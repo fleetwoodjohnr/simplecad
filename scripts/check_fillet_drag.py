@@ -129,12 +129,17 @@ def main() -> int:
             REPORT["readout_visible"] = window.stage.drag_readout.isVisible()
             REPORT["readout_text"] = window.stage.drag_readout.size_label.text()
             REPORT["body_dimmed"] = panel._dimmed == "Block"
-            QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+            REPORT["radius_during_release"] = round(panel.value("radius"), 2)
             REPORT["radius_after_drag"] = round(panel.value("radius"), 2)
-
-            panel.commit()
+            # Letting go is what commits, exactly as it does for a dragged
+            # face. Nothing is clicked here on purpose: a drag that leaves the
+            # model unchanged until you find a button is the bug this checks.
+            QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
             window.wait_for_rebuild()
             REPORT["features"] = [f.type_name for f in window.document.features]
+            REPORT["committed_on_release"] = (
+                REPORT["features"].count("fillet") == 1
+            )
             fillet = next(
                 (f for f in window.document.features if f.type_name == "fillet"), None
             )
@@ -170,7 +175,7 @@ def main() -> int:
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
 
-    dragged = REPORT.get("radius_after_drag") or 0
+    dragged = REPORT.get("radius_during_release") or 0
     committed = REPORT.get("committed_radius") or 0
     ok = (
         REPORT.get("edge_found")
@@ -184,7 +189,7 @@ def main() -> int:
         and REPORT.get("readout_visible")
         and REPORT.get("body_dimmed")
         and abs(committed - dragged) < 1e-6         # committed what was dragged
-        and "fillet" in (REPORT.get("features") or [])
+        and REPORT.get("committed_on_release")
         and REPORT.get("volume_after", 0) < REPORT.get("volume_before", 0)
         and REPORT.get("ghost_cleared")
         and REPORT.get("handles_cleared")

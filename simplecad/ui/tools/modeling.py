@@ -607,10 +607,13 @@ class _EdgeTool(_SelectionTool):
     by the current radius so the handle's position *is* the size. Dragging it
     outward makes the corner rounder and shows the real filleted body while you
     move; the number in the panel follows the drag, and typing in the panel
-    moves the handle. Neither route is the primary one and neither commits on
-    its own -- Apply writes the same parametric feature whichever way the value
-    was arrived at, which is the rule the rest of the app already follows for
-    Pull and Move.
+    moves the handle.
+
+    **Letting go commits**, exactly as letting go of a dragged face does. A
+    drag is a complete gesture with an obvious end, and finishing one only to
+    find the model unchanged until you hunt for a button reads as the drag not
+    working at all. Typing a value still goes through Apply, because typing has
+    no natural end.
 
     The preview is the genuine kernel result rather than an approximation,
     because the interesting radii are exactly the ones near where the operation
@@ -646,6 +649,7 @@ class _EdgeTool(_SelectionTool):
         self._drag_base = self.default_value
         self._dimmed = None
         self._last_good = None
+        self._preview_failed = False
 
         self.set_subtitle(self._describe())
         self.add_field(self.field_key, self.field_label, self.default_value)
@@ -720,6 +724,38 @@ class _EdgeTool(_SelectionTool):
             return 1e6
 
     # -- the handle ------------------------------------------------------
+    def _handle_pick(self):
+        """Which selected edge gets the handle: the one nearest the cursor.
+
+        With several edges selected -- and a filleted corner is three of them
+        -- putting the handle on whichever happened to be picked first can land
+        it on the far side of the part, out of sight behind the model.
+        """
+        from PySide6.QtGui import QCursor
+
+        viewport = self.window_.stage.viewport
+        if len(self.picks) == 1:
+            return self.picks[0]
+        try:
+            cursor = viewport.mapFromGlobal(QCursor.pos())
+        except Exception:  # noqa: BLE001 - no cursor to speak of, headless
+            return self.picks[0]
+
+        from ...kernel.edge_frame import edge_midpoint
+
+        best, best_distance = self.picks[0], None
+        for pick in self.picks:
+            try:
+                screen = viewport.project(edge_midpoint(pick.shape))
+            except Exception:  # noqa: BLE001 - an edge we cannot place
+                continue
+            if screen is None:
+                continue
+            distance = (screen[0] - cursor.x()) ** 2 + (screen[1] - cursor.y()) ** 2
+            if best_distance is None or distance < best_distance:
+                best, best_distance = pick, distance
+        return best
+
     def _install_handle(self) -> None:
         from ...kernel.edge_frame import edge_drag_frame
         from ..viewport.handles import DragHandle
@@ -728,7 +764,7 @@ class _EdgeTool(_SelectionTool):
             return
         try:
             anchor, direction, _limit = edge_drag_frame(
-                self._body_shape, self.picks[0].shape
+                self._body_shape, self._handle_pick().shape
             )
         except Exception:  # noqa: BLE001 - no handle is better than a wrong one
             return
@@ -758,8 +794,16 @@ class _EdgeTool(_SelectionTool):
         )
 
     def _move_handle(self, value: float) -> None:
+        """Put the handle where *value* says, and redraw so it is seen there.
+
+        The refresh is the point. ``move_to`` only updates a transformation;
+        without asking the viewport to repaint, the handle stays where it was
+        drawn and the drag looks like it is doing nothing at all -- which is
+        precisely how this read. Split does the same thing and refreshes.
+        """
         if self._handle is not None and self._anchor is not None:
             self._handle.move_to(self._offset_anchor(value))
+            self.window_.stage.viewport.refresh()
 
     # -- dragging --------------------------------------------------------
     def _on_handle_pressed(self, key: str) -> None:
@@ -783,15 +827,30 @@ class _EdgeTool(_SelectionTool):
         if finished:
             self._dragging = False
             self._preview_timer.stop()
-            self._refresh_preview()
-        else:
+            # A press and release that went nowhere is a click on the handle,
+            # not a gesture -- committing the default radius for it would be a
+            # change nobody asked for. Push/Pull draws the same line.
+            if abs(distance) < 0.05:
+                self._refresh_preview()
+                return
+            self.commit()
+            return
+        # Started only if it is not already running. Restarting it on every
+        # drag event -- which is what a debounce does -- means a 70 ms timer
+        # never elapses while the mouse is moving, because the events arrive
+        # every few milliseconds. The preview then appears only once the user
+        # stops, which is not a preview.
+        if not self._preview_timer.isActive():
             self._preview_timer.start()
 
     def _show_readout(self, value: float) -> None:
         from PySide6.QtGui import QCursor
 
         palette = self.window_.palette_
-        buildable = self._last_good is not None
+        # Unbuildable means "tried and failed", not "not tried yet". Reading
+        # this straight off ``_last_good`` made the readout red for the first
+        # few frames of every drag, before the preview timer had run once.
+        buildable = self._last_good is not None or not self._preview_failed
         self.window_.stage.drag_readout.show_text(
             self.window_.stage.mapFromGlobal(QCursor.pos()),
             f"{self.field_label[0]} {value:.2f} mm",
@@ -815,6 +874,7 @@ class _EdgeTool(_SelectionTool):
             # exact moment the radius becomes invalid is the least useful thing
             # to do: it hides the shape you were steering toward just as you
             # need to see how far you overshot.
+            self._preview_failed = True
             self.warn(
                 f"{self.field_label} {value:.2f} mm is more than this shape can "
                 "take here."
@@ -822,6 +882,7 @@ class _EdgeTool(_SelectionTool):
             self._show_readout(value)
             return
         self._last_good = shape
+        self._preview_failed = False
         self.warn("")
         viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.12)
         self._dim_body(0.88)

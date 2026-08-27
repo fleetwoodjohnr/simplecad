@@ -42,6 +42,11 @@ PATHS: dict[str, str] = {
     "sketch": '<path d="M3 21 6 13 17.5 1.5a2.1 2.1 0 0 1 3 3L9 16z"/><path d="m15.5 3.5 3 3"/>',
     "measure": '<path d="m3 15 12-12 6 6-12 12z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/>',
     "boolean": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
+    # The three combines differ only in which region is emphasised, which is
+    # exactly how they differ in meaning.
+    "subtract": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6" stroke-dasharray="2.5 2.5"/>',
+    "union": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/><path d="M12 7.1a6 6 0 0 0 0 9.8" opacity=".35"/>',
+    "intersect": '<circle cx="9" cy="12" r="6" stroke-dasharray="2.5 2.5"/><circle cx="15" cy="12" r="6" stroke-dasharray="2.5 2.5"/><path d="M12 7.1a6 6 0 0 1 0 9.8 6 6 0 0 1 0-9.8"/>',
     "pattern": '<circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="18" r="2.2"/><circle cx="12" cy="12" r="2.2" opacity=".5"/>',
     "print": '<path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/>',
     # --- chrome ---

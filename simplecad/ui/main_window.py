@@ -1513,9 +1513,12 @@ class MainWindow(QMainWindow):
         panel, Delete just happens -- so both go through here rather than each
         deciding for itself and disagreeing about, say, Duplicate.
         """
-        from .tools.registry import TOOLS
+        from .tools.registry import is_tool
 
-        if key in TOOLS:
+        # ``is_tool`` rather than a bare lookup in TOOLS: the registry fills
+        # itself in on import, so asking before that has happened answers no
+        # for every tool in the application.
+        if is_tool(key):
             self.activate_tool(key)
         else:
             self.run_command(key)
@@ -1703,17 +1706,29 @@ class MainWindow(QMainWindow):
         a file dialog -- by a scripted check, by a drop, or by anything else
         that already knows which file it wants.
         """
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QApplication
+
         from ..core.errors import translate
         from ..kernel.importing import ImportFeature, forget, read_bodies
         from ..kernel.io_formats import import_filter  # noqa: F401
 
         # The file may have changed since it was last read in this session.
         forget(path)
+        # Read here rather than in the geometry process because the placement
+        # below needs the bounds before any feature exists. A large mesh takes
+        # seconds, so it says so -- an unannounced pause on a file the user
+        # just chose reads as the application having ignored them.
+        self.set_hint(f"Reading {os.path.basename(path)}…")
+        QApplication.setOverrideCursor(QCursor(Qt.BusyCursor))
+        QApplication.processEvents()
         try:
             bodies = read_bodies(path)
         except Exception as exc:  # noqa: BLE001 - reported, never fatal
             self._report_import_failure(path, translate(exc, "import"))
             return []
+        finally:
+            QApplication.restoreOverrideCursor()
 
         offset = self._placement_for([body.shape for body in bodies])
         self.history.record("Import")

@@ -216,6 +216,16 @@ def _grouped(model: SelectionModel) -> bool:
     return bool(model.groups)
 
 
+def _combinable(model: SelectionModel) -> bool:
+    """Two or more whole bodies -- what a boolean needs.
+
+    Read from ``bodies`` rather than ``items`` because a boolean acts on
+    geometry: a group of two is two bodies to cut with, even though Group
+    counts it as one thing.
+    """
+    return model.only_bodies and len(model.bodies) >= 2
+
+
 CONTEXT_ACTIONS = (
     # -- relationships between two parts, which are the most specific reading
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
@@ -237,6 +247,10 @@ CONTEXT_ACTIONS = (
     # -- an edge or a corner
     ("fillet", "Fillet", "fillet", _roundable),
     ("chamfer", "Chamfer", "chamfer", _roundable),
+    # -- two or more bodies, where a boolean is usually the point
+    ("subtract", "Subtract", "subtract", _combinable),
+    ("join", "Join", "union", _combinable),
+    ("intersect", "Intersect", "intersect", _combinable),
     # -- whole objects
     ("group", "Group", "group", _groupable),
     ("move", "Move", "move", lambda m: m.count >= 1),

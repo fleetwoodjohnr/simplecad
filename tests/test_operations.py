@@ -211,6 +211,99 @@ def test_booleans_produce_the_expected_volume(doc, operation, expected):
     assert volume(doc.bodies["Plate"].shape) == pytest.approx(expected, rel=1e-3)
 
 
+def test_a_cut_consumes_the_tool_body(doc):
+    """Subtract is not "put the cutter inside the part and leave it there".
+
+    Without this the cutter stays in the tree and in the viewport, occupying
+    the space it just removed -- which is not what subtract means in any other
+    CAD package.
+    """
+    plate(doc)
+    doc.add_feature(
+        CylinderFeature(
+            inputs={"radius": 5, "height": 30, "x": 20, "y": 20}, outputs=["Tool"]
+        )
+    )
+    build(doc)
+    doc.add_feature(
+        BooleanFeature(
+            inputs={"body": BodyRef("Plate"), "tool": BodyRef("Tool"),
+                    "operation": "cut"},
+            outputs=["Plate"],
+        )
+    )
+    build(doc)
+    assert "Tool" not in doc.bodies
+    assert "Plate" in doc.bodies
+
+
+def test_keep_tool_leaves_the_cutter_in_the_document(doc):
+    plate(doc)
+    doc.add_feature(
+        CylinderFeature(
+            inputs={"radius": 5, "height": 30, "x": 20, "y": 20}, outputs=["Tool"]
+        )
+    )
+    build(doc)
+    doc.add_feature(
+        BooleanFeature(
+            inputs={"body": BodyRef("Plate"), "tool": BodyRef("Tool"),
+                    "operation": "cut", "keep_tool": True},
+            outputs=["Plate"],
+        )
+    )
+    build(doc)
+    assert "Tool" in doc.bodies
+    assert volume(doc.bodies["Tool"].shape) == pytest.approx(
+        math.pi * 25 * 30, rel=1e-3
+    )
+
+
+def test_a_cut_takes_several_tools_at_once(doc):
+    """Selecting three bodies and pressing Subtract has to mean all of them."""
+    plate(doc)
+    for index, x in enumerate((10, 20, 30), start=1):
+        doc.add_feature(
+            CylinderFeature(
+                inputs={"radius": 3, "height": 30, "x": x, "y": 20},
+                outputs=[f"Tool {index}"],
+            )
+        )
+    build(doc)
+    before = volume(doc.bodies["Plate"].shape)
+    doc.add_feature(
+        BooleanFeature(
+            inputs={
+                "body": BodyRef("Plate"),
+                "tools": [BodyRef("Tool 1"), BodyRef("Tool 2"), BodyRef("Tool 3")],
+                "operation": "cut",
+            },
+            outputs=["Plate"],
+        )
+    )
+    build(doc)
+    assert is_valid(doc.bodies["Plate"].shape)
+    assert volume(doc.bodies["Plate"].shape) == pytest.approx(
+        before - 3 * math.pi * 9 * 10, rel=1e-3
+    )
+    for index in (1, 2, 3):
+        assert f"Tool {index}" not in doc.bodies
+
+
+def test_a_combine_with_no_tool_says_so(doc):
+    plate(doc)
+    build(doc)
+    doc.add_feature(
+        BooleanFeature(
+            inputs={"body": BodyRef("Plate"), "operation": "cut"},
+            outputs=["Plate"],
+        )
+    )
+    report = Rebuilder(doc).rebuild()
+    assert not report.ok
+    assert "second body" in report.summary()
+
+
 def test_move_translates_by_the_requested_amount(doc):
     plate(doc)
     build(doc)

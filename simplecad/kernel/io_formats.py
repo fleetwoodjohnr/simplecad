@@ -204,15 +204,42 @@ def export_3mf(shapes, path: str, *, deflection: float = 0.05) -> str:
 # ----------------------------------------------------------------------
 # Import
 # ----------------------------------------------------------------------
-#: Triangle count above which a mesh is not sewn into a solid.
+#: Triangle count above which a mesh is not rebuilt as a solid.
 #:
-#: Sewing turns a triangle soup into real B-Rep topology, which is what makes an
-#: imported mesh something you can split, boolean and shell rather than merely
-#: look at. It is also quadratic-ish in practice, and a 200k-triangle scan would
-#: hang the application for minutes. Past this size the triangulation is kept
-#: as-is: the body still imports, displays, moves and measures, and the feature
-#: says plainly that the heavier operations will not work on it.
-SEW_TRIANGLE_LIMIT = 40_000
+#: Rebuilding turns a triangle soup into real B-Rep topology, which is what
+#: makes an imported mesh something you can split, boolean and shell rather
+#: than merely look at. Building it from the mesh's own vertex indices is
+#: linear -- measured at about 0.09 ms a triangle, so 15k triangles is 1.4 s
+#: and 30k is 2.8 s -- which is what makes a limit this high reasonable at all.
+#: (Asking BRepBuilderAPI_Sewing to rediscover the same topology geometrically
+#: is not linear: on a real slicer mesh it went from 0.9 s at 2,200 triangles to
+#: over six minutes at 2,600. That path survives only as a fallback.)
+#:
+#: The file is read twice -- once here for placement and once in the geometry
+#: process during the rebuild -- so the budget is half of what the user waits.
+#: Past this size the triangulation is kept as-is: the body still imports,
+#: displays, moves and measures, and the feature says plainly that the heavier
+#: operations will not work on it.
+REBUILD_TRIANGLE_LIMIT = 40_000
+
+#: Triangle count above which coplanar faces are not merged back together.
+#:
+#: Merging is what turns an imported box into six faces you can select, pull
+#: and sketch on rather than twelve triangles you can do nothing with. It is
+#: worth its cost twice over: on a real 21-part slicer project it took the face
+#: count from 83,949 to 37,631, and everything downstream -- selection,
+#: display, and snapping in particular, which is per-face and runs on every
+#: mouse-move -- then does less than half the work for the rest of the session.
+#:
+#: It is a second pass over the topology, measured at about 0.07 ms a triangle
+#: (6 s across that project's 89,000). Past this size a body is more use
+#: quickly than tidily, and a mesh that large is usually a scan rather than
+#: something anyone is about to pull a face on.
+UNIFY_TRIANGLE_LIMIT = 20_000
+
+#: Boundary edges times suspect vertices above which zero-area slivers are left
+#: alone. Generous: a real part's slivers give a product in the hundreds.
+MAX_SLIVER_REPAIR_WORK = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -383,11 +410,361 @@ def import_brep(path: str) -> list[ImportedBody]:
 
 
 # -- meshes -------------------------------------------------------------
+def _components(vertices, triangles) -> list[list[tuple[int, int, int]]]:
+    """Split the triangles into connected pieces, by shared vertex index.
+
+    One STL routinely holds several disconnected objects, and each has to
+    become its own shell -- otherwise a file with a lid and a base yields one
+    body that is closed nowhere.
+    """
+    parent = list(range(len(vertices)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        a, b = find(i), find(j)
+        if a != b:
+            parent[b] = a
+
+    for a, b, c in triangles:
+        union(a, b)
+        union(a, c)
+    groups: dict[int, list] = {}
+    for triangle in triangles:
+        groups.setdefault(find(triangle[0]), []).append(triangle)
+    return list(groups.values())
+
+
+def _signed_volume(vertices, triangles) -> float:
+    """Six times the enclosed volume. Negative means the winding is inside-out."""
+    total = 0.0
+    for a, b, c in triangles:
+        ax, ay, az = vertices[a]
+        bx, by, bz = vertices[b]
+        cx, cy, cz = vertices[c]
+        total += (
+            ax * (by * cz - bz * cy)
+            - ay * (bx * cz - bz * cx)
+            + az * (bx * cy - by * cx)
+        )
+    return total
+
+
+def _triangle_normal(vertices, a: int, b: int, c: int):
+    """The outward unit normal of one triangle, or None if it has no area."""
+    import math
+
+    ax, ay, az = vertices[a]
+    bx, by, bz = vertices[b]
+    cx, cy, cz = vertices[c]
+    ux, uy, uz = bx - ax, by - ay, bz - az
+    vx, vy, vz = cx - ax, cy - ay, cz - az
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if length < 1e-12:
+        return None
+    return (nx / length, ny / length, nz / length)
+
+
+def _heal_slivers(vertices, triangles):
+    """Remove zero-area triangles, and mend the T-junctions that leaves.
+
+    Real slicer meshes contain fans of exactly collinear points -- triangles
+    with three distinct corners and no area at all. They cannot become faces:
+    there is no plane through a line. Simply dropping them is what turns a mesh
+    that is closed in the file into a shell with a slit in it, because the
+    edges those triangles paired are left used once.
+
+    The slit is a T-junction: a corner of one triangle sitting part-way along
+    another triangle's edge. The repair is the standard one -- split the
+    offending edge at that point, so both sides agree where the edge is. Only
+    vertices that took part in a sliver can be at fault, and there are a
+    handful of those, so this costs a scan rather than a search.
+
+    Returns ``(vertices, triangles)``, both possibly extended.
+    """
+    import math
+
+    good, suspects = [], set()
+    for a, b, c in triangles:
+        if a == b or b == c or a == c:
+            suspects.update((a, b, c))
+            continue
+        if _triangle_normal(vertices, a, b, c) is None:
+            suspects.update((a, b, c))
+            continue
+        good.append((a, b, c))
+    if not suspects or not good:
+        return (list(vertices), good)
+
+    # Only edges that the slivers left unpaired are candidates. Splitting an
+    # edge that is already shared by two triangles would be busywork at best,
+    # and where the new point is a corner of a neighbouring triangle it makes
+    # the mesh non-manifold -- four faces meeting on one edge, which is worse
+    # than the slit being mended.
+    uses: dict[tuple[int, int], int] = {}
+    for a, b, c in good:
+        for u, v in ((a, b), (b, c), (c, a)):
+            key = (u, v) if u < v else (v, u)
+            uses[key] = uses.get(key, 0) + 1
+    boundary = {key for key, count in uses.items() if count != 2}
+    if not boundary:
+        return (list(vertices), good)
+    # The search below is boundary edges times suspect vertices. On a mesh that
+    # is closed apart from a few slivers -- the case this exists for -- both are
+    # tiny. On a mesh that is genuinely a surface, or one that is mostly
+    # rubbish, both can be large, and mending it is not worth stalling the
+    # import for: it imports as a shell, and says so.
+    if len(boundary) * len(suspects) > MAX_SLIVER_REPAIR_WORK:
+        return (list(vertices), good)
+
+    def distance(i: int, j: int) -> float:
+        return math.dist(vertices[i], vertices[j])
+
+    def between(u: int, v: int) -> list[int]:
+        """The suspect vertices lying strictly along the unpaired edge u-v."""
+        key = (u, v) if u < v else (v, u)
+        if key not in boundary:
+            return []
+        span = distance(u, v)
+        if span <= 1e-12:
+            return []
+        found = []
+        for w in suspects:
+            if w == u or w == v:
+                continue
+            first, second = distance(u, w), distance(w, v)
+            if first <= 1e-9 or second <= 1e-9:
+                continue
+            if abs(first + second - span) <= 1e-7 * max(span, 1.0):
+                found.append((first, w))
+        return [w for _d, w in sorted(found)]
+
+    healed_vertices = list(vertices)
+    healed: list[tuple[int, int, int]] = []
+    for a, b, c in good:
+        loop: list[int] = []
+        for u, v in ((a, b), (b, c), (c, a)):
+            loop.append(u)
+            loop.extend(between(u, v))
+        if len(loop) == 3:
+            healed.append((a, b, c))
+            continue
+        # Fanned from the centroid rather than from a corner: a corner fan
+        # would join points that are collinear with it along the very edge
+        # being split, producing fresh zero-area triangles and no progress.
+        # The centroid is inside the triangle and in its plane, so every
+        # triangle of the fan has area and the same winding as the original.
+        centre = len(healed_vertices)
+        healed_vertices.append(tuple(
+            sum(vertices[i][axis] for i in (a, b, c)) / 3.0 for axis in range(3)
+        ))
+        for index, corner in enumerate(loop):
+            healed.append((centre, corner, loop[(index + 1) % len(loop)]))
+    return (healed_vertices, healed)
+
+
+def _shell_from_triangles(vertices, triangles):
+    """Build one shell straight from the mesh's own connectivity.
+
+    The point of doing it this way rather than through
+    ``BRepBuilderAPI_Sewing``: a triangle list *already carries the topology*.
+    Two triangles share an edge exactly when they name the same pair of vertex
+    indices, so there is nothing to discover. Sewing throws that away, hands
+    OCCT a pile of unrelated faces and asks it to find the coincidences
+    geometrically -- which on a real slicer mesh from this project's own bug
+    report went from 0.9 s at 2,200 triangles to over six minutes at 2,600.
+    Building the vertices and edges once and sharing them is linear.
+
+    Returns ``(shell, closed)``, or ``(None, False)`` if nothing could be built.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeVertex
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.TopoDS import TopoDS_Shell, TopoDS_Wire
+
+    builder = BRep_Builder()
+    made_vertices: dict[int, object] = {}
+    made_edges: dict[tuple[int, int], object] = {}
+    edge_uses: dict[tuple[int, int], int] = {}
+
+    def vertex(index: int):
+        found = made_vertices.get(index)
+        if found is None:
+            found = BRepBuilderAPI_MakeVertex(gp_Pnt(*vertices[index])).Vertex()
+            made_vertices[index] = found
+        return found
+
+    def edge(a: int, b: int):
+        """The shared edge for a vertex pair, oriented from *a* to *b*."""
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+
+        key = (a, b) if a < b else (b, a)
+        found = made_edges.get(key)
+        if found is None:
+            maker = BRepBuilderAPI_MakeEdge(vertex(key[0]), vertex(key[1]))
+            if not maker.IsDone():
+                return None
+            found = maker.Edge()
+            made_edges[key] = found
+        edge_uses[key] = edge_uses.get(key, 0) + 1
+        return found if (a, b) == key else found.Reversed()
+
+    shell = TopoDS_Shell()
+    builder.MakeShell(shell)
+    faces = 0
+    for a, b, c in triangles:
+        # Everything that can reject a triangle is asked *before* its edges are
+        # created, because creating one is what counts it towards closedness.
+        # Rejecting afterwards leaves the edge counted for a face that was
+        # never added, and the shell then claims to be closed with a hole in it.
+        if a == b or b == c or a == c:
+            continue                      # a degenerate triangle has no face
+        # The plane is stated rather than inferred. Left to work it out from
+        # the wire, OCCT picks a normal that does not reliably follow the
+        # winding, and the shell comes out with its faces facing every which
+        # way -- which reads as a negative volume and an inside-out solid. The
+        # triangle's own cross product is the outward normal by construction.
+        normal = _triangle_normal(vertices, a, b, c)
+        if normal is None:
+            continue                      # zero area: no plane, no face
+        wire = TopoDS_Wire()
+        builder.MakeWire(wire)
+        pieces = [edge(a, b), edge(b, c), edge(c, a)]
+        if any(piece is None for piece in pieces):
+            continue
+        for piece in pieces:
+            builder.Add(wire, piece)
+        try:
+            plane = gp_Pln(gp_Pnt(*vertices[a]), gp_Dir(*normal))
+            maker = BRepBuilderAPI_MakeFace(plane, wire, True)
+        except Exception:  # noqa: BLE001 - a degenerate triangle has no plane
+            continue
+        if not maker.IsDone():
+            continue
+        builder.Add(shell, maker.Face())
+        faces += 1
+
+    if faces == 0:
+        return (None, False)
+    # Closed when every edge is used by exactly two triangles. Read off the
+    # index bookkeeping rather than asked of the kernel: it is the same answer
+    # and it costs nothing.
+    closed = bool(edge_uses) and all(count == 2 for count in edge_uses.values())
+    shell.Closed(closed)
+    return (shell, closed)
+
+
+def _solid_from_shell(shell, closed: bool, enclosed: float):
+    """A solid from *shell*, or None if this piece is genuinely a surface.
+
+    Perfect edge pairing is the fast answer, but not the only one worth
+    accepting. Real slicer meshes carry zero-area slivers -- fans of collinear
+    points -- and dropping those (they have no plane, so they cannot become
+    faces) leaves the edge counts short by a slit of no width. The surface is
+    closed in every sense that matters, and refusing to make a solid of it
+    would cost the user Cut, Split and Hollow over nothing.
+
+    So when the count says otherwise, the shell is asked to become a solid
+    anyway and the result is checked against the mesh's *own* enclosed volume,
+    which is arithmetic on the triangle list and cannot be argued with. If
+    OCCT's solid agrees to within a hair, it really does bound that volume.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+
+    from .occ import is_valid, volume
+
+    try:
+        maker = BRepBuilderAPI_MakeSolid(shell)
+        if not maker.IsDone():
+            return None
+        solid = maker.Solid()
+    except Exception:  # noqa: BLE001 - not every shell bounds a solid
+        return None
+    if closed:
+        return solid
+    if enclosed <= 0.0 or not is_valid(solid):
+        return None
+    try:
+        built = volume(solid)
+    except Exception:  # noqa: BLE001
+        return None
+    return solid if abs(built - enclosed) <= 1e-6 * max(enclosed, 1.0) else None
+
+
 def _shape_from_mesh(mesh: Mesh) -> tuple[object, str]:
-    """Sew a triangle soup into a shell, and a solid when it closes.
+    """Turn a triangle soup into solids, one per connected piece.
 
     Returns the shape and a note, which is non-empty when the mesh was too big
-    to sew and had to be kept as a plain triangulation.
+    to rebuild or when some part of it does not close.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+
+    from .occ import unify
+
+    if len(mesh.triangles) > REBUILD_TRIANGLE_LIMIT:
+        return (
+            _triangulation_face(mesh),
+            f"{len(mesh.triangles):,} triangles is too many to rebuild as a "
+            "solid, so this body can be moved and measured but not cut.",
+        )
+
+    solids, open_shells = [], 0
+    with guard("import"):
+        vertices, triangles = _heal_slivers(mesh.vertices, mesh.triangles)
+        for piece in _components(vertices, triangles):
+            # A mesh wound inside-out builds an inside-out solid, which every
+            # boolean afterwards gets backwards. The sign of the enclosed
+            # volume says which way round it is, and flipping the winding is
+            # cheaper than asking OCCT to re-orient the result.
+            enclosed = _signed_volume(vertices, piece) / 6.0
+            if enclosed < 0.0:
+                piece = [(c, b, a) for a, b, c in piece]
+                enclosed = -enclosed
+            shell, closed = _shell_from_triangles(vertices, piece)
+            if shell is None:
+                continue
+            solid = _solid_from_shell(shell, closed, enclosed)
+            if solid is None:
+                open_shells += 1
+                solids.append(shell)
+            else:
+                # Merge the coplanar triangles back into the faces they were a
+                # tessellation of. An imported box arrives with six faces you
+                # can select, pull and sketch on rather than twelve triangles
+                # you cannot do anything useful with -- and every later
+                # operation, snapping included, has a fraction of the work.
+                solids.append(unify(solid) if len(piece) <= UNIFY_TRIANGLE_LIMIT
+                              else solid)
+
+    if not solids:
+        # Nothing came of the connectivity: fall back to asking the kernel to
+        # find the coincidences itself. Slow, but it copes with a mesh whose
+        # indices do not actually describe shared edges.
+        return _sewn_from_mesh(mesh)
+
+    note = ""
+    if open_shells:
+        note = (
+            f"{open_shells} part(s) of this mesh do not close, so they stay "
+            "surfaces and cannot be cut."
+        )
+    return (_compound(solids), note)
+
+
+def _sewn_from_mesh(mesh: Mesh) -> tuple[object, str]:
+    """The geometric fallback: one face per triangle, sewn by tolerance.
+
+    Only reached when the index-built shell produced nothing at all, which
+    means the file's triangles do not share vertex indices along their common
+    edges. Kept because such files exist; not used otherwise, because it is
+    orders of magnitude slower.
     """
     from OCP.BRepBuilderAPI import (
         BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon,
@@ -397,13 +774,6 @@ def _shape_from_mesh(mesh: Mesh) -> tuple[object, str]:
     from OCP.TopAbs import TopAbs_SHELL
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
-
-    if len(mesh.triangles) > SEW_TRIANGLE_LIMIT:
-        return (
-            _triangulation_face(mesh),
-            f"{len(mesh.triangles):,} triangles is too many to rebuild as a "
-            "solid, so this body can be moved and measured but not cut.",
-        )
 
     with guard("import"):
         sewing = BRepBuilderAPI_Sewing(1e-4)
@@ -423,11 +793,6 @@ def _shape_from_mesh(mesh: Mesh) -> tuple[object, str]:
         sewing.Perform()
         sewn = sewing.SewedShape()
 
-    # Every closed shell becomes a solid. This is the step that makes an
-    # imported mesh usable by Split and the booleans rather than merely
-    # visible -- and it has to run per shell, because one STL routinely holds
-    # several disconnected objects and turning only the lone-shell case into a
-    # solid would leave every multi-part file un-editable.
     explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
     shells = []
     while explorer.More():
@@ -580,63 +945,286 @@ UNIT_SCALE = {
     "inch": 25.4, "foot": 304.8, "meter": 1000.0,
 }
 
+#: The production extension: what lets one 3MF spread its meshes over several
+#: parts, with the root holding nothing but references. Every current slicer --
+#: Bambu Studio, OrcaSlicer, ElegooSlicer, PrusaSlicer's project files -- writes
+#: this, so it is the common case rather than an exotic one.
+PRODUCTION_NS = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
+#: OPC relationships, which is how a package says which part is the model.
+RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+MODEL_REL_TYPE = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"
+#: Object types that describe scaffolding rather than the part being printed.
+SKIPPED_OBJECT_TYPES = {"support", "solidsupport", "other"}
+#: How deep ``<components>`` may nest before the file is called malformed.
+MAX_3MF_DEPTH = 16
+
+
+def _3mf_root_part(archive: zipfile.ZipFile) -> str:
+    """Which part inside the package is the model.
+
+    Asked of the package's own relationships rather than guessed from the file
+    names. Guessing -- taking the first entry ending in ``.model`` -- is what
+    used to pick a production-extension file's *reference* part, which holds no
+    mesh at all, and report the whole file as having no triangles.
+    """
+    names = archive.namelist()
+    try:
+        root = ElementTree.fromstring(archive.read("_rels/.rels"))
+    except Exception:  # noqa: BLE001 - a package without relationships
+        root = None
+    if root is not None:
+        for relationship in root.iter(f"{{{RELS_NS}}}Relationship"):
+            if relationship.get("Type") != MODEL_REL_TYPE:
+                continue
+            target = (relationship.get("Target") or "").lstrip("/")
+            if target in names:
+                return target
+    for candidate in ("3D/3dmodel.model", "3d/3dmodel.model"):
+        if candidate in names:
+            return candidate
+    found = next((n for n in names if n.lower().endswith(".model")), None)
+    if found is None:
+        raise CadError(
+            f"'{os.path.basename(archive.filename or '')}' has no 3MF model part.",
+            suggestion="It may be a renamed archive rather than a 3MF file.",
+        )
+    return found
+
+
+def _3mf_part(archive: zipfile.ZipFile, cache: dict, name: str):
+    """The parsed ``(root, objects-by-id)`` for one model part, read once."""
+    key = name.lstrip("/")
+    found = cache.get(key)
+    if found is None:
+        root = ElementTree.fromstring(archive.read(key))
+        objects = {
+            obj.get("id"): obj
+            for obj in root.iter(f"{{{MODEL_NS}}}object")
+            if obj.get("id")
+        }
+        found = (root, objects)
+        cache[key] = found
+    return found
+
+
+def _3mf_transform(text: str | None):
+    """A 3MF transform as 12 floats, or None for the identity.
+
+    3MF writes a 4x3 matrix in row-major order and multiplies points as row
+    vectors, so the last three numbers are the translation.
+    """
+    if not text:
+        return None
+    parts = text.split()
+    if len(parts) != 12:
+        return None
+    try:
+        return tuple(float(value) for value in parts)
+    except ValueError:
+        return None
+
+
+def _3mf_compose(first, second):
+    """The transform that applies *first* and then *second*."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    out = []
+    for row in range(4):
+        base = [first[row * 3 + k] for k in range(3)]
+        for column in range(3):
+            value = sum(base[k] * second[k * 3 + column] for k in range(3))
+            if row == 3:
+                value += second[9 + column]
+            out.append(value)
+    return tuple(out)
+
+
+def _3mf_apply(matrix, point):
+    if matrix is None:
+        return point
+    x, y, z = point
+    return (
+        x * matrix[0] + y * matrix[3] + z * matrix[6] + matrix[9],
+        x * matrix[1] + y * matrix[4] + z * matrix[7] + matrix[10],
+        x * matrix[2] + y * matrix[5] + z * matrix[8] + matrix[11],
+    )
+
+
+def _3mf_component_path(component, current: str) -> str:
+    """Which part a ``<component>`` points at, defaulting to its own."""
+    direct = component.get(f"{{{PRODUCTION_NS}}}path")
+    if direct:
+        return direct.lstrip("/")
+    # The production namespace may be bound to any prefix, and some writers
+    # leave the attribute unqualified, so fall back to matching the local name.
+    for key, value in component.attrib.items():
+        if key == "path" or key.endswith("}path"):
+            return value.lstrip("/")
+    return current
+
+
+def _3mf_slicer_names(archive: zipfile.ZipFile) -> dict[str, str]:
+    """Object id -> name, from the slicer's own settings part if there is one.
+
+    Not part of the 3MF standard, but it is where Bambu Studio and its
+    derivatives put the name the user actually gave the object -- so an import
+    says "empty_2_B" rather than "Atlas Box 1".
+    """
+    names: dict[str, str] = {}
+    for candidate in ("Metadata/model_settings.config",):
+        try:
+            root = ElementTree.fromstring(archive.read(candidate))
+        except Exception:  # noqa: BLE001 - absent, or not a slicer's file
+            continue
+        for obj in root.iter("object"):
+            identifier = obj.get("id")
+            if not identifier:
+                continue
+            for entry in obj.findall("metadata"):
+                if entry.get("key") == "name" and entry.get("value"):
+                    names[identifier] = entry.get("value")
+                    break
+    return names
+
+
+def _3mf_mesh_into(mesh: Mesh, obj, matrix, scale: float) -> None:
+    """Append this object's own ``<mesh>`` to *mesh*, transformed and scaled."""
+    element = obj.find(f"{{{MODEL_NS}}}mesh")
+    if element is None:
+        return
+    offset = len(mesh.vertices)
+    added = 0
+    for vertex in element.iter(f"{{{MODEL_NS}}}vertex"):
+        try:
+            point = (
+                float(vertex.get("x")), float(vertex.get("y")),
+                float(vertex.get("z")),
+            )
+        except (TypeError, ValueError):
+            return
+        moved = _3mf_apply(matrix, point)
+        mesh.vertices.append(tuple(value * scale for value in moved))
+        added += 1
+    for triangle in element.iter(f"{{{MODEL_NS}}}triangle"):
+        try:
+            indices = (
+                int(triangle.get("v1")), int(triangle.get("v2")),
+                int(triangle.get("v3")),
+            )
+        except (TypeError, ValueError):
+            continue
+        if any(not 0 <= index < added for index in indices):
+            continue
+        mesh.triangles.append(tuple(offset + index for index in indices))
+
+
+def _3mf_gather(
+    archive: zipfile.ZipFile, cache: dict, part: str, object_id: str,
+    matrix, scale: float, mesh: Mesh, seen: tuple, depth: int = 0,
+) -> None:
+    """Collect one object's geometry, following ``<components>`` across parts."""
+    if depth > MAX_3MF_DEPTH:
+        raise CadError(
+            "This 3MF nests its parts too deeply to read.",
+            suggestion="It may reference itself. Re-export it from the slicer.",
+        )
+    key = (part, object_id)
+    if key in seen:
+        raise CadError(
+            "This 3MF refers to itself and cannot be read.",
+            suggestion="Re-export it from the program that made it.",
+        )
+    _root, objects = _3mf_part(archive, cache, part)
+    obj = objects.get(object_id)
+    if obj is None:
+        return
+    if (obj.get("type") or "model").lower() in SKIPPED_OBJECT_TYPES:
+        return
+
+    _3mf_mesh_into(mesh, obj, matrix, scale)
+    components = obj.find(f"{{{MODEL_NS}}}components")
+    if components is None:
+        return
+    for component in components.findall(f"{{{MODEL_NS}}}component"):
+        target = component.get("objectid")
+        if not target:
+            continue
+        _3mf_gather(
+            archive, cache, _3mf_component_path(component, part), target,
+            _3mf_compose(_3mf_transform(component.get("transform")), matrix),
+            scale, mesh, seen + (key,), depth + 1,
+        )
+
 
 def import_3mf(path: str) -> list[ImportedBody]:
-    """3MF, one body per ``<object>``, honouring the declared unit."""
+    """3MF, one body per object on the build plate.
+
+    Handles the production extension, where the root part holds only
+    references and the meshes live in parts of their own.
+    """
     with zipfile.ZipFile(path) as archive:
-        name = next(
-            (n for n in archive.namelist() if n.lower().endswith(".model")), None
-        )
-        if name is None:
-            raise CadError(f"'{os.path.basename(path)}' has no 3MF model part.")
-        root = ElementTree.fromstring(archive.read(name))
+        cache: dict = {}
+        part = _3mf_root_part(archive)
+        root, objects = _3mf_part(archive, cache, part)
+        scale = UNIT_SCALE.get((root.get("unit") or "millimeter").lower(), 1.0)
+        labels = _3mf_slicer_names(archive)
 
-    scale = UNIT_SCALE.get((root.get("unit") or "millimeter").lower(), 1.0)
-    labels = {}
-    for item in root.iter(f"{{{MODEL_NS}}}item"):
-        if item.get("objectid"):
-            labels[item.get("objectid")] = item.get("name") or ""
+        # What the file says to build, in the order it says to build it. Only
+        # falls back to every object when there is no build section, because a
+        # slicer's resources include the parts that make up each object and
+        # importing those as well would duplicate the whole model.
+        items = [
+            (item.get("objectid"), item.get("name") or "",
+             _3mf_transform(item.get("transform")))
+            for item in root.iter(f"{{{MODEL_NS}}}item")
+            if item.get("objectid")
+        ]
+        if not items:
+            items = [(identifier, "", None) for identifier in objects]
 
-    bodies: list[ImportedBody] = []
-    for obj in root.iter(f"{{{MODEL_NS}}}object"):
-        mesh = Mesh()
-        for element in obj.iter(f"{{{MODEL_NS}}}vertex"):
-            mesh.vertices.append((
-                float(element.get("x")) * scale,
-                float(element.get("y")) * scale,
-                float(element.get("z")) * scale,
-            ))
-        for element in obj.iter(f"{{{MODEL_NS}}}triangle"):
-            mesh.triangles.append((
-                int(element.get("v1")), int(element.get("v2")),
-                int(element.get("v3")),
-            ))
-        if mesh.is_empty:
-            continue
-        identifier = obj.get("id") or str(len(bodies) + 1)
-        label = (
-            obj.get("name") or labels.get(identifier) or
-            (_base_name(path) if len(bodies) == 0 else
-             f"{_base_name(path)} {identifier}")
-        )
-        shape, note = _shape_from_mesh(mesh)
-        bodies.append(ImportedBody(label, shape, note))
+        bodies: list[ImportedBody] = []
+        for index, (identifier, item_name, matrix) in enumerate(items, start=1):
+            mesh = Mesh()
+            _3mf_gather(
+                archive, cache, part, identifier, matrix, scale, mesh, ()
+            )
+            if mesh.is_empty:
+                continue
+            obj = objects.get(identifier)
+            name = (
+                labels.get(identifier)
+                or item_name
+                or (obj.get("name") if obj is not None else "")
+                or _base_name(path)
+            )
+            shape, note = _shape_from_mesh(mesh)
+            bodies.append(ImportedBody(name, shape, note))
 
     if not bodies:
-        raise CadError(f"'{os.path.basename(path)}' contains no triangles.")
-    if len(bodies) > 1:
-        # Disambiguate now rather than leaving the document to do it, so the
-        # names in the tree match the objects in the file.
-        bodies = [
-            ImportedBody(f"{_base_name(path)} {index}", body.shape, body.note)
-            if body.name == _base_name(path) else body
-            for index, body in enumerate(bodies, start=1)
-        ]
-    return bodies
+        raise CadError(
+            f"'{os.path.basename(path)}' describes {len(items)} object(s) but "
+            "no mesh SimpleCAD could read.",
+            suggestion="Re-export it from the slicer or CAD package that made it.",
+        )
+    # Disambiguate now rather than leaving the document to do it, so the names
+    # in the tree match the objects in the file.
+    seen: dict[str, int] = {}
+    unique: list[ImportedBody] = []
+    for body in bodies:
+        count = seen.get(body.name, 0) + 1
+        seen[body.name] = count
+        unique.append(
+            body if count == 1
+            else ImportedBody(f"{body.name} {count}", body.shape, body.note)
+        )
+    return unique
 
 
 def import_gltf(path: str) -> list[ImportedBody]:
     """glTF / GLB, when this OCCT build wraps the reader."""
+    from OCP.Message import Message_ProgressRange
     from OCP.RWGltf import RWGltf_CafReader
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDF import TDF_LabelSequence
@@ -648,7 +1236,10 @@ def import_gltf(path: str) -> list[ImportedBody]:
         reader = RWGltf_CafReader()
         reader.SetDocument(document)
         reader.SetSystemLengthUnit(0.001)     # glTF is metres; we work in mm
-        if not reader.Perform(path, None):
+        # Not None: these bindings type the progress argument, so passing None
+        # raises TypeError and every glTF import failed with a message about
+        # the geometry rather than about the call.
+        if not reader.Perform(path, Message_ProgressRange()):
             raise CadError(f"'{os.path.basename(path)}' could not be read.")
         tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
         labels = TDF_LabelSequence()

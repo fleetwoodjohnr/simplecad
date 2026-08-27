@@ -23,14 +23,32 @@ def register_tool(key: str):
     return decorate
 
 
-def activate(window, key: str) -> None:
-    """Activate the tool named *key* on *window*."""
+def load() -> dict[str, Callable]:
+    """Import the tool modules, so ``TOOLS`` describes everything there is.
+
+    Registration happens as a side effect of importing, which means asking
+    ``TOOLS`` a question before this has run gets the wrong answer. That is not
+    hypothetical: ``run_action`` decides between a tool and a command by
+    looking the key up, so on a cold start the *first* thing launched from the
+    contextual bar or from search fell through to "not available yet" -- and
+    picking an edge and pressing Fillet is exactly that first thing.
+    """
     from . import (  # noqa: F401 - registers the built-in tools
-        matching, measuring, modeling, shapes, sketching, splitting,
+        combining, matching, measuring, modeling, shapes, sketching, splitting,
     )
     from ..printws import fit_panel, panel  # noqa: F401
 
-    factory = TOOLS.get(key)
+    return TOOLS
+
+
+def is_tool(key: str) -> bool:
+    """Whether *key* names a tool, loading the modules if need be."""
+    return key in load()
+
+
+def activate(window, key: str) -> None:
+    """Activate the tool named *key* on *window*."""
+    factory = load().get(key)
     if factory is None:
         window.set_hint(f"{key.replace('_', ' ').title()} is not available yet.")
         return

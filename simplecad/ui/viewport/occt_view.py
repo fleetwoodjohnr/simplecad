@@ -55,6 +55,27 @@ PINCH_UNITS = 12.0
 #: an anti-aliasing artefact, narrow enough not to swallow small features.
 EDGE_WIDTH = 1.8
 
+#: How near the cursor has to be to pick something, in *logical* pixels.
+#:
+#: OCCT's own default is 2, and it counts device pixels -- so on a HiDPI screen
+#: an edge had to be hit within a single logical pixel. That is what made edges
+#: and corners feel unhittable. The drawn line is the affordance; the hit box
+#: is allowed to be bigger than what it outlines, and every direct-manipulation
+#: tool in the app already works that way (see handles.GRAB_PX, which is 15).
+PICK_TOLERANCE_PX = 8
+#: Sensitivity of the edge and vertex selection zones. OCCT's defaults are 3
+#: and 12 in its own units; these widen the thin targets without touching
+#: faces, which are large already and would start winning ties if they grew.
+EDGE_SENSITIVITY = 8
+VERTEX_SENSITIVITY = 20
+#: How many shapes' snap candidates to keep. A handful: this exists to collapse
+#: the many mouse-moves over one face into one computation, not to hold a model.
+SNAP_CACHE_LIMIT = 16
+#: How far the cursor may travel between press and release and still count as
+#: a click rather than a drag, in logical pixels. Two was tight enough that an
+#: ordinary hand tremor discarded the selection outright.
+CLICK_SLOP_PX = 5
+
 
 class SelectionMode(IntEnum):
     """OCCT ``AIS_Shape`` selection modes, named for readability."""
@@ -203,6 +224,13 @@ class OcctViewport(QOpenGLWidget):
         self._pending_fit = False
         #: The last snap the cursor hovered, with where it was computed.
         self._last_snap: tuple[QPoint, object] | None = None
+        #: Snap candidates, keyed on the shapes they were derived from. The
+        #: cursor stays over one face for dozens of consecutive events and the
+        #: answer is identical every time; computing it again is what made
+        #: point-to-point measuring unusable.
+        self._snap_candidates: dict = {}
+        #: Where the cursor last was while point-picking, waiting to be snapped.
+        self._pending_snap: QPoint | None = None
         #: Set while a double-click selection is being reported, so the window
         #: knows not to widen it to the whole group.
         self._pick_inside_group = False
@@ -216,6 +244,15 @@ class OcctViewport(QOpenGLWidget):
         self._view_changed_timer.setSingleShot(True)
         self._view_changed_timer.setInterval(0)
         self._view_changed_timer.timeout.connect(self.view_changed.emit)
+        # Snapping is kernel work and X11 delivers motion every few
+        # milliseconds, so doing it per event means the queue never drains and
+        # the window stops repainting -- which is what "the dot never appears
+        # and it freezes" was. Same trick as above: keep the latest position
+        # and answer it once per turn of the event loop.
+        self._snap_timer = QTimer(self)
+        self._snap_timer.setSingleShot(True)
+        self._snap_timer.setInterval(0)
+        self._snap_timer.timeout.connect(self._emit_pending_snap)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -533,6 +570,41 @@ class OcctViewport(QOpenGLWidget):
         )
 
     # -- selection ------------------------------------------------------
+    def apply_pick_tolerance(self) -> None:
+        """Widen the pick radius to something a hand can actually hit.
+
+        Re-applied whenever the device pixel ratio can have changed, because
+        OCCT counts device pixels and the ratio is what turns a comfortable
+        target into an impossible one.
+        """
+        if self._context is None:
+            return
+        self._context.SetPixelTolerance(
+            max(1, round(PICK_TOLERANCE_PX * self.devicePixelRatioF()))
+        )
+
+    def _apply_sensitivity(self, presentation) -> None:
+        """Give this body's edges and corners bigger sensitive zones.
+
+        Faces are left alone. They are large targets already, and OCCT breaks a
+        tie by priority -- vertex over edge over face -- so the only thing that
+        stops a corner winning is the cursor never reaching its zone at all.
+        """
+        if self._context is None or presentation is None:
+            return
+        for mode, sensitivity in (
+            (SelectionMode.EDGE, EDGE_SENSITIVITY),
+            (SelectionMode.VERTEX, VERTEX_SENSITIVITY),
+        ):
+            if mode not in self._selection_modes:
+                continue
+            try:
+                self._context.SetSelectionSensitivity(
+                    presentation, int(mode), int(sensitivity)
+                )
+            except Exception:  # noqa: BLE001 - a mode this object has no zones for
+                pass
+
     def set_selection_modes(self, modes) -> None:
         """Restrict what the user can pick (bodies, faces, edges, vertices)."""
         modes = tuple(modes) or (SelectionMode.BODY,)
@@ -549,6 +621,7 @@ class OcctViewport(QOpenGLWidget):
             self._context.Deactivate(obj)
             for mode in modes:
                 self._context.Activate(obj, int(mode))
+            self._apply_sensitivity(obj)
         self.refresh()
 
     def clear_selection(self) -> None:
@@ -715,6 +788,7 @@ class OcctViewport(QOpenGLWidget):
         self._context.Display(presentation, 1, int(self._selection_modes[0]), False)
         for mode in self._selection_modes[1:]:
             self._context.Activate(presentation, int(mode))
+        self._apply_sensitivity(presentation)
         self.refresh()
         return presentation
 
@@ -812,6 +886,7 @@ class OcctViewport(QOpenGLWidget):
         boundary.SetColor(Quantity_Color(red, green, blue, Quantity_TOC_sRGB))
         boundary.SetWidth(EDGE_WIDTH)
         self._context.SetDisplayMode(1, False)  # shaded
+        self.apply_pick_tolerance()
 
         # The neutral window must carry a real X11 Window id -- OCCT reads the
         # visual from it via XGetWindowAttributes. See docs/architecture.md.
@@ -959,6 +1034,10 @@ class OcctViewport(QOpenGLWidget):
         )
         self._view.MustBeResized()
         self._view.Invalidate()
+        # Moving the window to a screen of a different density resizes it, and
+        # the pick tolerance is expressed in device pixels, so it is re-derived
+        # here rather than left at whatever the first screen implied.
+        self.apply_pick_tolerance()
 
     def paintGL(self) -> None:  # noqa: N802
         if self._view is None:
@@ -1105,21 +1184,59 @@ class OcctViewport(QOpenGLWidget):
 
         shape, parent = self.detected_pair(pos)
         self._context.ClearDetected(False)
-        self.update()
+        # No update() here. mouseMoveEvent asks for one immediately after, and
+        # two repaint requests per motion event is how a queue that was merely
+        # busy became one that never drains.
         if shape is None:
             self._last_snap = (QPoint(pos), None)
             return None
 
-        candidates = snap_points(shape, parent=parent)
+        candidates = self._candidates_for(shape, parent)
         ray = self.cursor_ray(pos)
         if ray is not None:
-            candidates = candidates + ray_snaps(shape, ray)
+            # ``parent`` matters: it is the fallback that keeps an answer under
+            # the cursor when the detected sub-shape itself has no surface to
+            # hit, which is what stops the indicator blinking out.
+            candidates = candidates + ray_snaps(shape, ray, parent=parent)
         snap = nearest(candidates, self.project, (pos.x(), pos.y()))
         self._last_snap = (QPoint(pos), snap)
         return snap
 
+    def _candidates_for(self, shape, parent):
+        """The named snaps on *shape*, computed once per shape rather than
+        once per mouse-move. See ``_snap_candidates``."""
+        from ...kernel.snapping import snap_points
+
+        key = (shape.TShape(), None if parent is None else parent.TShape())
+        found = self._snap_candidates.get(key)
+        if found is None:
+            found = snap_points(shape, parent=parent)
+            if len(self._snap_candidates) >= SNAP_CACHE_LIMIT:
+                self._snap_candidates.pop(next(iter(self._snap_candidates)))
+            self._snap_candidates[key] = found
+        return found
+
+    def _emit_pending_snap(self) -> None:
+        """Answer the most recent cursor position, and only that one."""
+        pos, self._pending_snap = self._pending_snap, None
+        if pos is None or not self._picking_points:
+            return
+        self.snap_hovered.emit(self.snap_at(pos))
+        self.update()
+
+    def request_snap(self, pos: QPoint) -> None:
+        """Note where the cursor is; the snap follows on the next event turn."""
+        self._pending_snap = QPoint(pos)
+        if not self._snap_timer.isActive():
+            self._snap_timer.start()
+
     def clear_snap_cache(self) -> None:
+        from ...kernel.snapping import clear_caches
+
         self._last_snap = None
+        self._pending_snap = None
+        self._snap_candidates.clear()
+        clear_caches()
 
     def camera_state(self):
         """Enough of the camera to put it back afterwards."""
@@ -1202,7 +1319,13 @@ class OcctViewport(QOpenGLWidget):
         return self.begin_axis_drag(center, normal, "face")
 
     def _handle_press(self, pos: QPoint) -> bool:
-        """Begin a handle drag if one is under the cursor."""
+        """Begin a handle drag if one is under the cursor.
+
+        Never while point-picking: a handle left over from a previous tool
+        would otherwise swallow the first click of a measurement.
+        """
+        if self._picking_points:
+            return False
         handle = self.handles.hit(self, pos)
         if handle is None:
             return False
@@ -1302,7 +1425,11 @@ class OcctViewport(QOpenGLWidget):
             return
         pos = event.position().toPoint()
         delta = pos - self._last_pos
-        if delta.manhattanLength() > 2:
+        # Measured from where the button went down, not from the previous
+        # event. Per-event it meant one jumpy motion report marked the whole
+        # gesture a drag, and mouseReleaseEvent then threw the selection away
+        # -- so a click on an edge with any tremor in it simply did nothing.
+        if (pos - self._press_pos).manhattanLength() > CLICK_SLOP_PX:
             self._dragged = True
 
         if self._nav is _Nav.GIZMO and self.gizmo is not None:
@@ -1332,8 +1459,7 @@ class OcctViewport(QOpenGLWidget):
             if where is not None:
                 self.sketch_moved.emit(where[0], where[1])
         elif self._picking_points:
-            self.snap_hovered.emit(self.snap_at(pos))
-            self.update()
+            self.request_snap(pos)
         else:
             x, y = self._device_pos(pos)
             self._context.MoveTo(x, y, self._view, True)
@@ -1397,7 +1523,11 @@ class OcctViewport(QOpenGLWidget):
             if event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
             else AIS_SelectionScheme_Replace
         )
-        x, y = self._device_pos(event.position().toPoint())
+        # Detected at the *press* position. Re-detecting where the button came
+        # up means pressing on an edge and lifting a pixel to one side selects
+        # the face behind it instead -- the user aimed once, and that is the
+        # aim that should count.
+        x, y = self._device_pos(self._press_pos)
         self._context.MoveTo(x, y, self._view, False)
         if self._handle_view_cube_click():
             return

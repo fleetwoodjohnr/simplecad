@@ -50,6 +50,29 @@ LABELS = {
 #: thousands of edges and would turn the cursor to treacle.
 MAX_EDGES_FOR_RAY = 64
 
+#: Above this many faces, the named snaps on a shape are skipped.
+#:
+#: The counterpart of MAX_EDGES_FOR_RAY, and the one that was missing. Face
+#: centres cost a surface integration each (``analyse_plane`` runs
+#: ``BRepGProp.SurfaceProperties``), so the work grows with the model while the
+#: mouse keeps sending events every few milliseconds -- measured at 45 ms on a
+#: 126-face plate, and an imported mesh has thousands of faces. Past this size
+#: only the ray snaps run, which are bounded, so the indicator still tracks the
+#: cursor; it just stops offering centres nobody could pick out of that many.
+MAX_FACES_FOR_SNAPS = 400
+
+#: Ancestor maps, keyed on the body they were built from. Rebuilding one is a
+#: full traversal of the body, and the cursor sits over the same body for
+#: thousands of consecutive mouse-moves.
+_ANCESTORS: dict = {}
+#: Enough for the bodies plausibly under one cursor, not a leak.
+_ANCESTOR_LIMIT = 8
+
+
+def clear_caches() -> None:
+    """Drop memoised topology. Called when the model is rebuilt."""
+    _ANCESTORS.clear()
+
 
 @dataclass(frozen=True)
 class SnapPoint:
@@ -156,14 +179,28 @@ def _face_points(shape) -> list[SnapPoint]:
     return found
 
 
-def _neighbours_of(face, parent) -> list:
-    """The faces sharing an edge with *face*, within *parent*."""
+def _edge_face_map(parent):
+    """Edge -> the faces using it, for *parent*, built at most once per body."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
-    mapping = TopTools_IndexedDataMapOfShapeListOfShape()
-    TopExp.MapShapesAndAncestors_s(parent, TopAbs_EDGE, TopAbs_FACE, mapping)
+    key = parent.TShape()
+    found = _ANCESTORS.get(key)
+    if found is None:
+        found = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(parent, TopAbs_EDGE, TopAbs_FACE, found)
+        if len(_ANCESTORS) >= _ANCESTOR_LIMIT:
+            _ANCESTORS.pop(next(iter(_ANCESTORS)))
+        _ANCESTORS[key] = found
+    return found
+
+
+def _neighbours_of(face, parent) -> list:
+    """The faces sharing an edge with *face*, within *parent*."""
+    from OCP.TopAbs import TopAbs_EDGE
+
+    mapping = _edge_face_map(parent)
     found, seen = [], set()
     explorer = _explore(face, TopAbs_EDGE)
     for edge in explorer:
@@ -179,6 +216,18 @@ def _neighbours_of(face, parent) -> list:
             seen.add(key)
             found.append(other)
     return found
+
+
+def _count(shape, kind, limit: int = 10_000) -> int:
+    """How many sub-shapes of *kind* are in *shape*, giving up past *limit*."""
+    from OCP.TopExp import TopExp_Explorer
+
+    total = 0
+    explorer = TopExp_Explorer(shape, kind)
+    while explorer.More() and total <= limit:
+        total += 1
+        explorer.Next()
+    return total
 
 
 def _explore(shape, kind) -> list:
@@ -217,6 +266,11 @@ def snap_points(shape, parent=None) -> list[SnapPoint]:
 
         pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(shape))
         return [SnapPoint(_point(pnt), "vertex")]
+
+    if _count(shape, TopAbs_FACE) > MAX_FACES_FOR_SNAPS:
+        # Too big to enumerate on a mouse-move. ray_snaps still answers, so the
+        # indicator keeps following the cursor -- see MAX_FACES_FOR_SNAPS.
+        return []
 
     found = _vertices(shape) + _edges_of(shape) + _face_points(shape)
     if parent is not None and shape.ShapeType() == TopAbs_FACE:

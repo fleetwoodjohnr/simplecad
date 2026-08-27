@@ -271,3 +271,152 @@ def test_rotation_decomposes_to_the_axis_it_was_made_about(axis, degrees):
     assert others == pytest.approx([0.0, 0.0], abs=1e-6), (
         "a rotation about one axis must not leak into the others"
     )
+
+
+# ----------------------------------------------------------------------
+# Reaching the tools at all
+# ----------------------------------------------------------------------
+def test_the_tool_registry_answers_before_anything_has_imported_it():
+    """``run_action`` asks whether a key is a tool before deciding what to do.
+
+    Registration is a side effect of importing the tool modules, so asking
+    ``TOOLS`` directly answered "no" for every tool in the application until
+    something had already opened one. The contextual bar and command search
+    both route through that question -- so on a fresh window, selecting an edge
+    and pressing Fillet reported "Fillet is not available yet" and nothing
+    happened. Run in a subprocess because "nothing has imported it yet" cannot
+    be arranged twice in one process.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from simplecad.ui.tools.registry import is_tool, TOOLS;"
+         "assert not TOOLS, 'nothing should be registered yet';"
+         "assert is_tool('fillet');"
+         "assert is_tool('subtract');"
+         "assert not is_tool('delete');"
+         "print('ok')"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+# ----------------------------------------------------------------------
+# What the contextual bar offers
+# ----------------------------------------------------------------------
+class StubSelection:
+    """Enough of SelectionModel for the action predicates to run."""
+
+    def __init__(self, document, bodies):
+        self.document = document
+        self.bodies = list(bodies)
+        self.items = list(bodies)
+        self.groups = []
+        self.picks = []
+        self.only_bodies = True
+        self.count = len(bodies)
+
+    def edges(self):
+        return []
+
+    def faces(self):
+        return []
+
+    def planar_faces(self):
+        return []
+
+    def round_faces(self):
+        return []
+
+
+def test_two_bodies_offer_the_booleans_and_subtract_leads():
+    """The kernel had booleans from the start and nothing could reach them."""
+    from simplecad.core.document import Document
+    from simplecad.ui.selection import available_actions
+
+    actions = [
+        key for key, _l, _i in available_actions(StubSelection(Document("T"), ["A", "B"]))
+    ]
+    assert actions[0] == "subtract"
+    assert {"subtract", "join", "intersect"} <= set(actions)
+
+
+def test_one_body_is_not_offered_a_boolean():
+    """A boolean needs something to act with; offering it for one body lies."""
+    from simplecad.core.document import Document
+    from simplecad.ui.selection import available_actions
+
+    actions = [
+        key for key, _l, _i in available_actions(StubSelection(Document("T"), ["A"]))
+    ]
+    assert not {"subtract", "join", "intersect"} & set(actions)
+
+
+# ----------------------------------------------------------------------
+# Filleting a corner
+# ----------------------------------------------------------------------
+def test_a_corner_expands_to_three_edges_not_six():
+    """``MapShapesAndAncestors`` lists an edge once per face that uses it.
+
+    Undeduplicated, filleting a box corner added each of its three edges to the
+    builder twice and stored six references in the feature.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from simplecad.kernel.edge_frame import edges_at_vertex
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    explorer = TopExp_Explorer(box, TopAbs_VERTEX)
+    corner = TopoDS.Vertex_s(explorer.Current())
+    assert len(edges_at_vertex(box, corner)) == 3
+
+
+# ----------------------------------------------------------------------
+# Snapping, which runs on every mouse-move
+# ----------------------------------------------------------------------
+def test_snapping_gives_up_on_shapes_too_complex_to_enumerate():
+    """Face centres cost a surface integration each.
+
+    Unbounded, this ran for tens of milliseconds per mouse-move and the window
+    stopped repainting -- which is what "no dot appears and it freezes" was.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    from simplecad.kernel import snapping
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    assert snapping.snap_points(box)                     # six faces: fine
+    limit = snapping.MAX_FACES_FOR_SNAPS
+    try:
+        snapping.MAX_FACES_FOR_SNAPS = 2
+        assert snapping.snap_points(box) == []
+    finally:
+        snapping.MAX_FACES_FOR_SNAPS = limit
+
+
+def test_the_ancestor_map_is_reused_between_calls():
+    """Rebuilding it per mouse-move is a full traversal of the body."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from simplecad.kernel import snapping
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    face = TopoDS.Face_s(explorer.Current())
+
+    snapping.clear_caches()
+    first = snapping.snap_points(face, parent=box)
+    assert snapping._ANCESTORS, "the map was not kept"
+    again = snapping.snap_points(face, parent=box)
+    assert [s.position for s in again] == [s.position for s in first]
+    snapping.clear_caches()
+    assert not snapping._ANCESTORS

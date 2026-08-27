@@ -86,10 +86,15 @@ def adjacent_faces(body, edge) -> list:
 
 
 def edges_at_vertex(body, vertex) -> list:
-    """Every edge of *body* meeting *vertex*.
+    """Every edge of *body* meeting *vertex*, each once.
 
     What "fillet this corner" means: a corner is where three edges meet, and
     rounding it is rounding all three.
+
+    The de-duplication is not tidiness. ``MapShapesAndAncestors`` lists an edge
+    once for each face it belongs to, so a box corner comes back as six entries
+    for three edges -- and a fillet then adds every edge to the builder twice
+    and stores two references to each in the feature.
     """
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
     from OCP.TopExp import TopExp
@@ -100,7 +105,14 @@ def edges_at_vertex(body, vertex) -> list:
     index = mapping.FindIndex(vertex)
     if index <= 0:
         return []
-    return list(mapping.FindFromIndex(index))
+    found, seen = [], set()
+    for edge in mapping.FindFromIndex(index):
+        key = edge.TShape()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(edge)
+    return found
 
 
 def outward_direction(body, edge, at=None):

@@ -140,7 +140,11 @@ class BuildContext:
                 "This feature is missing one of its inputs.",
                 suggestion="Re-select the body it should act on.",
             )
-        shape = self.bodies.get(str(name))
+        return self.named_shape(str(name))
+
+    def named_shape(self, name: str):
+        """Fetch a body's shape by name, for inputs that hold several."""
+        shape = self.bodies.get(name)
         if shape is None:
             raise CadError(
                 f"The body '{name}' this feature needs is not available.",

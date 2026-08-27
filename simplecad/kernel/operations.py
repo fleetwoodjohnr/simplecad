@@ -321,9 +321,35 @@ def _diagonal(factors):
 
 @register("boolean")
 class BooleanFeature(Feature):
-    """Join, Cut or Intersect two bodies."""
+    """Join, Cut or Intersect -- one target body against one or more tools."""
 
     label = "Combine"
+
+    def tool_names(self) -> list[str]:
+        """The bodies acting on the target, in order.
+
+        Reads ``tools`` when it is there and falls back to the singular
+        ``tool``, so a project saved before several tools were allowed still
+        rebuilds.
+        """
+        tools = self.inputs.get("tools")
+        if tools:
+            return [str(name) for name in tools]
+        single = self.inputs.get("tool")
+        return [str(single)] if single else []
+
+    def consumed_bodies(self) -> list[str]:
+        """The tools, unless the user asked to keep them.
+
+        Without this the cutter stays in the tree and in the viewport, sitting
+        inside the part it just cut -- which is not what "subtract" means
+        anywhere else in CAD. Keep tools is how you ask for the other
+        behaviour, and then it is not consumed at all.
+        """
+        if bool(self.inputs.get("keep_tool", False)):
+            return []
+        target = str(self.inputs.get("body", ""))
+        return [name for name in self.tool_names() if name != target]
 
     def execute(self, ctx: BuildContext) -> dict:
         from OCP.BRepAlgoAPI import (
@@ -331,8 +357,6 @@ class BooleanFeature(Feature):
         )
 
         operation = str(self.inputs.get("operation", "join"))
-        target = ctx.shape(self, "body")
-        tool = ctx.shape(self, "tool")
         builders = {
             "join": BRepAlgoAPI_Fuse,
             "cut": BRepAlgoAPI_Cut,
@@ -340,16 +364,34 @@ class BooleanFeature(Feature):
         }
         if operation not in builders:
             raise CadError(f"'{operation}' is not a combine operation.")
-        with guard(operation):
-            result = unify(built_shape(builders[operation](target, tool), operation))
+
         name = str(self.inputs["body"])
+        tool_names = self.tool_names()
+        if not tool_names:
+            raise CadError("Combine needs a second body to work with.")
+
+        target = ctx.shape(self, "body")
+        tools = {tool: ctx.named_shape(tool) for tool in tool_names}
+        with guard(operation):
+            result = target
+            for tool in tool_names:
+                # One boolean per tool rather than one call with a list of
+                # arguments: OCCT copes with either, and doing them in turn
+                # means a failure names the tool that caused it.
+                result = built_shape(
+                    builders[operation](result, tools[tool]), operation
+                )
+            result = unify(result)
+
         keep_tool = bool(self.inputs.get("keep_tool", False))
         self.outputs = [name]
         outputs = {name: result}
         if keep_tool:
-            tool_name = str(self.inputs["tool"])
-            self.outputs.append(tool_name)
-            outputs[tool_name] = tool
+            for tool in tool_names:
+                if tool == name:
+                    continue
+                self.outputs.append(tool)
+                outputs[tool] = tools[tool]
         return outputs
 
 

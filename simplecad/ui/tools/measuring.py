@@ -184,24 +184,24 @@ class MeasurePanel(ToolPanel):
             overlay.update()
 
     def _on_snap_hover(self, snap) -> None:
+        """Show where the cursor has landed. Nothing here may be expensive.
+
+        In particular this does *not* write the hint line. ``set_hint`` runs
+        ``_layout_overlays``, which calls ``adjustSize`` and ``raise_`` on every
+        floating panel -- each of them carrying a 36 px drop shadow that is
+        re-blurred on every repaint. Doing that per mouse-move, on top of the
+        snapping itself, is what stopped the window keeping up.
+
+        Nothing is lost by it. The running length is drawn on the rubber band
+        by the overlay, and which *kind* of place the cursor has found is drawn
+        inside the indicator -- a square for a corner, a diamond for a
+        midpoint -- which is what the glyphs are for.
+        """
         if self._mode != "points":
             return
         overlay = self.window_.stage.measure_overlay
         overlay.hover = snap
         overlay.update()
-        if snap is None or len(self.points) >= 2:
-            return
-        if self.points:
-            # Report the running length while the second point is being placed,
-            # so the number is readable before the click rather than after it.
-            import math
-
-            running = math.dist(self.points[0].position, snap.position)
-            self.window_.set_hint(
-                f"{_fmt(running)} to this {snap.label} — click to finish."
-            )
-        else:
-            self.window_.set_hint(f"Snap to {snap.label} — click for the first point.")
 
     def _on_snap_picked(self, snap) -> None:
         if self._mode != "points" or snap is None:
@@ -214,6 +214,15 @@ class MeasurePanel(ToolPanel):
         overlay.picked = list(self.points)
         overlay.update()
         self.refresh()
+        # Written on a click, not on a move: once per gesture is affordable and
+        # is when the user is actually looking for confirmation.
+        self.window_.set_hint(
+            f"First point on a {snap.label}. Click the second."
+            if len(self.points) == 1
+            else f"{self.measurement.headline.text}."
+            if self.measurement.headline is not None
+            else "Click to start a new measurement."
+        )
 
     def _on_selection_changed(self) -> None:
         """Re-read the viewport, then measure. Deciding *when* to re-read is
