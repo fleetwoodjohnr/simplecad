@@ -1,0 +1,125 @@
+{
+  "note": "ISO 4014 hex head bolts and ISO 4032 hex nuts. across_flats and heights in mm. Socket-cap figures follow ISO 4762.",
+  "hex": {
+    "M3": {
+      "across_flats": 5.5,
+      "head_height": 2.0,
+      "nut_height": 2.4,
+      "socket_head_diameter": 4.5,
+      "socket_head_height": 3.0
+    },
+    "M4": {
+      "across_flats": 7.0,
+      "head_height": 2.8,
+      "nut_height": 3.2,
+      "socket_head_diameter": 6.0,
+      "socket_head_height": 4.0
+    },
+    "M5": {
+      "across_flats": 8.0,
+      "head_height": 3.5,
+      "nut_height": 4.7,
+      "socket_head_diameter": 7.5,
+      "socket_head_height": 5.0
+    },
+    "M6": {
+      "across_flats": 10.0,
+      "head_height": 4.0,
+      "nut_height": 5.2,
+      "socket_head_diameter": 9.0,
+      "socket_head_height": 6.0
+    },
+    "M8": {
+      "across_flats": 13.0,
+      "head_height": 5.3,
+      "nut_height": 6.8,
+      "socket_head_diameter": 12.0,
+      "socket_head_height": 8.0
+    },
+    "M10": {
+      "across_flats": 16.0,
+      "head_height": 6.4,
+      "nut_height": 8.4,
+      "socket_head_diameter": 15.0,
+      "socket_head_height": 10.0
+    },
+    "M12": {
+      "across_flats": 18.0,
+      "head_height": 7.5,
+      "nut_height": 10.8,
+      "socket_head_diameter": 18.0,
+      "socket_head_height": 12.0
+    },
+    "M14": {
+      "across_flats": 21.0,
+      "head_height": 8.8,
+      "nut_height": 12.8,
+      "socket_head_diameter": 21.0,
+      "socket_head_height": 14.0
+    },
+    "M16": {
+      "across_flats": 24.0,
+      "head_height": 10.0,
+      "nut_height": 14.8,
+      "socket_head_diameter": 24.0,
+      "socket_head_height": 16.0
+    },
+    "M18": {
+      "across_flats": 27.0,
+      "head_height": 11.5,
+      "nut_height": 15.8,
+      "socket_head_diameter": 27.0,
+      "socket_head_height": 18.0
+    },
+    "M20": {
+      "across_flats": 30.0,
+      "head_height": 12.5,
+      "nut_height": 18.0,
+      "socket_head_diameter": 30.0,
+      "socket_head_height": 20.0
+    },
+    "M22": {
+      "across_flats": 34.0,
+      "head_height": 14.0,
+      "nut_height": 19.4,
+      "socket_head_diameter": 33.0,
+      "socket_head_height": 22.0
+    },
+    "M24": {
+      "across_flats": 36.0,
+      "head_height": 15.0,
+      "nut_height": 21.5,
+      "socket_head_diameter": 36.0,
+      "socket_head_height": 24.0
+    },
+    "M27": {
+      "across_flats": 41.0,
+      "head_height": 17.0,
+      "nut_height": 23.8,
+      "socket_head_diameter": 40.5,
+      "socket_head_height": 27.0
+    },
+    "M30": {
+      "across_flats": 46.0,
+      "head_height": 18.7,
+      "nut_height": 25.6,
+      "socket_head_diameter": 45.0,
+      "socket_head_height": 30.0
+    },
+    "M33": {
+      "across_flats": 50.0,
+      "head_height": 21.0,
+      "nut_height": 28.7,
+      "socket_head_diameter": 49.5,
+      "socket_head_height": 33.0
+    },
+    "M36": {
+      "across_flats": 55.0,
+      "head_height": 22.5,
+      "nut_height": 31.0,
+      "socket_head_diameter": 54.0,
+      "socket_head_height": 36.0
+    }
+  },
+  "default_washer_clearance": 0.4
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Elegoo Centauri Carbon 2",
+  "id": "elegoo_centauri_carbon_2",
+  "build_volume": {
+    "x": 256.0,
+    "y": 256.0,
+    "z": 256.0
+  },
+  "nozzle_diameter": 0.4,
+  "layer_height": 0.2,
+  "min_wall_thickness": 0.8,
+  "min_feature_size": 0.6,
+  "max_overhang_angle": 50.0,
+  "thread_clearance": "normal",
+  "note": "Default profile. Print a calibration model to replace these with values measured on your own machine."
+}

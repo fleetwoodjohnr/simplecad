@@ -1,0 +1,236 @@
+{
+  "standard": "ISO Metric",
+  "code": "iso_metric",
+  "angle": 60.0,
+  "note": "ISO 68-1 60-degree profile. Coarse pitches first; fine pitches follow.",
+  "sizes": [
+    {
+      "designation": "M1.6",
+      "diameter": 1.6,
+      "pitch": 0.35,
+      "series": "coarse"
+    },
+    {
+      "designation": "M2",
+      "diameter": 2.0,
+      "pitch": 0.4,
+      "series": "coarse"
+    },
+    {
+      "designation": "M2.5",
+      "diameter": 2.5,
+      "pitch": 0.45,
+      "series": "coarse"
+    },
+    {
+      "designation": "M3",
+      "diameter": 3.0,
+      "pitch": 0.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M3.5",
+      "diameter": 3.5,
+      "pitch": 0.6,
+      "series": "coarse"
+    },
+    {
+      "designation": "M4",
+      "diameter": 4.0,
+      "pitch": 0.7,
+      "series": "coarse"
+    },
+    {
+      "designation": "M5",
+      "diameter": 5.0,
+      "pitch": 0.8,
+      "series": "coarse"
+    },
+    {
+      "designation": "M6",
+      "diameter": 6.0,
+      "pitch": 1.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M7",
+      "diameter": 7.0,
+      "pitch": 1.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M8",
+      "diameter": 8.0,
+      "pitch": 1.25,
+      "series": "coarse"
+    },
+    {
+      "designation": "M10",
+      "diameter": 10.0,
+      "pitch": 1.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M12",
+      "diameter": 12.0,
+      "pitch": 1.75,
+      "series": "coarse"
+    },
+    {
+      "designation": "M14",
+      "diameter": 14.0,
+      "pitch": 2.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M16",
+      "diameter": 16.0,
+      "pitch": 2.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M18",
+      "diameter": 18.0,
+      "pitch": 2.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M20",
+      "diameter": 20.0,
+      "pitch": 2.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M22",
+      "diameter": 22.0,
+      "pitch": 2.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M24",
+      "diameter": 24.0,
+      "pitch": 3.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M27",
+      "diameter": 27.0,
+      "pitch": 3.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M30",
+      "diameter": 30.0,
+      "pitch": 3.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M33",
+      "diameter": 33.0,
+      "pitch": 3.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M36",
+      "diameter": 36.0,
+      "pitch": 4.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M42",
+      "diameter": 42.0,
+      "pitch": 4.5,
+      "series": "coarse"
+    },
+    {
+      "designation": "M48",
+      "diameter": 48.0,
+      "pitch": 5.0,
+      "series": "coarse"
+    },
+    {
+      "designation": "M8x1",
+      "diameter": 8.0,
+      "pitch": 1.0,
+      "series": "fine"
+    },
+    {
+      "designation": "M10x1.25",
+      "diameter": 10.0,
+      "pitch": 1.25,
+      "series": "fine"
+    },
+    {
+      "designation": "M10x1",
+      "diameter": 10.0,
+      "pitch": 1.0,
+      "series": "fine"
+    },
+    {
+      "designation": "M12x1.5",
+      "diameter": 12.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M12x1.25",
+      "diameter": 12.0,
+      "pitch": 1.25,
+      "series": "fine"
+    },
+    {
+      "designation": "M14x1.5",
+      "diameter": 14.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M16x1.5",
+      "diameter": 16.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M18x1.5",
+      "diameter": 18.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M20x1.5",
+      "diameter": 20.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M22x1.5",
+      "diameter": 22.0,
+      "pitch": 1.5,
+      "series": "fine"
+    },
+    {
+      "designation": "M24x2",
+      "diameter": 24.0,
+      "pitch": 2.0,
+      "series": "fine"
+    },
+    {
+      "designation": "M27x2",
+      "diameter": 27.0,
+      "pitch": 2.0,
+      "series": "fine"
+    },
+    {
+      "designation": "M30x2",
+      "diameter": 30.0,
+      "pitch": 2.0,
+      "series": "fine"
+    },
+    {
+      "designation": "M36x3",
+      "diameter": 36.0,
+      "pitch": 3.0,
+      "series": "fine"
+    }
+  ]
+}

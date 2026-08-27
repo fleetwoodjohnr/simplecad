@@ -1,0 +1,54 @@
+{
+  "note": "Diametral clearances in mm, tuned for FDM. Applied to the internal (female) side so the external part keeps its nominal size.",
+  "thread_clearance": {
+    "tight": {
+      "label": "Tight",
+      "clearance": 0.1,
+      "hint": "Snug assembly, may need force"
+    },
+    "normal": {
+      "label": "Normal",
+      "clearance": 0.2,
+      "hint": "Recommended for most FDM prints"
+    },
+    "loose": {
+      "label": "Loose",
+      "clearance": 0.35,
+      "hint": "Easy turning, some play"
+    },
+    "very_loose": {
+      "label": "Very Loose",
+      "clearance": 0.5,
+      "hint": "Coarse printers or fast assembly"
+    }
+  },
+  "default_thread_clearance": "normal",
+  "fits": {
+    "sliding": {
+      "label": "Sliding Fit",
+      "clearance": 0.3,
+      "hint": "Moves freely"
+    },
+    "snug": {
+      "label": "Snug Fit",
+      "clearance": 0.15,
+      "hint": "Assembles by hand, little play"
+    },
+    "press": {
+      "label": "Press Fit",
+      "clearance": -0.05,
+      "hint": "Requires force, stays put"
+    },
+    "loose": {
+      "label": "Loose Fit",
+      "clearance": 0.5,
+      "hint": "Generous, always assembles"
+    },
+    "thread": {
+      "label": "Thread Fit",
+      "clearance": 0.2,
+      "hint": "Matches the thread clearance default"
+    }
+  },
+  "default_fit": "snug"
+}

@@ -1,0 +1,79 @@
+{
+  "standard": "National Pipe Taper (NPT)",
+  "code": "npt",
+  "angle": 60.0,
+  "taper": 0.0625,
+  "note": "Tapered pipe thread, 1:16 taper (3/4 inch per foot on diameter).",
+  "sizes": [
+    {
+      "designation": "NPT 1/16",
+      "diameter": 7.938,
+      "pitch": 0.9407,
+      "tpi": 27,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1/8",
+      "diameter": 10.287,
+      "pitch": 0.9407,
+      "tpi": 27,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1/4",
+      "diameter": 13.716,
+      "pitch": 1.4111,
+      "tpi": 18,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 3/8",
+      "diameter": 17.145,
+      "pitch": 1.4111,
+      "tpi": 18,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1/2",
+      "diameter": 21.336,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 3/4",
+      "diameter": 26.67,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1",
+      "diameter": 33.401,
+      "pitch": 2.2087,
+      "tpi": 11.5,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1-1/4",
+      "diameter": 42.164,
+      "pitch": 2.2087,
+      "tpi": 11.5,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 1-1/2",
+      "diameter": 48.26,
+      "pitch": 2.2087,
+      "tpi": 11.5,
+      "series": "npt"
+    },
+    {
+      "designation": "NPT 2",
+      "diameter": 60.325,
+      "pitch": 2.2087,
+      "tpi": 11.5,
+      "series": "npt"
+    }
+  ]
+}

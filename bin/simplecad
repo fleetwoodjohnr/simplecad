@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Launch SimpleCAD from the project venv.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ``-m`` only puts the cwd on sys.path, so launching from anywhere but the repo
+# root -- the desktop entry starts us in $HOME -- could not import the package.
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$ROOT/.venv/bin/python" -m simplecad "$@"

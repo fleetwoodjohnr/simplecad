@@ -1,0 +1,113 @@
+{
+  "standard": "Unified Coarse (UNC)",
+  "code": "unc",
+  "angle": 60.0,
+  "note": "Unified thread. Pitch derived from threads per inch.",
+  "sizes": [
+    {
+      "designation": "#2-56",
+      "diameter": 2.1844,
+      "pitch": 0.4536,
+      "tpi": 56,
+      "series": "unc"
+    },
+    {
+      "designation": "#4-40",
+      "diameter": 2.8448,
+      "pitch": 0.635,
+      "tpi": 40,
+      "series": "unc"
+    },
+    {
+      "designation": "#6-32",
+      "diameter": 3.5052,
+      "pitch": 0.7937,
+      "tpi": 32,
+      "series": "unc"
+    },
+    {
+      "designation": "#8-32",
+      "diameter": 4.1656,
+      "pitch": 0.7937,
+      "tpi": 32,
+      "series": "unc"
+    },
+    {
+      "designation": "#10-24",
+      "diameter": 4.826,
+      "pitch": 1.0583,
+      "tpi": 24,
+      "series": "unc"
+    },
+    {
+      "designation": "1/4-20",
+      "diameter": 6.35,
+      "pitch": 1.27,
+      "tpi": 20,
+      "series": "unc"
+    },
+    {
+      "designation": "5/16-18",
+      "diameter": 7.9375,
+      "pitch": 1.4111,
+      "tpi": 18,
+      "series": "unc"
+    },
+    {
+      "designation": "3/8-16",
+      "diameter": 9.525,
+      "pitch": 1.5875,
+      "tpi": 16,
+      "series": "unc"
+    },
+    {
+      "designation": "7/16-14",
+      "diameter": 11.1125,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "unc"
+    },
+    {
+      "designation": "1/2-13",
+      "diameter": 12.7,
+      "pitch": 1.9538,
+      "tpi": 13,
+      "series": "unc"
+    },
+    {
+      "designation": "9/16-12",
+      "diameter": 14.2875,
+      "pitch": 2.1167,
+      "tpi": 12,
+      "series": "unc"
+    },
+    {
+      "designation": "5/8-11",
+      "diameter": 15.875,
+      "pitch": 2.3091,
+      "tpi": 11,
+      "series": "unc"
+    },
+    {
+      "designation": "3/4-10",
+      "diameter": 19.05,
+      "pitch": 2.54,
+      "tpi": 10,
+      "series": "unc"
+    },
+    {
+      "designation": "7/8-9",
+      "diameter": 22.225,
+      "pitch": 2.8222,
+      "tpi": 9,
+      "series": "unc"
+    },
+    {
+      "designation": "1-8",
+      "diameter": 25.4,
+      "pitch": 3.175,
+      "tpi": 8,
+      "series": "unc"
+    }
+  ]
+}

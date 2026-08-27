@@ -1,0 +1,13 @@
+[project]
+name = "simplecad"
+version = "0.1.0"
+description = "Modern parametric CAD for Fedora, built for functional 3D printing"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: modelled-thread and boolean tests that take minutes (deselect with -m 'not slow')",
+    "gui: needs a real GL context; run under xvfb-run with QT_QPA_PLATFORM=xcb",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

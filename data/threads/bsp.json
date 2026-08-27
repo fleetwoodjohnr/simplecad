@@ -1,0 +1,85 @@
+{
+  "standard": "British Standard Pipe (BSP/G)",
+  "code": "bsp",
+  "angle": 55.0,
+  "note": "ISO 228 parallel pipe thread, 55-degree Whitworth profile.",
+  "sizes": [
+    {
+      "designation": "G1/8",
+      "diameter": 9.728,
+      "pitch": 0.9071,
+      "tpi": 28,
+      "series": "bsp"
+    },
+    {
+      "designation": "G1/4",
+      "diameter": 13.157,
+      "pitch": 1.3368,
+      "tpi": 19,
+      "series": "bsp"
+    },
+    {
+      "designation": "G3/8",
+      "diameter": 16.662,
+      "pitch": 1.3368,
+      "tpi": 19,
+      "series": "bsp"
+    },
+    {
+      "designation": "G1/2",
+      "diameter": 20.955,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "bsp"
+    },
+    {
+      "designation": "G5/8",
+      "diameter": 22.911,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "bsp"
+    },
+    {
+      "designation": "G3/4",
+      "diameter": 26.441,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "bsp"
+    },
+    {
+      "designation": "G7/8",
+      "diameter": 30.201,
+      "pitch": 1.8143,
+      "tpi": 14,
+      "series": "bsp"
+    },
+    {
+      "designation": "G1",
+      "diameter": 33.249,
+      "pitch": 2.3091,
+      "tpi": 11,
+      "series": "bsp"
+    },
+    {
+      "designation": "G1-1/4",
+      "diameter": 41.91,
+      "pitch": 2.3091,
+      "tpi": 11,
+      "series": "bsp"
+    },
+    {
+      "designation": "G1-1/2",
+      "diameter": 47.803,
+      "pitch": 2.3091,
+      "tpi": 11,
+      "series": "bsp"
+    },
+    {
+      "designation": "G2",
+      "diameter": 59.614,
+      "pitch": 2.3091,
+      "tpi": 11,
+      "series": "bsp"
+    }
+  ]
+}
