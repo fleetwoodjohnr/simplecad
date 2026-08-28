@@ -236,8 +236,15 @@ CONTEXT_ACTIONS = (
     ("align_stack", "Align & Stack", "align", _two_planar_faces),
     ("center", "Center", "align", _two_planar_faces),
     # -- a face
+    #
+    # Pull answers for round faces too, and leads on them. Dragging the side of
+    # a shaft or a tube inward to make it thinner is the same gesture as pulling
+    # a flat face, and it is the commoner thing to want to do to a cylinder than
+    # threading it -- Thread sits directly underneath either way.
     ("pushpull", "Pull", "extrude",
-     lambda m: len(m.planar_faces()) == 1 and m.count == 1),
+     lambda m: m.count == 1 and (
+         len(m.planar_faces()) == 1 or len(m.round_faces()) == 1
+     )),
     ("thread", "Thread", "thread",
      lambda m: len(m.round_faces()) == 1 and m.count == 1),
     ("hole", "Hole", "hole", lambda m: len(m.planar_faces()) >= 1),

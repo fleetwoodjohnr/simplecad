@@ -52,14 +52,16 @@ MAX_EDGES_FOR_RAY = 64
 
 #: Above this many faces, the named snaps on a shape are skipped.
 #:
-#: The counterpart of MAX_EDGES_FOR_RAY, and the one that was missing. Face
-#: centres cost a surface integration each (``analyse_plane`` runs
-#: ``BRepGProp.SurfaceProperties``), so the work grows with the model while the
-#: mouse keeps sending events every few milliseconds -- measured at 45 ms on a
-#: 126-face plate, and an imported mesh has thousands of faces. Past this size
-#: only the ray snaps run, which are bounded, so the indicator still tracks the
-#: cursor; it just stops offering centres nobody could pick out of that many.
-MAX_FACES_FOR_SNAPS = 400
+#: A backstop rather than the main defence. Face centres cost a surface
+#: integration each (``analyse_plane`` runs ``BRepGProp.SurfaceProperties``), so
+#: the work grows with the model while the mouse keeps sending events every few
+#: milliseconds. This used to be 400, which is low enough that any real
+#: imported part lost every corner and centre it had -- and losing them silently
+#: is what made point-to-point measuring look broken on exactly the models
+#: people measure. The viewport now times each snap and turns the effort down
+#: on a body that cannot afford it (see occt_view.SNAP_BUDGET), so this only has
+#: to stop the pathological case of enumerating a whole mesh.
+MAX_FACES_FOR_SNAPS = 2500
 
 #: Ancestor maps, keyed on the body they were built from. Rebuilding one is a
 #: full traversal of the body, and the cursor sits over the same body for
@@ -267,7 +269,7 @@ def snap_points(shape, parent=None) -> list[SnapPoint]:
         pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(shape))
         return [SnapPoint(_point(pnt), "vertex")]
 
-    if _count(shape, TopAbs_FACE) > MAX_FACES_FOR_SNAPS:
+    if _count(shape, TopAbs_FACE, MAX_FACES_FOR_SNAPS + 1) > MAX_FACES_FOR_SNAPS:
         # Too big to enumerate on a mouse-move. ray_snaps still answers, so the
         # indicator keeps following the cursor -- see MAX_FACES_FOR_SNAPS.
         return []

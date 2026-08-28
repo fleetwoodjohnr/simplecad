@@ -72,6 +72,25 @@ def main() -> int:
             REPORT["default_position"] = round(panel.value("position"), 2)
             REPORT["sizes_at_open"] = panel.sizes.text()
 
+            # Nothing is highlighted while the plane is on screen. The subject
+            # of this tool is the plane, and a selection glowing through a
+            # translucent body competes with the one thing there is to look at.
+            REPORT["nothing_selected"] = viewport.context.NbSelected() == 0
+            REPORT["picking_off"] = not viewport.picking_enabled
+            # And a click on the body cannot bring the highlight back.
+            from simplecad.kernel.occ import bounding_box as _bounds
+
+            low, high = _bounds(shape)
+            centre = viewport.project(
+                tuple((low[i] + high[i]) / 2.0 for i in range(3))
+            )
+            if centre is not None:
+                QTest.mouseClick(
+                    viewport, Qt.LeftButton, Qt.NoModifier,
+                    QPoint(int(centre[0]), int(centre[1])), 60,
+                )
+            REPORT["stays_unselected"] = viewport.context.NbSelected() == 0
+
             # At least one handle has to be reachable from this camera angle.
             on_screen = [
                 h for h in panel._handles
@@ -141,6 +160,7 @@ def main() -> int:
                 viewport.select_shape(first)
                 window.selection.refresh()
                 REPORT["selected_one_half"] = window.selection.bodies == [halves[0]]
+                REPORT["picking_restored"] = viewport.picking_enabled
 
                 # ...and deleting one must not take the other with it.
                 window.delete_body(halves[1])
@@ -173,6 +193,10 @@ def main() -> int:
         and REPORT.get("handle_count") == 5
         and REPORT.get("handles_on_screen", 0) >= 1
         and abs(REPORT.get("span", 0) - 60.0) < 1e-6
+        and REPORT.get("nothing_selected")
+        and REPORT.get("picking_off")
+        and REPORT.get("stays_unselected")
+        and REPORT.get("picking_restored")
         and REPORT.get("drag_started")
         and REPORT.get("position_during_drag") != REPORT.get("default_position")
         and REPORT.get("readout_visible")

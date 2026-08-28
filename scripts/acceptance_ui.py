@@ -173,8 +173,12 @@ def run(window, failures: list[str]) -> None:
         select(pick(post_name, round_face), pick(lid_name, round_face))
         run_tool("threaded_connection")
         connection = document.features[-1]
+        # P12, not M12: the printable coarse series leads, because an ISO M12
+        # tooth is 0.55 mm deep -- finer than a 0.4 mm nozzle resolves -- and
+        # overhangs by 63 degrees, so it prints only with support inside the
+        # thread, which is what stops a printed pair ever turning.
         check("Automatic thread pair",
-              connection.inputs.get("designation") == "M12" and not connection.message.startswith("The"),
+              connection.inputs.get("designation") == "P12" and not connection.message.startswith("The"),
               f"{connection.message or connection.inputs.get('designation')}")
 
         # 7. Fillet the base's vertical edges.
@@ -244,7 +248,7 @@ def run(window, failures: list[str]) -> None:
               report.ok and abs(lid_height - 6.0) < 0.05, detail)
 
         window.stage.viewport.fit_all()
-        window.set_hint("Box → Pull → Stack → Hole → M12 thread pair → Fillet → Export")
+        window.set_hint("Box → Pull → Stack → Hole → P12 thread pair → Fillet → Export")
     except Exception as exc:  # noqa: BLE001
         import traceback
         traceback.print_exc()

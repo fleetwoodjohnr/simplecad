@@ -635,6 +635,32 @@ class Document:
         ]
         return items
 
+    def export_items(self) -> list[tuple[str, list]]:
+        """What a file should contain: ``(name, shapes)``, one entry per object.
+
+        The one place the difference between "a group" and "two bodies" is
+        carried out of the document and into a file. A slicer has no notion of a
+        SimpleCAD group, so a group that reaches it as two objects is two things
+        to place, orient and print -- which is precisely not what grouping them
+        said. Every visible member of a group therefore comes back under a single
+        name, and the writers turn each entry into exactly one object.
+
+        Nothing is fused: the members stay separate solids in the same object,
+        which is what "these belong together" means and what a boolean would
+        destroy.
+        """
+        items: list[tuple[str, list]] = []
+        for kind, name in self.root_items():
+            names = self.expand([name]) if kind == "group" else [name]
+            shapes = [
+                body.shape
+                for body in (self.bodies.get(n) for n in names)
+                if body is not None and body.visible and body.shape is not None
+            ]
+            if shapes:
+                items.append((name, shapes))
+        return items
+
     def group_members(self, name: str) -> list[tuple[str, str]]:
         """One group's direct children, as ``("group"|"body", name)``."""
         group = self.groups.get(name)

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from ..core.document import BodyRef, Document
 from ..core.history import History
 from ..core.rebuild import Rebuilder
-from ..kernel.operations import PushPullFeature
+from ..kernel.operations import PushPullFeature, RoundPushPullFeature
 from .icons import icon
 from .geometry_client import GeometryClient, apply_result
 from .panels.command_search import CommandSearch
@@ -184,10 +184,13 @@ class ViewportStage(QWidget):
 
         from .panels.drag_readout import DragReadout
         from .panels.measure_overlay import MeasureOverlay
+        from .panels.selection_band import SelectionBand
 
         self.drag_readout = DragReadout(palette, parent=self)
         self.measure_overlay = MeasureOverlay(palette, self)
         self.measure_overlay.hide()
+        self.selection_band = SelectionBand(palette, self)
+        self.viewport.band_changed.connect(self.selection_band.show_rect)
 
         self.view_controls = FloatingCard(palette, self, shadow=False)
         row = QHBoxLayout(self.view_controls)
@@ -220,6 +223,8 @@ class ViewportStage(QWidget):
             self.resized()
         if self.measure_overlay.isVisible():
             self.measure_overlay.setGeometry(self.rect())
+        if self.selection_band.isVisible():
+            self.selection_band.setGeometry(self.rect())
         self._layout_overlays()
         super().resizeEvent(event)
 
@@ -260,15 +265,21 @@ class ViewportStage(QWidget):
         self.hint.move(margin, height - self.hint.height() - margin)
 
         # Last, so the measurement drawn on the model is never hidden behind a
-        # panel. It takes no clicks, so being on top costs nothing.
+        # panel. It takes no clicks, so being on top costs nothing. The marquee
+        # rides along for the same reason -- a rectangle half-hidden behind a
+        # floating panel would look like it stopped at the panel's edge.
         if self.measure_overlay.isVisible():
             self.measure_overlay.raise_()
+        if self.selection_band.isVisible():
+            self.selection_band.setGeometry(self.rect())
+            self.selection_band.raise_()
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
         self.viewport.apply_palette(palette)
         self.drag_readout.apply_palette(palette)
         self.measure_overlay.apply_palette(palette)
+        self.selection_band.apply_palette(palette)
         self.hint.apply_palette(palette)
         self.view_controls.apply_palette(palette)
         for button in self._view_buttons.values():
@@ -347,6 +358,7 @@ class MainWindow(QMainWindow):
         self.rail.tool_selected.connect(self.activate_tool)
         self.stage.viewport.ready.connect(self._on_viewport_ready)
         self.stage.viewport.hover_changed.connect(self._on_hover)
+        self.stage.viewport.notice.connect(self.set_hint)
         self.stage.viewport.selection_changed.connect(self._on_selection)
         self.stage.viewport.face_dragged.connect(self._on_face_dragged)
         self.stage.viewport.sketch_clicked.connect(self._on_sketch_click)
@@ -688,37 +700,86 @@ class MainWindow(QMainWindow):
 
     # -- direct manipulation ---------------------------------------------
     def _maybe_start_face_drag(self) -> None:
-        """Pressing on an already-selected flat face starts a Pull.
+        """Pressing on an already-selected face starts a Pull.
 
         This is the interaction the whole design is built around: select, drag,
         watch it happen, type an exact number if you want one. It only triggers
         on a face that is *already* selected, so the first click still selects
         and orbiting is unaffected.
+
+        A round face is dragged along its **radius** rather than a normal, which
+        is how a shaft or a tube is made thinner: the same gesture, aimed at the
+        one direction a cylinder can actually move in.
         """
-        faces = self.selection.planar_faces()
-        if len(faces) != 1 or self.selection.count != 1:
+        if self.selection.count != 1:
+            return
+        faces = self.selection.planar_faces() or self.selection.round_faces()
+        if len(faces) != 1:
             return
         pick = faces[0]
+        viewport = self.stage.viewport
         # Only drag if the press actually landed on the selected face. Without
         # this check, every click after a selection starts a drag and nothing
         # else can ever be selected again.
-        under_cursor = self.stage.viewport.detected_shape(
-            self.stage.viewport._press_pos
-        )
+        under_cursor = viewport.detected_shape(viewport._press_pos)
         if under_cursor is None or not under_cursor.IsSame(pick.shape):
             return
-        if self.stage.viewport.begin_face_drag(pick.info.center, pick.info.normal):
+
+        if pick.is_round_face:
+            frame = self._radial_frame(pick)
+            if frame is None:
+                return
+            anchor, direction = frame
+        else:
+            anchor, direction = pick.info.center, pick.info.normal
+        if viewport.begin_face_drag(anchor, direction):
             self._drag_pick = pick
             self._drag_distance = 0.0
+
+    def _radial_frame(self, pick):
+        """``(point on the face, outward radial direction)`` under the cursor.
+
+        Anchored where the user actually pressed rather than at some canonical
+        point on the axis, so the handle-less drag tracks the surface they are
+        holding -- and so the direction is the one facing the camera, which is
+        the only one a mouse can push along.
+        """
+        import math
+
+        from ..kernel.snapping import _surface_hit
+
+        viewport = self.stage.viewport
+        info = pick.info
+        ray = viewport.cursor_ray(viewport._press_pos)
+        if ray is None:
+            return None
+        hit = _surface_hit(pick.shape, ray[0], ray[1])
+        if hit is None:
+            return None
+        along = sum(
+            (hit[i] - info.origin[i]) * info.direction[i] for i in range(3)
+        )
+        axis_point = tuple(
+            info.origin[i] + info.direction[i] * along for i in range(3)
+        )
+        radial = tuple(hit[i] - axis_point[i] for i in range(3))
+        length = math.sqrt(sum(v * v for v in radial))
+        if length < 1e-9:
+            return None
+        return (hit, tuple(v / length for v in radial))
 
     def _on_face_dragged(self, distance: float, finished: bool) -> None:
         pick = getattr(self, "_drag_pick", None)
         if pick is None:
             return
         self._drag_distance = distance
+        # Dragging a round face outward makes a shaft fatter and a hole bigger,
+        # so on a bore the gesture *removes* material. Everything downstream
+        # talks in "material added", so the sign is settled once, here.
+        adds = -distance if pick.is_round_face and pick.info.internal else distance
 
         if not finished:
-            cutting = distance < 0
+            cutting = adds < 0
             self.stage.viewport.show_ghost(
                 self._pull_preview(pick, distance),
                 self.palette_.danger if cutting else self.palette_.accent,
@@ -727,13 +788,25 @@ class MainWindow(QMainWindow):
             # get out of its own way for the preview to be visible at all.
             self._set_drag_transparency(pick.body, 0.6 if cutting else 0.0)
             self._show_drag_readout(pick, distance)
-            verb = "Adding" if distance >= 0 else "Cutting"
-            self.set_hint(f"{verb} {abs(distance):.2f} mm — release to apply")
+            verb = "Adding" if adds >= 0 else "Cutting"
+            self.set_hint(f"{verb} {abs(adds):.2f} mm — release to apply")
             return
 
         self._end_face_drag()
         if abs(distance) < 0.05:
             self.set_hint(self.selection.summary())
+            return
+        if pick.is_round_face:
+            self.add_feature(
+                RoundPushPullFeature(
+                    inputs={
+                        "body": BodyRef(pick.body),
+                        "face": pick.reference(self.document),
+                        "delta": round(adds, 3),
+                    },
+                    outputs=[pick.body],
+                )
+            )
             return
         self.add_feature(
             PushPullFeature(
@@ -760,6 +833,16 @@ class MainWindow(QMainWindow):
 
         readout = self.stage.drag_readout
         body = self.document.body(pick.body)
+        if pick.is_round_face:
+            # A cylinder has one size worth reading, and it is not how far the
+            # surface travelled.
+            readout.show_drag(
+                self.stage.mapFromGlobal(QCursor.pos()),
+                distance,
+                pick.info.diameter + 2.0 * distance,
+                "Diameter",
+            )
+            return
         resulting, label = None, ""
         if body is not None and body.shape is not None:
             from ..kernel.occ import bounding_box
@@ -792,9 +875,25 @@ class MainWindow(QMainWindow):
         self._drag_pick = None
 
     def _pull_preview(self, pick, distance: float):
-        """The slab of material a pull would add or remove, for the ghost."""
+        """The material a pull would add or remove, for the ghost.
+
+        A slab for a flat face, a tube for a round one -- and the tube is built
+        by the very function the feature uses, so what is previewed is what will
+        be committed rather than a lookalike computed a second way.
+        """
         if abs(distance) < 1e-6:
             return None
+        if pick.is_round_face:
+            from ..kernel.operations import radial_ring
+
+            info = pick.info
+            try:
+                return radial_ring(
+                    info, info.radius + distance,
+                    adding=(distance < 0) if info.internal else (distance > 0),
+                )
+            except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
+                return None
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
         from OCP.gp import gp_Vec
         from OCP.TopoDS import TopoDS
@@ -1659,8 +1758,9 @@ class MainWindow(QMainWindow):
 
         from ..kernel.io_formats import export_shapes
 
-        shapes = [b.shape for b in self.document.visible_bodies()]
-        if not shapes:
+        # Items, not bodies: a group has to reach the slicer as one object.
+        items = self.document.export_items()
+        if not items:
             self.set_hint("There is nothing to export yet.")
             return
         path, _filter = QFileDialog.getSaveFileName(
@@ -1670,7 +1770,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            export_shapes(shapes, path)
+            export_shapes(items, path)
         except Exception as exc:  # noqa: BLE001 - surfaced, never fatal
             from ..core.errors import translate
 

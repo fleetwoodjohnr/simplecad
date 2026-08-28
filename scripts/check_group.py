@@ -175,6 +175,42 @@ def main() -> int:
         if window.selection.bodies != ["Lid"]:
             FAILURES.append("could not select one object inside a group")
 
+        # -- the group has to reach a slicer as one object --------------------
+        #
+        # The whole point of grouping, from the printer's side. Two grouped
+        # bodies used to arrive as two objects to place, orient and print,
+        # which is precisely what grouping them said they were not.
+        import tempfile
+        import zipfile
+        from xml.etree import ElementTree
+
+        from simplecad.kernel.io_formats import export_shapes
+
+        ns = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
+        items = window.document.export_items()
+        REPORT["export_items"] = [name for name, _shapes in items]
+        with tempfile.TemporaryDirectory(prefix="simplecad-group-") as folder:
+            path = os.path.join(folder, "grouped.3mf")
+            export_shapes(items, path)
+            with zipfile.ZipFile(path) as archive:
+                model = ElementTree.fromstring(archive.read("3D/3dmodel.model"))
+        REPORT["3mf_objects"] = [
+            obj.get("name")
+            for obj in model.findall(f"./{ns}resources/{ns}object")
+        ]
+        REPORT["3mf_build_items"] = len(
+            model.findall(f"./{ns}build/{ns}item")
+        )
+        # The group, plus the one body left outside it.
+        if sorted(REPORT["3mf_objects"]) != sorted([group_name, "Pin"]):
+            FAILURES.append(
+                f"the group did not export as one object: {REPORT['3mf_objects']}"
+            )
+        if REPORT["3mf_build_items"] != 2:
+            FAILURES.append(
+                f"expected two things on the plate, got {REPORT['3mf_build_items']}"
+            )
+
         # -- ungroup ---------------------------------------------------------
         window.ungroup(group_name)
         QApplication.processEvents()

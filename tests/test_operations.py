@@ -16,9 +16,10 @@ from simplecad.core.naming import fingerprint, make_ref, sub_shapes
 from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel.detect import analyse_cylinder, cylindrical_faces
 from simplecad.kernel.occ import bounding_box, is_valid, volume
+from simplecad.core.errors import CadError
 from simplecad.kernel.operations import (
     BooleanFeature, ChamferFeature, HoleFeature, MoveFeature, PushPullFeature,
-    ShellFeature,
+    RoundPushPullFeature, ShellFeature,
 )
 from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 
@@ -441,4 +442,148 @@ def test_threaded_through_hole_is_actually_threaded(doc):
     assert (high[2] - low[2]) == pytest.approx(6.0, abs=0.05), (
         "the thread must not extend past the material"
     )
-    assert doc.features[-1].inputs["designation"] == "M6"
+    # P6, not M6: the printable coarse series leads, because an ISO tooth at a
+    # 1 mm pitch is 0.31 mm deep -- under what a 0.4 mm nozzle can resolve.
+    assert doc.features[-1].inputs["designation"] == "P6"
+
+
+# ----------------------------------------------------------------------
+# Pull, on round things
+# ----------------------------------------------------------------------
+def outer_round_face(shape):
+    """The widest shaft face -- the outside of a cylinder or a tube."""
+    return max(
+        (f for f, i in cylindrical_faces(shape) if not analyse_cylinder(f).internal),
+        key=lambda f: analyse_cylinder(f).radius,
+    )
+
+
+def bore_face(shape):
+    return max(
+        (f for f, i in cylindrical_faces(shape) if analyse_cylinder(f).internal),
+        key=lambda f: analyse_cylinder(f).radius,
+    )
+
+
+def tube(document, name="Tube", outer=10.0, bore=6.0, height=20.0):
+    """A cylinder with a coaxial hole through it, built as two features."""
+    outer_feature = document.add_feature(
+        CylinderFeature(
+            inputs={"radius": outer, "height": height}, outputs=[name]
+        )
+    )
+    document.add_feature(
+        CylinderFeature(
+            inputs={"radius": bore, "height": height}, outputs=["Bore"]
+        )
+    )
+    document.add_feature(
+        BooleanFeature(
+            inputs={
+                "body": BodyRef(name), "tools": [BodyRef("Bore")],
+                "operation": "cut",
+            },
+            outputs=[name],
+        )
+    )
+    return outer_feature
+
+
+def resize(document, name, face, feature_id, delta):
+    document.add_feature(
+        RoundPushPullFeature(
+            inputs={
+                "body": BodyRef(name),
+                "face": make_ref(
+                    document.bodies[name].shape, face, feature_id, body=name
+                ),
+                "delta": delta,
+            },
+            outputs=[name],
+        )
+    )
+
+
+def test_a_shaft_can_be_made_thinner(doc):
+    """The request this exists for: drag the side of a cylinder inward."""
+    feature = doc.add_feature(
+        CylinderFeature(inputs={"radius": 10.0, "height": 30.0}, outputs=["Post"])
+    )
+    build(doc)
+    before = doc.bodies["Post"].shape
+    resize(doc, "Post", outer_round_face(before), feature.id, -2.5)
+    build(doc)
+
+    shape = doc.bodies["Post"].shape
+    assert is_valid(shape)
+    assert analyse_cylinder(outer_round_face(shape)).radius == pytest.approx(7.5)
+    # Only the radius moved: the part is no shorter than it was.
+    low, high = bounding_box(shape)
+    assert (high[2] - low[2]) == pytest.approx(30.0, abs=1e-6)
+    assert volume(shape) == pytest.approx(math.pi * 7.5 ** 2 * 30.0, rel=1e-4)
+
+
+def test_a_shaft_can_be_made_fatter(doc):
+    feature = doc.add_feature(
+        CylinderFeature(inputs={"radius": 6.0, "height": 20.0}, outputs=["Post"])
+    )
+    build(doc)
+    resize(doc, "Post", outer_round_face(doc.bodies["Post"].shape), feature.id, 1.5)
+    build(doc)
+    shape = doc.bodies["Post"].shape
+    assert analyse_cylinder(outer_round_face(shape)).radius == pytest.approx(7.5)
+    assert volume(shape) == pytest.approx(math.pi * 7.5 ** 2 * 20.0, rel=1e-4)
+
+
+def test_thinning_a_tube_keeps_its_bore(doc):
+    """The reason the tool is an annulus and not a cylinder.
+
+    Turning a tube down with a solid cylinder would fill the bore on the way
+    past, which is the difference between making a tube thinner and ruining it.
+    """
+    feature = tube(doc, outer=10.0, bore=6.0, height=20.0)
+    build(doc)
+    resize(doc, "Tube", outer_round_face(doc.bodies["Tube"].shape), feature.id, -2.0)
+    build(doc)
+
+    shape = doc.bodies["Tube"].shape
+    assert is_valid(shape)
+    assert analyse_cylinder(outer_round_face(shape)).radius == pytest.approx(8.0)
+    assert analyse_cylinder(bore_face(shape)).radius == pytest.approx(6.0)
+    assert volume(shape) == pytest.approx(
+        math.pi * (8.0 ** 2 - 6.0 ** 2) * 20.0, rel=1e-4
+    )
+
+
+def test_a_bore_can_be_opened_out(doc):
+    feature = tube(doc, outer=10.0, bore=5.0, height=20.0)
+    build(doc)
+    # Negative takes material away, whichever face it is: on a hole that means
+    # a wider hole.
+    resize(doc, "Tube", bore_face(doc.bodies["Tube"].shape), feature.id, -1.5)
+    build(doc)
+
+    shape = doc.bodies["Tube"].shape
+    assert analyse_cylinder(bore_face(shape)).radius == pytest.approx(6.5)
+    assert analyse_cylinder(outer_round_face(shape)).radius == pytest.approx(10.0)
+
+
+def test_thinning_past_the_bore_is_refused_with_the_limit(doc):
+    feature = tube(doc, outer=10.0, bore=8.0, height=20.0)
+    build(doc)
+    resize(doc, "Tube", outer_round_face(doc.bodies["Tube"].shape), feature.id, -3.0)
+
+    report = Rebuilder(doc).rebuild()
+    assert not report.ok
+    assert "break through" in report.summary()
+    # And it names the size that would work, rather than only saying no.
+    assert "16.1" in report.summary()
+
+
+def test_resizing_to_nothing_is_refused(doc):
+    feature = doc.add_feature(
+        CylinderFeature(inputs={"radius": 5.0, "height": 10.0}, outputs=["Post"])
+    )
+    build(doc)
+    resize(doc, "Post", outer_round_face(doc.bodies["Post"].shape), feature.id, -5.0)
+    assert not Rebuilder(doc).rebuild().ok

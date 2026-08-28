@@ -82,14 +82,19 @@ class SplitPanel(_SelectionTool):
 
     # -- construction ----------------------------------------------------
     def build(self) -> None:
+        # Read everything the selection has to say *first*. What follows throws
+        # the selection away, and the order is the whole reason cutting along a
+        # picked face still works.
         self.body_name = self._target_body()
         self.body_shape = self._body_shape()
+        self._face_plane = self._selected_face_plane()
         self._plane = None
         self._handles: list = []
         self._dragging = False
         self._drag_base = 0.0
         self._dimmed = False
-        self._face_plane = self._selected_face_plane()
+        self._quieted = False
+        self._quieten()
 
         self.set_subtitle(
             f"Cutting {self.body_name} into two parts — drag the plane, or "
@@ -129,6 +134,22 @@ class SplitPanel(_SelectionTool):
         viewport.handle_dragged.connect(self._on_handle_dragged)
 
         self.choose("face" if self._face_plane is not None else self._longest_axis())
+
+    def _quieten(self) -> None:
+        """Drop the selection and stop the viewport reacting to the cursor.
+
+        In every other tool the highlighted body *is* the subject. Here it is
+        not: the subject is the plane, and the plane lives inside the body. A
+        selection highlight glowing through a translucent part, changing colour
+        wherever the cursor happens to pass, competes with the one thing there
+        is to look at -- so for the duration of Split there simply is no
+        highlight. The handles are tested before picking in the press handler,
+        so the plane stays draggable throughout.
+        """
+        viewport = self.window_.stage.viewport
+        viewport.clear_selection()
+        viewport.set_picking_enabled(False)
+        self._quieted = True
 
     def _make_sizes_label(self):
         from PySide6.QtWidgets import QLabel
@@ -366,6 +387,15 @@ class SplitPanel(_SelectionTool):
         self._clear_scene()
         if self._dimmed:
             self._dim_body(0.0)
+        if self._quieted:
+            viewport.set_picking_enabled(True)
+            self._quieted = False
+            # Hand the part back selected. Leaving with nothing selected after
+            # cancelling a split means the context bar empties and the user has
+            # to find and click the body again to do anything else with it.
+            presentation = self.window_._presentations.get(self.body_name)
+            if presentation is not None:
+                viewport.select_shape(presentation)
         self.window_.stage.drag_readout.finish()
         for signal, slot in (
             (viewport.handle_pressed, self._on_handle_pressed),

@@ -83,6 +83,14 @@ class MeasurePanel(ToolPanel):
     confirm_label = "Done"
     width = 320
 
+    #: Which mode Measure opens in, remembered across uses.
+    #:
+    #: Point-to-point used to be reachable only by opening Measure and then
+    #: noticing a toggle, which is a poor place for the answer to "how far is
+    #: this corner from that hole". It now has its own command, and having used
+    #: it once you get it back without hunting for the toggle again.
+    last_mode = "entities"
+
     def build(self) -> None:
         self.selection = self.window_.selection
         self.points: list = []
@@ -132,12 +140,17 @@ class MeasurePanel(ToolPanel):
         viewport.snap_hovered.connect(self._on_snap_hover)
         viewport.snap_picked.connect(self._on_snap_picked)
         viewport.view_changed.connect(self._reposition_overlay)
-        self.set_mode("entities")
+        self.set_mode(self.start_mode())
+
+    def start_mode(self) -> str:
+        """Which mode to open in. Overridden by the point-to-point command."""
+        return type(self).last_mode
 
     # -- modes -----------------------------------------------------------
     def set_mode(self, mode: str) -> None:
         previous = getattr(self, "_mode", None)
         self._mode = mode
+        MeasurePanel.last_mode = mode
         for key, button in self._mode_buttons.items():
             button.setChecked(key == mode)
         viewport = self.window_.stage.viewport
@@ -325,3 +338,22 @@ class MeasurePanel(ToolPanel):
                 signal.disconnect(slot)
             except (RuntimeError, TypeError):
                 pass
+
+
+class PointMeasurePanel(MeasurePanel):
+    """Measure, opened straight into point-to-point."""
+
+    def start_mode(self) -> str:
+        return "points"
+
+
+@register_tool("measure_points")
+def open_point_measure(window):
+    """Two points on a model is a question of its own, so it gets its own way in.
+
+    Registered as a factory rather than a second decorator on the class,
+    because the registry hands a tool only the window -- the mode has to be
+    bound here or this would open showing Entities, which is the very thing
+    that made point-to-point hard to find.
+    """
+    return PointMeasurePanel(window, window.palette_)

@@ -97,9 +97,9 @@ def test_a_nut_is_a_hex_with_a_threaded_bore():
 @pytest.mark.slow
 def test_a_generated_bolt_threads_into_a_generated_nut():
     """The whole promise, checked by intersecting the two."""
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
-
     from simplecad.kernel.occ import make_transform, transformed
+
+    from .fit import TOLERANCE, buried_fraction
 
     size = by_designation("M6")
     nut = make_nut(size, clearance="normal")
@@ -109,31 +109,41 @@ def test_a_generated_bolt_threads_into_a_generated_nut():
     head_height = head_for(size)["head_height"]
     seated = transformed(bolt, make_transform(translate=(0.0, 0.0, -head_height)))
 
-    common = BRepAlgoAPI_Common(seated, nut)
-    common.Build()
-    overlap = abs(volume(common.Shape()))
-    allowance = max(volume(bolt) * 1e-3, 1e-2)
-    assert overlap < allowance, (
-        f"the pair interferes by {overlap:.4f} mm3 (allowed {allowance:.4f})"
+    buried = buried_fraction(seated, nut)
+    assert buried < TOLERANCE, (
+        f"{buried:.1%} of the bolt is inside the nut's metal"
     )
 
 
 @pytest.mark.slow
-def test_a_tight_clearance_makes_the_pair_interfere():
-    """Control: the fit check above must be able to detect a bad fit."""
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+def test_turning_the_bolt_without_advancing_it_makes_the_pair_clash():
+    """Control: the fit check above must be able to detect a bad fit.
 
+    The mis-fit is a bolt turned in place rather than a nut cut undersize. An
+    undersize nut's thread ends up floating free inside its own bore, and what
+    that measures is the boolean's handling of a detached compound rather than
+    anything about the fit -- see :mod:`tests.fit`.
+    """
     from simplecad.kernel.occ import make_transform, transformed
 
+    from .fit import buried_fraction, turned_in_place
+
     size = by_designation("M6")
-    nut = make_nut(size, clearance=-0.4)          # deliberately undersize
+    nut = make_nut(size, clearance="normal")
     bolt = make_bolt(size, 20.0, thread_length=20.0)
     seated = transformed(
         bolt, make_transform(translate=(0.0, 0.0, -head_for(size)["head_height"]))
     )
-    common = BRepAlgoAPI_Common(seated, nut)
-    common.Build()
-    assert abs(volume(common.Shape())) > 0.5, "an undersize nut must clash"
+    clean = buried_fraction(seated, nut)
+    # Half a turn on a 1 mm pitch is half a millimetre of phase error, which is
+    # well past the clearance. A sixth of a turn is only 0.17 mm and lands
+    # inside it -- correctly, since a thread has to tolerate some slop.
+    clashing = buried_fraction(turned_in_place(seated, 180.0), nut)
+
+    assert clashing > 0.10, "a bolt turned without advancing must bind"
+    assert clashing > clean * 5, (
+        f"{clashing:.1%} buried is not clearly above the seated pair's {clean:.1%}"
+    )
 
 
 # ----------------------------------------------------------------------

@@ -1,0 +1,20 @@
+{
+  "standard": "Printed (FDM)",
+  "code": "printed",
+  "angle": 90.0,
+  "form": "printed",
+  "note": "Coarse threads shaped for fused-filament printing, not for metal hardware. Pitch is roughly a quarter of the diameter and never below 2.4 mm, which is what keeps the 45-degree tooth at least 0.8 mm deep -- two extrusion widths on a 0.4 mm nozzle. Print axis-up: nothing on these threads overhangs by more than 45 degrees, so they need no supports.",
+  "sizes": [
+    { "designation": "P6",  "diameter": 6.0,  "pitch": 2.4, "series": "printed" },
+    { "designation": "P8",  "diameter": 8.0,  "pitch": 2.5, "series": "printed" },
+    { "designation": "P10", "diameter": 10.0, "pitch": 2.5, "series": "printed" },
+    { "designation": "P12", "diameter": 12.0, "pitch": 3.0, "series": "printed" },
+    { "designation": "P14", "diameter": 14.0, "pitch": 3.5, "series": "printed" },
+    { "designation": "P16", "diameter": 16.0, "pitch": 4.0, "series": "printed" },
+    { "designation": "P20", "diameter": 20.0, "pitch": 4.0, "series": "printed" },
+    { "designation": "P25", "diameter": 25.0, "pitch": 5.0, "series": "printed" },
+    { "designation": "P30", "diameter": 30.0, "pitch": 5.0, "series": "printed" },
+    { "designation": "P40", "diameter": 40.0, "pitch": 6.0, "series": "printed" },
+    { "designation": "P50", "diameter": 50.0, "pitch": 6.0, "series": "printed" }
+  ]
+}

@@ -16,8 +16,8 @@ from ...core.document import BodyRef
 from ...core.units import Dimension
 from ...kernel.operations import (
     AlignFeature, ChamferFeature, FilletFeature, HoleFeature, MoveFeature,
-    PushPullFeature, ScaleFeature, ShellFeature, ThreadedConnectionFeature,
-    ThreadFeature,
+    PushPullFeature, RoundPushPullFeature, ScaleFeature, ShellFeature,
+    ThreadedConnectionFeature, ThreadFeature,
 )
 from ...kernel.thread_specs import clearance_presets, recommend
 from ..theme import METRICS
@@ -45,27 +45,93 @@ class _SelectionTool(ToolPanel):
 # ----------------------------------------------------------------------
 @register_tool("pushpull")
 class PushPullPanel(_SelectionTool):
+    """Pull a face. One command, because there is one gesture.
+
+    A flat face moves along its normal and asks for a distance. A round face
+    moves along its radius and asks for a diameter, because nobody thinks about
+    a shaft in terms of how far its surface travelled -- they think about how
+    thick it ends up. Both are the same idea and the same panel, and asking the
+    user which one they meant would be asking about something the selection
+    already says.
+    """
+
     title = "Pull face"
     confirm_label = "Pull"
 
     def build(self) -> None:
-        faces = self.selection.planar_faces()
-        if faces:
+        self.pick = self._pick()
+        if self.pick is None:
+            self.set_subtitle("Select a flat face, or the side of a shaft or hole.")
+            self.add_field("distance", "Distance", 5.0)
+            return
+        if self.pick.is_round_face:
+            info = self.pick.info
             self.set_subtitle(
-                f"{faces[0].describe()} — positive adds material, negative cuts."
+                f"{self.pick.describe()} — set the diameter it should end up."
+                + self._wall_note(info)
             )
-        self.add_field("distance", "Distance", 5.0)
+            self.add_field("diameter", "Diameter", round(info.diameter, 3))
+        else:
+            self.set_subtitle(
+                f"{self.pick.describe()} — positive adds material, negative cuts."
+            )
+            self.add_field("distance", "Distance", 5.0)
+
+    def _pick(self):
+        faces = self.selection.planar_faces() or self.selection.round_faces()
+        return faces[0] if faces else None
+
+    def _wall_note(self, info) -> str:
+        """How thick the wall would be, when there is a wall to speak of."""
+        from ...kernel.operations import _coaxial_faces
+
+        body = self.window_.document.body(self.pick.body)
+        if body is None or body.shape is None:
+            return ""
+        others = _coaxial_faces(body.shape, info, internal=not info.internal)
+        if not others:
+            return ""
+        wall = abs(others[0].radius - info.radius)
+        return f" Wall is {wall:.2f} mm now."
 
     def commit(self) -> None:
-        faces = self.selection.planar_faces()
-        if not _need(self.window_, bool(faces), "Select a flat face to pull."):
+        pick = self._pick()
+        if not _need(
+            self.window_, pick is not None,
+            "Select a flat face, or the side of a shaft or hole.",
+        ):
             return
-        pick = faces[0]
+        document = self.window_.document
+        if pick.is_round_face:
+            wanted = self.value("diameter", pick.info.diameter)
+            delta = (wanted - pick.info.diameter) / 2.0
+            if not _need(
+                self.window_, abs(delta) > 1e-9,
+                "That is the diameter it already has.",
+            ):
+                return
+            # Stored as the radial move rather than the diameter, so the feature
+            # still means the same thing after an upstream edit resizes the
+            # face -- exactly as Pull stores a distance and not a height.
+            self.window_.add_feature(
+                RoundPushPullFeature(
+                    inputs={
+                        "body": BodyRef(pick.body),
+                        "face": pick.reference(document),
+                        "delta": round(
+                            delta if not pick.info.internal else -delta, 4
+                        ),
+                    },
+                    outputs=[pick.body],
+                )
+            )
+            self.window_.cancel_tool()
+            return
         self.window_.add_feature(
             PushPullFeature(
                 inputs={
                     "body": BodyRef(pick.body),
-                    "face": pick.reference(self.window_.document),
+                    "face": pick.reference(document),
                     "distance": self.expression("distance", "5"),
                 },
                 outputs=[pick.body],
@@ -360,8 +426,55 @@ class HolePanel(_SelectionTool):
 
 
 # ----------------------------------------------------------------------
+#: The tooth shapes offered, best first. Printed leads because SimpleCAD makes
+#: parts for a printer, and a 60-degree ISO tooth printed axis-up overhangs by
+#: 63 degrees -- it needs supports, and supports inside a thread are what stops
+#: the two halves ever turning.
+THREAD_FORMS = (
+    ("printed", "Printed — 45° teeth, no supports"),
+    ("iso", "Standard ISO — 60° V, needs supports"),
+)
+
+
+class _ThreadTool(_SelectionTool):
+    """Shared furniture for the tools that create threads."""
+
+    def add_form_chooser(self) -> None:
+        self.form = QComboBox()
+        for key, label in THREAD_FORMS:
+            self.form.addItem(label, key)
+        self.form.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.add_section("Tooth shape")
+        self.add_widget(self.form)
+
+    def chosen_form(self) -> str:
+        return self.form.currentData() if hasattr(self, "form") else "printed"
+
+    def check_printability(self, designation: str | None = None) -> None:
+        """Say up front what will be wrong with printing this thread.
+
+        The same sentence the kernel would put on the finished feature, said at
+        the point of choosing instead -- discovering that a thread was too fine
+        for the nozzle after a four-hour print is not feedback, it is a bill.
+        """
+        from ...kernel.thread_specs import by_designation
+        from ...kernel.threads import printable_note, thread_form
+
+        designation = designation or (
+            self.sizes.currentData() if hasattr(self, "sizes") else None
+        )
+        size = by_designation(str(designation)) if designation else None
+        if size is None:
+            return
+        try:
+            shape = thread_form(size.pitch, size.angle, self.chosen_form())
+        except Exception:  # noqa: BLE001 - a warning is never worth failing over
+            return
+        self.warn(printable_note(shape, size))
+
+
 @register_tool("thread")
-class ThreadPanel(_SelectionTool):
+class ThreadPanel(_ThreadTool):
     """Select a round face; the size is already worked out."""
 
     title = "Thread"
@@ -397,8 +510,11 @@ class ThreadPanel(_SelectionTool):
             )
         self.clearance.setCurrentIndex(1)   # Normal
         self.add_widget(self.clearance)
+        self.add_form_chooser()
         self.add_field("length", "Length", 0.0)
         self.fields["length"].setPlaceholderText("full face")
+        self.sizes.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.check_printability()
 
     def commit(self) -> None:
         faces = self.selection.round_faces()
@@ -414,6 +530,7 @@ class ThreadPanel(_SelectionTool):
                     "face": pick.reference(self.window_.document),
                     "designation": self.sizes.currentData(),
                     "clearance": self.clearance.currentData(),
+                    "form": self.chosen_form(),
                     "length": self.expression("length", "0"),
                 },
                 outputs=[pick.body],
@@ -423,7 +540,7 @@ class ThreadPanel(_SelectionTool):
 
 
 @register_tool("align_threaded")
-class AlignThreadedPanel(_SelectionTool):
+class AlignThreadedPanel(_ThreadTool):
     """Align two parts by their round faces *and* thread the pair, in one step.
 
     The spec asks for this as one command rather than two: selecting a post and
@@ -462,7 +579,10 @@ class AlignThreadedPanel(_SelectionTool):
             self.clearance.addItem(f"{entry['label']} — {entry['clearance']:.2f} mm", key)
         self.clearance.setCurrentIndex(1)
         self.add_widget(self.clearance)
+        self.add_form_chooser()
         self.add_field("offset", "Seat offset", 0.0)
+        self.sizes.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.check_printability()
 
     def commit(self) -> None:
         faces = self.selection.round_faces()
@@ -505,6 +625,7 @@ class AlignThreadedPanel(_SelectionTool):
                     "face_b": female.reference(document),
                     "designation": self.sizes.currentData(),
                     "clearance": self.clearance.currentData(),
+                    "form": self.chosen_form(),
                 },
                 outputs=[male.body, female.body],
             )
@@ -529,7 +650,7 @@ class AlignAndStackPanel(AlignPanel):
 
 
 @register_tool("threaded_connection")
-class ThreadedConnectionPanel(_SelectionTool):
+class ThreadedConnectionPanel(_ThreadTool):
     """The headline feature: two parts in, a matched printable pair out."""
 
     title = "Threaded connection"
@@ -565,8 +686,11 @@ class ThreadedConnectionPanel(_SelectionTool):
             )
         self.clearance.setCurrentIndex(1)
         self.add_widget(self.clearance)
+        self.add_form_chooser()
         self.add_field("length", "Length", 0.0)
         self.fields["length"].setPlaceholderText("full engagement")
+        self.sizes.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.check_printability()
 
     def commit(self) -> None:
         faces = self.selection.round_faces()
@@ -591,6 +715,7 @@ class ThreadedConnectionPanel(_SelectionTool):
                     "face_b": second.reference(document),
                     "designation": self.sizes.currentData(),
                     "clearance": self.clearance.currentData(),
+                    "form": self.chosen_form(),
                     "length": self.expression("length", "0"),
                 },
                 outputs=[first.body, second.body],

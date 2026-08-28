@@ -57,6 +57,24 @@ def make_transform(
     return transform
 
 
+def axis_transform(origin, direction):
+    """Move geometry built on +Z at the world origin onto an arbitrary axis.
+
+    Threads, and anything else swept or revolved about a cylindrical feature,
+    are far easier to build upright at the origin and then placed. Shared so the
+    thread builder and the round push/pull agree on exactly what "on this axis"
+    means -- two independent copies of this is how a tool ends up a hair off the
+    face it is meant to be concentric with.
+    """
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf
+
+    target = gp_Ax3(gp_Pnt(*origin), gp_Dir(*direction))
+    source = gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    transform = gp_Trsf()
+    transform.SetDisplacement(source, target)
+    return transform
+
+
 def transformed(shape, transform):
     """Apply a ``gp_Trsf``, copying so the original is untouched."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform

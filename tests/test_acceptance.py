@@ -281,9 +281,11 @@ def test_automatic_thread_pair_between_two_parts(doc):
     report = builder.rebuild()
     assert report.ok, report.summary()
 
-    # It picked the size itself, and it is the one a person would pick.
-    assert connection.inputs["designation"] == "M12"
-    assert "M12" in connection.message
+    # It picked the size itself, and it is the one a person printing would pick:
+    # the printable coarse series leads, so a 12 mm post gets P12 rather than an
+    # ISO M12 whose 0.55 mm tooth is finer than the nozzle can resolve.
+    assert connection.inputs["designation"] == "P12"
+    assert "P12" in connection.message
     assert is_valid(doc.bodies["Post"].shape)
     assert is_valid(doc.bodies["Plate"].shape)
 

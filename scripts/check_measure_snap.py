@@ -99,6 +99,11 @@ def main() -> int:
                     Qt.NoButton, Qt.NoButton, Qt.NoModifier,
                 ))
                 QApplication.processEvents()
+                # Snapping is paced so it can never monopolise the event loop,
+                # so the answer lands a fraction of a frame after the move. A
+                # hand never notices; a script that looks immediately would read
+                # the previous position's answer, so ask for it now.
+                viewport.flush_snap()
                 return overlay.hover
 
             def hover_near(point, gap):
@@ -128,6 +133,7 @@ def main() -> int:
                     Qt.NoButton, Qt.NoButton, Qt.NoModifier,
                 ))
                 QApplication.processEvents()
+                viewport.flush_snap()
                 return overlay.hover
 
             # -- the middle of a face, far from any named snap --------------

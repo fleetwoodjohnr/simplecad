@@ -13,7 +13,9 @@ import math
 from ..core.document import BodyRef, BuildContext, Feature, register
 from ..core.errors import CadError, guard
 from ..core.units import Dimension
-from .occ import bounding_box, built_shape, make_transform, transformed, unify
+from .occ import (
+    axis_transform, bounding_box, built_shape, make_transform, transformed, unify,
+)
 
 
 def _cast_faces(shapes) -> list:
@@ -214,6 +216,165 @@ class PushPullFeature(_BodyOperation):
                 )
             # Merge the seam the boolean leaves between coplanar faces.
             return self._emit(unify(result))
+
+
+#: Slack on the radius the tool shares with the face being moved. Two coaxial
+#: cylinders of exactly the same radius are tangent surfaces, and a boolean
+#: across tangent surfaces is where OCCT hands back an invalid solid. The
+#: surplus always lies in material the operation is not responsible for, so it
+#: changes nothing about the result. Same reasoning as threads.ENVELOPE_MARGIN.
+RADIAL_MARGIN = 0.02
+#: The thinnest wall this refuses to leave behind, in mm. Geometric, not a
+#: printing rule -- printability is the print workspace's job to warn about.
+MIN_WALL = 0.05
+
+
+def _coaxial_faces(shape, info, internal: bool):
+    """Cylindrical faces of *shape* on the same axis as *info*, largest first.
+
+    What makes a tube behave like a tube: to know whether thinning its outer
+    wall would break through, you have to know where its bore is.
+    """
+    from ..core.naming import sub_shapes
+
+    from .detect import analyse_cylinder
+
+    found = []
+    for face in sub_shapes(shape, "face"):
+        other = analyse_cylinder(face)
+        if other is None or other.internal is not internal:
+            continue
+        aligned = abs(sum(a * b for a, b in zip(other.direction, info.direction)))
+        if aligned < 0.999:
+            continue
+        # On the same axis, not merely parallel to it.
+        offset = tuple(other.origin[i] - info.origin[i] for i in range(3))
+        along = sum(offset[i] * info.direction[i] for i in range(3))
+        sideways = math.sqrt(
+            max(0.0, sum(v * v for v in offset) - along * along)
+        )
+        if sideways > 1e-6:
+            continue
+        found.append(other)
+    found.sort(key=lambda c: c.radius, reverse=True)
+    return found
+
+
+def radial_ring(info, new_radius: float, adding: bool):
+    """The tube of material between a round face and where it is moving to.
+
+    Shared by the feature and by the drag preview, so what the ghost shows
+    during the drag is the very shape the commit will use -- a preview computed
+    a second way is a preview that can lie.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+    # Overlap the material that is already there when adding, and reach past
+    # the face being moved when cutting. Either way the tool never shares a
+    # surface with the body -- see RADIAL_MARGIN.
+    outward = info.internal == adding
+    overlap = info.radius + (RADIAL_MARGIN if outward else -RADIAL_MARGIN)
+    inner, outer = min(new_radius, overlap), max(new_radius, overlap)
+
+    ring = BRepPrimAPI_MakeCylinder(outer, info.length).Shape()
+    if inner > 1e-6:
+        ring = built_shape(
+            BRepAlgoAPI_Cut(
+                ring, BRepPrimAPI_MakeCylinder(inner, info.length).Shape()
+            ),
+            "resize",
+        )
+    return transformed(ring, axis_transform(info.origin, info.direction))
+
+
+@register("resize_round")
+class RoundPushPullFeature(_BodyOperation):
+    """Move a cylindrical face along its radius: Push/Pull for round things.
+
+    The flat-face Pull has never had a counterpart on a shaft, so the only way
+    to make a cylinder or a tube thinner was to delete it and model it again at
+    a new size. This is that counterpart, and it reads the same way: positive
+    adds material, negative takes it away, whether the face is the outside of a
+    shaft or the inside of a bore.
+
+    The tool is an **annulus**, never a solid cylinder, and that is the whole
+    reason this works on tubes. Turning a tube down with a solid cylinder would
+    fill its bore on the way past; a ring between the old and the new radius
+    touches only the wall it is asked to move.
+    """
+
+    label = "Resize"
+
+    def execute(self, ctx: BuildContext) -> dict:
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+        from .detect import analyse_cylinder
+
+        body = ctx.shape(self, "body")
+        delta = ctx.value(self, "delta", 0.0)
+        face = ctx.resolve(self, "face")
+        info = analyse_cylinder(face)
+        if info is None:
+            raise CadError(
+                "This only works on round faces.",
+                suggestion="Select the side of a shaft, a tube or a hole.",
+            )
+        if abs(delta) < 1e-9:
+            return self._emit(body)
+
+        radius = info.radius
+        # A hole grows *inward* when material is added, which is the one place
+        # the two cases differ; everything after this is common.
+        new_radius = radius - delta if info.internal else radius + delta
+        if new_radius <= MIN_WALL:
+            raise CadError(
+                f"That would take the {info.kind} down to ⌀{new_radius * 2:.2f} mm.",
+                suggestion=f"Keep the diameter above {MIN_WALL * 2:.2f} mm.",
+            )
+        self._check_wall(body, info, new_radius, delta > 0)
+
+        adding = delta > 0
+        with guard("resize"):
+            ring = radial_ring(info, new_radius, adding)
+            result = built_shape(
+                (BRepAlgoAPI_Fuse if adding else BRepAlgoAPI_Cut)(body, ring),
+                "resize",
+            )
+            if not _has_solid(result):
+                raise CadError(
+                    "That would leave nothing behind.",
+                    suggestion="Take less off, or delete the body instead.",
+                )
+            return self._emit(unify(result))
+
+    @staticmethod
+    def _check_wall(body, info, new_radius: float, adding: bool) -> None:
+        """Refuse a move that would break through into a bore, and say why.
+
+        Without this, thinning a tube past its own wall reports as a boolean
+        that produced no solid -- true, and no use at all to someone who just
+        wanted the wall a bit thinner than it can actually be.
+        """
+        if info.internal:
+            walls = _coaxial_faces(body, info, internal=False)
+            outer = walls[0].radius if walls else None
+            if outer is not None and not adding and new_radius >= outer - MIN_WALL:
+                raise CadError(
+                    f"Opening the hole to ⌀{new_radius * 2:.2f} mm would break "
+                    f"through the ⌀{outer * 2:.2f} mm wall around it.",
+                    suggestion=f"Stay under ⌀{(outer - MIN_WALL) * 2:.2f} mm.",
+                )
+            return
+        bores = _coaxial_faces(body, info, internal=True)
+        bore = bores[0].radius if bores else None
+        if bore is not None and not adding and new_radius <= bore + MIN_WALL:
+            raise CadError(
+                f"Thinning to ⌀{new_radius * 2:.2f} mm would break through the "
+                f"⌀{bore * 2:.2f} mm bore inside it.",
+                suggestion=f"Stay above ⌀{(bore + MIN_WALL) * 2:.2f} mm.",
+            )
 
 
 @register("move")
@@ -500,6 +661,7 @@ class HoleFeature(_BodyOperation):
             length=bore.length, internal=True,
             clearance=str(self.inputs.get("clearance", "normal")),
             feature_diameter=bore.diameter,
+            form=str(self.inputs.get("form", "printed")),
         )
         if outcome.message:
             ctx.warn(outcome.message)
@@ -634,6 +796,7 @@ class ThreadFeature(_BodyOperation):
             clearance=str(self.inputs.get("clearance", "normal")),
             left_hand=bool(self.inputs.get("left_hand", False)),
             feature_diameter=info.diameter,
+            form=str(self.inputs.get("form", "printed")),
         )
         if outcome.message:
             ctx.warn(outcome.message)
@@ -690,6 +853,7 @@ class ThreadedConnectionFeature(Feature):
             )
 
         clearance = str(self.inputs.get("clearance", "normal"))
+        form = str(self.inputs.get("form", "printed"))
         length = ctx.value(self, "length", 0.0) or min(male.length, female.length)
 
         outputs: dict[str, object] = {}
@@ -703,6 +867,7 @@ class ThreadedConnectionFeature(Feature):
                 clearance=clearance,
                 left_hand=bool(self.inputs.get("left_hand", False)),
                 feature_diameter=info.diameter,
+                form=form,
             )
             if outcome.message:
                 ctx.warn(outcome.message)

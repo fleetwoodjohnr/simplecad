@@ -15,7 +15,9 @@ import math
 from contextlib import contextmanager
 from enum import Enum, IntEnum
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+import time
+
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -109,7 +111,29 @@ class _Nav(Enum):
     DRAG_FACE = 4
     GIZMO = 5
     DRAG_HANDLE = 6
+    RUBBER_BAND = 7
 
+
+#: How long to leave between snap computations, in milliseconds.
+#:
+#: This used to be zero, which meant "once per turn of the event loop" -- so on
+#: any model where a snap took longer than a frame, snapping consumed every turn
+#: the loop had and the window stopped repainting. That is what "it freezes"
+#: was. One frame's worth of interval guarantees the loop a turn between snaps
+#: whatever they cost, and is far below what a hand can perceive. It does mean
+#: the indicator answers a fraction of a frame late, which is why anything
+#: driving the viewport in a script wants ``flush_snap``.
+SNAP_INTERVAL_MS = 16
+#: How many named snap candidates to project per mouse-move. Each costs a
+#: camera projection, and past a certain number they are all within a few
+#: pixels of one another anyway -- nobody can aim at the two hundredth.
+SNAP_CANDIDATE_LIMIT = 240
+#: A snap slower than this (seconds) means the body is too heavy for named
+#: snapping, and it drops to the cheap ray-only path from then on.
+SNAP_BUDGET = 0.030
+#: Slower than this and even the whole-body fallback is dropped, and the user is
+#: told once. Degrading in front of someone beats hanging behind them.
+SNAP_CEILING = 0.250
 
 #: How far the cursor may move between hovering a snap and clicking it before
 #: the snap is recomputed, in widget pixels. Reusing the hovered answer is what
@@ -183,6 +207,13 @@ class OcctViewport(QOpenGLWidget):
     snap_hovered = Signal(object)
     #: A snap point was clicked.
     snap_picked = Signal(object)
+    #: The selection rectangle being dragged, as a QRect, or None when there is
+    #: none. Drawn by a Qt overlay rather than here -- painting into a
+    #: QOpenGLWidget is the one thing this viewport must not do.
+    band_changed = Signal(object)
+    #: Something the user should know that has no better home, e.g. that
+    #: snapping has been turned down on a model too heavy for it.
+    notice = Signal(str)
 
     def __init__(self, palette: Palette, parent=None) -> None:
         super().__init__(parent)
@@ -234,6 +265,18 @@ class OcctViewport(QOpenGLWidget):
         #: Set while a double-click selection is being reported, so the window
         #: knows not to widen it to the whole group.
         self._pick_inside_group = False
+        #: The selection rectangle being dragged, if any.
+        self._band: QRect | None = None
+        #: False while a tool owns the view and a selection highlight would only
+        #: be in the way -- Split, where the point is to see the cutting plane.
+        self._picking_enabled = True
+        #: True while a snap is being computed, so a slow one cannot be entered
+        #: twice by an event loop OCCT pumped underneath us.
+        self._snapping = False
+        #: How snapping is performing per body: TShape -> "full"|"ray"|"none".
+        self._snap_effort: dict = {}
+        #: Bodies we have already complained about, so we say it once.
+        self._snap_warned: set = set()
 
         self.camera = CameraController(self)
         self.animator = CameraAnimator(self)
@@ -251,7 +294,7 @@ class OcctViewport(QOpenGLWidget):
         # and answer it once per turn of the event loop.
         self._snap_timer = QTimer(self)
         self._snap_timer.setSingleShot(True)
-        self._snap_timer.setInterval(0)
+        self._snap_timer.setInterval(SNAP_INTERVAL_MS)
         self._snap_timer.timeout.connect(self._emit_pending_snap)
 
         self.setMouseTracking(True)
@@ -624,12 +667,110 @@ class OcctViewport(QOpenGLWidget):
             self._apply_sensitivity(obj)
         self.refresh()
 
+    def set_picking_enabled(self, enabled: bool) -> None:
+        """Turn clicking and hovering on the model on or off.
+
+        For tools that own the view and whose subject is *not* the body -- Split
+        is the one, where the thing to look at is the cutting plane and a
+        selection highlight glowing through it is pure noise. Handles are
+        unaffected: they are tested before this in the press handler, so the
+        plane stays draggable while nothing else responds.
+        """
+        self._picking_enabled = bool(enabled)
+        if not self._picking_enabled and self._context is not None:
+            self._context.ClearDetected(False)
+            self.refresh()
+
+    @property
+    def picking_enabled(self) -> bool:
+        return self._picking_enabled
+
     def clear_selection(self) -> None:
         if self._context is None:
             return
         self._context.ClearSelected(False)
         self.refresh()
         self.selection_changed.emit()
+
+    # -- rectangle (marquee) selection ----------------------------------
+    def _band_rect(self, pos: QPoint) -> QRect:
+        """The rectangle from where the button went down to *pos*."""
+        return QRect(self._press_pos, pos).normalized()
+
+    def _set_band(self, rect) -> None:
+        self._band = rect
+        self.band_changed.emit(rect)
+
+    @staticmethod
+    def _band_is_a_drag(rect) -> bool:
+        """Big enough to have been meant, rather than a click with a tremor."""
+        return rect is not None and (
+            rect.width() > CLICK_SLOP_PX or rect.height() > CLICK_SLOP_PX
+        )
+
+    def _set_overlap_detection(self, enabled: bool) -> None:
+        """Whether a rectangle catches what it touches or only what it encloses."""
+        try:
+            self._context.MainSelector().AllowOverlapDetection(bool(enabled))
+        except Exception:  # noqa: BLE001 - an older selector simply encloses
+            pass
+
+    def select_in_rect(
+        self, rect: QRect, additive: bool = False, crossing: bool = False
+    ) -> None:
+        """Select every whole object the rectangle catches.
+
+        **Whole objects, not faces.** Dragging a box across the model says "these
+        things", and a marquee that came back with forty faces would offer none
+        of the operations -- Group, Move, Subtract, Delete -- that wanting
+        several things at once is usually the point of.
+
+        *crossing* is the difference between a box that catches only what it
+        completely surrounds and one that catches anything it touches. Both are
+        wanted: surrounding is precise, touching is forgiving, and every CAD
+        program worth copying picks between them by the direction of the drag.
+
+        OCCT can only return what its active selection modes allow, so the modes
+        are narrowed for the rectangle pass and put back afterwards, and the
+        answer is read out before they are restored. Reading it out is also what
+        lets the additive case be a genuine toggle rather than a second pass.
+        """
+        if self._context is None or self._view is None:
+            return
+        top_left = self._device_pos(rect.topLeft())
+        bottom_right = self._device_pos(rect.bottomRight())
+        previous = self._selection_modes
+
+        self.set_selection_modes((SelectionMode.BODY, SelectionMode.SOLID))
+        self._set_overlap_detection(crossing)
+        try:
+            # The rectangular overload takes an update flag, not a scheme, and
+            # always replaces -- which is why the additive case is applied by
+            # hand below rather than asked for here.
+            self._context.Select(
+                top_left[0], top_left[1], bottom_right[0], bottom_right[1],
+                self._view, False,
+            )
+            found = []
+            self._context.InitSelected()
+            while self._context.MoreSelected():
+                presentation = self._context.SelectedInteractive()
+                if presentation is not None and not any(
+                    p is presentation for p in found
+                ):
+                    found.append(presentation)
+                self._context.NextSelected()
+        finally:
+            self._set_overlap_detection(False)
+            self.set_selection_modes(previous)
+
+        if not additive:
+            self._context.ClearSelected(False)
+        for presentation in found:
+            self._context.AddOrRemoveSelected(presentation, False)
+        self.refresh()
+        self.selection_changed.emit()
+        self.update()
 
     def selected_shapes(self) -> list:
         """Every selected sub-shape, as ``TopoDS_Shape``."""
@@ -1175,13 +1316,14 @@ class OcctViewport(QOpenGLWidget):
         slightly different pixel, which is exactly how the point you got came to
         differ from the marker you clicked on.
         """
-        from ...kernel.snapping import nearest, ray_snaps, snap_points
+        from ...kernel.snapping import nearest, ray_snaps
 
         if reuse and self._last_snap is not None:
             where, cached = self._last_snap
             if (where - pos).manhattanLength() <= SNAP_REUSE_PX:
                 return cached
 
+        started = time.perf_counter()
         shape, parent = self.detected_pair(pos)
         self._context.ClearDetected(False)
         # No update() here. mouseMoveEvent asks for one immediately after, and
@@ -1191,16 +1333,65 @@ class OcctViewport(QOpenGLWidget):
             self._last_snap = (QPoint(pos), None)
             return None
 
-        candidates = self._candidates_for(shape, parent)
+        # How much work this body has earned. A model heavy enough to make
+        # snapping stutter gets the cheap treatment from then on, rather than
+        # being allowed to stall the window every time the cursor crosses it.
+        effort = self._snap_effort.get(self._snap_key(parent), "full")
+        candidates = (
+            self._candidates_for(shape, parent) if effort == "full" else []
+        )
+        if len(candidates) > SNAP_CANDIDATE_LIMIT:
+            # Already sorted most-specific first, so this keeps the corners and
+            # the centres and drops the tail nobody could aim at anyway.
+            candidates = candidates[:SNAP_CANDIDATE_LIMIT]
         ray = self.cursor_ray(pos)
         if ray is not None:
             # ``parent`` matters: it is the fallback that keeps an answer under
             # the cursor when the detected sub-shape itself has no surface to
-            # hit, which is what stops the indicator blinking out.
-            candidates = candidates + ray_snaps(shape, ray, parent=parent)
+            # hit, which is what stops the indicator blinking out. It is also
+            # the single most expensive thing here on a heavy body, so the
+            # slowest tier gives it up.
+            candidates = candidates + ray_snaps(
+                shape, ray, parent=None if effort == "none" else parent
+            )
         snap = nearest(candidates, self.project, (pos.x(), pos.y()))
+        self._note_snap_cost(parent, time.perf_counter() - started)
         self._last_snap = (QPoint(pos), snap)
         return snap
+
+    @staticmethod
+    def _snap_key(parent):
+        if parent is None:
+            return None
+        try:
+            return parent.TShape()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _note_snap_cost(self, parent, elapsed: float) -> None:
+        """Downgrade snapping on a body that cannot afford it, and say so once.
+
+        Only ever downgrades. A single fast reading on a heavy body -- the
+        cursor happening to cross a simple face -- must not undo the decision,
+        or the stutter comes straight back.
+        """
+        if elapsed <= SNAP_BUDGET:
+            return
+        key = self._snap_key(parent)
+        level = "none" if elapsed > SNAP_CEILING else "ray"
+        order = {"full": 0, "ray": 1, "none": 2}
+        current = self._snap_effort.get(key, "full")
+        if order[level] <= order[current]:
+            return
+        self._snap_effort[key] = level
+        if key in self._snap_warned:
+            return
+        self._snap_warned.add(key)
+        self.notice.emit(
+            "This model is heavy enough that snapping to corners and centres "
+            "would stall the view, so the cursor is following the surface "
+            "instead."
+        )
 
     def _candidates_for(self, shape, parent):
         """The named snaps on *shape*, computed once per shape rather than
@@ -1217,11 +1408,21 @@ class OcctViewport(QOpenGLWidget):
         return found
 
     def _emit_pending_snap(self) -> None:
-        """Answer the most recent cursor position, and only that one."""
+        """Answer the most recent cursor position, and only that one.
+
+        Guarded against re-entry: OCCT pumps the event loop during some of its
+        own work, so without this a slow snap can be entered again from inside
+        itself, and a stall becomes a hang.
+        """
         pos, self._pending_snap = self._pending_snap, None
-        if pos is None or not self._picking_points:
+        if pos is None or not self._picking_points or self._snapping:
             return
-        self.snap_hovered.emit(self.snap_at(pos))
+        self._snapping = True
+        try:
+            snap = self.snap_at(pos)
+        finally:
+            self._snapping = False
+        self.snap_hovered.emit(snap)
         self.update()
 
     def request_snap(self, pos: QPoint) -> None:
@@ -1230,12 +1431,27 @@ class OcctViewport(QOpenGLWidget):
         if not self._snap_timer.isActive():
             self._snap_timer.start()
 
+    def flush_snap(self) -> None:
+        """Answer any pending snap now instead of on the timer.
+
+        Snapping is deliberately paced so it can never monopolise the event
+        loop, which means the indicator lands a fraction of a frame after the
+        cursor -- invisible to a hand, and awkward for anything driving the
+        viewport in a script, which moves the cursor and looks immediately.
+        """
+        self._snap_timer.stop()
+        self._emit_pending_snap()
+
     def clear_snap_cache(self) -> None:
         from ...kernel.snapping import clear_caches
 
         self._last_snap = None
         self._pending_snap = None
         self._snap_candidates.clear()
+        # Deliberately *not* cleared: what a body costs to snap on is a property
+        # of the body, and a rebuild that changes it will key the record
+        # differently anyway. Forgetting it here would re-learn the same stall
+        # every time the measure tool was reopened.
         clear_caches()
 
     def camera_state(self):
@@ -1380,9 +1596,21 @@ class OcctViewport(QOpenGLWidget):
             self._nav = _Nav.GIZMO
         elif button == Qt.LeftButton and self._sketch_plane is not None:
             self._nav = _Nav.NONE
-        elif button == Qt.LeftButton and not modifiers and not self._picking_points:
+        elif (
+            button == Qt.LeftButton
+            and not self._picking_points
+            and self._picking_enabled
+        ):
             self._nav = _Nav.NONE
-            self.drag_candidate_requested()
+            if not modifiers:
+                # Pull gets first refusal: pressing on an already-selected face
+                # is a drag on that face, and always has been.
+                self.drag_candidate_requested()
+            if self._nav is _Nav.NONE:
+                # Nothing else claimed the press, so it may become a marquee.
+                # It only becomes one once the cursor actually travels; until
+                # then this is still an ordinary click.
+                self._nav = _Nav.RUBBER_BAND
         else:
             self._nav = _Nav.NONE
         self.setFocus()
@@ -1448,6 +1676,11 @@ class OcctViewport(QOpenGLWidget):
             )
             self._last_pos = pos
             return
+        if self._nav is _Nav.RUBBER_BAND:
+            rect = self._band_rect(pos)
+            self._set_band(rect if self._band_is_a_drag(rect) else None)
+            self._last_pos = pos
+            return
         if self._nav is _Nav.ORBIT:
             self.camera.orbit(delta.x(), delta.y())
             self.camera_moved()
@@ -1460,7 +1693,7 @@ class OcctViewport(QOpenGLWidget):
                 self.sketch_moved.emit(where[0], where[1])
         elif self._picking_points:
             self.request_snap(pos)
-        else:
+        elif self._picking_enabled:
             x, y = self._device_pos(pos)
             self._context.MoveTo(x, y, self._view, True)
             self.hover_changed.emit(self._describe_detected())
@@ -1474,6 +1707,25 @@ class OcctViewport(QOpenGLWidget):
             return
         if was_nav is _Nav.ORBIT:
             self.camera.end_orbit()
+        if was_nav is _Nav.RUBBER_BAND:
+            rect = self._band_rect(event.position().toPoint())
+            self._set_band(None)
+            if self._band_is_a_drag(rect):
+                self.select_in_rect(
+                    rect,
+                    additive=bool(
+                        event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
+                    ),
+                    # Dragged leftward means "anything I touched", rightward
+                    # means "only what I surrounded" -- the convention every
+                    # other CAD program uses, and worth matching because people
+                    # arrive already knowing it.
+                    crossing=event.position().toPoint().x() < self._press_pos.x(),
+                )
+                return
+            # Too small to have been a rectangle: it was a click, so let the
+            # ordinary single-pick path below have it.
+            was_nav = _Nav.NONE
         if was_nav is _Nav.DRAG_HANDLE and self._drag is not None:
             distance = self._drag_distance(
                 event.position().toPoint(), event.modifiers()
@@ -1500,6 +1752,8 @@ class OcctViewport(QOpenGLWidget):
                 self.context_menu_requested.emit(event.position().toPoint())
             return
         if event.button() != Qt.LeftButton or self._dragged:
+            return
+        if not self._picking_enabled and self._sketch_plane is None:
             return
 
         if self._sketch_plane is not None:
@@ -1549,6 +1803,7 @@ class OcctViewport(QOpenGLWidget):
             or event.button() != Qt.LeftButton
             or self._sketch_plane is not None
             or self._picking_points
+            or not self._picking_enabled
         ):
             return
         x, y = self._device_pos(event.position().toPoint())

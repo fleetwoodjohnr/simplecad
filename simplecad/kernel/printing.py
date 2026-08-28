@@ -38,6 +38,11 @@ class Finding:
     severity: Severity
     message: str
     detail: str = ""
+    #: What was measured, when the check measured something -- the overhanging
+    #: fraction, the wall thickness. The message is for reading; this is for
+    #: comparing, so a caller can ask whether one design overhangs less than
+    #: another without parsing a percentage back out of a sentence.
+    value: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -230,6 +235,7 @@ def check_overhangs(
             f"{fraction * 100:.0f}% of the surface overhangs by more than "
             f"{max_angle:.0f}°.",
             "It will need supports, or rotating.",
+            value=fraction,
         )
     if fraction > 0.02:
         return Finding(
@@ -237,8 +243,11 @@ def check_overhangs(
             f"{fraction * 100:.0f}% of the surface overhangs by more than "
             f"{max_angle:.0f}°.",
             "Light support may help.",
+            value=fraction,
         )
-    return Finding("overhangs", Severity.OK, "No significant overhangs.")
+    return Finding(
+        "overhangs", Severity.OK, "No significant overhangs.", value=fraction
+    )
 
 
 def _triangle_area(mesh: Mesh, triangle) -> float:

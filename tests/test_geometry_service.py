@@ -250,6 +250,9 @@ def test_a_choice_the_feature_made_comes_back(child):
     from simplecad.ui.geometry_client import apply_result  # noqa: PLC0415
 
     apply_result(document, reply)
-    assert thread.inputs.get("designation") == "M8", (
+    # P8, not M8: an 8 mm post is offered the printable coarse size first, and
+    # what this is really checking is that whichever size the child settled on
+    # travels back to the parent rather than being recomputed there.
+    assert thread.inputs.get("designation") == "P8", (
         "the size the child chose must reach the parent"
     )

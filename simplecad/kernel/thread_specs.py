@@ -22,7 +22,10 @@ DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data",
 )
-STANDARD_FILES = ("iso_metric", "unc", "unf", "bsp", "npt")
+#: Loaded in this order. ``printed`` leads because SimpleCAD makes parts for
+#: a printer: an ISO tooth at a small pitch is a support-hungry sliver in
+#: plastic, so the printable coarse series is what should be offered first.
+STANDARD_FILES = ("printed", "iso_metric", "unc", "unf", "bsp", "npt")
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,19 @@ class ThreadSize:
     angle: float = 60.0      # thread profile included angle, degrees
     series: str = ""
     taper: float = 0.0       # NPT and friends
+    form: str = "iso"        # tooth shape: "printed" or "iso"
+
+    @property
+    def tooth_depth(self) -> float:
+        """Radial root-to-crest depth of the tooth actually built.
+
+        Form-aware, unlike the ISO properties below: a printed tooth is a
+        45-degree trapezoid and its depth follows from the pitch and the flats,
+        not from the sharp-triangle height an ISO thread is truncated out of.
+        """
+        from .threads import thread_form
+
+        return thread_form(self.pitch, self.angle, self.form).depth
 
     # -- derived geometry (ISO 68-1 style, valid for 55 and 60 degree forms) --
     @property
@@ -82,6 +98,7 @@ class ThreadSize:
             "angle": self.angle,
             "series": self.series,
             "taper": self.taper,
+            "form": self.form,
         }
 
     @classmethod
@@ -95,6 +112,7 @@ class ThreadSize:
             angle=float(data.get("angle", 60.0)),
             series=data.get("series", ""),
             taper=float(data.get("taper", 0.0)),
+            form=data.get("form", "iso"),
         )
 
 
@@ -119,6 +137,7 @@ def load_sizes() -> tuple[ThreadSize, ...]:
                     angle=float(table.get("angle", 60.0)),
                     series=entry.get("series", ""),
                     taper=float(table.get("taper", 0.0)),
+                    form=table.get("form", "iso"),
                 )
             )
     return tuple(sizes)
@@ -154,10 +173,11 @@ class Recommendation:
         return f"{self.size.designation} — {self.fit_error:+.2f} mm"
 
 
-#: Standards ranked ahead of others when sizes are near-equally close. Metric
-#: leads because SimpleCAD works in millimetres; without this a 6.2 mm hole
-#: would offer 1/4-20 above M6 purely on arithmetic.
-PREFERENCE = ("iso_metric", "unc", "unf", "bsp", "npt")
+#: Standards ranked ahead of others when sizes are near-equally close. The
+#: printable series leads because SimpleCAD makes parts to print, and metric
+#: leads the rest because SimpleCAD works in millimetres; without this a 6.2 mm
+#: hole would offer 1/4-20 above M6 purely on arithmetic.
+PREFERENCE = ("printed", "iso_metric", "unc", "unf", "bsp", "npt")
 #: How much closer a less-preferred standard must be to win, in mm.
 PREFERENCE_BIAS = 0.25
 

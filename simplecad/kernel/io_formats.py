@@ -62,10 +62,36 @@ def _compound(shapes):
 # ----------------------------------------------------------------------
 # Export
 # ----------------------------------------------------------------------
+def as_items(shapes) -> list[tuple[str, list]]:
+    """Normalise what callers pass into ``[(object_name, [shapes]), ...]``.
+
+    Every writer here accepts either a plain list of shapes -- which is one
+    object each, the way it always was -- or the ``(name, shapes)`` items
+    :meth:`Document.export_items` produces, where each entry is one *object*
+    that may be made of several solids. That is how a group survives the trip
+    into a file: it arrives as one entry and leaves as one object.
+    """
+    items: list[tuple[str, list]] = []
+    for index, entry in enumerate(shapes, start=1):
+        if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], str):
+            name, members = entry
+            members = [s for s in members if s is not None]
+            if members:
+                items.append((name, members))
+        elif entry is not None:
+            items.append((f"Object {index}", [entry]))
+    return items
+
+
+def flatten(shapes) -> list:
+    """Every shape in *shapes*, whichever form it arrived in."""
+    return [shape for _name, members in as_items(shapes) for shape in members]
+
+
 def export_shapes(shapes, path: str, *, deflection: float = 0.05) -> str:
     """Write *shapes* to *path*, choosing the writer from the extension."""
-    shapes = [s for s in shapes if s is not None]
-    if not shapes:
+    items = as_items(shapes)
+    if not items:
         raise CadError(
             "There is nothing to export.",
             suggestion="Create or unhide a body first.",
@@ -83,8 +109,8 @@ def export_shapes(shapes, path: str, *, deflection: float = 0.05) -> str:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     if writer is export_step:
-        return writer(shapes, path)
-    return writer(shapes, path, deflection=deflection)
+        return writer(items, path)
+    return writer(items, path, deflection=deflection)
 
 
 def export_step(shapes, path: str) -> str:
@@ -98,8 +124,10 @@ def export_step(shapes, path: str) -> str:
         writer = STEPControl_Writer()
         Interface_Static.SetCVal_s("write.step.unit", "MM")
         Interface_Static.SetCVal_s("write.step.schema", "AP214IS")
-        for shape in shapes:
-            writer.Transfer(shape, STEPControl_AsIs)
+        # One transfer per *object*, not per solid, so a group arrives in the
+        # receiving CAD system as the single part it was grouped to be.
+        for _name, members in as_items(shapes):
+            writer.Transfer(_compound(members), STEPControl_AsIs)
         status = writer.Write(path)
     # IFSelect_RetDone is 1, not 0 -- comparing against zero rejects every
     # successful write.
@@ -119,7 +147,7 @@ def export_stl(shapes, path: str, *, deflection: float = 0.05, binary: bool = Tr
     with guard("export"):
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
-        shape = _compound(shapes)
+        shape = _compound(flatten(shapes))
         BRepMesh_IncrementalMesh(shape, deflection, False, DEFAULT_ANGLE, True)
         writer = StlAPI_Writer()
         writer.ASCIIMode = not binary
@@ -129,7 +157,7 @@ def export_stl(shapes, path: str, *, deflection: float = 0.05, binary: bool = Tr
 
 
 def export_obj(shapes, path: str, *, deflection: float = 0.05) -> str:
-    mesh = triangulate(_compound(shapes), deflection)
+    mesh = triangulate(_compound(flatten(shapes)), deflection)
     if mesh.is_empty:
         raise CadError("There is no surface to export.")
     with open(path, "w") as handle:
@@ -145,11 +173,41 @@ def export_obj(shapes, path: str, *, deflection: float = 0.05) -> str:
 MODEL_NS = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 
 
+def _merged_mesh(members, deflection: float):
+    """One vertex/triangle list covering every shape in *members*.
+
+    Indices are offset per shape, which is the whole trick: several solids
+    written into a single ``<mesh>`` are one object to a slicer, even though
+    they remain separate shells in space. Nothing is fused -- a boolean would
+    change the geometry, and grouping is not a boolean.
+    """
+    vertices: list[tuple[float, float, float]] = []
+    triangles: list[tuple[int, int, int]] = []
+    for shape in members:
+        mesh = triangulate(shape, deflection)
+        if mesh.is_empty:
+            continue
+        offset = len(vertices)
+        vertices.extend(mesh.vertices)
+        triangles.extend(
+            (a + offset, b + offset, c + offset) for a, b, c in mesh.triangles
+        )
+    return vertices, triangles
+
+
 def export_3mf(shapes, path: str, *, deflection: float = 0.05) -> str:
-    """A minimal but valid 3MF: one object per body, millimetre units."""
-    meshes = [(triangulate(shape, deflection), index)
-              for index, shape in enumerate(shapes, start=1)]
-    meshes = [(mesh, index) for mesh, index in meshes if not mesh.is_empty]
+    """A minimal but valid 3MF: one object per *item*, millimetre units.
+
+    Per item, not per solid. A group hands us several bodies under one name and
+    they are written into a single object with a single build item, because the
+    slicer's idea of "one thing to place on the plate" is the only definition of
+    a group that survives leaving SimpleCAD.
+    """
+    meshes = []
+    for index, (name, members) in enumerate(as_items(shapes), start=1):
+        vertices, triangles = _merged_mesh(members, deflection)
+        if triangles:
+            meshes.append((name, vertices, triangles, index))
     if not meshes:
         raise CadError("There is no surface to export.")
 
@@ -157,19 +215,20 @@ def export_3mf(shapes, path: str, *, deflection: float = 0.05) -> str:
     resources = ElementTree.SubElement(model, "resources")
     build = ElementTree.SubElement(model, "build")
 
-    for mesh, index in meshes:
+    for name, mesh_vertices, mesh_triangles, index in meshes:
         obj = ElementTree.SubElement(
-            resources, "object", {"id": str(index), "type": "model"}
+            resources, "object",
+            {"id": str(index), "type": "model", "name": name},
         )
         mesh_element = ElementTree.SubElement(obj, "mesh")
         vertices = ElementTree.SubElement(mesh_element, "vertices")
-        for x, y, z in mesh.vertices:
+        for x, y, z in mesh_vertices:
             ElementTree.SubElement(
                 vertices, "vertex",
                 {"x": f"{x:.6f}", "y": f"{y:.6f}", "z": f"{z:.6f}"},
             )
         triangles = ElementTree.SubElement(mesh_element, "triangles")
-        for a, b, c in mesh.triangles:
+        for a, b, c in mesh_triangles:
             ElementTree.SubElement(
                 triangles, "triangle", {"v1": str(a), "v2": str(b), "v3": str(c)}
             )

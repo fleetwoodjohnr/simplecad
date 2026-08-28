@@ -116,7 +116,12 @@ class PrintPanel(ToolPanel):
 
     # -- analysis --------------------------------------------------------
     def _shapes(self) -> list:
+        """Every visible body, flat. Plate placement and analysis want solids."""
         return [b.shape for b in self.window_.document.visible_bodies()]
+
+    def _items(self) -> list:
+        """What to write to a file: a group counts as one object."""
+        return self.window_.document.export_items()
 
     def refresh_analysis(self) -> None:
         while self.findings_layout.count():
@@ -218,8 +223,8 @@ class PrintPanel(ToolPanel):
 
         from ...kernel.io_formats import export_shapes
 
-        shapes = self._shapes()
-        if not shapes:
+        items = self._items()
+        if not items:
             self.window_.set_hint("There is nothing to export yet.")
             return
         path, _filter = QFileDialog.getSaveFileName(
@@ -230,7 +235,7 @@ class PrintPanel(ToolPanel):
         if not path:
             return
         try:
-            export_shapes(shapes, path)
+            export_shapes(items, path)
         except Exception as exc:  # noqa: BLE001
             from ...core.errors import translate
 
@@ -246,8 +251,8 @@ class PrintPanel(ToolPanel):
         from ...kernel.io_formats import export_shapes
         from ...kernel.printing import open_in_slicer
 
-        shapes = self._shapes()
-        if not shapes:
+        items = self._items()
+        if not items:
             self.window_.set_hint("There is nothing to slice yet.")
             return
         path = os.path.join(
@@ -255,7 +260,7 @@ class PrintPanel(ToolPanel):
             f"{self.window_.document.title}.3mf",
         )
         try:
-            export_shapes(shapes, path)
+            export_shapes(items, path)
             name = open_in_slicer(path)
         except Exception as exc:  # noqa: BLE001
             from ...core.errors import translate
