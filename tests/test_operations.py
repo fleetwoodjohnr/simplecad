@@ -447,6 +447,72 @@ def test_threaded_through_hole_is_actually_threaded(doc):
     assert doc.features[-1].inputs["designation"] == "P6"
 
 
+@pytest.mark.slow
+def test_a_threaded_hole_honours_the_size_it_was_given(doc):
+    """The panel now offers a size, so the kernel has to use the one chosen.
+
+    Left to itself a ⌀6 hole gets P6, whose printed tooth is 0.75 mm deep. Asked
+    for M6 it must get M6 -- 0.31 mm, shallow enough that the panel warns about
+    it, and the warning has to reach the feature rather than a hint line the next
+    click wipes.
+    """
+    feature = plate(doc, height=6)
+    build(doc)
+    _hole(
+        doc, feature, style="threaded", position=(20.0, 20.0, 6.0),
+        diameter=6, designation="M6",
+    )
+    report = build(doc)
+    assert doc.features[-1].inputs["designation"] == "M6"
+    assert any("M6" in w for w in report.warnings), report.warnings
+    assert "M6" in (doc.features[-1].message or ""), (
+        "the warning must survive on the feature, not only in the hint line"
+    )
+
+    shape = doc.bodies["Plate"].shape
+    assert is_valid(shape)
+    crests = sorted(
+        round(info.diameter, 2) for face in sub_shapes(shape, "face")
+        if (info := analyse_cylinder(face)) is not None and info.internal
+    )
+    assert any(d < 5.95 for d in crests), (
+        f"nothing protrudes into the bore, so there is no thread: {crests}"
+    )
+    # M6's tooth is 0.31 mm, so the crest sits near 5.4 -- not at P6's 4.7.
+    assert min(crests) > 5.0, f"that is a P6 thread, not the M6 asked for: {crests}"
+
+
+@pytest.mark.slow
+def test_a_threaded_hole_finds_its_own_bore_among_others_the_same_size(doc):
+    """Matched by diameter and axis alone, the longest bore won.
+
+    Two ⌀6 holes through the same plate are indistinguishable that way, so the
+    thread could land in the one drilled ten minutes ago and the new hole came
+    out plain.
+    """
+    feature = plate(doc, height=6)
+    build(doc)
+    _hole(doc, feature, position=(10.0, 10.0, 6.0))        # a plain one first
+    build(doc)
+    _hole(
+        doc, feature, style="threaded", position=(30.0, 30.0, 6.0),
+        designation="P6",
+    )
+    build(doc)
+
+    shape = doc.bodies["Plate"].shape
+    threaded = [
+        info for face in sub_shapes(shape, "face")
+        if (info := analyse_cylinder(face)) is not None
+        and info.internal and info.diameter < 5.9
+    ]
+    assert threaded, "the second hole was left plain"
+    # Every crest belongs to the hole that asked for the thread, not the other.
+    for info in threaded:
+        assert info.origin[0] == pytest.approx(30.0, abs=0.5), info.origin
+        assert info.origin[1] == pytest.approx(30.0, abs=0.5), info.origin
+
+
 # ----------------------------------------------------------------------
 # Pull, on round things
 # ----------------------------------------------------------------------

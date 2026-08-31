@@ -559,6 +559,48 @@ class BooleanFeature(Feature):
 # ----------------------------------------------------------------------
 # Holes
 # ----------------------------------------------------------------------
+def thread_origin(info, length: float, from_end: str):
+    """Where a thread of *length* starts on the cylindrical face *info* describes.
+
+    ``analyse_cylinder`` reports the face's ``vmin`` end, which is an artefact of
+    how the surface happened to get built and means nothing to anyone looking at
+    the model. A thread shorter than the face therefore landed on whichever end
+    OCCT felt like, with no way to ask for the other one -- so a hole would come
+    back threaded at the bottom when the whole point was to start a screw at the
+    top.
+
+    The choice is resolved against **world Z**, because top and bottom are what
+    the user can see. A horizontal axis has no top, so there the face's own
+    direction decides and today's behaviour is kept.
+    """
+    spare = info.length - length
+    if spare <= 1e-9:
+        return info.origin
+
+    far = tuple(info.origin[i] + info.direction[i] * info.length for i in range(3))
+    rise = far[2] - info.origin[2]
+    far_is_top = rise > 1e-9
+    horizontal = abs(rise) <= 1e-9
+    if horizontal:
+        # Nothing to be higher than: start where the face starts, as before.
+        use_far = False
+    else:
+        use_far = far_is_top if from_end == "top" else not far_is_top
+    if not use_far:
+        return info.origin
+    return tuple(info.origin[i] + info.direction[i] * spare for i in range(3))
+
+
+def _on_axis(info, position, tolerance: float = 1e-4) -> bool:
+    """Whether *position* lies on the axis of the cylinder *info* describes."""
+    offset = tuple(position[i] - info.origin[i] for i in range(3))
+    along = sum(offset[i] * info.direction[i] for i in range(3))
+    perpendicular = math.dist(
+        offset, tuple(info.direction[i] * along for i in range(3))
+    )
+    return perpendicular <= tolerance
+
+
 @register("hole")
 class HoleFeature(_BodyOperation):
     """A hole placed on a face: simple, counterbored, countersunk or threaded."""
@@ -624,10 +666,14 @@ class HoleFeature(_BodyOperation):
             result = built_shape(BRepAlgoAPI_Cut(body, tool), "hole")
 
         if style == "threaded":
-            result = self._thread_the_bore(ctx, result, diameter, inward)
+            result = self._thread_the_bore(
+                ctx, result, diameter, inward, position
+            )
         return self._emit(result)
 
-    def _thread_the_bore(self, ctx: BuildContext, shape, diameter: float, inward):
+    def _thread_the_bore(
+        self, ctx: BuildContext, shape, diameter: float, inward, position=None
+    ):
         """Thread the bore that was just cut, over the material it passes through.
 
         The thread must span the *bore*, not the drill. A through hole is cut
@@ -636,37 +682,81 @@ class HoleFeature(_BodyOperation):
         fails to sweep, so the user silently got a plain hole. Measuring the
         cylindrical face the cut actually produced gives the real thickness.
         """
-        from .detect import analyse_cylinder
-        from .thread_specs import best_match
-        from .threads import apply_thread
+        from .threads import apply_thread, require_modelled
 
-        bore = self._find_bore(shape, diameter, inward)
+        # False until the complete physical result exists. The geometry worker
+        # returns portable feature inputs even on failure, so matching-part
+        # discovery can never mistake the retained plain upstream body for a
+        # successfully threaded one.
+        self.inputs["thread_modelled"] = False
+        self.inputs["thread_internal"] = True
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
+
+        bore = self._find_bore(shape, diameter, inward, position)
         if bore is None:
-            ctx.warn(
+            raise CadError(
                 "The hole was made, but its wall could not be measured, so no "
-                "thread was added."
+                "thread was added.",
+                suggestion="Try a shorter blind hole or select another face.",
             )
-            return shape
 
-        size = best_match(bore.diameter, internal=True)
+        size = self._thread_size(bore.diameter)
         if size is None:
-            ctx.warn(
+            raise CadError(
                 f"No standard thread matches ⌀{bore.diameter:.2f} mm, so the "
-                "hole was left plain."
+                "hole was left plain.",
+                suggestion="Change the diameter or choose a standard size.",
             )
-            return shape
 
-        outcome = apply_thread(
-            shape, size=size, origin=bore.origin, direction=bore.direction,
-            length=bore.length, internal=True,
+        length = ctx.value(self, "thread_length", bore.length) or bore.length
+        length = min(length, bore.length)
+        outcome = require_modelled(apply_thread(
+            shape, size=size,
+            origin=thread_origin(
+                bore, length, str(self.inputs.get("from_end", "top"))
+            ),
+            direction=bore.direction,
+            length=length, internal=True,
             clearance=str(self.inputs.get("clearance", "normal")),
+            left_hand=bool(self.inputs.get("left_hand", False)),
             feature_diameter=bore.diameter,
             form=str(self.inputs.get("form", "printed")),
-        )
+        ))
         if outcome.message:
-            ctx.warn(outcome.message)
+            self._complain(ctx, outcome.message)
         self.inputs.setdefault("designation", size.designation)
+        self.inputs["thread_modelled"] = True
         return outcome.shape
+
+    def _thread_size(self, bore_diameter: float):
+        """The size to cut: the one asked for, else the closest standard one.
+
+        Asking matters. Left to itself the match is made on nominal diameter, so
+        a ⌀5 hole gets M5 -- whose printed tooth is 0.25 mm deep, real geometry
+        that is invisible on screen and finer than any nozzle resolves, which is
+        what "it made the hole but there is no thread" was. There is no printable
+        size at 5 mm to prefer instead; the way out is for the user to choose,
+        which the Hole panel now lets them do.
+        """
+        from .thread_specs import best_match, by_designation
+
+        designation = self.inputs.get("designation")
+        if designation:
+            size = by_designation(str(designation))
+            if size is not None:
+                return size
+        return best_match(bore_diameter, internal=True)
+
+    def _complain(self, ctx: BuildContext, message: str) -> None:
+        """Warn, and keep the warning on the feature.
+
+        ``ctx.warn`` alone reaches only the hint line, which the next selection
+        change overwrites -- so the one explanation of why a thread is missing
+        was gone before the user had looked at the model.
+        """
+        ctx.warn(message)
+        self.message = message
 
     def _depth_to_object(self, ctx: BuildContext, position, direction, span: float):
         """Drill until it reaches another body, and stop there.
@@ -705,8 +795,14 @@ class HoleFeature(_BodyOperation):
         return nearest
 
     @staticmethod
-    def _find_bore(shape, diameter: float, direction):
-        """The cylindrical face this hole created: right size, right axis."""
+    def _find_bore(shape, diameter: float, direction, position=None):
+        """The cylindrical face this hole created: right size, right axis.
+
+        *position* is the drill's own start point, and it is what separates this
+        hole from a same-diameter one running parallel to it somewhere else in
+        the part -- without it the longest bore won and the thread could land in
+        a hole the user drilled ten minutes ago.
+        """
         from .detect import analyse_cylinder
         from ..core.naming import sub_shapes
 
@@ -719,6 +815,8 @@ class HoleFeature(_BodyOperation):
                 continue
             aligned = abs(sum(a * b for a, b in zip(info.direction, direction)))
             if aligned < 0.999:
+                continue
+            if position is not None and not _on_axis(info, position):
                 continue
             if best is None or info.length > best.length:
                 best = info
@@ -768,7 +866,7 @@ class ThreadFeature(_BodyOperation):
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
         from .thread_specs import best_match, by_designation
-        from .threads import apply_thread
+        from .threads import apply_thread, require_modelled
 
         body = ctx.shape(self, "body")
         face = ctx.resolve(self, "face")
@@ -778,6 +876,11 @@ class ThreadFeature(_BodyOperation):
                 "Threads go on round faces.",
                 suggestion="Select the cylindrical face of a shaft or a hole.",
             )
+
+        self.inputs["thread_modelled"] = False
+        self.inputs["thread_internal"] = bool(info.internal)
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
 
         designation = self.inputs.get("designation")
         size = by_designation(str(designation)) if designation else None
@@ -790,18 +893,24 @@ class ThreadFeature(_BodyOperation):
             )
 
         length = ctx.value(self, "length", info.length) or info.length
-        outcome = apply_thread(
-            body, size=size, origin=info.origin, direction=info.direction,
-            length=min(length, info.length), internal=info.internal,
+        length = min(length, info.length)
+        outcome = require_modelled(apply_thread(
+            body, size=size,
+            origin=thread_origin(
+                info, length, str(self.inputs.get("from_end", "top"))
+            ),
+            direction=info.direction,
+            length=length, internal=info.internal,
             clearance=str(self.inputs.get("clearance", "normal")),
             left_hand=bool(self.inputs.get("left_hand", False)),
             feature_diameter=info.diameter,
             form=str(self.inputs.get("form", "printed")),
-        )
+        ))
         if outcome.message:
             ctx.warn(outcome.message)
             self.message = outcome.message
         self.inputs.setdefault("designation", size.designation)
+        self.inputs["thread_modelled"] = True
         return self._emit(outcome.shape)
 
 
@@ -819,7 +928,7 @@ class ThreadedConnectionFeature(Feature):
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
         from .thread_specs import best_match, by_designation
-        from .threads import apply_thread
+        from .threads import apply_thread, require_modelled
 
         first_name = str(self.inputs["body_a"])
         second_name = str(self.inputs["body_b"])
@@ -840,6 +949,13 @@ class ThreadedConnectionFeature(Feature):
                 suggestion="Select one shaft and one hole so they can mate.",
             )
 
+        self.inputs["thread_modelled_a"] = False
+        self.inputs["thread_modelled_b"] = False
+        self.inputs["thread_internal_a"] = bool(face_a.internal)
+        self.inputs["thread_internal_b"] = bool(face_b.internal)
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
+
         # The male side sets the size; the female side carries the clearance.
         male, female = (face_b, face_a) if face_a.internal else (face_a, face_b)
         designation = self.inputs.get("designation")
@@ -857,21 +973,22 @@ class ThreadedConnectionFeature(Feature):
         length = ctx.value(self, "length", 0.0) or min(male.length, female.length)
 
         outputs: dict[str, object] = {}
-        for name, shape, info in (
-            (first_name, first, face_a),
-            (second_name, second, face_b),
+        for suffix, name, shape, info in (
+            ("a", first_name, first, face_a),
+            ("b", second_name, second, face_b),
         ):
-            outcome = apply_thread(
+            outcome = require_modelled(apply_thread(
                 shape, size=size, origin=info.origin, direction=info.direction,
                 length=min(length, info.length), internal=info.internal,
                 clearance=clearance,
                 left_hand=bool(self.inputs.get("left_hand", False)),
                 feature_diameter=info.diameter,
                 form=form,
-            )
+            ))
             if outcome.message:
                 ctx.warn(outcome.message)
             outputs[name] = outcome.shape
+            self.inputs[f"thread_modelled_{suffix}"] = True
 
         self.inputs.setdefault("designation", size.designation)
         self.message = (

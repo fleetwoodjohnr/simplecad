@@ -20,7 +20,8 @@ from simplecad.kernel.thread_specs import (
 )
 from simplecad.kernel.printing import Severity, check_overhangs
 from simplecad.kernel.threads import (
-    apply_thread, thread_form, thread_profile_points, thread_solid,
+    ThreadResult, apply_thread, require_modelled, thread_form,
+    thread_profile_points, thread_solid,
 )
 
 from .fit import TOLERANCE
@@ -170,6 +171,12 @@ def test_internal_thread_adds_material_to_a_hole():
     assert result.modelled
     assert is_valid(result.shape)
     assert volume(result.shape) > before, "nut metal must protrude into the bore"
+
+
+def test_a_cosmetic_fallback_is_rejected_by_user_facing_features():
+    unchanged = object()
+    with pytest.raises(Exception, match="helix failed"):
+        require_modelled(ThreadResult(unchanged, False, "helix failed"))
 
 
 # ----------------------------------------------------------------------
@@ -506,3 +513,96 @@ def test_a_printed_pair_turns_rather_than_merely_seating():
         assert buried < TOLERANCE, (
             f"binds after {angle:.0f}° of turn: {buried:.1%} buried"
         )
+
+
+# ----------------------------------------------------------------------
+# Which end of the face the thread lands on
+# ----------------------------------------------------------------------
+def _plate_with_bore(thickness=12.0, radius=3.0):
+    """A plate bored through from the top, and the bore's own description."""
+    from simplecad.kernel.detect import analyse_cylinder
+    from simplecad.core.naming import sub_shapes
+
+    shape = plate_with_hole(thickness=thickness, hole_radius=radius)
+    info = next(
+        a for face in sub_shapes(shape, "face")
+        if (a := analyse_cylinder(face)) is not None and a.internal
+    )
+    return shape, info
+
+
+def test_a_short_thread_starts_at_the_end_the_user_asked_for():
+    """Not at whichever end OCCT happened to parameterise first.
+
+    ``analyse_cylinder`` reports the face's ``vmin`` end, which is an artefact
+    of how the surface got built and is invisible from outside -- so a thread
+    shorter than the bore landed on an arbitrary end, and a hole came back
+    threaded at the bottom when the point was to start a screw at the top.
+    """
+    from simplecad.kernel.occ import bounding_box
+    from simplecad.kernel.operations import thread_origin
+    from simplecad.core.naming import sub_shapes
+    from simplecad.kernel.detect import analyse_cylinder
+
+    shape, info = _plate_with_bore()
+    size = by_designation("P6")
+    length = 4.0
+
+    spans = {}
+    for end in ("top", "bottom"):
+        outcome = apply_thread(
+            shape, size=size, origin=thread_origin(info, length, end),
+            direction=info.direction, length=length, internal=True,
+            feature_diameter=info.diameter, form="printed",
+        )
+        assert outcome.modelled, outcome.message
+        boxes = [
+            bounding_box(face, optimal=False)
+            for face in sub_shapes(outcome.shape, "face")
+            if (a := analyse_cylinder(face)) is not None
+            and a.internal and a.diameter < info.diameter - 0.05
+        ]
+        assert boxes, f"no thread was cut for from_end={end}"
+        spans[end] = (
+            min(b[0][2] for b in boxes), max(b[1][2] for b in boxes)
+        )
+
+    # The plate spans z 0..12 and the thread is 4 mm of it, so the two must sit
+    # in opposite halves -- which is the whole of what the option promises.
+    assert spans["top"][0] > 6.0, spans
+    assert spans["bottom"][1] < 6.0, spans
+
+
+def test_the_full_length_case_is_unaffected_by_the_choice():
+    """A thread that spans the face has no end to choose."""
+    from simplecad.kernel.operations import thread_origin
+
+    _shape, info = _plate_with_bore()
+    for end in ("top", "bottom"):
+        assert thread_origin(info, info.length, end) == info.origin
+
+
+def test_a_boolean_that_changed_nothing_is_not_a_thread():
+    """OCCT reports handing an operand straight back as done.
+
+    The old check -- "most of the body is still there" -- was satisfied by
+    exactly that, so a thread that never got applied came back marked
+    ``modelled`` with no message, and the user got a plain hole and no
+    explanation. Compare ``_carved``, which does verify its subtraction.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    from simplecad.kernel.threads import _apply_tool
+
+    body = BRepPrimAPI_MakeBox(20.0, 20.0, 20.0).Shape()
+    # A tool nowhere near the body: cutting removes nothing and fusing adds a
+    # separate lump, and neither is the thread anyone asked for.
+    away = BRepPrimAPI_MakeBox(
+        gp_Pnt(500.0, 500.0, 500.0), 1.0, 1.0, 1.0
+    ).Shape()
+    assert _apply_tool(body, away, cut=True) is None
+
+    # And the honest case still works: a tool that genuinely bites.
+    biting = BRepPrimAPI_MakeBox(gp_Pnt(-1.0, -1.0, -1.0), 5.0, 5.0, 5.0).Shape()
+    assert _apply_tool(body, biting, cut=True) is not None

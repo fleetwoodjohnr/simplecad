@@ -23,6 +23,21 @@ from _harness import run_and_capture  # noqa: E402
 REPORT: dict[str, object] = {}
 
 
+def wait_for(condition, timeout_ms: int = 4000) -> float:
+    """Pump the event loop until *condition* holds. Returns the wait, in ms."""
+    import time
+
+    from PySide6.QtCore import QEventLoop
+    from PySide6.QtWidgets import QApplication
+
+    started = time.perf_counter()
+    while (time.perf_counter() - started) * 1000.0 < timeout_ms:
+        if condition():
+            break
+        QApplication.processEvents(QEventLoop.AllEvents, 10)
+    return round((time.perf_counter() - started) * 1000.0, 1)
+
+
 def main() -> int:
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtTest import QTest
@@ -125,9 +140,21 @@ def main() -> int:
             REPORT["drag_started"] = viewport._nav.name == "DRAG_HANDLE"
             QTest.mouseMove(viewport, end)
             REPORT["radius_during_drag"] = round(panel.value("radius"), 2)
+            # The preview is built in the geometry process now -- OCCT's fillet
+            # solver segfaulted the window twice when it ran here -- so the
+            # ghost arrives on a reply rather than before this line returns.
+            REPORT["preview_ms"] = wait_for(
+                lambda: getattr(viewport, "_ghost", None) is not None
+            )
             REPORT["preview_shown"] = getattr(viewport, "_ghost", None) is not None
             REPORT["readout_visible"] = window.stage.drag_readout.isVisible()
+            # The readout must show where the hand is, not what the preview
+            # that just came back was asked about.
             REPORT["readout_text"] = window.stage.drag_readout.size_label.text()
+            REPORT["readout_tracks_the_drag"] = (
+                f"{REPORT['radius_during_drag']:.2f}"
+                in window.stage.drag_readout.size_label.text()
+            )
             REPORT["body_dimmed"] = panel._dimmed == "Block"
             REPORT["radius_during_release"] = round(panel.value("radius"), 2)
             REPORT["radius_after_drag"] = round(panel.value("radius"), 2)
@@ -187,6 +214,7 @@ def main() -> int:
         and abs(dragged - TARGET_MM) < 1.0          # drag steered the value
         and REPORT.get("preview_shown")
         and REPORT.get("readout_visible")
+        and REPORT.get("readout_tracks_the_drag")
         and REPORT.get("body_dimmed")
         and abs(committed - dragged) < 1e-6         # committed what was dragged
         and REPORT.get("committed_on_release")

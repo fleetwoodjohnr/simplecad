@@ -12,3 +12,5 @@ Keywords=CAD;3D;model;parametric;print;STEP;STL;3MF;
 MimeType=model/step;application/vnd.ms-package.3dmanufacturing-3dmodel+xml;model/stl;
 StartupNotify=true
 StartupWMClass=SimpleCAD
+SingleMainWindow=true
+X-GNOME-SingleWindow=true

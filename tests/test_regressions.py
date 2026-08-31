@@ -420,3 +420,92 @@ def test_the_ancestor_map_is_reused_between_calls():
     assert [s.position for s in again] == [s.position for s in first]
     snapping.clear_caches()
     assert not snapping._ANCESTORS
+
+
+def test_the_snap_tier_is_decided_by_counting_not_by_timing():
+    """The stopwatch could only ever react to a stall it had already caused.
+
+    ``_note_snap_cost`` measures a snap and turns the effort down *afterwards*,
+    so the first hover over every heavy body paid full price however long that
+    was -- 200 ms on a 646-face shell, 373 ms on a 1242-face one, on the GUI
+    thread inside a mouse-move. That is what "it freezes the instant I switch to
+    point to point" was. :func:`snap_tier` answers from sub-shape counts before
+    any geometry is touched, and counting stops at the limit.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    from simplecad.kernel import snapping
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    assert snapping.snap_tier(box) == "full"        # six faces: fine
+
+    limit = snapping.FULL_SNAP_FACES
+    try:
+        snapping.FULL_SNAP_FACES = 2
+        assert snapping.snap_tier(box) == "ray"
+    finally:
+        snapping.FULL_SNAP_FACES = limit
+
+    edges = snapping.FULL_SNAP_EDGES
+    try:
+        snapping.FULL_SNAP_EDGES = 2
+        assert snapping.snap_tier(box) == "ray"
+    finally:
+        snapping.FULL_SNAP_EDGES = edges
+
+
+def test_a_single_face_of_a_heavy_body_keeps_its_named_snaps():
+    """The limit is on what was detected, not on the body behind it.
+
+    Losing corners and centres on exactly the models people measure is the other
+    half of this bug, and the reason the old face ceiling kept being raised.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from simplecad.kernel import snapping
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    face = TopoDS.Face_s(explorer.Current())
+
+    limit = snapping.FULL_SNAP_FACES
+    try:
+        snapping.FULL_SNAP_FACES = 2          # the body is now "too big"
+        assert snapping.snap_tier(box) == "ray"
+        assert snapping.snap_tier(face) == "full"
+    finally:
+        snapping.FULL_SNAP_FACES = limit
+
+
+def test_the_ray_fallback_lets_go_of_an_expensive_body():
+    """``_surface_hit`` against the whole body was 18-68 ms, every mouse-move.
+
+    Uncached, and paid at every tier but the last, which on its own is more than
+    the 16 ms the snap timer allows -- so the queue never drained.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from simplecad.kernel import snapping
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    explorer = TopExp_Explorer(box, TopAbs_EDGE)
+    edge = TopoDS.Edge_s(explorer.Current())
+    # An edge has no surface of its own, so the only way to a "surface" snap
+    # here is through the parent.
+    ray = ((5.0, 5.0, 100.0), (0.0, 0.0, -1.0))
+    kinds = {s.kind for s in snapping.ray_snaps(edge, ray, parent=box)}
+    assert "surface" in kinds
+
+    limit = snapping.RAY_PARENT_FACES
+    try:
+        snapping.RAY_PARENT_FACES = 2
+        kinds = {s.kind for s in snapping.ray_snaps(edge, ray, parent=box)}
+        assert "surface" not in kinds
+    finally:
+        snapping.RAY_PARENT_FACES = limit

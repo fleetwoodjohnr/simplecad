@@ -256,3 +256,105 @@ def test_a_choice_the_feature_made_comes_back(child):
     assert thread.inputs.get("designation") == "P8", (
         "the size the child chose must reach the parent"
     )
+
+
+# ----------------------------------------------------------------------
+# Previews -- the fillet solver, kept out of the parent
+# ----------------------------------------------------------------------
+def preview(pipe, feature, token=1, timeout=120):
+    pipe.send({
+        "kind": service.PREVIEW,
+        "feature": feature.to_dict(),
+        "token": token,
+    })
+    assert pipe.poll(timeout), "no preview reply from the geometry process"
+    return pipe.recv()
+
+
+def built_box(child, width=40.0):
+    """A document whose Box body holds the geometry the child just built.
+
+    The edge reference has to be taken against the same shape the child will
+    resolve it against, which is exactly what the panel does: it references the
+    geometry on screen.
+    """
+    from simplecad.core.document import Body
+
+    document = box_document(width)
+    reply = ask(child, document)
+    body = Body(name="Box")
+    body.shape = service.deserialise_shape(reply["bodies"]["Box"])
+    document.bodies["Box"] = body
+    return document
+
+
+def fillet_of(document, radius: float):
+    """A fillet feature on the box's first edge, as the panel would send it."""
+    from simplecad.core.document import BodyRef
+    from simplecad.core.naming import make_ref, sub_shapes
+    from simplecad.kernel.operations import FilletFeature
+
+    shape = document.bodies["Box"].shape
+    edge = sub_shapes(shape, "edge")[0]
+    return FilletFeature(
+        inputs={
+            "body": BodyRef("Box"),
+            "edges": [make_ref(shape, edge, "", kind="edge", body="Box")],
+            "radius": float(radius),
+        },
+        outputs=["Box"],
+    )
+
+
+def test_a_preview_comes_back_as_a_shape(child):
+    """The whole point: the fillet is built there, not in the window."""
+    document = built_box(child)
+
+    reply = preview(child, fillet_of(document, 2.0))
+    assert reply["kind"] == service.PREVIEWED
+    assert reply["token"] == 1
+    assert reply["error"] is None
+    shape = service.deserialise_shape(reply["shape"])
+    assert shape is not None
+    # A fillet takes material off the corner and nothing else.
+    assert volume(shape) < 40 * 30 * 10
+    assert volume(shape) > 40 * 30 * 10 * 0.95
+
+
+def test_a_preview_that_cannot_be_built_answers_none_rather_than_raising(child):
+    """A radius past what the edge can carry is an ordinary answer."""
+    document = built_box(child)
+
+    reply = preview(child, fillet_of(document, 500.0), token=7)
+    assert reply["kind"] == service.PREVIEWED
+    assert reply["token"] == 7
+    assert reply["shape"] is None
+    assert reply["error"]
+
+
+def test_a_preview_leaves_the_child_document_alone(child):
+    """A preview is a question. Asking it must not edit the model.
+
+    Without this, dragging a fillet handle would rewrite the very body the
+    preview is computed against, and each frame of the drag would compound on
+    the last.
+    """
+    document = built_box(child)
+
+    preview(child, fillet_of(document, 3.0))
+
+    # Nothing changed, so an unchanged rebuild request must still send nothing
+    # back -- which it only can if the preview left the cache and the bodies
+    # exactly as they were.
+    after = ask(child, document)
+    assert after["report"]["ok"]
+    assert after["bodies"] == {}, "the preview disturbed the child's document"
+
+
+def test_the_child_keeps_serving_after_a_preview(child):
+    document = built_box(child)
+    preview(child, fillet_of(document, 500.0))          # one it cannot build
+    reply = ask(child, box_document(50), force=True)
+    assert reply["report"]["ok"]
+    shape = service.deserialise_shape(reply["bodies"]["Box"])
+    assert volume(shape) == pytest.approx(50 * 30 * 10)

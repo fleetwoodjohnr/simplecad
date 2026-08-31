@@ -36,6 +36,8 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "open": "Ctrl+O",
     "export": "Ctrl+E",
     "import": "Ctrl+I",
+    "copy": "Ctrl+C",
+    "paste": "Ctrl+V",
     "cancel": "Escape",
     "confirm": "Return",
     "confirm_alt": "Enter",
@@ -182,4 +184,21 @@ def set_view_preference(name: str, value: bool) -> bool:
         view = {}
     view[name] = bool(value)
     data["view"] = view
+    return _write(data)
+
+
+def theme_choice() -> str | None:
+    """The theme the user picked, or None if they have never said.
+
+    Kept apart from :func:`view_preference`, which is bool-only. None is a
+    meaningful third answer here and not the same as either mode: it means
+    "follow the desktop", which is what a fresh install should do.
+    """
+    value = _read().get("theme")
+    return value if value in ("light", "dark", "system") else None
+
+
+def set_theme_choice(value: str) -> bool:
+    data = _read()
+    data["theme"] = value
     return _write(data)

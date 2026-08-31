@@ -8,7 +8,9 @@ modal dialog, so the model stays visible and editable while they are open.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import itertools
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ...core.units import Dimension
@@ -91,21 +93,22 @@ class ToolPanel(FloatingCard):
         label: str,
         value: float,
         dimension: Dimension = Dimension.LENGTH,
+        into=None,
     ) -> ValueField:
         field = ValueField(
             self._palette, self.window_.document.parameters, dimension, value
         )
         field.returnPressed.connect(self.commit)
         field.committed.connect(lambda _v: self.preview())
-        self.body.addWidget(LabeledField(label, field, self._palette))
+        (into or self.body).addWidget(LabeledField(label, field, self._palette))
         self.fields[key] = field
         return field
 
-    def add_section(self, text: str) -> None:
-        self.body.addWidget(SectionLabel(text, self._palette))
+    def add_section(self, text: str, into=None) -> None:
+        (into or self.body).addWidget(SectionLabel(text, self._palette))
 
-    def add_widget(self, widget: QWidget) -> None:
-        self.body.addWidget(widget)
+    def add_widget(self, widget: QWidget, into=None) -> None:
+        (into or self.body).addWidget(widget)
 
     def value(self, key: str, default: float = 0.0) -> float:
         field = self.fields.get(key)
@@ -151,3 +154,67 @@ class ToolPanel(FloatingCard):
             self.window_.cancel_tool()
             return
         super().keyPressEvent(event)
+
+
+_preview_tokens = itertools.count(1)
+
+
+class FeaturePreviewController:
+    """Debounced, crash-isolated preview requests for a tool panel.
+
+    The geometry process has one shared preview signal, so every request gets a
+    session-unique token and a closed panel disconnects explicitly.  Callers
+    receive the complete protocol message: physical-thread panels need both the
+    shape and the kernel's failure text before enabling their Create button.
+    """
+
+    def __init__(self, panel: ToolPanel, callback, delay_ms: int = 110) -> None:
+        self.panel = panel
+        self.callback = callback
+        self._state: dict | None = None
+        self._token: int | None = None
+        self._closed = False
+        self.timer = QTimer(panel)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(delay_ms)
+        self.timer.timeout.connect(self._send)
+        panel.window_.geometry.previewed.connect(self._answered)
+
+    def request(self, state: dict | None) -> None:
+        self._state = state
+        self._token = None
+        self.timer.stop()
+        if state is None:
+            self.callback({
+                "token": None,
+                "shape": None,
+                "error": None,
+            })
+            return
+        self.timer.start()
+
+    def _send(self) -> None:
+        if self._closed or self._state is None:
+            return
+        self._token = next(_preview_tokens)
+        if not self.panel.window_.geometry.preview(self._state, self._token):
+            self.callback({
+                "token": self._token,
+                "shape": None,
+                "error": "The geometry engine is unavailable; no physical preview was built.",
+            })
+
+    def _answered(self, message: dict) -> None:
+        if self._closed or message.get("token") != self._token:
+            return
+        self.callback(message)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.timer.stop()
+        try:
+            self.panel.window_.geometry.previewed.disconnect(self._answered)
+        except (RuntimeError, TypeError):
+            pass

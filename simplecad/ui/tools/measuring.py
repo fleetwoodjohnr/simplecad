@@ -16,7 +16,7 @@ what anyone means.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
@@ -95,6 +95,7 @@ class MeasurePanel(ToolPanel):
         self.selection = self.window_.selection
         self.points: list = []
         self._mode = "entities"
+        self._closing = False
         self.measurement = Measurement()
 
         self.set_subtitle(
@@ -110,7 +111,9 @@ class MeasurePanel(ToolPanel):
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
             button.setMinimumHeight(METRICS.control_height)
-            button.clicked.connect(lambda _=False, k=key: self.set_mode(k))
+            button.clicked.connect(
+                lambda _=False, k=key: self.set_mode(k, defer=True)
+            )
             modes.addWidget(button, 1)
             self._mode_buttons[key] = button
         host = QWidget()
@@ -147,18 +150,47 @@ class MeasurePanel(ToolPanel):
         return type(self).last_mode
 
     # -- modes -----------------------------------------------------------
-    def set_mode(self, mode: str) -> None:
+    def set_mode(self, mode: str, defer: bool = False) -> None:
+        """Switch between the two ways of asking.
+
+        *defer* holds the viewport half back by one turn of the event loop. Qt
+        cannot repaint a button until the slot that checked it returns, so a
+        click on the toggle that goes straight on to clear the selection, empty
+        the context bar and re-lay the overlays leaves "Entities" still looking
+        selected until all of that is done -- and while the window was busy that
+        read as the toggle being dead. Opening the tool does *not* defer: there
+        the panel is not on screen yet, and callers reasonably expect point mode
+        to be live the moment the tool is up.
+        """
         previous = getattr(self, "_mode", None)
         self._mode = mode
         MeasurePanel.last_mode = mode
         for key, button in self._mode_buttons.items():
             button.setChecked(key == mode)
-        viewport = self.window_.stage.viewport
-        overlay = self.window_.stage.measure_overlay
         self._clear_button.setVisible(mode == "points")
 
         if mode == "points":
             self.clear_points()
+            self.set_subtitle(
+                "Click two points. The cursor snaps to corners, midpoints, "
+                "centres, edges and faces."
+            )
+            self.window_.set_hint("Click the first point.")
+
+        if defer:
+            QTimer.singleShot(0, lambda: self._enter_mode(mode, previous))
+        else:
+            self._enter_mode(mode, previous)
+        self.refresh()
+
+    def _enter_mode(self, mode: str, previous) -> None:
+        """The viewport half of a mode switch."""
+        if self._closing or self._mode != mode:
+            return
+        viewport = self.window_.stage.viewport
+        overlay = self.window_.stage.measure_overlay
+
+        if mode == "points":
             viewport.clear_selection()
             viewport.clear_snap_cache()
             viewport.begin_point_pick()
@@ -166,11 +198,6 @@ class MeasurePanel(ToolPanel):
             overlay.setGeometry(self.window_.stage.rect())
             overlay.show()
             overlay.raise_()
-            self.set_subtitle(
-                "Click two points. The cursor snaps to corners, midpoints, "
-                "centres, edges and faces."
-            )
-            self.window_.set_hint("Click the first point.")
         else:
             viewport.end_point_pick()
             overlay.clear()
@@ -199,11 +226,12 @@ class MeasurePanel(ToolPanel):
     def _on_snap_hover(self, snap) -> None:
         """Show where the cursor has landed. Nothing here may be expensive.
 
-        In particular this does *not* write the hint line. ``set_hint`` runs
-        ``_layout_overlays``, which calls ``adjustSize`` and ``raise_`` on every
-        floating panel -- each of them carrying a 36 px drop shadow that is
-        re-blurred on every repaint. Doing that per mouse-move, on top of the
-        snapping itself, is what stopped the window keeping up.
+        In particular this does *not* write the hint line. ``set_hint`` now
+        ignores a repeat of what the line already says, and ``_layout_overlays``
+        no longer re-raises every floating panel unless the stacking actually
+        changed -- between them the per-move cost is gone -- but a snap hover
+        reports a *different* place on every motion event, so this is the one
+        caller the repeat guard could never help.
 
         Nothing is lost by it. The running length is drawn on the rubber band
         by the overlay, and which *kind* of place the cursor has found is drawn
@@ -322,6 +350,7 @@ class MeasurePanel(ToolPanel):
         self.window_.cancel_tool()
 
     def teardown(self) -> None:
+        self._closing = True
         viewport = self.window_.stage.viewport
         viewport.end_point_pick()
         viewport.clear_snap_cache()

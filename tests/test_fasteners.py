@@ -177,3 +177,48 @@ def test_a_fastener_without_a_size_says_so():
     report = Rebuilder(document).rebuild()
     assert not report.ok
     assert "which thread to match" in report.summary()
+
+
+def test_generated_fasteners_are_discoverable_as_physical_thread_sources():
+    document = Document("T")
+    bolt = document.add_feature(MatchingBoltFeature(
+        inputs={
+            "designation": "P8", "thread_modelled": True,
+            "thread_internal": False, "form": "printed", "left_hand": True,
+        },
+        outputs=["Bolt"],
+    ))
+    nut = document.add_feature(MatchingNutFeature(
+        inputs={
+            "designation": "P8", "thread_modelled": True,
+            "thread_internal": True, "clearance": "loose",
+        },
+        outputs=["Nut"],
+    ))
+
+    bolt_thread = document.threads_on("Bolt")[0]
+    nut_thread = document.threads_on("Nut")[0]
+    assert bolt_thread["feature_id"] == bolt.id
+    assert bolt_thread["internal"] is False
+    assert bolt_thread["left_hand"] is True
+    assert nut_thread["feature_id"] == nut.id
+    assert nut_thread["internal"] is True
+    assert nut_thread["clearance"] == "loose"
+
+
+def test_failed_or_cosmetic_features_cannot_be_matching_sources():
+    from simplecad.core.document import FeatureState
+
+    document = Document("T")
+    cosmetic = document.add_feature(MatchingBoltFeature(
+        inputs={"designation": "P8", "thread_modelled": False},
+        outputs=["Cosmetic"],
+    ))
+    failed = document.add_feature(MatchingNutFeature(
+        inputs={"designation": "P8", "thread_modelled": True},
+        outputs=["Failed"],
+    ))
+    failed.state = FeatureState.FAILED
+
+    assert document.threads_on("Cosmetic") == []
+    assert document.threads_on("Failed") == []

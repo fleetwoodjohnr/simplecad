@@ -193,8 +193,12 @@ class ContextBar(FloatingCard):
 
         self._apply_overflow(actions, max_width)
         self._resize_to_fit()
-        self.show()
-        self.raise_()
+        # Only on the way in: see DragReadout for the same reasoning. The bar is
+        # rebuilt on every selection change, and re-raising something already on
+        # top costs a full viewport re-composite for nothing.
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def _resize_to_fit(self) -> None:
         """Size the bar to its contents, now rather than a frame later.

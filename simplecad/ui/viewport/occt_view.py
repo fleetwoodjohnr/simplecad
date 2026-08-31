@@ -4,13 +4,15 @@ Because OCCT draws into the framebuffer Qt already owns, ordinary Qt widgets
 composite on top of the viewport -- which is what lets SimpleCAD put floating
 contextual panels over the model instead of docking them around it.
 
-See docs/architecture.md for the wiring and the one non-obvious trap
-(``SetNativeHandle`` must be given ``winId()``, not the GLX drawable).
+See docs/architecture.md for the wiring and the one non-obvious trap: OCCT
+needs a real X11 window handle, but making the viewport itself native prevents
+Qt's composited floating panels from receiving physical pointer events.
 """
 
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 from contextlib import contextmanager
 from enum import Enum, IntEnum
@@ -29,6 +31,19 @@ from .camera import (
 from .fonts import init_fonts
 from .ground_grid import GroundGrid
 from .handles import HandleSet
+
+log = logging.getLogger("simplecad.viewport")
+
+#: Re-seats that failed to produce a drawable frame before the viewport stops
+#: trying to be gentle and rebuilds the whole OCCT stack instead.
+RESEAT_ATTEMPTS = 2
+#: And the point past which it stops trying at all and says so.
+MAX_GL_RECOVERIES = 6
+#: How often to look at a view that has stopped drawing. Recovery runs in
+#: ``paintGL``, and the failure being recovered from is one that stops paints
+#: arriving, so something has to keep asking. Cheap: it does nothing at all
+#: unless a repair is already known to be outstanding.
+HEALTH_INTERVAL_MS = 1000
 
 
 #: Drag increments, in mm. Landing on a round number should be the default and
@@ -214,6 +229,10 @@ class OcctViewport(QOpenGLWidget):
     #: Something the user should know that has no better home, e.g. that
     #: snapping has been turned down on a model too heavy for it.
     notice = Signal(str)
+    #: OCCT was re-attached to a new GL context or native window. Everything
+    #: that was displayed is still displayed, but the window has to hand the
+    #: bodies back -- see ``MainWindow._on_viewport_rebound``.
+    rebound = Signal()
 
     def __init__(self, palette: Palette, parent=None) -> None:
         super().__init__(parent)
@@ -230,10 +249,27 @@ class OcctViewport(QOpenGLWidget):
         self._view_cube = None
         self._fbo = None
 
+        #: The ``QOpenGLContext`` and X11 window id OCCT was handed. Qt is free
+        #: to replace either one underneath us, and when it does OCCT keeps
+        #: using the old pointers -- so they are remembered and compared rather
+        #: than assumed to be the ones from ``_init_occt``.
+        self._bound_context = None
+        self._bound_winid = None
+        #: Set when the context is known to be gone but Qt has not yet given us
+        #: a current one to rebind to. Acted on in ``paintGL``.
+        self._rebind_pending = False
+        #: Consecutive repairs that have not yet produced a healthy frame.
+        #: Reset by the first frame that draws.
+        self._recoveries = 0
+
         self._nav = _Nav.NONE
         self._press_pos = QPoint()
         self._last_pos = QPoint()
         self._dragged = False
+        #: Raw event counts, for the UI dump. "The logic rejected the click" and
+        #: "the click never arrived" look identical from every other piece of
+        #: state, and guessing between them has cost enough already.
+        self._events = {"press": 0, "release": 0, "move": 0, "wheel": 0}
         self._selection_modes: tuple[SelectionMode, ...] = (SelectionMode.BODY,)
         self._batch_depth = 0
         #: Set while a face is being dragged: (origin_px, screen_axis, mm_per_px).
@@ -273,6 +309,9 @@ class OcctViewport(QOpenGLWidget):
         #: True while a snap is being computed, so a slow one cannot be entered
         #: twice by an event loop OCCT pumped underneath us.
         self._snapping = False
+        #: What each shape can afford, counted before any work is done:
+        #: TShape -> "full"|"ray"|"none". See ``_effort_for``.
+        self._snap_tiers: dict = {}
         #: How snapping is performing per body: TShape -> "full"|"ray"|"none".
         self._snap_effort: dict = {}
         #: Bodies we have already complained about, so we say it once.
@@ -296,6 +335,11 @@ class OcctViewport(QOpenGLWidget):
         self._snap_timer.setSingleShot(True)
         self._snap_timer.setInterval(SNAP_INTERVAL_MS)
         self._snap_timer.timeout.connect(self._emit_pending_snap)
+        # Nothing to do while the view is healthy; see HEALTH_INTERVAL_MS.
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(HEALTH_INTERVAL_MS)
+        self._health_timer.timeout.connect(self._check_health)
+        self._health_timer.start()
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -679,6 +723,10 @@ class OcctViewport(QOpenGLWidget):
         self._picking_enabled = bool(enabled)
         if not self._picking_enabled and self._context is not None:
             self._context.ClearDetected(False)
+            # Nothing is under the cursor any more as far as anyone watching is
+            # concerned -- said out loud, because no further move event will say
+            # it and a highlight left on screen is exactly what this turns off.
+            self.hover_changed.emit(None)
             self.refresh()
 
     @property
@@ -964,15 +1012,72 @@ class OcctViewport(QOpenGLWidget):
     # GL lifecycle
     # ------------------------------------------------------------------
     def initializeGL(self) -> None:  # noqa: N802 - Qt naming
+        """Build OCCT the first time; re-attach it every time after that.
+
+        Qt calls this again whenever it has made a new context current for this
+        widget, which is not an error and usually not even a rebuild. See
+        :meth:`_recover_binding` for which of the two handles went stale and
+        what each one costs to repair.
+        """
         if self._initialised:
+            if self._binding_is_stale():
+                self._recover_binding()
             return
         self._initialised = True
+        self._watch_context()
         try:
             self._init_occt()
         except Exception as exc:  # noqa: BLE001 - report, never crash the app
             self._failure = f"{type(exc).__name__}: {exc}"
             return
         self.ready.emit()
+
+    def _watch_context(self) -> None:
+        """Notice when the GL context goes away underneath OCCT.
+
+        OCCT renders through a raw context pointer it was handed once. If Qt
+        destroys that context -- a driver reset, the compositor taking it back,
+        XWayland losing the surface -- OCCT does not find out. It carries on
+        being asked to draw and logs ``glXMakeCurrent() has failed!``, the view
+        stops changing, and the application is left looking frozen while its
+        event loop is in fact perfectly healthy and idle.
+
+        That is not a state the user can diagnose from the outside, and it is
+        what a four-minute "nothing works" session on this machine looked like
+        from the inside: an idle loop, an idle geometry process, and a picture
+        that had stopped moving.
+
+        Knowing early lets us drop the stale handles before anything is asked to
+        draw through them. Re-armed on every rebind, because the notification is
+        attached to the context that is going away.
+        """
+        # QOpenGLWidget.context explicitly: this class defines its own
+        # ``context`` property for the AIS interactive context, which shadows
+        # Qt's method of the same name.
+        context = QOpenGLWidget.context(self)
+        if context is None:
+            return
+        try:
+            context.aboutToBeDestroyed.connect(self._on_context_lost)
+        except (AttributeError, RuntimeError):  # pragma: no cover - old Qt
+            pass
+
+    def _on_context_lost(self) -> None:
+        """The context is going. Let go of it and wait for its replacement.
+
+        Deliberately not a failure. Qt destroys and recreates the context for
+        ordinary reasons -- the compositor taking the surface back, the widget
+        gaining a native ancestor, a move between screens -- and every one of
+        those is followed by a fresh context and another ``initializeGL``.
+        Recording it as fatal is what left the view white and frozen for the
+        rest of the session.
+        """
+        self._bound_context = None
+        self._rebind_pending = True
+        # The framebuffer belonged to the context that is going. Holding the
+        # wrapper past that point is how a dead FBO gets drawn into.
+        self._fbo = None
+        log.warning("the OpenGL context was destroyed; the 3D view will rebuild")
 
     def _init_occt(self) -> None:
         from OCP.AIS import AIS_InteractiveContext, AIS_ViewCube
@@ -1030,15 +1135,19 @@ class OcctViewport(QOpenGLWidget):
         self.apply_pick_tolerance()
 
         # The neutral window must carry a real X11 Window id -- OCCT reads the
-        # visual from it via XGetWindowAttributes. See docs/architecture.md.
+        # visual from it via XGetWindowAttributes.  Use the effective native
+        # ancestor, not self.winId(): the latter promotes this QOpenGLWidget to
+        # a native child that sits in front of Qt's composited panels and takes
+        # their physical XWayland pointer events. See docs/architecture.md.
         self._window = Aspect_NeutralWindow()
         self._window.SetVirtual(True)
-        self._window.SetNativeHandle(int(self.winId()))
+        self._window.SetNativeHandle(self._native_window_handle())
         width, height = self._device_size()
         self._window.SetSize(width, height)
 
         self._view = self._viewer.CreateView()
         self._view.SetWindow(self._window, capsule)
+        self._remember_binding()
 
         params = self._view.ChangeRenderingParams()
         # Qt's FBO already carries 4x MSAA; a second MSAA pass here makes OCCT's
@@ -1067,6 +1176,186 @@ class OcctViewport(QOpenGLWidget):
         self._context.Display(self._view_cube, False)
 
         self.set_standard_view(StandardView.ISO)
+
+    def _remember_binding(self) -> None:
+        """Record the context and window OCCT is currently drawing through."""
+        self._bound_context = QOpenGLWidget.context(self)
+        self._bound_winid = self._native_window_handle()
+        self._rebind_pending = False
+
+    def _native_window_handle(self) -> int:
+        """Return a real X11 window without making the viewport native.
+
+        ``effectiveWinId()`` returns the nearest native ancestor's handle for a
+        composited child.  That is enough for OCCT's visual lookup because it
+        renders into Qt's current FBO, while keeping the viewport and every
+        floating panel in one Qt backing store so normal hit testing works.
+        """
+        handle = int(self.effectiveWinId())
+        if not handle:
+            raise RuntimeError("No native ancestor is available for the 3D view")
+        return handle
+
+    def _check_health(self) -> None:
+        """Keep asking for a frame while a repair is outstanding.
+
+        The whole difficulty with this failure is that it removes its own
+        symptom: once OCCT cannot make its context current the view stops
+        changing, so nothing asks it to paint, so the recovery that lives in
+        ``paintGL`` never runs again. The window then sits there rendering the
+        last good frame and ignoring the user -- which is what "it opens and it
+        just does not work at all" was.
+        """
+        if self._failure is not None or self._view is None:
+            return
+        if self._rebind_pending:
+            self.update()
+
+    def _binding_is_stale(self) -> bool:
+        """Has either handle OCCT was given been replaced underneath us?
+
+        Both are checked. Watching only the context is what left this bug in
+        place through one whole round of fixing it: the journal for a failing
+        session shows ``glXMakeCurrent() has failed!`` with no context-lost line
+        anywhere near it, because Qt had replaced the *window* and kept the
+        context. ``effectiveWinId()`` returns the stored handle of the native
+        ancestor, so asking every frame costs nothing and does not promote this
+        widget to a native child.
+        """
+        return (
+            QOpenGLWidget.context(self) is not self._bound_context
+            or self._native_window_handle() != self._bound_winid
+        )
+
+    def _recover_binding(self) -> bool:
+        """Repair whichever handle went stale, at the cost that one deserves.
+
+        The two failures are not the same failure. A replaced *context* takes
+        every shader, vertex buffer and texture with it, so the scene has to be
+        built again. A replaced *window* leaves all of that intact and needs
+        nothing but a new drawable -- and rebuilding for that would throw away a
+        working scene, and re-tessellate every body, every time the compositor
+        handed us a new surface.
+        """
+        if QOpenGLWidget.context(self) is not self._bound_context:
+            return self._rebind_gl()
+        if self._recoveries > RESEAT_ATTEMPTS:
+            # Re-pointing has not taken. Whatever is wrong is not just the
+            # drawable, so stop being economical and build the thing again.
+            return self._rebind_gl()
+        return self._reseat_window()
+
+    def _reseat_window(self) -> bool:
+        """Same GL context, new X window: re-point OCCT and keep the scene.
+
+        ``V3d_View::SetWindow`` is what holds the drawable, and it accepts being
+        given a new one. Everything on the GPU still belongs to a live context,
+        so nothing else has to be rebuilt.
+        """
+        if self._view is None or self._window is None or self._failure is not None:
+            return False
+        capsule = _current_gl_context_capsule()
+        if capsule is None:
+            self._rebind_pending = True
+            return False
+        try:
+            # The framebuffer wrapper is re-adopted from Qt on the next paint.
+            self._fbo = None
+            self._window.SetNativeHandle(self._native_window_handle())
+            self._window.SetSize(*self._device_size())
+            self._view.SetWindow(self._window, capsule)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the app
+            self._rebind_pending = True
+            log.error("could not re-point the 3D view at its new window: %s", exc)
+            return False
+        # SetWindow re-creates the view's own render objects, so the background
+        # has to be re-stated -- otherwise a theme chosen before this point is
+        # set on the view and never drawn, which is the white-viewport half of
+        # this bug.
+        self._apply_view_colors()
+        self._view.MustBeResized()
+        self._view.Invalidate()
+        self.apply_pick_tolerance()
+        self._remember_binding()
+        log.info("3D view re-pointed at a new effective native window")
+        return True
+
+    def _teardown_occt(self) -> None:
+        """Let go of every OCCT object tied to the context that has gone.
+
+        Dropped, never removed. Handing the *new* context a presentation built
+        in the old one raises ``object has been displayed in another context``,
+        so anything holding an AIS object here has to forget it instead. What
+        the window owns it forgets in ``MainWindow._on_viewport_rebound``.
+        """
+        self._grid.detach()
+        self._ghost = None
+        self.gizmo = None
+        self.handles.handles.clear()
+        self._view_cube = None
+        self._view = None
+        self._viewer = None
+        self._context = None
+        self._driver = None
+        self._display = None
+        self._window = None
+        self._fbo = None
+        self._bound_context = None
+        self._bound_winid = None
+
+    def _rebind_gl(self) -> bool:
+        """Rebuild OCCT's GL side against the context Qt is using *now*.
+
+        Re-seating the existing view -- handing ``V3d_View::SetWindow`` a fresh
+        context capsule -- is the obvious fix and it does not work. It appears
+        to: no exception, no message. But the viewer still holds the shaders,
+        vertex buffers and textures it uploaded to the context that has gone,
+        none of which mean anything in the new one, and every draw after that
+        fails with ``GL_INVALID_OPERATION`` on an empty screen. The scene has to
+        be built again.
+
+        Nothing the user cares about is lost, because none of it lives on the
+        GPU: the camera, the grid, what may be picked, and the bodies -- which
+        the window re-displays when it sees ``rebound``.
+
+        Must run with Qt's context current, which is true in ``initializeGL``
+        and at the top of ``paintGL``. Returns True if the view can draw.
+        """
+        if not self._initialised or self._failure is not None:
+            return False
+        if _current_gl_context_capsule() is None:
+            # Nothing current to build against yet; the next paint will have one.
+            self._rebind_pending = True
+            return False
+
+        camera = self.camera_state()
+        modes = self._selection_modes
+        grid_visible = self._grid.visible
+
+        self._teardown_occt()
+        try:
+            self._init_occt()
+        except Exception as exc:  # noqa: BLE001 - report, never crash the app
+            self._failure = f"{type(exc).__name__}: {exc}"
+            log.error("could not rebuild the 3D view: %s", exc)
+            # Only now is it worth saying out loud. A lost context on its own is
+            # routine and recovered from silently; a rebuild that will not come
+            # back is the one case where the user is looking at a dead view and
+            # deserves to be told rather than left guessing.
+            self.notice.emit(
+                "The 3D view could not be restored after the graphics driver "
+                "reset it. Your model is safe — save it, then reopen SimpleCAD."
+            )
+            return False
+
+        self._grid.set_visible(grid_visible)
+        # After _init_occt, which leaves the camera at the default ISO view.
+        self.restore_camera(camera)
+        self.set_selection_modes(modes)
+        self._watch_context()
+        log.info("3D view rebuilt on a new GL context")
+        self.rebound.emit()
+        return True
 
     # -- ground grid ----------------------------------------------------
     def show_grid(self, visible: bool) -> None:
@@ -1157,7 +1446,14 @@ class OcctViewport(QOpenGLWidget):
             if style is not None:
                 style.SetColor(color)
                 style.SetDisplayMode(1)
-                style.SetTransparency(0.0)
+                # A selected face should read as a tinted surface with its own
+                # boundary, not as a cage around the complete part.
+                style.SetTransparency(
+                    0.22 if kind in (
+                        Prs3d_TypeOfHighlight_Selected,
+                        Prs3d_TypeOfHighlight_LocalSelected,
+                    ) else 0.38
+                )
 
     def _device_size(self) -> tuple[int, int]:
         ratio = self.devicePixelRatioF()
@@ -1185,9 +1481,31 @@ class OcctViewport(QOpenGLWidget):
             return
         from OCP.OpenGl import OpenGl_FrameBuffer
 
+        # Qt does not always route a replaced handle through initializeGL, so
+        # the check that matters is here, before anything is drawn through a
+        # pointer that may no longer be valid.
+        if self._rebind_pending or self._binding_is_stale():
+            if not self._recover_binding():
+                return
+
         gl_context = self._driver.GetSharedContext()
         if gl_context is None:
+            # A failure, not "nothing to draw" -- so it has to leave a repair
+            # outstanding. Returning quietly here is half of why the health
+            # check below never ran in a session that needed it.
+            self._rebind_pending = True
             return
+        # Not ``gl_context.IsCurrent()``. It looks like the ideal health check
+        # -- OCCT implements it as ``glXGetCurrentContext() == myGContext &&
+        # glXGetCurrentDrawable() == myWindow``, which is exactly the test whose
+        # failure prints ``glXMakeCurrent() has failed!``. It was measured
+        # instead: True on a bare viewport, and False on every healthy frame
+        # once the widget is a child inside the real window, because Qt's
+        # current drawable is then the top-level's and OCCT switches to its own
+        # inside Redraw. Used as a health signal it condemns a working view on
+        # its first frame. The handle comparison in ``_binding_is_stale`` is the
+        # check that holds.
+        #
         # Adopt whichever FBO Qt has bound right now. Qt recreates it on resize,
         # so this has to happen every frame, not once.
         fbo = gl_context.DefaultFrameBuffer()
@@ -1195,6 +1513,11 @@ class OcctViewport(QOpenGLWidget):
             fbo = OpenGl_FrameBuffer()
             gl_context.SetDefaultFrameBuffer(fbo)
         if not fbo.InitWrapper(gl_context):
+            # This is the return that mattered. When OCCT cannot make its
+            # context current, InitWrapper is the first thing to fail -- so
+            # returning here skipped ``_note_frame_health`` precisely when the
+            # frame had not drawn, and nothing was ever marked for repair.
+            self._rebind_pending = True
             self._view.Invalidate()
             return
         self._fbo = fbo
@@ -1211,9 +1534,62 @@ class OcctViewport(QOpenGLWidget):
         if self._pending_fit:
             self._pending_fit = False
             self._view.FitAll(0.15, False)
-            self.view_changed.emit()
+            # Queued, never emitted straight from here. The receivers are Qt
+            # widgets -- the highlight box and the dimension overlay -- and
+            # running widget code inside a GL paint pass can re-enter Qt's
+            # compositing path. The queued timer also coalesces this with the
+            # path ``camera_moved`` uses.
+            if not self._view_changed_timer.isActive():
+                self._view_changed_timer.start()
         self._view.InvalidateImmediate()
-        self._view.Redraw()
+        try:
+            self._view.Redraw()
+        except Exception as exc:  # noqa: BLE001 - one bad frame is recoverable
+            # Said once and turned into a repair, rather than raised out of a
+            # paint event every frame for the rest of the session.
+            self._rebind_pending = True
+            log.warning("the 3D view failed to draw (%s); re-attaching", exc)
+            return
+        self._note_frame_health(gl_context)
+
+    def _note_frame_health(self, gl_context) -> None:
+        """Did that frame actually reach the screen?
+
+        ``Redraw`` does not raise when OCCT cannot bind its context -- it prints
+        ``glXMakeCurrent() has failed!`` through OCCT's own message stream and
+        returns normally, which is why every failing session in the journal
+        shows that line and nothing else. Asking afterwards is what turns it
+        into something recoverable.
+
+        Timing is the whole trick. ``IsCurrent`` compares against *OCCT's*
+        context and drawable, so at the top of ``paintGL`` -- where Qt's are
+        still current -- it is False on perfectly healthy frames, and using it
+        there condemns a working view on sight. After ``Redraw`` it is True on
+        every healthy frame. Both were measured before this was wired up.
+        """
+        if gl_context.IsCurrent():
+            self._recoveries = 0
+            self._rebind_pending = False
+            return
+        self._recoveries += 1
+        if self._recoveries > MAX_GL_RECOVERIES:
+            if self._failure is None:
+                self._failure = "the OpenGL surface could not be re-attached"
+                log.error("gave up re-attaching the 3D view")
+                self.notice.emit(
+                    "The 3D view lost its connection to the graphics driver and "
+                    "could not recover. Your model is safe — save it, then "
+                    "reopen SimpleCAD."
+                )
+            return
+        # Handled at the top of the next paint, which _check_health guarantees
+        # will come even though this failure is one that stops paints arriving.
+        self._rebind_pending = True
+        log.warning(
+            "the 3D view did not draw (attempt %d); re-attaching",
+            self._recoveries,
+        )
+        self.update()
 
     # ------------------------------------------------------------------
     # Interaction
@@ -1273,6 +1649,11 @@ class OcctViewport(QOpenGLWidget):
         ``detected_shape`` already reports sub-shapes of every kind.
         """
         self._picking_points = True
+        # Point mode sends motion to the snapper instead of to hover detection,
+        # so nothing will report the cursor leaving whatever it was last over.
+        # Said here, or the highlight box from before the switch stays on screen
+        # competing with the snap indicator it was replaced by.
+        self.hover_changed.emit(None)
 
     def end_point_pick(self) -> None:
         self._picking_points = False
@@ -1323,8 +1704,13 @@ class OcctViewport(QOpenGLWidget):
             if (where - pos).manhattanLength() <= SNAP_REUSE_PX:
                 return cached
 
+        from ...kernel.snapping import SnapPoint
+
         started = time.perf_counter()
         shape, parent = self.detected_pair(pos)
+        # Read before ClearDetected: MoveTo has just worked out exactly where the
+        # cursor ray met the model, and asking for that answer costs nothing.
+        picked = self.picked_point()
         self._context.ClearDetected(False)
         # No update() here. mouseMoveEvent asks for one immediately after, and
         # two repaint requests per motion event is how a queue that was merely
@@ -1333,10 +1719,10 @@ class OcctViewport(QOpenGLWidget):
             self._last_snap = (QPoint(pos), None)
             return None
 
-        # How much work this body has earned. A model heavy enough to make
-        # snapping stutter gets the cheap treatment from then on, rather than
-        # being allowed to stall the window every time the cursor crosses it.
-        effort = self._snap_effort.get(self._snap_key(parent), "full")
+        # How much work this shape can afford -- decided from sub-shape counts
+        # before any of it is done, so a heavy body never gets to stall the
+        # window even once.
+        effort = self._effort_for(shape, parent)
         candidates = (
             self._candidates_for(shape, parent) if effort == "full" else []
         )
@@ -1345,19 +1731,66 @@ class OcctViewport(QOpenGLWidget):
             # the centres and drops the tail nobody could aim at anyway.
             candidates = candidates[:SNAP_CANDIDATE_LIMIT]
         ray = self.cursor_ray(pos)
-        if ray is not None:
-            # ``parent`` matters: it is the fallback that keeps an answer under
-            # the cursor when the detected sub-shape itself has no surface to
-            # hit, which is what stops the indicator blinking out. It is also
-            # the single most expensive thing here on a heavy body, so the
-            # slowest tier gives it up.
+        if ray is not None and effort != "none":
+            # ``parent`` is the fallback that keeps an answer under the cursor
+            # when the detected sub-shape itself has no surface to hit. It is
+            # also the single most expensive thing here on a heavy body, so only
+            # the full tier asks for it.
             candidates = candidates + ray_snaps(
-                shape, ray, parent=None if effort == "none" else parent
+                shape, ray, parent=parent if effort == "full" else None
             )
+        if picked is not None:
+            # The continuity guarantee, for free and at every tier: wherever
+            # OCCT saw the model, there is a point to snap to. Ranked with the
+            # other surface hits, so any named place still beats it.
+            candidates = candidates + [SnapPoint(picked, "surface")]
         snap = nearest(candidates, self.project, (pos.x(), pos.y()))
         self._note_snap_cost(parent, time.perf_counter() - started)
         self._last_snap = (QPoint(pos), snap)
         return snap
+
+    def picked_point(self):
+        """Where the cursor ray met the model on the last ``MoveTo``, or None.
+
+        OCCT computes this as part of detection, so it is already sitting in the
+        selector. Re-deriving it with ``BRepIntCurveSurface_Inter`` -- which is
+        what the ray fallback does -- costs 18 ms on a 646-face shell and 68 ms
+        on a 2554-face one, on the GUI thread, on every mouse-move. Asking for
+        the answer that already exists costs nothing and does not grow with the
+        model.
+        """
+        if self._context is None:
+            return None
+        try:
+            selector = self._context.MainSelector()
+            if selector.NbPicked() < 1:
+                return None
+            point = selector.PickedPoint(1)
+        except Exception:  # noqa: BLE001 - an older selector simply has none
+            return None
+        if point is None:
+            return None
+        return (point.X(), point.Y(), point.Z())
+
+    def _effort_for(self, shape, parent) -> str:
+        """What this shape can afford, counted rather than timed.
+
+        The learned downgrade from :meth:`_note_snap_cost` still applies, and
+        still only ever makes things cheaper -- it is the backstop for a body
+        whose counts looked affordable and turned out not to be.
+        """
+        from ...kernel.snapping import snap_tier
+
+        key = shape.TShape()
+        tier = self._snap_tiers.get(key)
+        if tier is None:
+            tier = snap_tier(shape)
+            if len(self._snap_tiers) >= SNAP_CACHE_LIMIT:
+                self._snap_tiers.pop(next(iter(self._snap_tiers)))
+            self._snap_tiers[key] = tier
+        learned = self._snap_effort.get(self._snap_key(parent), "full")
+        order = {"full": 0, "ray": 1, "none": 2}
+        return tier if order[tier] >= order[learned] else learned
 
     @staticmethod
     def _snap_key(parent):
@@ -1448,6 +1881,7 @@ class OcctViewport(QOpenGLWidget):
         self._last_snap = None
         self._pending_snap = None
         self._snap_candidates.clear()
+        self._snap_tiers.clear()
         # Deliberately *not* cleared: what a body costs to snap on is a property
         # of the body, and a rebuild that changes it will key the record
         # differently anyway. Forgetting it here would re-learn the same stall
@@ -1564,6 +1998,7 @@ class OcctViewport(QOpenGLWidget):
         return int(round(pos.x() * ratio)), int(round(pos.y() * ratio))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._events["press"] += 1
         self._press_pos = event.position().toPoint()
         self._last_pos = self._press_pos
         self._dragged = False
@@ -1649,6 +2084,7 @@ class OcctViewport(QOpenGLWidget):
         return (shape, parent)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        self._events["move"] += 1
         if self._view is None:
             return
         pos = event.position().toPoint()
@@ -1657,7 +2093,13 @@ class OcctViewport(QOpenGLWidget):
         # event. Per-event it meant one jumpy motion report marked the whole
         # gesture a drag, and mouseReleaseEvent then threw the selection away
         # -- so a click on an edge with any tremor in it simply did nothing.
-        if (pos - self._press_pos).manhattanLength() > CLICK_SLOP_PX:
+        #
+        # Only while a button is actually held. Mouse tracking is on, so this
+        # runs on every hover move too, and without the guard the flag was set
+        # by nothing more than the cursor crossing the viewport -- leaving a
+        # "this gesture was a drag" verdict standing on a gesture that never
+        # happened, for any press whose own event went astray.
+        if event.buttons() and (pos - self._press_pos).manhattanLength() > CLICK_SLOP_PX:
             self._dragged = True
 
         if self._nav is _Nav.GIZMO and self.gizmo is not None:
@@ -1701,6 +2143,7 @@ class OcctViewport(QOpenGLWidget):
         self._last_pos = pos
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._events["release"] += 1
         was_nav = self._nav
         self._nav = _Nav.NONE
         if self._view is None:
@@ -1856,6 +2299,7 @@ class OcctViewport(QOpenGLWidget):
         Shift turns the same gesture into a pan, and takes the horizontal axis
         with it, so a trackpad's sideways travel is not simply discarded.
         """
+        self._events["wheel"] += 1
         if self._view is None:
             return
         self.animator.cancel()

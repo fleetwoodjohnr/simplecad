@@ -509,8 +509,11 @@ class Document:
         """
         found: list[dict] = []
         for feature in reversed(self.features):
+            if feature.state is not FeatureState.OK or feature.suppressed:
+                continue
             if feature.type_name not in (
-                "thread", "threaded_connection", "hole", "matching_thread"
+                "thread", "threaded_connection", "hole", "matching_thread",
+                "matching_bolt", "matching_nut",
             ):
                 continue
             designation = feature.inputs.get("designation")
@@ -518,21 +521,53 @@ class Document:
                 continue
             if body_name not in feature.outputs:
                 continue
+            suffix = None
+            if feature.type_name == "threaded_connection":
+                if str(feature.inputs.get("body_a", "")) == body_name:
+                    suffix = "a"
+                elif str(feature.inputs.get("body_b", "")) == body_name:
+                    suffix = "b"
+            modelled_key = (
+                f"thread_modelled_{suffix}" if suffix else "thread_modelled"
+            )
+            # Old files predate the flag and contained modelled geometry, so an
+            # absent value remains compatible. A new failed/cosmetic feature is
+            # explicitly False and must never be offered as a matching source.
+            modelled = feature.inputs.get(modelled_key, True)
+            if modelled is False:
+                continue
+            if suffix:
+                internal = feature.inputs.get(f"thread_internal_{suffix}")
+            elif feature.type_name in ("hole", "matching_nut"):
+                internal = True
+            elif feature.type_name == "matching_bolt":
+                internal = False
+            else:
+                internal = feature.inputs.get("thread_internal")
             found.append({
+                "body": body_name,
+                "feature_id": feature.id,
                 "designation": str(designation),
                 "feature": feature.name,
                 "clearance": feature.inputs.get("clearance", "normal"),
                 "type": feature.type_name,
+                "internal": internal,
+                "form": feature.inputs.get("form", "printed"),
+                "left_hand": bool(feature.inputs.get("left_hand", False)),
+                "modelled": bool(modelled),
             })
         return found
 
     def any_thread(self) -> dict | None:
         """The most recent thread anywhere in the document."""
+        newest = None
+        newest_index = -1
         for body in self.bodies:
-            found = self.threads_on(body)
-            if found:
-                return found[0]
-        return None
+            for candidate in self.threads_on(body):
+                index = self.index_of(candidate["feature_id"])
+                if index > newest_index:
+                    newest, newest_index = candidate, index
+        return newest
 
     # -- bodies ---------------------------------------------------------
     def body(self, name: str) -> Body | None:

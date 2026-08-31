@@ -193,22 +193,91 @@ def resolve(mode: Mode) -> Palette:
 
 
 def _system_prefers_dark() -> bool:
-    """Ask Qt, then the XDG desktop portal, then assume dark."""
-    try:
-        from PySide6.QtGui import QGuiApplication, QPalette
-        from PySide6.QtCore import Qt
+    """Ask the desktop, in the order that actually answers.
 
-        app = QGuiApplication.instance()
-        if app is not None:
-            hints = app.styleHints()
-            scheme = getattr(hints, "colorScheme", None)
-            if scheme is not None:
-                return scheme() == Qt.ColorScheme.Dark
-            window = app.palette().color(QPalette.ColorRole.Window)
-            return window.lightness() < 128
-    except Exception:  # noqa: BLE001 - theme detection must never break startup
-        pass
-    return True
+    Qt is asked *last*, and that is the fix rather than an oversight. SimpleCAD
+    runs under ``QT_QPA_PLATFORM=xcb`` because OCCT needs GLX, and on that
+    platform Qt never sees GNOME's preference: measured on a machine set to
+    ``prefer-dark``, ``styleHints().colorScheme()`` answered ``Light`` and the
+    application opened light on a dark desktop every time.
+
+    The portal is the cross-desktop answer and works inside a sandbox; gsettings
+    is the direct one and works when no portal is running. Either beats a Qt
+    answer that is a guess from a palette.
+    """
+    for source in (_portal_prefers_dark, _gsettings_prefers_dark, _qt_prefers_dark):
+        try:
+            answer = source()
+        except Exception:  # noqa: BLE001 - detection must never break startup
+            answer = None
+        if answer is not None:
+            return answer
+    return False
+
+
+def _portal_prefers_dark() -> bool | None:
+    """``org.freedesktop.appearance``/``color-scheme``: 1 means prefer dark."""
+    from PySide6.QtDBus import QDBusConnection, QDBusInterface
+
+    bus = QDBusConnection.sessionBus()
+    if not bus.isConnected():
+        return None
+    interface = QDBusInterface(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Settings",
+        bus,
+    )
+    if not interface.isValid():
+        return None
+    reply = interface.call("Read", "org.freedesktop.appearance", "color-scheme")
+    arguments = reply.arguments()
+    if not arguments:
+        return None
+    value = arguments[0]
+    # The portal answers a variant wrapped in a variant.
+    for _ in range(3):
+        inner = getattr(value, "value", None)
+        if inner is None:
+            break
+        value = inner
+    try:
+        return int(value) == 1
+    except (TypeError, ValueError):
+        return None
+
+
+def _gsettings_prefers_dark() -> bool | None:
+    """What GNOME itself says, when there is no portal to ask."""
+    import shutil
+    import subprocess
+
+    if shutil.which("gsettings") is None:
+        return None
+    result = subprocess.run(
+        ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+        capture_output=True, text=True, timeout=2,
+    )
+    if result.returncode != 0:
+        return None
+    return "prefer-dark" in result.stdout
+
+
+def _qt_prefers_dark() -> bool | None:
+    """Qt's own view. Right on Wayland, a guess under xcb -- hence last."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication, QPalette
+
+    app = QGuiApplication.instance()
+    if app is None:
+        return None
+    hints = app.styleHints()
+    scheme = getattr(hints, "colorScheme", None)
+    if scheme is not None:
+        resolved = scheme()
+        if resolved != Qt.ColorScheme.Unknown:
+            return resolved == Qt.ColorScheme.Dark
+    return app.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:

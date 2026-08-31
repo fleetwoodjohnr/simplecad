@@ -4,13 +4,68 @@
 Checks the case that is easy to get wrong: switching theme while a selection is
 active, so the contextual bar and any open tool panel have to re-theme too --
 they are children of the stage, not of the docked chrome.
+
+The 3D background is checked here too, and that is not a formality: this script
+used to assert only that the *chrome* re-themed, which is how "the side bar goes
+dark but the screen with the shape stays white" reached a user. The brightness
+is read from Qt's composed top-level image, not OCCT's off-screen ``ToPixMap``;
+an off-screen render can be correct while the framebuffer visible underneath a
+native overlay is stale.
 """
 
 from __future__ import annotations
 
 import sys
 
-from _harness import run_and_capture  # noqa: E402
+from _harness import grab_composited, run_and_capture  # noqa: E402
+
+#: How far the mean background brightness has to move for the switch to count.
+#: The two gradients are far apart (#FBFCFE/#C6D0DE against #2A2F3A/#15181E), so
+#: this only asks that something happened, it does not measure a colour.
+MIN_SHIFT = 40.0
+
+
+def background_level(window, viewport):
+    """Mean brightness of clear viewport patches in the composed window.
+
+    Samples sit across the upper middle: away from the model, the shape panel,
+    the browser and the ViewCube. Small patches make crossing grid lines noise
+    rather than the answer. Coordinates are mapped from Qt's logical pixels to
+    the captured image's device pixels, so this exercises the reported 2x-DPI
+    path as well as a 1x display.
+    """
+    from PySide6.QtCore import QPoint
+
+    image = grab_composited(window)
+    if image.isNull() or not window.width() or not window.height():
+        return None
+    origin = viewport.mapTo(window, QPoint(0, 0))
+    scale_x = image.width() / window.width()
+    scale_y = image.height() / window.height()
+    samples = (
+        (0.36, 0.06), (0.50, 0.06), (0.64, 0.06),
+        (0.38, 0.15), (0.52, 0.15), (0.66, 0.15),
+    )
+    total = 0.0
+    count = 0
+    radius = 3
+    for relative_x, relative_y in samples:
+        centre_x = int(round(
+            (origin.x() + viewport.width() * relative_x) * scale_x
+        ))
+        centre_y = int(round(
+            (origin.y() + viewport.height() * relative_y) * scale_y
+        ))
+        for y in range(
+            max(0, centre_y - radius), min(image.height(), centre_y + radius + 1)
+        ):
+            for x in range(
+                max(0, centre_x - radius), min(image.width(), centre_x + radius + 1)
+            ):
+                color = image.pixelColor(x, y)
+                total += (color.red() + color.green() + color.blue()) / 3.0
+                count += 1
+    return total / count if count else None
 
 REPORT: dict[str, object] = {}
 
@@ -49,7 +104,15 @@ def main() -> int:
             QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, centre)
             REPORT["selected_before_toggle"] = window.selection.count
             window.activate_tool("hole")          # a tool panel open across the switch
+            before = background_level(window, viewport)
             window.toggle_theme()                  # dark -> light
+            after = background_level(window, viewport)
+            REPORT["dark_background"] = None if before is None else round(before, 1)
+            REPORT["light_background"] = None if after is None else round(after, 1)
+            REPORT["viewport_themed"] = (
+                before is not None and after is not None
+                and after - before >= MIN_SHIFT
+            )
             REPORT["palette"] = "light" if window.palette_.bg == "#EDEFF3" else "dark"
             bar = window.context_bar
             REPORT["bar_themed"] = window.palette_.surface_raised in bar.styleSheet()
@@ -71,6 +134,7 @@ def main() -> int:
         REPORT.get("palette") == "light"
         and REPORT.get("bar_themed")
         and REPORT.get("tool_panel_themed")
+        and REPORT.get("viewport_themed")
     )
     print("VERDICT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

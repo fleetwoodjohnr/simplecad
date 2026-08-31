@@ -8,9 +8,12 @@ has been handed a cylindrical face knows the diameter and whether it is a hole.
 
 from __future__ import annotations
 
+import itertools
 import math
 
-from PySide6.QtWidgets import QButtonGroup, QComboBox, QGridLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup, QComboBox, QGridLayout, QVBoxLayout, QWidget,
+)
 
 from ...core.document import BodyRef
 from ...core.units import Dimension
@@ -22,9 +25,15 @@ from ...kernel.operations import (
 from ...kernel.thread_specs import clearance_presets, recommend
 from ..theme import METRICS
 from ..widgets.controls import GhostButton
-from .base import ToolPanel
+from .base import FeaturePreviewController, ToolPanel
 from ...kernel.vent import VentCutFeature
 from .registry import register_tool
+
+
+#: Preview requests are numbered across the whole session rather than per panel.
+#: A panel closed mid-drag and reopened would otherwise start counting again and
+#: could accept the previous panel's late answer as its own.
+_preview_tokens = itertools.count(1)
 
 
 def _need(window, test: bool, message: str) -> bool:
@@ -35,11 +44,31 @@ def _need(window, test: bool, message: str) -> bool:
 
 
 class _SelectionTool(ToolPanel):
-    """A tool that acts on whatever is selected when it opens."""
+    """A tool that acts on whatever is selected when it opens -- or after.
+
+    Panels are built once, at activation (see ``registry.activate``), so a tool
+    opened *before* its subject was picked used to sit there reading "select a
+    face" for as long as it was open, and then commit whatever that amounted to
+    -- which for Thread was a feature carrying no size at all. The selection is
+    a live input, so :meth:`on_selection_changed` is called whenever it moves.
+
+    The window drives it (``MainWindow._on_selection``) rather than the panel
+    connecting to the viewport itself: ``close_tool_panels`` takes a panel out
+    of the overlay list before tearing it down, so notification stops at exactly
+    the right moment without every subclass having to remember to disconnect.
+    """
 
     def __init__(self, window, palette=None) -> None:
         self.selection = window.selection
         super().__init__(window, palette)
+
+    def on_selection_changed(self) -> None:
+        """Re-read the selection into the panel. Subclasses override."""
+
+    def relayout(self) -> None:
+        """Resize to fit whatever the panel is now showing."""
+        self.adjustSize()
+        self.window_.stage._layout_overlays()
 
 
 # ----------------------------------------------------------------------
@@ -336,8 +365,99 @@ class AlignPanel(_SelectionTool):
 
 
 # ----------------------------------------------------------------------
+#: The tooth shapes offered, best first. Printed leads because SimpleCAD makes
+#: parts for a printer, and a 60-degree ISO tooth printed axis-up overhangs by
+#: 63 degrees -- it needs supports, and supports inside a thread are what stops
+#: the two halves ever turning.
+THREAD_FORMS = (
+    ("printed", "Printed — 45° teeth, no supports"),
+    ("iso", "Standard ISO — 60° V, needs supports"),
+)
+
+
+class _ThreadTool(_SelectionTool):
+    """Shared furniture for the tools that create threads."""
+
+    def add_form_chooser(self, into=None) -> None:
+        self.form = QComboBox()
+        for key, label in THREAD_FORMS:
+            self.form.addItem(label, key)
+        self.form.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.add_section("Tooth shape", into=into)
+        self.add_widget(self.form, into=into)
+
+    def chosen_form(self) -> str:
+        return self.form.currentData() if hasattr(self, "form") else "printed"
+
+    def add_end_chooser(self, into=None) -> None:
+        """Which end of the face a thread shorter than the face starts at.
+
+        The kernel's own answer is the end OCCT happened to parameterise first,
+        which is invisible from outside and lands the thread on whichever end it
+        likes -- so a hole came back threaded at the bottom when the point was to
+        start a screw at the top. Resolved against world Z, so the labels mean
+        what they say.
+        """
+        self.from_end = QComboBox()
+        self.from_end.addItem("From the top", "top")
+        self.from_end.addItem("From the bottom", "bottom")
+        self.add_section("Start the thread", into=into)
+        self.add_widget(self.from_end, into=into)
+
+    def chosen_end(self) -> str:
+        return (
+            self.from_end.currentData() if hasattr(self, "from_end") else "top"
+        )
+
+    def fill_sizes(self, combo: QComboBox, diameter: float, internal: bool) -> None:
+        """(Re)stock *combo* with the sizes that suit *diameter*, keeping the
+        user's choice where it is still on offer."""
+        keep = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for option in recommend(diameter, internal=internal, limit=8):
+            combo.addItem(option.describe(), option.size.designation)
+        index = combo.findData(keep)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def check_printability(self, designation: str | None = None) -> None:
+        """Say up front what will be wrong with printing this thread.
+
+        The same sentence the kernel would put on the finished feature, said at
+        the point of choosing instead -- discovering that a thread was too fine
+        for the nozzle after a four-hour print is not feedback, it is a bill.
+        """
+        from ...kernel.thread_specs import by_designation
+        from ...kernel.threads import printable_note, thread_form
+
+        designation = designation or (
+            self.sizes.currentData() if hasattr(self, "sizes") else None
+        )
+        size = by_designation(str(designation)) if designation else None
+        if size is None:
+            return
+        try:
+            shape = thread_form(size.pitch, size.angle, self.chosen_form())
+        except Exception:  # noqa: BLE001 - a warning is never worth failing over
+            return
+        self.warn(printable_note(shape, size))
+
+
+# ----------------------------------------------------------------------
 @register_tool("hole")
-class HolePanel(_SelectionTool):
+class HolePanel(_ThreadTool):
+    """Drill a hole -- and, when it is a threaded one, say what thread.
+
+    The threaded style used to ask for nothing at all, so the kernel picked the
+    size on its own and answered ⌀5 with M5: a 0.25 mm tooth that is real
+    geometry, invisible on screen and finer than any nozzle resolves. "It made
+    the hole but there is no thread" was that. The size, the tooth shape and the
+    clearance are now the user's to choose, and the printability warning is said
+    here, before Create, rather than in a hint line that the next click wipes.
+    """
+
     title = "Hole"
     confirm_label = "Create"
 
@@ -349,15 +469,8 @@ class HolePanel(_SelectionTool):
     )
 
     def build(self) -> None:
-        faces = self.selection.planar_faces()
         self.style = "simple"
-        if faces:
-            self.set_subtitle(
-                f"Drilling into {faces[0].body}. The hole is centred on the face "
-                "unless you click a position first."
-            )
-        else:
-            self.set_subtitle("Select the flat face to drill into.")
+        self.on_selection_changed()
 
         self.add_section("Type")
         chooser = QWidget()
@@ -391,17 +504,86 @@ class HolePanel(_SelectionTool):
         self.add_field("depth", "Depth", 10.0)
         self.fields["depth"].setEnabled(False)
 
+        self._build_thread_group()
+        self._refresh_sizes()
+
+    def _build_thread_group(self) -> None:
+        """The controls that only a threaded hole needs, in one hideable block."""
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(METRICS.space(1.5))
+
+        self.sizes = QComboBox()
+        self.sizes.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.add_section("Thread size", into=layout)
+        self.add_widget(self.sizes, into=layout)
+
+        self.clearance = QComboBox()
+        for key, entry in clearance_presets().items():
+            self.clearance.addItem(
+                f"{entry['label']} — {entry['clearance']:.2f} mm  ·  {entry['hint']}",
+                key,
+            )
+        self.clearance.setCurrentIndex(1)   # Normal
+        self.add_section("Printable clearance", into=layout)
+        self.add_widget(self.clearance, into=layout)
+
+        self.add_form_chooser(into=layout)
+        self.add_field("thread_length", "Threaded length", 0.0, into=layout)
+        self.fields["thread_length"].setPlaceholderText("full depth")
+        self.add_end_chooser(into=layout)
+
+        group.setVisible(False)
+        self.add_widget(group)
+        self._thread_group = group
+
+    def _refresh_sizes(self) -> None:
+        """Restock the size list for the diameter now in the field."""
+        diameter = self.value("diameter", 6.0)
+        self.fill_sizes(self.sizes, diameter, internal=True)
+        if self.style != "threaded":
+            return
+        if self.sizes.count() == 0:
+            self.warn(
+                f"No standard thread is close to ⌀{diameter:.2f} mm. "
+                "Change the diameter, or drill it plain."
+            )
+        else:
+            self.check_printability()
+
+    def preview(self) -> None:
+        # Reached when a value field is committed, which is where the diameter
+        # changes -- and the diameter is what decides which threads can fit.
+        self._refresh_sizes()
+
+    def on_selection_changed(self) -> None:
+        faces = self.selection.planar_faces()
+        if faces:
+            self.set_subtitle(
+                f"Drilling into {faces[0].body}. The hole is centred on the face "
+                "unless you click a position first."
+            )
+        else:
+            self.set_subtitle("Select the flat face to drill into.")
+        self.relayout()
+
     def _choose(self, key: str) -> None:
         self.style = key
         for candidate, _label in self.STYLES:
             getattr(self, f"_button_{candidate}").setChecked(candidate == key)
+        self._thread_group.setVisible(key == "threaded")
+        if key == "threaded":
+            self._refresh_sizes()
+        else:
+            self.warn("")
+        self.relayout()
 
     def _depth_changed(self) -> None:
         mode = self.depth_mode.currentData()
         self.fields["depth"].setEnabled(mode == "blind")
         self.until.setVisible(mode == "to_object")
-        self.adjustSize()
-        self.window_.stage._layout_overlays()
+        self.relayout()
 
     def commit(self) -> None:
         faces = self.selection.planar_faces()
@@ -421,56 +603,20 @@ class HolePanel(_SelectionTool):
             inputs["until"] = BodyRef(self.until.currentData())
         if pick.info is not None:
             inputs["position"] = tuple(pick.info.center)
+        if self.style == "threaded":
+            inputs.update({
+                "clearance": self.clearance.currentData(),
+                "form": self.chosen_form(),
+                "thread_length": self.expression("thread_length", "0"),
+                "from_end": self.chosen_end(),
+            })
+            # Never send a null designation: the key existing is what stops the
+            # kernel recording the size it chose for itself, and then nothing
+            # downstream can find the thread again.
+            if self.sizes.currentData():
+                inputs["designation"] = self.sizes.currentData()
         self.window_.add_feature(HoleFeature(inputs=inputs, outputs=[pick.body]))
         self.window_.cancel_tool()
-
-
-# ----------------------------------------------------------------------
-#: The tooth shapes offered, best first. Printed leads because SimpleCAD makes
-#: parts for a printer, and a 60-degree ISO tooth printed axis-up overhangs by
-#: 63 degrees -- it needs supports, and supports inside a thread are what stops
-#: the two halves ever turning.
-THREAD_FORMS = (
-    ("printed", "Printed — 45° teeth, no supports"),
-    ("iso", "Standard ISO — 60° V, needs supports"),
-)
-
-
-class _ThreadTool(_SelectionTool):
-    """Shared furniture for the tools that create threads."""
-
-    def add_form_chooser(self) -> None:
-        self.form = QComboBox()
-        for key, label in THREAD_FORMS:
-            self.form.addItem(label, key)
-        self.form.currentIndexChanged.connect(lambda _i: self.check_printability())
-        self.add_section("Tooth shape")
-        self.add_widget(self.form)
-
-    def chosen_form(self) -> str:
-        return self.form.currentData() if hasattr(self, "form") else "printed"
-
-    def check_printability(self, designation: str | None = None) -> None:
-        """Say up front what will be wrong with printing this thread.
-
-        The same sentence the kernel would put on the finished feature, said at
-        the point of choosing instead -- discovering that a thread was too fine
-        for the nozzle after a four-hour print is not feedback, it is a bill.
-        """
-        from ...kernel.thread_specs import by_designation
-        from ...kernel.threads import printable_note, thread_form
-
-        designation = designation or (
-            self.sizes.currentData() if hasattr(self, "sizes") else None
-        )
-        size = by_designation(str(designation)) if designation else None
-        if size is None:
-            return
-        try:
-            shape = thread_form(size.pitch, size.angle, self.chosen_form())
-        except Exception:  # noqa: BLE001 - a warning is never worth failing over
-            return
-        self.warn(printable_note(shape, size))
 
 
 @register_tool("thread")
@@ -481,25 +627,13 @@ class ThreadPanel(_ThreadTool):
     confirm_label = "Create"
 
     def build(self) -> None:
-        faces = self.selection.round_faces()
+        self._preview_valid = False
+        self._preview_body: str | None = None
+        self._preview = FeaturePreviewController(
+            self, self._preview_answered, delay_ms=120
+        )
         self.sizes = QComboBox()
         self.clearance = QComboBox()
-
-        if faces:
-            info = faces[0].info
-            self.set_subtitle(
-                f"Detected a {info.kind}, ⌀{info.diameter:.2f} mm. "
-                f"{'Internal' if info.internal else 'External'} thread."
-            )
-            for option in recommend(info.diameter, internal=info.internal, limit=8):
-                self.sizes.addItem(option.describe(), option.size.designation)
-            if self.sizes.count() == 0:
-                self.warn(
-                    f"No standard thread is close to ⌀{info.diameter:.2f} mm. "
-                    "Resize the feature, or pick a size below."
-                )
-        else:
-            self.set_subtitle("Select the round face of a shaft or a hole.")
 
         self.add_section("Size")
         self.add_widget(self.sizes)
@@ -513,28 +647,140 @@ class ThreadPanel(_ThreadTool):
         self.add_form_chooser()
         self.add_field("length", "Length", 0.0)
         self.fields["length"].setPlaceholderText("full face")
-        self.sizes.currentIndexChanged.connect(lambda _i: self.check_printability())
+        self.add_end_chooser()
+        self.sizes.currentIndexChanged.connect(self._thread_choice_changed)
+        self.clearance.currentIndexChanged.connect(lambda _i: self.preview())
+        self.form.currentIndexChanged.connect(lambda _i: self.preview())
+        self.from_end.currentIndexChanged.connect(lambda _i: self.preview())
+        self.on_selection_changed()
+
+    def _thread_choice_changed(self, _index: int) -> None:
         self.check_printability()
+        self.preview()
+
+    def on_selection_changed(self) -> None:
+        """Read the face the panel is about -- now, or whenever it is picked.
+
+        Opening Thread and *then* clicking the face is a perfectly ordinary
+        order to work in, and it used to leave the size list empty for good.
+        """
+        faces = self.selection.round_faces()
+        if not faces:
+            self.set_subtitle("Select the round face of a shaft or a hole.")
+            self.sizes.clear()
+            self.warn("")
+            self._clear_preview()
+            self.confirm.setEnabled(False)
+            self.relayout()
+            return
+
+        info = faces[0].info
+        self.set_subtitle(
+            f"Detected a {info.kind}, ⌀{info.diameter:.2f} mm. "
+            f"{'Internal' if info.internal else 'External'} thread."
+        )
+        self.fill_sizes(self.sizes, info.diameter, internal=info.internal)
+        if self.sizes.count() == 0:
+            self.warn(
+                f"No standard thread is close to ⌀{info.diameter:.2f} mm. "
+                "Resize the feature, or pick a size below."
+            )
+        else:
+            self.check_printability()
+        self.preview()
+        self.relayout()
+
+    def preview(self) -> None:
+        self._preview_valid = False
+        self.confirm.setEnabled(False)
+        self.confirm.setText("Building preview…")
+        self._preview.request(self._feature_state())
+
+    def _feature_state(self) -> dict | None:
+        faces = self.selection.round_faces()
+        designation = self.sizes.currentData()
+        if not faces or not designation:
+            return None
+        pick = faces[0]
+        return ThreadFeature(
+            inputs={
+                "body": BodyRef(pick.body),
+                "face": pick.reference(self.window_.document),
+                "designation": designation,
+                "clearance": self.clearance.currentData(),
+                "form": self.chosen_form(),
+                "length": self.expression("length", "0"),
+                "from_end": self.chosen_end(),
+            },
+            outputs=[pick.body],
+        ).to_dict()
+
+    def _preview_answered(self, message: dict) -> None:
+        from ...core.geometry_service import deserialise_shape
+
+        blob = message.get("shape")
+        shape = deserialise_shape(blob) if blob else None
+        if shape is None:
+            self._clear_preview()
+            self.confirm.setEnabled(False)
+            self.confirm.setText(self.confirm_label)
+            self.warn(message.get("error") or "A physical thread could not be built here.")
+            return
+        faces = self.selection.round_faces()
+        if not faces:
+            self._clear_preview()
+            return
+        viewport = self.window_.stage.viewport
+        self._clear_preview()
+        self._preview_body = faces[0].body
+        viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.12)
+        presentation = self.window_._presentations.get(self._preview_body)
+        viewport.set_transparency(presentation, 0.88)
+        self._preview_valid = True
+        self.confirm.setEnabled(True)
+        self.confirm.setText(self.confirm_label)
+        warnings = message.get("warnings") or []
+        self.warn(" · ".join(warnings))
+
+    def _clear_preview(self) -> None:
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        if self._preview_body:
+            viewport.set_transparency(
+                self.window_._presentations.get(self._preview_body), 0.0
+            )
+        self._preview_body = None
+
+    def teardown(self) -> None:
+        self._preview.close()
+        self._clear_preview()
 
     def commit(self) -> None:
+        if not self._preview_valid:
+            self.warn("Wait for a valid physical thread preview before creating it.")
+            return
         faces = self.selection.round_faces()
         if not _need(
             self.window_, bool(faces), "Select the round face of a shaft or hole."
         ):
             return
         pick = faces[0]
+        inputs = {
+            "body": BodyRef(pick.body),
+            "face": pick.reference(self.window_.document),
+            "clearance": self.clearance.currentData(),
+            "form": self.chosen_form(),
+            "length": self.expression("length", "0"),
+            "from_end": self.chosen_end(),
+        }
+        # Omitted rather than None when there is nothing chosen: the key merely
+        # existing defeats the kernel's own ``setdefault``, and the feature then
+        # records no size at all -- which is what left Create Matching Part
+        # saying "no thread found yet" about a thread that was plainly there.
+        if self.sizes.currentData():
+            inputs["designation"] = self.sizes.currentData()
         self.window_.add_feature(
-            ThreadFeature(
-                inputs={
-                    "body": BodyRef(pick.body),
-                    "face": pick.reference(self.window_.document),
-                    "designation": self.sizes.currentData(),
-                    "clearance": self.clearance.currentData(),
-                    "form": self.chosen_form(),
-                    "length": self.expression("length", "0"),
-                },
-                outputs=[pick.body],
-            )
+            ThreadFeature(inputs=inputs, outputs=[pick.body])
         )
         self.window_.cancel_tool()
 
@@ -754,12 +1000,6 @@ class _EdgeTool(_SelectionTool):
     #: How long to coalesce drag events before rebuilding the preview, in ms.
     PREVIEW_MS = 70
 
-    @staticmethod
-    def preview_builder(body):
-        from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
-
-        return BRepFilletAPI_MakeFillet(body)
-
     # -- construction ----------------------------------------------------
     def build(self) -> None:
         from PySide6.QtCore import QTimer
@@ -775,6 +1015,13 @@ class _EdgeTool(_SelectionTool):
         self._dimmed = None
         self._last_good = None
         self._preview_failed = False
+        # Previews are answered by the geometry process, so a reply can arrive
+        # after the value it was for has been overtaken. The token says which
+        # question each answer belongs to.
+        self._preview_token = 0
+        self._preview_value = self.default_value
+        self._said_no_preview = False
+        self.window_.geometry.previewed.connect(self._on_previewed)
 
         self.set_subtitle(self._describe())
         self.add_field(self.field_key, self.field_label, self.default_value)
@@ -991,9 +1238,74 @@ class _EdgeTool(_SelectionTool):
         self._refresh_preview()
 
     def _refresh_preview(self) -> None:
+        """Ask the geometry process what this value builds. Answer arrives later.
+
+        This used to run ``BRepFilletAPI_MakeFillet::Build`` right here, on the
+        GUI thread, from inside a Qt signal handler. OCCT does not reliably
+        raise on a blend it cannot compute -- twice on this machine it walked
+        off a null curve adaptor in ``ChFi3d_Builder`` and the process was gone
+        mid-instruction, taking the user's unsaved model with it. The
+        ``except BaseException`` that wrapped the call could not have helped:
+        there is no catching a SIGSEGV.
+
+        So the preview goes where every other piece of fragile kernel work
+        already goes. ``docs/architecture.md`` promises that "one bad fillet
+        radius never empties the viewport or crashes the app"; this is the path
+        that was not keeping it.
+        """
         value = self.value(self.field_key, self.default_value)
-        shape = self._build(value)
+        state = self._preview_feature(value)
+        if state is None:
+            self._preview_answered(value, None)
+            return
+        self._preview_token = next(_preview_tokens)
+        self._preview_value = value
+        if not self.window_.geometry.preview(state, self._preview_token):
+            # No geometry process to ask. The tool still works -- the handle
+            # moves, the number tracks it and Apply commits -- but there is
+            # deliberately no in-process fallback here: running the solver that
+            # killed the child in the parent instead is how a crash gets
+            # promoted from an inconvenience to a lost model.
+            self._preview_unavailable(value)
+
+    def _preview_feature(self, value: float) -> dict | None:
+        """The feature whose result the preview shows, serialised for the pipe.
+
+        Built from the same inputs as :meth:`commit`, deliberately: a preview
+        that is computed some other way is a preview of something the Apply
+        button will not produce. The value goes over as a number rather than the
+        expression, because it is the *current* one the handle is sitting at.
+        """
+        if not self.picks or value <= 0:
+            return None
+        body = self.picks[0].body
+        document = self.window_.document
+        return self.feature_class(
+            inputs={
+                "body": BodyRef(body),
+                "edges": [
+                    p.reference(document) for p in self.picks if p.body == body
+                ],
+                self.field_key: float(value),
+            },
+            outputs=[body],
+        ).to_dict()
+
+    def _on_previewed(self, message) -> None:
+        from ...core.geometry_service import deserialise_shape
+
+        if message.get("token") != self._preview_token:
+            return          # an answer from earlier in the drag; overtaken
+        blob = message.get("shape")
+        shape = deserialise_shape(blob) if blob else None
+        self._preview_answered(self._preview_value, shape)
+
+    def _preview_answered(self, value: float, shape) -> None:
+        """Show the answer. *value* is the one it was asked about, which during
+        a drag is already behind the cursor -- so it names the failure, but the
+        readout keeps showing where the hand actually is."""
         viewport = self.window_.stage.viewport
+        live = self.value(self.field_key, self.default_value)
         if shape is None:
             # Keep whatever last worked on screen. Blanking the preview at the
             # exact moment the radius becomes invalid is the least useful thing
@@ -1004,30 +1316,24 @@ class _EdgeTool(_SelectionTool):
                 f"{self.field_label} {value:.2f} mm is more than this shape can "
                 "take here."
             )
-            self._show_readout(value)
+            self._show_readout(live)
             return
         self._last_good = shape
         self._preview_failed = False
         self.warn("")
         viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.12)
         self._dim_body(0.88)
+        self._show_readout(live)
+
+    def _preview_unavailable(self, value: float) -> None:
+        """No child to ask. Say so once and keep the tool usable."""
+        if not self._said_no_preview:
+            self._said_no_preview = True
+            self.warn(
+                "The geometry engine is not running, so there is no live "
+                "preview. The value still applies."
+            )
         self._show_readout(value)
-
-    def _build(self, value: float):
-        """The real kernel result, or None if this value cannot be built."""
-        from ...kernel.occ import built_shape
-
-        if self._body_shape is None or not self.picks or value <= 0:
-            return None
-        from OCP.TopoDS import TopoDS
-
-        try:
-            builder = self.preview_builder(self._body_shape)
-            for pick in self.picks:
-                builder.Add(value, TopoDS.Edge_s(pick.shape))
-            return built_shape(builder, self.title.lower())
-        except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
-            return None
 
     def _dim_body(self, amount: float) -> None:
         presentation = self.window_._presentations.get(self.picks[0].body)
@@ -1040,6 +1346,10 @@ class _EdgeTool(_SelectionTool):
     def teardown(self) -> None:
         viewport = self.window_.stage.viewport
         self._preview_timer.stop()
+        try:
+            self.window_.geometry.previewed.disconnect(self._on_previewed)
+        except (RuntimeError, TypeError):
+            pass
         viewport.clear_ghost()
         viewport.handles.clear(viewport)
         self.window_.stage.drag_readout.finish()
@@ -1095,12 +1405,6 @@ class ChamferPanel(_EdgeTool):
     feature_class = ChamferFeature
     field_key = "distance"
     field_label = "Distance"
-
-    @staticmethod
-    def preview_builder(body):
-        from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
-
-        return BRepFilletAPI_MakeChamfer(body)
 
 
 @register_tool("scale")

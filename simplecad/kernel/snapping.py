@@ -58,10 +58,35 @@ MAX_EDGES_FOR_RAY = 64
 #: milliseconds. This used to be 400, which is low enough that any real
 #: imported part lost every corner and centre it had -- and losing them silently
 #: is what made point-to-point measuring look broken on exactly the models
-#: people measure. The viewport now times each snap and turns the effort down
-#: on a body that cannot afford it (see occt_view.SNAP_BUDGET), so this only has
-#: to stop the pathological case of enumerating a whole mesh.
+#: people measure. :func:`snap_tier` is now the main defence: it decides what a
+#: shape can afford *before* any of the work is done, so this only has to stop
+#: the pathological case of enumerating a whole mesh.
 MAX_FACES_FOR_SNAPS = 2500
+
+#: Above this many faces, enumerating a shape's named snaps costs more than a
+#: frame. Measured at roughly 0.3 ms a face -- a 646-face shell takes 200 ms and
+#: a 1242-face one 373 ms, on the GUI thread, inside a mouse-move -- so this is
+#: about 25 ms, paid once per shape and then cached.
+#:
+#: The old defence was a stopwatch, which cannot help until after the stall it is
+#: measuring has already happened; the first hover over every heavy body froze
+#: the window regardless. Counting is O(limit) rather than O(model), so it is
+#: affordable to ask *before* committing to the work.
+#:
+#: This is a limit on the shape OCCT detected, not on the body it belongs to. A
+#: single face of a heavy import still gets its corners and midpoints -- 3-6 ms,
+#: measured -- which is the whole point of snapping and what raising
+#: ``MAX_FACES_FOR_SNAPS`` was reaching for.
+FULL_SNAP_FACES = 80
+
+#: And the same for edges: ``_edges_of`` walks every one of them.
+FULL_SNAP_EDGES = 240
+
+#: Above this many faces on the *owning body*, the ray fallback stops testing
+#: the whole body. ``_surface_hit`` against a 646-face shell costs 18 ms and
+#: against a 2554-face one 68 ms -- on every mouse-move, uncached, which on its
+#: own is more than the 16 ms the snap timer allows.
+RAY_PARENT_FACES = 240
 
 #: Ancestor maps, keyed on the body they were built from. Rebuilding one is a
 #: full traversal of the body, and the cursor sits over the same body for
@@ -243,6 +268,36 @@ def _explore(shape, kind) -> list:
     return found
 
 
+def snap_tier(shape) -> str:
+    """How much snapping *shape* can afford: ``full``, ``ray`` or ``none``.
+
+    Answered from sub-shape counts alone, before any geometry is touched, so a
+    heavy body never gets the chance to stall the window even once. ``_count``
+    stops at the limit it is given, so this is cheap however big the model is.
+
+    * ``full`` -- corners, midpoints, centres and face centres, plus the ray.
+    * ``ray``  -- the ray only, and only against the detected sub-shape.
+    * ``none`` -- the ray against the sub-shape, with no fallback to the body.
+
+    The limits are on the shape OCCT detected, not on the body behind it. A
+    modelled part detected whole is a few dozen faces and stays ``full``; a mesh
+    import detected whole is hundreds and does not. Either way a single *face* of
+    that import is still ``full``, so corners and midpoints survive on exactly
+    the models people measure.
+    """
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+
+    if shape is None or shape.IsNull():
+        return "none"
+    if shape.ShapeType() == TopAbs_VERTEX:
+        return "full"
+    if _count(shape, TopAbs_FACE, FULL_SNAP_FACES + 1) > FULL_SNAP_FACES:
+        return "ray"
+    if _count(shape, TopAbs_EDGE, FULL_SNAP_EDGES + 1) > FULL_SNAP_EDGES:
+        return "ray"
+    return "full"
+
+
 def snap_points(shape, parent=None) -> list[SnapPoint]:
     """Every snap candidate on *shape*, most specific kinds first.
 
@@ -298,10 +353,17 @@ def ray_snaps(shape, ray, parent=None) -> list[SnapPoint]:
     click never silently does nothing. Both are ranked below every named snap in
     :data:`PRIORITY`, so they cede to a corner or a centre whenever one is near.
     """
+    from OCP.TopAbs import TopAbs_FACE
+
     origin, direction = ray
     found: list[SnapPoint] = []
     surface = _surface_hit(shape, origin, direction)
-    if surface is None and parent is not None:
+    if surface is None and parent is not None and _count(
+        parent, TopAbs_FACE, RAY_PARENT_FACES + 1
+    ) <= RAY_PARENT_FACES:
+        # Only where the body is small enough to intersect within a frame. On a
+        # heavy one this was the single most expensive thing in the whole snap,
+        # and it ran on every mouse-move whatever tier the body was on.
         surface = _surface_hit(parent, origin, direction)
     if surface is not None:
         found.append(SnapPoint(surface, "surface"))

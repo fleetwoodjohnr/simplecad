@@ -131,6 +131,19 @@ def main() -> int:
             if panel is None:
                 return
 
+            # The first snap on a heavy body is the one that froze the window:
+            # the cost governor could not turn the effort down until after the
+            # stall it was measuring had already happened. Taken on its own,
+            # before the sweep warms any cache, because "the instant I switch to
+            # point to point" is exactly this reading.
+            centre = viewport.project((-40.0, 0.0, 15.0))
+            if centre is not None:
+                started = time.perf_counter()
+                viewport.snap_at(QPoint(int(centre[0]), int(centre[1])))
+                REPORT["first_mesh_snap_ms"] = round(
+                    (time.perf_counter() - started) * 1000.0, 2
+                )
+
             width, height = viewport.width(), viewport.height()
             timings = []
             for index in range(SAMPLES):
@@ -198,12 +211,16 @@ def main() -> int:
         and REPORT.get("still_in_point_mode") is True
         and REPORT.get("p95_ms", 1e9) < P95_LIMIT_MS
         and REPORT.get("max_ms", 1e9) < MAX_LIMIT_MS
+        and REPORT.get("first_mesh_snap_ms", 1e9) < MAX_LIMIT_MS
         and REPORT.get("downgraded_to") == "ray"
         and REPORT.get("downgraded_again_to") == "none"
         and REPORT.get("stays_downgraded") == "none"
         and REPORT.get("said_so_once") == 1
     )
-    print(f"  limits: p95 < {P95_LIMIT_MS} ms, max < {MAX_LIMIT_MS} ms")
+    print(
+        f"  limits: p95 < {P95_LIMIT_MS} ms, "
+        f"max and first snap < {MAX_LIMIT_MS} ms"
+    )
     print("VERDICT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

@@ -90,8 +90,12 @@ class DragReadout(QWidget):
         self.delta_label.setVisible(bool(sub))
         self.adjustSize()
         self.move(at + OFFSET)
-        self.show()
-        self.raise_()
+        # Raised on the way in only. This runs on every motion event of a drag,
+        # and ``raise_`` over the GL viewport re-composites it and re-blurs the
+        # drop shadow -- per frame, for a widget that is already on top.
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def show_drag(
         self, at: QPoint, distance: float, resulting: float | None, label: str

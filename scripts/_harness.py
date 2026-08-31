@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 # OCCT in the cadquery-ocp wheel is a GLX build, so Qt must speak X11.
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
@@ -15,9 +16,40 @@ os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 os.environ.setdefault("SIMPLECAD_NO_RECOVERY", "1")
 os.environ.pop("QT_XCB_GL_INTEGRATION", None)
 
+# Scripted runs must not write to the real profile. ``settings`` and
+# ``autosave`` resolve their directories from these at import time, so this has
+# to happen before the package is imported -- which is the whole reason it lives
+# at module scope here. Without it a screenshot script that toggles the theme
+# silently rewrites the user's saved preference, and a recovery check plants
+# files in the recovery folder the user's own session reads.
+_SANDBOX = os.path.join(tempfile.gettempdir(), f"simplecad-scripts-{os.getuid()}")
+os.environ.setdefault("XDG_CONFIG_HOME", os.path.join(_SANDBOX, "config"))
+os.environ.setdefault("XDG_DATA_HOME", os.path.join(_SANDBOX, "data"))
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+from simplecad.ui.qt_runtime import configure_qt_application  # noqa: E402
+
+# Match the real bootstrap. Without this, stage children may acquire separate
+# X11 windows, so scripted direct events can pass while physical clicks are
+# routed to the wrong native child in the installed application.
+configure_qt_application()
+
+
+def grab_composited(widget):
+    """Safely capture the top-level widget, including its OpenGL viewport."""
+    from PySide6.QtWidgets import QApplication
+
+    # Qt 6's QWidget.grab() includes QOpenGLWidget content, but a grab between a
+    # display change and its paint can crash.  Drain events and force that paint
+    # first, exactly as the final screenshot path does.
+    viewport = getattr(getattr(widget, "stage", None), "viewport", None)
+    if viewport is not None and viewport.is_ready:
+        viewport.repaint()
+    QApplication.processEvents()
+    return widget.grab().toImage()
 
 
 def run_and_capture(build, out_path: str, settle_ms: int = 1400, size=(1280, 820)):
@@ -43,18 +75,9 @@ def run_and_capture(build, out_path: str, settle_ms: int = 1400, size=(1280, 820
 
     def capture() -> None:
         try:
-            # Qt 6's QWidget.grab() does include QOpenGLWidget content, so this
-            # captures chrome and viewport together. (Screen grabs are useless
-            # here: XWayland returns a blank root window.)
-            #
-            # grab() crashes if it runs between a display change and the paint
-            # that follows it, so drain pending events and force the viewport to
-            # paint synchronously first.
-            viewport = getattr(getattr(widget, "stage", None), "viewport", None)
-            if viewport is not None and viewport.is_ready:
-                viewport.repaint()
-            QApplication.processEvents()
-            image = widget.grab().toImage()
+            # Screen grabs are useless here: XWayland returns a blank root
+            # window. Capture through Qt's compositor instead.
+            image = grab_composited(widget)
             colors = {
                 image.pixel(x, y)
                 for x in range(0, image.width(), 11)

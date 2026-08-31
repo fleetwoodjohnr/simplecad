@@ -39,8 +39,9 @@ native-window viewport would have forced panels into separate top-level windows.
 3. `OpenGl_GraphicDriver(display, False)` is created and told Qt owns presentation:
    `buffersNoSwap = True`, `buffersOpaqueAlpha = True`, `useSystemBuffer = False`.
    `ChangeOptions()` returns a live mutable `OpenGl_Caps`, so these stick.
-4. An `Aspect_NeutralWindow` is created with `SetVirtual(True)` and
-   **`SetNativeHandle(int(self.winId()))`**.
+4. An `Aspect_NeutralWindow` is created with `SetVirtual(True)` and receives
+   **`int(self.effectiveWinId())`** — the real handle of the nearest native ancestor,
+   without making the viewport a native child.
 5. `view.SetWindow(window, context_capsule)`.
 6. In `paintGL`, `OpenGl_FrameBuffer.InitWrapper(gl_ctx)` adopts the FBO Qt has currently
    bound, and the neutral window is resized to match it. This runs every frame because Qt
@@ -48,9 +49,11 @@ native-window viewport would have forced panels into separate top-level windows.
 
 ### The non-obvious part
 
-`SetNativeHandle` **must** be given `winId()` — a real X11 `Window`. OCCT does not read the
-visual from the GL context; `OpenGl_Window::CreateWindow` calls `XGetWindowAttributes` on the
-native handle and looks the visual up with `XGetVisualInfo`:
+`SetNativeHandle` **must** be given a real X11 `Window`. It does not have to be the viewport's
+own window: because OCCT renders into Qt's current FBO, the effective handle of the top-level
+native ancestor supplies the same X11 visual without turning the `QOpenGLWidget` into a native
+child. OCCT does not read the visual from the GL context; `OpenGl_Window::CreateWindow` calls
+`XGetWindowAttributes` on the native handle and looks the visual up with `XGetVisualInfo`:
 
 ```c
 Window aWindow = (Window)myPlatformWindow->NativeHandle();
@@ -63,6 +66,77 @@ X `Window`, so `XGetWindowAttributes` yields nothing and the lookup throws
 `Aspect_GraphicDeviceDefinitionError: XGetVisualInfo is unable to choose needed configuration
 in existing OpenGL context`. That message is misleading — it is a *window* problem, not a
 context problem, and it is the single trap on this path.
+
+Calling `viewport.winId()` makes the viewport a native X11 child. That native child covers the
+stage, so a physical click over a visually composited Shape panel is first delivered to the
+viewport's X window; Qt never gets a chance to route it to the panel. Making the overlay native
+instead does not solve the general problem: a full-size measurement overlay has
+`WA_TransparentForMouseEvents`, but that flag only affects Qt's own hit testing, after XWayland
+has already chosen a native target.
+
+SimpleCAD therefore never calls `winId()` on the viewport. The viewport, floating panels and
+paint-only overlays stay ordinary children in one Qt-composited, Qt-hit-tested hierarchy, and
+OCCT receives `effectiveWinId()` solely for its visual lookup. The top-level window remains the
+only native window for the stage. `AA_DontCreateNativeWidgetSiblings` is also set before
+constructing `QApplication` as a defensive guard against accidental promotion elsewhere. Do
+not remove that application attribute or set it after widget creation. The GL rebind handling
+below is still required for genuine context, window and screen changes.
+
+### Neither handle is permanent
+
+Steps 2 and 4 hand OCCT two raw handles, and Qt is free to replace both. It destroys and
+recreates a `QOpenGLWidget`'s GL context for ordinary reasons — the compositor taking the
+surface back, a reparent, a move between screens — and OCCT is never
+told. It goes on drawing through the pointer it was given, logs
+`TKOpenGl.WinSystem ... glXMakeCurrent() has failed!` once, and then simply stops changing.
+Nothing else looks wrong: the event loop is idle and healthy, the geometry process is fine,
+Qt chrome keeps repainting. The window is left showing a still picture, which is what "I can
+add a shape but then nothing changes" and "the sidebar goes dark and the model stays white"
+both were.
+
+So `initializeGL` is not one-shot. `OcctViewport._binding_is_stale` compares **both** handles
+against what OCCT was given, and `paintGL` repeats the check because Qt does not always route a
+replacement through `initializeGL`.
+
+Checking only the context is not enough, and that mistake has already been made here once: a
+failing session showed `glXMakeCurrent() has failed!` with no context-lost line anywhere near
+it, because Qt had replaced the *window* and kept the context. Watch both.
+
+**The two failures need different repairs.** `_recover_binding` picks:
+
+| what went stale | GPU resources | repair |
+| --- | --- | --- |
+| the `QOpenGLContext` | gone with it | `_rebind_gl` — full teardown and `_init_occt` again |
+| only the X window | still live | `_reseat_window` — `SetNativeHandle` + `SetWindow` |
+
+Re-seating after a *context* loss is the obvious repair and silently does not work: the viewer
+keeps the shaders, vertex buffers and textures it uploaded to the context that has gone, and
+every draw then fails with `GL_INVALID_OPERATION` against a blank screen. The converse is just
+as wrong in the other direction — rebuilding for a mere window change would discard a live
+scene and re-tessellate every body each time the compositor handed us a new surface.
+
+Nothing the user cares about is lost either way, because none of it lives on the GPU: the
+camera, the grid and the selection modes are saved and restored around a rebuild, and the
+bodies are re-displayed by the window when it sees `rebound`. `_reseat_window` does not emit
+`rebound` at all — the presentations were never invalidated.
+
+One thing that looks like the perfect health check and is not: `OpenGl_Context::IsCurrent()`.
+OCCT implements it as `glXGetCurrentContext() == myGContext && glXGetCurrentDrawable() ==
+myWindow`, i.e. precisely the test whose failure prints `glXMakeCurrent() has failed!`. It was
+measured rather than assumed: True on a bare viewport, but False on *every healthy frame* once
+the widget is a child inside the real window, because Qt's current drawable is then the
+top-level's and OCCT switches to its own inside `Redraw`. Wired in as a health signal it
+condemns a working view on its first frame. Compare the handles instead.
+
+Anything holding an `AIS_InteractiveObject` has to drop it at that point rather than erase it:
+the new context rejects presentations built in the old one with `object has been displayed in
+another context`. `MainWindow._on_viewport_rebound` clears `_presentations` (in place — the
+`SelectionModel` was handed the same dict) and displays the document again.
+
+Guarded by `scripts/check_gl_rebind.py`, which destroys the context by reparenting the widget,
+then swaps in a second valid X11 ancestor handle without replacing the context. It checks that
+the view still draws, bodies come back after the expensive rebuild, bodies remain in place
+after the cheap window re-seat, and theme switches still reach the 3D background.
 
 ### Platform
 
@@ -135,11 +209,68 @@ something clean rather than from a process holding Qt and an open GL context;
 `spawn` re-executes `__main__`, which breaks when the app is launched from stdin
 or an embedded interpreter.
 
-**If the child cannot start, or dies, rebuilds fall back to the UI thread.**
-Slower and blocking, but the session survives — the right trade for something
-that is fundamentally an optimisation. `MainWindow._rebuild_in_process` is that
-path, and it reports progress between features so a multi-feature rebuild does
-not look frozen throughout.
+**If the child dies, it is restarted — falling back to the UI thread is the last
+resort, not the first.** The old reflex was to move the work into the parent
+straight away, which is precisely wrong when the thing that killed the child was
+OCCT: the next attempt at the same shape then runs on the GUI thread and takes
+the window with it. `GeometryClient._handle_death` brings a new child up (three
+times before giving up, reset by any successful rebuild) and the parent resends
+the document, because a fresh child starts empty. Only after that does
+`MainWindow._rebuild_in_process` take over — slower and blocking, but the
+session survives, and it reports progress between features so a multi-feature
+rebuild does not look frozen throughout.
+
+A rebuild that is never answered is treated as a death too. Without that, a
+child that hangs leaves the client permanently "busy", every later rebuild is
+parked behind it, and the model silently stops changing for the rest of the
+session.
+
+### When it hangs, ask it what it is doing
+
+`core/diagnostics.py` arms `faulthandler` in both processes before Qt starts, so
+a native crash writes the Python stack of every thread to stderr — which, under
+the desktop entry, is the journal. A four-minute "nothing works" session and two
+SIGSEGVs left *nothing* before this existed.
+
+`SIGUSR1` dumps stacks without stopping the process:
+
+```
+kill -USR1 $(pgrep -f -- '-m simplecad$')
+journalctl --user -t simplecad.desktop --since "-5 min"
+```
+
+The pattern is anchored on purpose: unanchored, it also matches the shell
+running the `pgrep`. A stall watchdog re-arms
+`faulthandler.dump_traceback_later` from a 1 s GUI-thread heartbeat, so a GUI
+thread that stops answering for 5 s dumps its own stack unprompted. It has to be
+that call rather than a Python watchdog thread: OCP holds the GIL for the whole
+of every kernel call, so when OCCT *is* the thing that stopped the window, no
+Python thread can run to report it.
+
+### Previews run there too
+
+Not only committed features. The fillet and chamfer panels show the **real**
+kernel result while you drag the handle, and that build used to run in the
+parent, on the GUI thread, from inside a Qt signal handler. OCCT does not
+reliably raise on a blend it cannot compute: two core dumps on the development
+machine share one stack — `ChFi3d_Builder` walking off a null curve adaptor
+inside `BRepFilletAPI_MakeFillet::Build` — and a SIGSEGV is not something
+`except BaseException` can catch. The window died mid-drag.
+
+So a preview is a `PREVIEW` message to the child, which builds the feature with
+its own `execute` and returns the shape plus warnings, resolved inputs and a
+specific error when the kernel refuses it. Fillet, chamfer, Thread, and all
+matching-thread modes use this path; physical-thread tools keep Create disabled
+until an actual helical result comes back. It must not touch the child's document or rebuild cache: a
+preview is a question, not an edit. Previews are coalesced separately from
+rebuilds, so a dragged handle settles without ever displacing a real edit.
+
+Model copy/paste similarly copies intent rather than tessellation or B-Rep. A
+clipboard fragment contains the selected bodies' feature-dependency closure and
+nested group topology. Paste remaps every feature id, body reference and durable
+sub-shape reference, adds one independent move per root body, and places the
+assembly to the right of the current model. Repeated pastes therefore remain
+parametric, independently editable and visibly separate.
 
 Also helping, independently of where the work runs: booleans use OCCT's own C++
 parallelism via `SetRunParallel(True)` in `occ.built_shape` (C++ threads are not

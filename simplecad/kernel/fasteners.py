@@ -93,12 +93,13 @@ def _hex_prism(across_flats: float, height: float):
 
 
 def make_bolt(size: ThreadSize, length: float, thread_length: float | None = None,
-              head: str = "hex") -> object:
+              head: str = "hex", form: str = "printed",
+              left_hand: bool = False) -> object:
     """A bolt: head, shank, and a modelled thread over the last *thread_length*."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
-    from .threads import apply_thread
+    from .threads import apply_thread, require_modelled
 
     if length <= 0:
         raise CadError("A bolt needs a length greater than zero.")
@@ -124,21 +125,23 @@ def make_bolt(size: ThreadSize, length: float, thread_length: float | None = Non
 
     # Thread the free end of the shank.
     start = head_height + length - thread_length
-    outcome = apply_thread(
+    outcome = require_modelled(apply_thread(
         body, size=size, origin=(0.0, 0.0, start), direction=(0.0, 0.0, 1.0),
         length=thread_length, internal=False, feature_diameter=size.diameter,
-    )
+        form=form, left_hand=left_hand,
+    ))
     return unify(outcome.shape)
 
 
 def make_nut(size: ThreadSize, clearance: str | float = "normal",
-             height: float | None = None) -> object:
+             height: float | None = None, form: str = "printed",
+             left_hand: bool = False) -> object:
     """A hex nut with a matching internal thread."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
     from .thread_specs import clearance_for
-    from .threads import apply_thread
+    from .threads import apply_thread, require_modelled
 
     dimensions = head_for(size)
     thickness = height or dimensions["nut_height"]
@@ -152,11 +155,11 @@ def make_nut(size: ThreadSize, clearance: str | float = "normal",
         )
         drilled = built_shape(BRepAlgoAPI_Cut(blank, drill), "nut")
 
-    outcome = apply_thread(
+    outcome = require_modelled(apply_thread(
         drilled, size=size, origin=(0.0, 0.0, 0.0), direction=(0.0, 0.0, 1.0),
         length=thickness, internal=True, clearance=clearance,
-        feature_diameter=bore,
-    )
+        feature_diameter=bore, form=form, left_hand=left_hand,
+    ))
     return unify(outcome.shape)
 
 
@@ -207,9 +210,17 @@ class MatchingBoltFeature(Feature):
         size = _resolve_size(self, ctx)
         length = ctx.value(self, "length", size.diameter * 3.0)
         thread_length = ctx.value(self, "thread_length", 0.0) or None
+        self.inputs["thread_modelled"] = False
+        self.inputs["thread_internal"] = False
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
         shape = make_bolt(
-            size, length, thread_length, str(self.inputs.get("head", "hex"))
+            size, length, thread_length, str(self.inputs.get("head", "hex")),
+            str(self.inputs.get("form", "printed")),
+            bool(self.inputs.get("left_hand", False)),
         )
+        shape = _placed(self, ctx, shape)
+        self.inputs["thread_modelled"] = True
         name = self.outputs[0] if self.outputs else self.name
         self.outputs = [name]
         self.message = f"{size.designation} x {length:g} mm bolt"
@@ -225,7 +236,17 @@ class MatchingNutFeature(Feature):
     def execute(self, ctx: BuildContext) -> dict:
         size = _resolve_size(self, ctx)
         height = ctx.value(self, "height", 0.0) or None
-        shape = make_nut(size, str(self.inputs.get("clearance", "normal")), height)
+        self.inputs["thread_modelled"] = False
+        self.inputs["thread_internal"] = True
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
+        shape = make_nut(
+            size, str(self.inputs.get("clearance", "normal")), height,
+            str(self.inputs.get("form", "printed")),
+            bool(self.inputs.get("left_hand", False)),
+        )
+        shape = _placed(self, ctx, shape)
+        self.inputs["thread_modelled"] = True
         name = self.outputs[0] if self.outputs else self.name
         self.outputs = [name]
         self.message = f"{size.designation} nut"
@@ -240,7 +261,7 @@ class ApplyMatchingThreadFeature(Feature):
 
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
-        from .threads import apply_thread
+        from .threads import apply_thread, require_modelled
 
         name = str(self.inputs["body"])
         body = ctx.shape(self, "body")
@@ -252,19 +273,35 @@ class ApplyMatchingThreadFeature(Feature):
                 suggestion="Select the shaft or hole to thread.",
             )
 
+        self.inputs["thread_modelled"] = False
+        self.inputs["thread_internal"] = bool(info.internal)
+        self.inputs.setdefault("form", "printed")
+        self.inputs.setdefault("left_hand", False)
+
         size = _resolve_size(self, ctx)
         clearance = str(self.inputs.get("clearance", "normal"))
         length = ctx.value(self, "length", 0.0) or info.length
-        outcome = apply_thread(
+        outcome = require_modelled(apply_thread(
             body, size=size, origin=info.origin, direction=info.direction,
             length=min(length, info.length), internal=info.internal,
             clearance=clearance, feature_diameter=info.diameter,
-        )
+            form=str(self.inputs.get("form", "printed")),
+            left_hand=bool(self.inputs.get("left_hand", False)),
+        ))
         if outcome.message:
             ctx.warn(outcome.message)
         self.message = (
             f"{size.designation} {'internal' if info.internal else 'external'} "
             f"thread to match"
         )
+        self.inputs["thread_modelled"] = True
         self.outputs = [name]
         return {name: outcome.shape}
+
+
+def _placed(feature: Feature, ctx: BuildContext, shape):
+    """Apply the optional stable placement shared by generated fasteners."""
+    position = tuple(ctx.value(feature, key, 0.0) for key in ("x", "y", "z"))
+    if all(abs(value) <= 1e-12 for value in position):
+        return shape
+    return transformed(shape, make_transform(translate=position))

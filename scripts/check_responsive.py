@@ -30,9 +30,11 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     from simplecad.ui.main_window import MainWindow
+    from simplecad.ui.qt_runtime import configure_qt_application
     from simplecad.ui.theme import Mode
     from simplecad.ui.viewport.occt_view import default_surface_format
 
+    configure_qt_application()
     QSurfaceFormat.setDefaultFormat(default_surface_format())
     app = QApplication(sys.argv[:1])
     window = MainWindow(Mode.DARK)

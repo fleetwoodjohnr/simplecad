@@ -18,9 +18,11 @@ Three ideas keep this usable rather than merely correct:
   what makes the two halves refuse to turn. The default :class:`ThreadForm` puts
   the flanks at 45 degrees instead, with real flats at crest and root so there
   are no knife edges to curl or fuse shut. See :data:`PRINT_FLANK_ANGLE`.
-* **It degrades instead of failing.** ``MakePipeShell`` on a helix genuinely does
-  fail at some pitch/diameter combinations. When it does, the caller gets a
-  :class:`ThreadResult` marked ``cosmetic`` with a usable body, not an exception.
+* **It protects the upstream body on failure.** ``MakePipeShell`` on a helix can
+  fail at some pitch/diameter combinations. The low-level operation returns an
+  unchanged shape marked ``cosmetic`` so geometry is never lost; user-facing
+  features then reject that result with :func:`require_modelled`, ensuring a
+  plain cylinder is never reported as a successfully created thread.
 """
 
 from __future__ import annotations
@@ -55,6 +57,17 @@ PRINT_FLANK_ANGLE = 45.0
 #: ``MakePipeShell`` starts handing back solids that will not validate.
 PRINT_CREST_FLAT = 1.0 / 8.0
 PRINT_ROOT_FLAT = 1.0 / 4.0
+
+#: The smallest change in a body's volume that counts as a boolean having
+#: happened, as a fraction of the body. See :func:`_apply_tool`.
+MIN_VOLUME_CHANGE = 1e-6
+
+#: How far to shift a tool along its axis when a boolean comes back having done
+#: nothing, in millimetres. One micron: far below the clearance a printed fit is
+#: built around and far below anything a nozzle resolves, but enough to move the
+#: tool's end faces off the body's and let OCCT find the intersection it missed.
+#: See :func:`_tool_attempts`.
+NUDGE = 1e-3
 
 #: How far the tooth is sunk into the core, as a fraction of tooth depth.
 #:
@@ -164,6 +177,27 @@ class ThreadResult:
     @property
     def cosmetic(self) -> bool:
         return not self.modelled
+
+
+def require_modelled(result: ThreadResult) -> ThreadResult:
+    """Return *result* only when it contains physical helical geometry.
+
+    ``apply_thread`` deliberately has a safe low-level fallback: if OCCT cannot
+    build the sweep, it returns the unchanged body instead of destroying it.
+    That is useful kernel behaviour, but a user-facing Thread feature must not
+    call a plain cylinder a success. Feature implementations pass their result
+    through here so the rebuild retains the upstream body and reports a clear
+    failure instead.
+    """
+    if result.modelled:
+        return result
+    from ..core.errors import CadError
+
+    raise CadError(
+        result.message or "The physical thread could not be modelled.",
+        suggestion="Choose a coarser size or a shorter threaded length.",
+        operation="thread",
+    )
 
 
 def helix_edge(
@@ -439,7 +473,36 @@ def _end_rings(envelope_radius: float, minor_radius: float, length: float) -> li
     return rings
 
 
-def _apply_tool(body, tool, cut: bool):
+def _tool_attempts(tool, axis):
+    """The tool, and then the tool nudged a micron each way along *axis*.
+
+    OCCT hands one operand straight back on geometry it ought to manage. Measured
+    on an M12 thread applied to an 11.6 mm shaft: the waste genuinely overlaps
+    the shaft by 231.5 mm3, and the cut removed exactly nothing -- at every fuzzy
+    value from 1e-6 to 1e-3, and whether the shaft was flush with the waste,
+    longer than it or shorter. Moving the tool one micron along the axis removed
+    the full 231.5.
+
+    So, the same reasoning as swapping the operands, one step further: try the
+    obvious thing, and when the kernel declines, ask again slightly differently
+    rather than quietly handing back a shaft with no thread on it.
+    """
+    yield tool
+    if axis is None:
+        return
+    from OCP.gp import gp_Trsf, gp_Vec
+
+    for step in (NUDGE, -NUDGE):
+        move = gp_Trsf()
+        move.SetTranslation(gp_Vec(*(component * step for component in axis)))
+        try:
+            shifted = transformed(tool, move)
+        except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
+            continue
+        yield shifted
+
+
+def _apply_tool(body, tool, cut: bool, axis=None):
     """Add or remove *tool* from *body*, and check the kernel's answer.
 
     OCCT reports these booleans done and hands back one operand untouched often
@@ -453,29 +516,54 @@ def _apply_tool(body, tool, cut: bool):
     first order fails, so a fuse gets both orders before giving up. Returns None
     when neither produces something that could be the answer, and the caller
     then leaves the body alone and says so.
+
+    **The body coming back untouched is a failure, not a success.** OCCT reports
+    that done too, and the old test -- "most of the body is still there" -- was
+    satisfied by exactly that, so a thread that never got applied was reported as
+    a finished one and the user got a plain hole with no warning at all. The
+    volume has to have actually moved, and moved by no more than the tool could
+    account for.
     """
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 
     from .occ import volume
 
     before = volume(body)
-    # A cut has one sensible order; a fuse is symmetric, so it gets two goes.
-    orders = [(body, tool)] if cut else [(body, tool), (tool, body)]
-    for first, second in orders:
-        try:
-            result = built_shape(
-                (BRepAlgoAPI_Cut if cut else BRepAlgoAPI_Fuse)(first, second),
-                "thread",
-            )
-        except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
-            continue
-        after = volume(result)
-        if cut:
-            # Threading a shaft removes a little and must leave most of it.
-            if before * 0.25 < after <= before * 1.001:
+    tool_volume = volume(tool)
+    # Enough to tell a real thread from arithmetic noise. The shallowest tooth
+    # the size tables offer still moves ~4e-5 of a plate's volume, and a boolean
+    # that did nothing moves ~1e-15 of it, so there is no near miss to worry
+    # about in between.
+    threshold = abs(before) * MIN_VOLUME_CHANGE
+    for candidate in _tool_attempts(tool, axis):
+        # A cut has one sensible order; a fuse is symmetric, so it gets two goes.
+        orders = (
+            [(body, candidate)] if cut
+            else [(body, candidate), (candidate, body)]
+        )
+        for first, second in orders:
+            try:
+                result = built_shape(
+                    (BRepAlgoAPI_Cut if cut else BRepAlgoAPI_Fuse)(first, second),
+                    "thread",
+                )
+            except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
+                continue
+            after = volume(result)
+            moved = (before - after) if cut else (after - before)
+            if moved <= threshold:
+                # The operand came back untouched, or it moved the wrong way.
+                continue
+            # Nothing can be added or removed that the tool did not occupy, so a
+            # bigger change means one of the operands was substituted.
+            if tool_volume > 0.0 and moved > tool_volume * 1.05:
+                continue
+            if cut:
+                # Threading a shaft removes a little and must leave most of it.
+                if before * 0.25 < after <= before * 1.001:
+                    return result
+            elif after >= before * 0.99:
                 return result
-        elif after >= before * 0.99:
-            return result
     return None
 
 
@@ -628,11 +716,11 @@ def apply_thread(
                 groove, _mouth_cones(envelope_radius, minor_radius, length)
             )
             filler = transformed(filler, placement)
-            shape = _apply_tool(body, filler, cut=False)
+            shape = _apply_tool(body, filler, cut=False, axis=direction)
         else:
             # Everything inside the shaft the bolt does not occupy is waste.
             waste = transformed(groove, placement)
-            shape = _apply_tool(body, waste, cut=True)
+            shape = _apply_tool(body, waste, cut=True, axis=direction)
             if shape is not None:
                 # Then chamfer the ends, so the bolt starts by hand.
                 shape = _cut_away(

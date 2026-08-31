@@ -7,9 +7,10 @@ where they are relevant. No dock widgets, no toolbar rows, no workbench picker.
 
 from __future__ import annotations
 
+import json
 import os
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow, QSizePolicy, QVBoxLayout,
@@ -47,6 +48,8 @@ TOOL_RAIL = (
     ("measure", "Measure", "measure"),
     ("print", "Print", "print"),
 )
+
+MODEL_CLIPBOARD_MIME = "application/x-simplecad-model-fragment+json"
 
 
 def _combined_bounds(shapes):
@@ -178,6 +181,9 @@ class ViewportStage(QWidget):
         self._palette = palette
         self.viewport = OcctViewport(palette, self)
         self.overlays: list[tuple[QWidget, str]] = []
+        #: The stacking order last applied, so it is only re-applied when it
+        #: actually changes. See :meth:`_restack_overlays`.
+        self._stacking: tuple[tuple[int, bool], ...] = ()
 
         self.hint = Hint(palette, self)
         self.hint.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -211,8 +217,20 @@ class ViewportStage(QWidget):
         """Place *widget* over the viewport. Anchor is e.g. ``"top-right"``."""
         widget.setParent(self)
         self.overlays.append((widget, anchor))
-        widget.raise_()
         self._layout_overlays()
+
+    def remove_overlay(self, widget: QWidget) -> None:
+        """Take *widget* off the stage. Hiding and deleting it stay the caller's.
+
+        Going through here rather than filtering ``overlays`` in place is what
+        keeps :meth:`_restack_overlays` honest. Its memo is a tuple of object
+        addresses, and every one of these removals is followed by a
+        ``deleteLater``, so a panel opened afterwards can be handed the address
+        a closed one had. Forgetting the memo on the way out costs one raise
+        and removes the coincidence entirely.
+        """
+        self.overlays = [(w, a) for w, a in self.overlays if w is not widget]
+        self._stacking = ()
 
     #: Called after a resize so the window can re-flow its overlays.
     resized = None
@@ -221,24 +239,23 @@ class ViewportStage(QWidget):
         self.viewport.setGeometry(self.rect())
         if self.resized is not None:
             self.resized()
-        if self.measure_overlay.isVisible():
-            self.measure_overlay.setGeometry(self.rect())
-        if self.selection_band.isVisible():
-            self.selection_band.setGeometry(self.rect())
+        # The full-size overlays are re-fitted by _layout_overlays itself.
         self._layout_overlays()
         super().resizeEvent(event)
 
     def _layout_overlays(self) -> None:
+        """Place everything that floats over the viewport, then stack it.
+
+        Placing is cheap -- moves and ``adjustSize`` measure at 0.0 ms even with
+        several panels open -- so it happens on every call. Stacking is not, and
+        is split out into :meth:`_restack_overlays` for that reason alone.
+        """
         margin = METRICS.space(4)
         width, height = self.width(), self.height()
 
         controls = self.view_controls
         controls.adjustSize()
         controls.move(width - controls.width() - margin, height - controls.height() - margin)
-        controls.raise_()
-
-        if self.measure_overlay.isVisible():
-            self.measure_overlay.setGeometry(self.rect())
 
         for widget, anchor in self.overlays:
             widget.adjustSize() if widget.sizeHint().isValid() else None
@@ -252,7 +269,6 @@ class ViewportStage(QWidget):
                 widget.move((width - size.width()) // 2, margin + 24)
             elif anchor == "bottom-center":
                 widget.move((width - size.width()) // 2, height - size.height() - margin)
-            widget.raise_()
 
         # The hint goes last, once the bottom-centre bar has a width, so it can
         # be trimmed to whatever room is actually left beside it.
@@ -264,15 +280,60 @@ class ViewportStage(QWidget):
         self.hint.adjustSize()
         self.hint.move(margin, height - self.hint.height() - margin)
 
-        # Last, so the measurement drawn on the model is never hidden behind a
-        # panel. It takes no clicks, so being on top costs nothing. The marquee
-        # rides along for the same reason -- a rectangle half-hidden behind a
-        # floating panel would look like it stopped at the panel's edge.
-        if self.measure_overlay.isVisible():
-            self.measure_overlay.raise_()
-        if self.selection_band.isVisible():
-            self.selection_band.setGeometry(self.rect())
-            self.selection_band.raise_()
+        # The three full-size overlays have to track a resize whether or not
+        # anything is being re-stacked. Setting a geometry that is already set
+        # costs nothing.
+        for overlay in (self.measure_overlay, self.selection_band):
+            if overlay.isVisible():
+                overlay.setGeometry(self.rect())
+
+        self._restack_overlays()
+
+    def _stacking_order(self) -> tuple[QWidget, ...]:
+        """Bottom to top: who should be above whom over the viewport.
+
+        The panels first, then the measurement and marquee, which are the
+        active gesture: a measurement drawn on the model must never be
+        hidden behind a panel, and a rubber-band rectangle that stopped at a
+        panel's edge would look like the drag had. Neither takes clicks, so
+        being on top costs nothing.
+        """
+        order: list[QWidget] = [self.view_controls]
+        order.extend(widget for widget, _anchor in self.overlays)
+        order.extend(
+            overlay
+            for overlay in (self.measure_overlay, self.selection_band)
+            if overlay.isVisible()
+        )
+        return tuple(order)
+
+    def _restack_overlays(self) -> None:
+        """Raise the overlays into order, but only when the order has changed.
+
+        ``raise_()`` over a ``QOpenGLWidget`` is not free: it re-composites the
+        whole viewport and re-blurs the 36 px drop shadow on every floating
+        panel. Measured at 23.7 ms of a 26.5 ms layout pass with two panels
+        open, and 58 ms with three. ``_layout_overlays`` is reached from
+        ``set_hint``, which the hover path calls on every mouse move, so paying
+        that per motion event is what made a window with a shape in it feel
+        dead -- 70 ms a move, against a 17 ms frame.
+
+        Re-raising is only ever needed when something joined, left, or appeared
+        over the stage, and every one of those changes the tuple below. Nothing
+        else in the app reorders these siblings except the widgets that raise
+        *themselves*, and those are the ones that belong on top anyway.
+        """
+        order = self._stacking_order()
+        # Visibility is part of the key, not just membership: a panel appearing
+        # does not change who is on the stage, but it does change who is on top
+        # of whom -- and a bar that showed itself while the highlight box was up
+        # would otherwise stay in front of it and clip the box.
+        key = tuple((id(widget), widget.isVisible()) for widget in order)
+        if key == self._stacking:
+            return
+        for widget in order:
+            widget.raise_()
+        self._stacking = key
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
@@ -294,6 +355,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SimpleCAD")
         self.resize(1440, 900)
 
+        # A choice the user has made outranks the desktop's; having none is
+        # what SYSTEM means, and is the right default for a fresh install.
+        if mode is Mode.SYSTEM:
+            from ..core.settings import theme_choice
+
+            stored = theme_choice()
+            if stored in ("light", "dark"):
+                mode = Mode(stored)
         self.mode = mode
         self.palette_ = resolve(mode)
         self.document = Document("Untitled")
@@ -315,11 +384,16 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._session_id = f"{os.getpid()}"
         self._presentations: dict[str, object] = {}
+        #: The recovery offer, while it is on screen. Never modal -- see
+        #: ``_offer_recovery``.
+        self._recovery_bar = None
         #: Guards the re-entrancy of widening a selection to its whole group.
         self._expanding = False
         #: body name -> the shape currently on screen, so unchanged bodies are
         #: not needlessly re-tessellated on every rebuild.
         self._shown: dict[str, object] = {}
+        #: Root items to select when the outstanding paste rebuild completes.
+        self._select_after_rebuild: list[str] = []
 
         root = QWidget()
         root.setObjectName("Root")
@@ -357,6 +431,7 @@ class MainWindow(QMainWindow):
         self.top_bar.action_triggered.connect(self.run_command)
         self.rail.tool_selected.connect(self.activate_tool)
         self.stage.viewport.ready.connect(self._on_viewport_ready)
+        self.stage.viewport.rebound.connect(self._on_viewport_rebound)
         self.stage.viewport.hover_changed.connect(self._on_hover)
         self.stage.viewport.notice.connect(self.set_hint)
         self.stage.viewport.selection_changed.connect(self._on_selection)
@@ -425,10 +500,13 @@ class MainWindow(QMainWindow):
         self.refresh_view()
 
     def toggle_theme(self) -> None:
+        from ..core.settings import set_theme_choice
         from .theme import DARK, LIGHT
 
         self.mode = Mode.LIGHT if self.palette_ is DARK else Mode.DARK
         self.palette_ = LIGHT if self.mode is Mode.LIGHT else DARK
+        # Remembered, or every launch argues with the user about it.
+        set_theme_choice(self.mode.value)
         self.apply_theme()
 
     # -- shortcuts ------------------------------------------------------
@@ -484,6 +562,8 @@ class MainWindow(QMainWindow):
             "open": self.show_open_menu,
             "export": self.export_model,
             "import": self.import_model,
+            "copy": self._copy_shortcut,
+            "paste": self._paste_shortcut,
             "group": self.group_selection,
             "ungroup": self.ungroup_selection,
             "cancel": self.cancel_tool,
@@ -542,6 +622,27 @@ class MainWindow(QMainWindow):
         else:
             self.set_hint("Open a sketch first — D dimensions sketch geometry.")
 
+    @staticmethod
+    def _focused_clipboard_method(name: str):
+        """Return a native text copy/paste method when an editor has focus."""
+        widget = QApplication.focusWidget()
+        method = getattr(widget, name, None)
+        return method if callable(method) else None
+
+    def _copy_shortcut(self) -> None:
+        native = self._focused_clipboard_method("copy")
+        if native is not None and self._is_typing():
+            native()
+            return
+        self.copy_selection()
+
+    def _paste_shortcut(self) -> None:
+        native = self._focused_clipboard_method("paste")
+        if native is not None and self._is_typing():
+            native()
+            return
+        self.paste_selection()
+
     def _standard_view(self, which: StandardView) -> None:
         self.stage.viewport.set_standard_view(which)
 
@@ -570,6 +671,24 @@ class MainWindow(QMainWindow):
             "perspective" if perspective else "ortho"
         )
         self.stage._view_buttons["projection"].apply_palette(self.palette_)
+
+    def _on_viewport_rebound(self) -> None:
+        """OCCT was rebuilt on a new GL context. Hand the bodies back.
+
+        Every AIS object this window is holding was built in the context that
+        has gone, and the new one refuses them -- ``erase`` on a presentation
+        from a previous context raises ``object has been displayed in another
+        context``. So they are dropped rather than removed, and the document is
+        displayed again from scratch.
+
+        ``_presentations`` is cleared in place because ``SelectionModel`` was
+        handed the same dict and reads it live.
+        """
+        self.detach_gizmo()
+        self._presentations.clear()
+        self._shown.clear()
+        self.selection.refresh()
+        self.refresh_view()
 
     # -- document -------------------------------------------------------
     def _on_viewport_ready(self) -> None:
@@ -660,15 +779,25 @@ class MainWindow(QMainWindow):
         apply_result(self.document, message)
         self.refresh_view()
         self.browser.refresh()
+        self._select_pasted_items()
         report = message.get("report", {})
         warnings = report.get("warnings") or []
         self.set_hint(warnings[-1] if warnings else report.get("summary", ""))
 
     def _on_geometry_failed(self, error: str) -> None:
         self.set_hint(error)
-        if not self.geometry.available:
-            # The child died; carry on in-process so the session is not lost.
-            self._rebuild_in_process()
+        if self.geometry.available:
+            # The child died and came back. It came back *empty* -- a fresh
+            # child holds no document -- so send it one. Rebuilds would repair
+            # themselves on the next edit, but previews would quietly answer
+            # nothing until then, and a fillet handle that silently stopped
+            # showing anything is exactly the sort of half-dead this whole
+            # change is about.
+            self.rebuild(force=True)
+            return
+        # No child at all any more. In-process is slower and cannot protect the
+        # window from OCCT, but losing the session outright is worse.
+        self._rebuild_in_process()
 
     def wait_for_rebuild(self, timeout_ms: int = 300_000) -> bool:
         """Block until the model is up to date. For scripts and tests only."""
@@ -1044,9 +1173,7 @@ class MainWindow(QMainWindow):
         self._camera_before_sketch = None
 
         if self.sketch_bar is not None:
-            self.stage.overlays = [
-                (w, a) for w, a in self.stage.overlays if w is not self.sketch_bar
-            ]
+            self.stage.remove_overlay(self.sketch_bar)
             self.sketch_bar.hide()
             self.sketch_bar.deleteLater()
             self.sketch_bar = None
@@ -1120,10 +1247,16 @@ class MainWindow(QMainWindow):
             self.set_hint("Autosaved.")
 
     def _offer_recovery(self) -> None:
-        """If a previous session did not exit cleanly, offer its work back."""
-        from PySide6.QtWidgets import QMessageBox
+        """If a previous session did not exit cleanly, offer its work back.
 
+        Offered on the stage rather than in a modal dialog. See
+        :mod:`simplecad.ui.panels.recovery_bar` for why -- in short, a message
+        box here locks the whole window and can hide behind it, and an
+        application that draws fine and ignores every click is one the user
+        reasonably calls frozen.
+        """
         from ..core import autosave
+        from .panels.recovery_bar import RecoveryBar
 
         leftovers = [
             (path, when) for path, when in autosave.pending()
@@ -1132,25 +1265,35 @@ class MainWindow(QMainWindow):
         if not leftovers:
             return
         path, when = leftovers[0]
-        answer = QMessageBox.question(
-            self,
-            "Recover unsaved work",
-            f"SimpleCAD closed unexpectedly. There is work from "
-            f"{autosave.describe_age(when)} that was not saved.\n\n"
-            "Would you like to recover it?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if answer == QMessageBox.Yes:
+        bar = RecoveryBar(self.palette_, autosave.describe_age(when), self.stage)
+        self._recovery_bar = bar
+
+        def dismiss() -> None:
+            self.stage.remove_overlay(bar)
+            bar.hide()
+            bar.deleteLater()
+            self._recovery_bar = None
+
+        def recover() -> None:
+            dismiss()
             self._open_path(path)
-            self._project_path = None      # recovered, but not yet saved anywhere
+            self._project_path = None   # recovered, but not yet saved anywhere
             self.mark_dirty()
             self.set_hint("Recovered. Save it somewhere to keep it.")
-        else:
+
+        def discard() -> None:
+            dismiss()
             for leftover, _when in leftovers:
                 try:
                     os.remove(leftover)
                 except OSError:
                     pass
+            self.set_hint("Discarded the unsaved work from last time.")
+
+        bar.recover_requested.connect(recover)
+        bar.discard_requested.connect(discard)
+        self.stage.add_overlay(bar, "top-center")
+        bar.show()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """A clean exit clears the recovery file; a crash leaves it behind."""
@@ -1270,44 +1413,21 @@ class MainWindow(QMainWindow):
 
     def duplicate_body(self, name: str) -> None:
         """Copy a body, offset clear of the original so both are visible."""
-        from ..core.document import BodyRef
+        from ..core.model_clipboard import copy_fragment
         from ..kernel.occ import bounding_box
-        from ..kernel.operations import MoveFeature
 
         body = self.document.body(name)
         if body is None or body.shape is None:
             return
-        low, high = bounding_box(body.shape)
-        offset = (high[0] - low[0]) * 1.2 or 20.0
-
-        producers = [f for f in self.document.features if name in f.outputs]
-        if not producers:
+        fragment = copy_fragment(
+            self.document, [name], bounds=bounding_box(body.shape)
+        )
+        if not fragment.features:
             self.set_hint(f"'{name}' has no feature history to copy.")
             return
-
-        self.history.record("Duplicate")
-        copy_name = self.document.unique_name(name)
-        import copy as copy_module
-
-        for feature in producers:
-            clone = copy_module.deepcopy(feature)
-            clone.id = f"f{__import__('uuid').uuid4().hex[:10]}"
-            clone.name = self.document.unique_name(feature.name)
-            clone.outputs = [copy_name if o == name else o for o in clone.outputs]
-            for key, value in list(clone.inputs.items()):
-                if isinstance(value, BodyRef) and str(value) == name:
-                    clone.inputs[key] = BodyRef(copy_name)
-            self.document.add_feature(clone)
-
-        self.document.add_feature(
-            MoveFeature(
-                inputs={"body": BodyRef(copy_name), "dx": round(offset, 3)},
-                outputs=[copy_name],
-            )
-        )
-        self.mark_dirty()
-        self.rebuild()
-        self.set_hint(f"Duplicated {name} as {copy_name}.")
+        roots = self._paste_model_fragment(fragment, "Duplicate")
+        if roots:
+            self.set_hint(f"Duplicated {name} as {roots[0]}.")
 
     def _retire_body(self, name: str) -> None:
         """Take *name* out of the feature graph, without collateral damage.
@@ -1500,27 +1620,144 @@ class MainWindow(QMainWindow):
 
     def duplicate_selection(self) -> None:
         """Copy what is selected, keeping a group a group."""
+        from ..core.model_clipboard import copy_fragment
+
         self.selection.refresh()
-        groups = self.selection.groups
-        if groups:
-            for name in groups:
-                self._duplicate_group(name)
+        if not self.selection.only_bodies:
+            self.set_hint("Select one or more whole bodies or groups to duplicate.")
             return
-        for name in self.selection.bodies:
-            self.duplicate_body(name)
+        items = self.selection.items
+        shapes = [
+            body.shape
+            for body in (
+                self.document.body(name) for name in self.document.expand(items)
+            )
+            if body is not None and body.shape is not None
+        ]
+        if not shapes:
+            return
+        fragment = copy_fragment(
+            self.document, items, bounds=_combined_bounds(shapes)
+        )
+        roots = self._paste_model_fragment(fragment, "Duplicate")
+        if roots:
+            self.set_hint(f"Duplicated {', '.join(items)} as {', '.join(roots)}.")
+
+    def copy_selection(self) -> None:
+        """Copy whole selected bodies/groups as an independent feature graph."""
+        from ..core.model_clipboard import copy_fragment
+
+        self.selection.refresh()
+        if not self.selection.only_bodies:
+            self.set_hint("Copy works on whole bodies or groups; select the object first.")
+            return
+        items = self.selection.items
+        bodies = self.document.expand(items)
+        shapes = [
+            body.shape for body in (self.document.body(name) for name in bodies)
+            if body is not None and body.shape is not None
+        ]
+        if not shapes:
+            self.set_hint("There is no built model in the selection to copy.")
+            return
+        fragment = copy_fragment(
+            self.document, items, bounds=_combined_bounds(shapes)
+        )
+        mime = QMimeData()
+        mime.setData(
+            MODEL_CLIPBOARD_MIME,
+            json.dumps(fragment.to_dict(), separators=(",", ":")).encode("utf-8"),
+        )
+        mime.setText(", ".join(items))
+        QApplication.clipboard().setMimeData(mime)
+        self.set_hint(f"Copied {', '.join(items)}. Press Ctrl+V to paste a new part.")
+
+    def paste_selection(self) -> None:
+        """Paste a copied parametric fragment beside the current model."""
+        from ..core.model_clipboard import ModelFragment
+
+        mime = QApplication.clipboard().mimeData()
+        if not mime.hasFormat(MODEL_CLIPBOARD_MIME):
+            self.set_hint("The clipboard does not contain a SimpleCAD body or group.")
+            return
+        try:
+            payload = bytes(mime.data(MODEL_CLIPBOARD_MIME)).decode("utf-8")
+            fragment = ModelFragment.from_dict(json.loads(payload))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.set_hint(f"That SimpleCAD clipboard data is not valid: {exc}")
+            return
+        if not fragment.features or not fragment.root_bodies:
+            self.set_hint("The copied model has no feature history to paste.")
+            return
+
+        root_items = self._paste_model_fragment(fragment, "Paste")
+        if root_items:
+            self.set_hint(f"Pasted {', '.join(root_items)} beside the model.")
+
+    def _paste_model_fragment(self, fragment, history_label: str) -> list[str]:
+        """Insert one fragment; shared by Paste and Duplicate."""
+        from ..core.model_clipboard import paste_fragment
+
+        offset = (0.0, 0.0, 0.0)
+        existing = [
+            body.shape for body in self.document.visible_bodies()
+            if body.shape is not None
+        ]
+        if existing and fragment.bounds is not None:
+            source_low, source_high = fragment.bounds
+            here_low, here_high = _combined_bounds(existing)
+            gap = max(10.0, (source_high[0] - source_low[0]) * 0.15)
+            offset = (
+                here_high[0] + gap - source_low[0],
+                here_low[1] - source_low[1],
+                here_low[2] - source_low[2],
+            )
+
+        self.history.record(history_label)
+        _features, root_items = paste_fragment(self.document, fragment, offset)
+        self._select_after_rebuild = root_items
+        self.mark_dirty()
+        self.rebuild()
+        if not self.is_rebuilding:
+            self.browser.refresh()
+            self._select_pasted_items()
+        return root_items
+
+    def _select_pasted_items(self) -> None:
+        """Select a just-built paste without recursively widening per click."""
+        if not self._select_after_rebuild:
+            return
+        items, self._select_after_rebuild = self._select_after_rebuild, []
+        names = self.document.expand(items)
+        viewport = self.stage.viewport
+        self._expanding = True
+        try:
+            viewport.clear_selection()
+            for name in names:
+                presentation = self._presentations.get(name)
+                if presentation is not None:
+                    viewport.select_shape(presentation, replace=False)
+        finally:
+            self._expanding = False
+        self._on_selection()
 
     def _duplicate_group(self, name: str) -> None:
         """Copy every body in a group, and group the copies together."""
+        from ..core.model_clipboard import copy_fragment
+
         members = self.document.expand([name])
-        before = set(self.document.bodies)
-        for body_name in members:
-            self.duplicate_body(body_name)
-        self.wait_for_rebuild()
-        copies = [n for n in self.document.bodies if n not in before]
-        if len(copies) >= 2:
-            self.document.add_group(copies, self.document.unique_name(name))
-        self.browser.refresh()
-        self.set_hint(f"Duplicated {name}.")
+        shapes = [
+            body.shape for body in (self.document.body(item) for item in members)
+            if body is not None and body.shape is not None
+        ]
+        if not shapes:
+            return
+        fragment = copy_fragment(
+            self.document, [name], bounds=_combined_bounds(shapes)
+        )
+        roots = self._paste_model_fragment(fragment, "Duplicate")
+        if roots:
+            self.set_hint(f"Duplicated {name} as {roots[0]}.")
 
     def select_item(self, name: str) -> None:
         """Select a body or a group from the model tree."""
@@ -1633,9 +1870,9 @@ class MainWindow(QMainWindow):
 
     def close_tool_panels(self) -> None:
         """Dismiss any open tool panel without touching the selection."""
-        for widget, anchor in list(self.stage.overlays):
+        for widget, _anchor in list(self.stage.overlays):
             if getattr(widget, "is_tool_panel", False):
-                self.stage.overlays.remove((widget, anchor))
+                self.stage.remove_overlay(widget)
                 teardown = getattr(widget, "teardown", None)
                 if teardown is not None:
                     try:
@@ -1692,6 +1929,8 @@ class MainWindow(QMainWindow):
             "search": self.open_search,
             "delete": self.delete_selection,
             "duplicate": self.duplicate_selection,
+            "copy": self.copy_selection,
+            "paste": self.paste_selection,
             "group": self.group_selection,
             "ungroup": self.ungroup_selection,
             "hide": self.hide_selection,
@@ -1742,9 +1981,7 @@ class MainWindow(QMainWindow):
         panel = getattr(self, "_search", None)
         if panel is None:
             return
-        self.stage.overlays = [
-            (w, a) for w, a in self.stage.overlays if w is not panel
-        ]
+        self.stage.remove_overlay(panel)
         panel.hide()
         panel.deleteLater()
         self._search = None
@@ -2028,6 +2265,20 @@ class MainWindow(QMainWindow):
 
     # -- feedback -------------------------------------------------------
     def set_hint(self, text: str) -> None:
+        """Say what to do next -- and say nothing at all when it already says it.
+
+        The hover path calls this on every mouse move that finds geometry, and
+        over a single face it is the same sentence every time: measured at
+        twelve calls carrying one distinct string across one sweep. Each of the
+        eleven repeats re-ran ``_layout_overlays``, which is the expensive half.
+
+        Compared against ``full_text`` rather than ``text``: :class:`Hint` keeps
+        the whole string and pushes an elided one to the label, so ``text``
+        would compare against the trimmed version and let a repeat through
+        whenever the line was too long to fit.
+        """
+        if self.stage.hint.full_text() == text:
+            return
         self.stage.hint.setText(text)
         self.stage._layout_overlays()
 
@@ -2041,10 +2292,32 @@ class MainWindow(QMainWindow):
         self.selection.refresh()
         self._expand_selection_to_groups()
         self.refresh_context_bar()
+        self._retell_open_tools()
         if self.selection.count:
             self.set_hint(self.selection.summary())
         else:
             self.set_hint("Pick a shape from the left, or select geometry to act on it.")
+
+    def _retell_open_tools(self) -> None:
+        """Let an open tool panel re-read the selection.
+
+        Panels are built once, at activation, so a tool opened before its
+        subject was picked used to stay stuck on "select a face" -- and Thread
+        in particular would then commit a feature carrying no size. Driven from
+        here rather than from a signal the panel subscribes to, because
+        ``close_tool_panels`` removes a panel from ``stage.overlays`` before
+        tearing it down, so a dying panel is never told.
+        """
+        for widget, _anchor in list(self.stage.overlays):
+            if not getattr(widget, "is_tool_panel", False):
+                continue
+            listener = getattr(widget, "on_selection_changed", None)
+            if listener is None:
+                continue
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 - never break selection over a panel
+                pass
 
     def refresh_context_bar(self) -> None:
         """Rebuild the contextual bar from the current selection.

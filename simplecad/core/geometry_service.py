@@ -23,8 +23,10 @@ import traceback
 
 #: Message kinds on the wire.
 REBUILD = "rebuild"
+PREVIEW = "preview"
 SHUTDOWN = "shutdown"
 RESULT = "result"
+PREVIEWED = "previewed"
 FAILED = "failed"
 READY = "ready"
 
@@ -54,6 +56,80 @@ def _portable_inputs(feature) -> dict:
         if isinstance(value, (int, float, bool, str)) or value is None:
             out[key] = value
     return out
+
+
+def build_preview(document, feature_state: dict):
+    """Build what *feature_state* would produce, without recording anything.
+
+    A preview is a question, not an edit: the document, its bodies and the
+    rebuilder's cache all have to come out the far side untouched, or dragging a
+    fillet handle would quietly rewrite the model it is previewing against.
+
+    Deliberately the feature's own ``execute`` rather than a second, parallel
+    implementation. It is the same question the committed feature will answer,
+    and the two drifting apart is how a preview comes to show something the
+    Apply button then does not produce.
+
+    Returns the shape, or None when it cannot be built -- which for a fillet
+    radius past what the edge can carry is an ordinary answer, not a fault.
+    """
+    from .document import BuildContext, Feature
+
+    feature = Feature.from_dict(feature_state)
+    context = BuildContext(document)
+    # A copy: whatever the feature does to its context cannot reach the child's
+    # own body table.
+    context.bodies = {
+        name: body.shape
+        for name, body in document.bodies.items()
+        if body.shape is not None
+    }
+    try:
+        outputs = feature.execute(context)
+    except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
+        return None
+    if not outputs:
+        return None
+    # One body in, one body out; a preview of several is not a thing any tool
+    # asks for, and picking arbitrarily would be worse than saying no.
+    return next(iter(outputs.values()), None)
+
+
+def build_preview_result(document, feature_state: dict) -> dict:
+    """Return a preview shape together with the feature's honest outcome.
+
+    ``build_preview`` predates tools that need to distinguish "no shape" from
+    "the kernel rejected this operation".  Keep that small public helper for
+    callers and tests, while the process protocol carries enough information
+    for a panel to disable Apply and explain why a physical thread failed.
+    """
+    from .document import BuildContext, Feature
+
+    try:
+        feature = Feature.from_dict(feature_state)
+        context = BuildContext(document)
+        context.bodies = {
+            name: body.shape
+            for name, body in document.bodies.items()
+            if body.shape is not None
+        }
+        outputs = feature.execute(context)
+        shape = next(iter(outputs.values()), None) if outputs else None
+        return {
+            "shape": shape,
+            "error": None if shape is not None else "This preview produced no solid.",
+            "warnings": list(context.warnings),
+            "inputs": _portable_inputs(feature),
+            "message": feature.message,
+        }
+    except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
+        return {
+            "shape": None,
+            "error": str(exc) or "The geometry kernel could not build this preview.",
+            "warnings": [],
+            "inputs": {},
+            "message": "",
+        }
 
 
 def _summarise(report, document) -> dict:
@@ -97,6 +173,16 @@ def serve(connection) -> None:
     #: body name -> the bytes last sent, so unchanged bodies are not resent.
     sent: dict[str, bytes] = {}
 
+    # The child is where the fragile kernel work belongs, so it is also where a
+    # crash is most likely. Arm it there too, or the parent sees only "the
+    # geometry process went away".
+    try:
+        from .diagnostics import install as install_diagnostics
+
+        install_diagnostics("geometry")
+    except Exception:  # noqa: BLE001 - diagnostics must never stop the child
+        pass
+
     connection.send({"kind": READY, "pid": os.getpid()})
 
     while True:
@@ -107,6 +193,38 @@ def serve(connection) -> None:
         kind = message.get("kind")
         if kind == SHUTDOWN:
             return
+        if kind == PREVIEW:
+            # Answered even when the child has no document yet: that just means
+            # there is nothing to preview against, and the empty answer is the
+            # honest one.
+            result = {
+                "shape": None,
+                "error": "The geometry engine is not ready yet.",
+                "warnings": [],
+                "inputs": {},
+                "message": "",
+            }
+            if document is not None:
+                result = build_preview_result(
+                    document, message.get("feature") or {}
+                )
+            blob = None
+            if result["shape"] is not None:
+                blob = serialise_shape(result["shape"])
+            try:
+                connection.send({
+                    "kind": PREVIEWED,
+                    "token": message.get("token"),
+                    "shape": blob,
+                    "error": result["error"],
+                    "warnings": result["warnings"],
+                    "inputs": result["inputs"],
+                    "message": result["message"],
+                })
+            except (OSError, ValueError):
+                return
+            continue
+
         if kind != REBUILD:
             continue
 

@@ -121,6 +121,16 @@ class GroundGrid:
         self.apply_palette(palette)
         self.redisplay()
 
+    def detach(self) -> None:
+        """Forget the presentations and the context that owned them.
+
+        Called when the GL context is rebuilt underneath the viewport: these
+        objects carry buffers uploaded to a context that no longer exists, so
+        they are dropped and built again rather than re-displayed.
+        """
+        self._objects = []
+        self._context = None
+
     def redisplay(self) -> None:
         """(Re-)display the grid. Also the hook after ``context.RemoveAll``."""
         from OCP.Graphic3d import Graphic3d_ZLayerId_BotOSD
