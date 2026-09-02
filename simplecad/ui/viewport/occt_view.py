@@ -52,6 +52,15 @@ HEALTH_INTERVAL_MS = 1000
 DRAG_SNAP = 0.25
 DRAG_SNAP_FINE = 0.05
 
+#: Baseline transparency for whole-scene X-ray. Tool previews may ask for a
+#: stronger value; their request is layered over this rather than replacing it.
+XRAY_TRANSPARENCY = 0.65
+
+
+def effective_transparency(requested: float, xray: bool) -> float:
+    """Compose a tool's opacity request with the whole-scene X-ray baseline."""
+    return max(float(requested), XRAY_TRANSPARENCY if xray else 0.0)
+
 
 def _snap_distance(value: float, modifiers=None) -> float:
     """Quantise a dragged distance. Shift is free, Ctrl is fine, else 0.25 mm."""
@@ -127,6 +136,17 @@ class _Nav(Enum):
     GIZMO = 5
     DRAG_HANDLE = 6
     RUBBER_BAND = 7
+
+
+def navigation_mode(button, modifiers) -> _Nav:
+    """Resolve the camera gesture before selection/drag routing takes over."""
+    if button == Qt.RightButton:
+        return _Nav.ORBIT
+    if button == Qt.MiddleButton:
+        return _Nav.ORBIT if modifiers & Qt.ShiftModifier else _Nav.PAN
+    if button == Qt.LeftButton and modifiers & Qt.AltModifier:
+        return _Nav.ORBIT
+    return _Nav.NONE
 
 
 #: How long to leave between snap computations, in milliseconds.
@@ -290,14 +310,17 @@ class OcctViewport(QOpenGLWidget):
         self._painted = False
         self._pending_fit = False
         #: The last snap the cursor hovered, with where it was computed.
-        self._last_snap: tuple[QPoint, object] | None = None
+        self._last_snap: tuple[QPoint, object, bool] | None = None
+        #: First measurement point and the currently magnetised inference line.
+        self._snap_reference = None
+        self._inference_lock = None
         #: Snap candidates, keyed on the shapes they were derived from. The
         #: cursor stays over one face for dozens of consecutive events and the
         #: answer is identical every time; computing it again is what made
         #: point-to-point measuring unusable.
         self._snap_candidates: dict = {}
         #: Where the cursor last was while point-picking, waiting to be snapped.
-        self._pending_snap: QPoint | None = None
+        self._pending_snap: tuple[QPoint, object] | None = None
         #: Set while a double-click selection is being reported, so the window
         #: knows not to widen it to the whole group.
         self._pick_inside_group = False
@@ -316,6 +339,13 @@ class OcctViewport(QOpenGLWidget):
         self._snap_effort: dict = {}
         #: Bodies we have already complained about, so we say it once.
         self._snap_warned: set = set()
+        #: X-ray is a session view state, never document visibility. Values in
+        #: this table are the temporary transparency requested by tools; the
+        #: effective value is max(tool, X-ray).
+        self._xray_enabled = False
+        self._body_presentations: dict[int, tuple[object, float]] = {}
+        #: Position whose detected stack Tab/Shift+Tab is currently walking.
+        self._xray_cycle_pos: QPoint | None = None
 
         self.camera = CameraController(self)
         self.animator = CameraAnimator(self)
@@ -740,6 +770,66 @@ class OcctViewport(QOpenGLWidget):
         self.refresh()
         self.selection_changed.emit()
 
+    # -- X-ray ---------------------------------------------------------
+    @property
+    def xray_enabled(self) -> bool:
+        return self._xray_enabled
+
+    def set_xray(self, enabled: bool) -> None:
+        """Show every model body through every other model body.
+
+        Only presentations created by :meth:`display` participate. Ghosts,
+        handles, the ground grid, and other tool scenery retain their authored
+        opacity, so switching X-ray cannot corrupt an in-progress preview.
+        """
+        enabled = bool(enabled)
+        if enabled == self._xray_enabled:
+            return
+        self._xray_enabled = enabled
+        self._xray_cycle_pos = None
+        if self._context is not None:
+            for presentation, requested in self._body_presentations.values():
+                effective = effective_transparency(requested, enabled)
+                self._context.SetTransparency(presentation, effective, False)
+            self._context.ClearDetected(False)
+        self.refresh()
+
+    def cycle_detected_face(self, backwards: bool = False) -> bool:
+        """Highlight the next/previous face in the hit stack under the cursor."""
+        if (
+            not self._xray_enabled or self._context is None or self._view is None
+            or self._picking_points or self._sketch_plane is not None
+        ):
+            return False
+        pos = QPoint(self._last_pos)
+        if self._xray_cycle_pos is None or pos != self._xray_cycle_pos:
+            x, y = self._device_pos(pos)
+            self._context.MoveTo(x, y, self._view, False)
+            self._xray_cycle_pos = pos
+
+        count = 0
+        self._context.InitDetected()
+        while self._context.MoreDetected():
+            count += 1
+            self._context.NextDetected()
+        if count < 1:
+            return False
+
+        from OCP.TopAbs import TopAbs_FACE
+
+        advance = (
+            self._context.HilightPreviousDetected
+            if backwards else self._context.HilightNextDetected
+        )
+        for _index in range(count):
+            advance(self._view, False)
+            shape = self._selected_shape(self._context.DetectedOwner())
+            if shape is not None and shape.ShapeType() == TopAbs_FACE:
+                self.hover_changed.emit(self._describe_detected())
+                self.refresh()
+                return True
+        return False
+
     # -- rectangle (marquee) selection ----------------------------------
     def _band_rect(self, pos: QPoint) -> QRect:
         """The rectangle from where the button went down to *pos*."""
@@ -789,7 +879,10 @@ class OcctViewport(QOpenGLWidget):
         bottom_right = self._device_pos(rect.bottomRight())
         previous = self._selection_modes
 
-        self.set_selection_modes((SelectionMode.BODY, SelectionMode.SOLID))
+        # Mode 0 is the whole AIS presentation. Enabling SOLID alongside it can
+        # return the same presentation through two different owners; adding the
+        # duplicate twice toggles a single enclosed body straight back off.
+        self.set_selection_modes((SelectionMode.BODY,))
         self._set_overlap_detection(crossing)
         try:
             # The rectangular overload takes an update flag, not a scheme, and
@@ -804,7 +897,7 @@ class OcctViewport(QOpenGLWidget):
             while self._context.MoreSelected():
                 presentation = self._context.SelectedInteractive()
                 if presentation is not None and not any(
-                    p is presentation for p in found
+                    p == presentation for p in found
                 ):
                     found.append(presentation)
                 self._context.NextSelected()
@@ -865,6 +958,31 @@ class OcctViewport(QOpenGLWidget):
         self.refresh()
         self.selection_changed.emit()
 
+    def select_presentations(self, presentations) -> None:
+        """Replace the selection with several whole body presentations."""
+        if self._context is None:
+            return
+        self._context.ClearSelected(False)
+        for presentation in presentations:
+            if presentation is not None:
+                self._context.AddSelect(presentation)
+        self.refresh()
+        self.selection_changed.emit()
+
+    def select_subshape(self, presentation, shape, replace: bool = True) -> bool:
+        """Select a known face or edge after a parametric rebuild."""
+        if self._context is None or presentation is None or shape is None:
+            return False
+        from OCP.StdSelect import StdSelect_BRepOwner
+
+        owner = StdSelect_BRepOwner(shape, presentation, 5, True)
+        if replace:
+            self._context.ClearSelected(False)
+        self._context.AddSelect(owner)
+        self.refresh()
+        self.selection_changed.emit()
+        return True
+
     def set_highlight(self, presentation, on: bool) -> None:
         """Temporarily emphasise a presentation, used for previews."""
         if self._context is None or presentation is None:
@@ -923,6 +1041,15 @@ class OcctViewport(QOpenGLWidget):
         self.refresh()
         return presentation
 
+    def transform_ghost(self, transform) -> None:
+        """Move the current preview with a cheap presentation transform."""
+        presentation = getattr(self, "_ghost", None)
+        if self._context is None or presentation is None:
+            return
+        presentation.SetLocalTransformation(transform)
+        self._context.Redisplay(presentation, False)
+        self.refresh()
+
     def show_overlay_shape(self, shape, color: str | None = None,
                            transparency: float = 0.6):
         """Display a shape as scenery: visible, never pickable, caller-owned.
@@ -972,12 +1099,15 @@ class OcctViewport(QOpenGLWidget):
         # they were meant to outline. The context's default drawer never gets a
         # look in, so the outline has to be re-stated per presentation.
         self._apply_boundary_aspect(presentation)
-        if transparency:
-            presentation.SetTransparency(transparency)
+        requested = float(transparency)
+        effective = effective_transparency(requested, self._xray_enabled)
+        if effective:
+            presentation.SetTransparency(effective)
         self._context.Display(presentation, 1, int(self._selection_modes[0]), False)
         for mode in self._selection_modes[1:]:
             self._context.Activate(presentation, int(mode))
         self._apply_sensitivity(presentation)
+        self._body_presentations[id(presentation)] = (presentation, requested)
         self.refresh()
         return presentation
 
@@ -990,17 +1120,25 @@ class OcctViewport(QOpenGLWidget):
         """
         if self._context is None or presentation is None:
             return
-        self._context.SetTransparency(presentation, float(value), False)
+        requested = float(value)
+        entry = self._body_presentations.get(id(presentation))
+        if entry is not None:
+            self._body_presentations[id(presentation)] = (presentation, requested)
+            requested = effective_transparency(requested, self._xray_enabled)
+        self._context.SetTransparency(presentation, requested, False)
         self.refresh()
 
     def erase(self, presentation) -> None:
         if self._context is not None and presentation is not None:
+            self._body_presentations.pop(id(presentation), None)
             self._context.Remove(presentation, False)
             self.refresh()
 
     def clear(self) -> None:
         if self._context is None:
             return
+        self._body_presentations.clear()
+        self._xray_cycle_pos = None
         self._context.RemoveAll(False)
         if self._view_cube is not None:
             self._context.Display(self._view_cube, False)
@@ -1289,6 +1427,8 @@ class OcctViewport(QOpenGLWidget):
         the window owns it forgets in ``MainWindow._on_viewport_rebound``.
         """
         self._grid.detach()
+        self._body_presentations.clear()
+        self._xray_cycle_pos = None
         self._ghost = None
         self.gizmo = None
         self.handles.handles.clear()
@@ -1657,6 +1797,13 @@ class OcctViewport(QOpenGLWidget):
 
     def end_point_pick(self) -> None:
         self._picking_points = False
+        self.set_snap_reference(None)
+
+    def set_snap_reference(self, snap) -> None:
+        """Set the first point used for second-point alignment inference."""
+        self._snap_reference = snap
+        self._inference_lock = None
+        self._last_snap = None
 
     @property
     def picking_points(self) -> bool:
@@ -1673,7 +1820,7 @@ class OcctViewport(QOpenGLWidget):
         ratio = self.devicePixelRatioF()
         return (float(x) / ratio, float(y) / ratio)
 
-    def snap_at(self, pos: QPoint, reuse: bool = False):
+    def snap_at(self, pos: QPoint, reuse: bool = False, modifiers=None):
         """The best snap point under *pos*, or None.
 
         Detection lights up whatever it finds, which while point-picking means
@@ -1697,11 +1844,16 @@ class OcctViewport(QOpenGLWidget):
         slightly different pixel, which is exactly how the point you got came to
         differ from the marker you clicked on.
         """
-        from ...kernel.snapping import nearest, ray_snaps
+        from ...kernel.snapping import inferred_snap, nearest, ray_snaps
+
+        bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
 
         if reuse and self._last_snap is not None:
-            where, cached = self._last_snap
-            if (where - pos).manhattanLength() <= SNAP_REUSE_PX:
+            where, cached, cached_bypass = self._last_snap
+            if (
+                cached_bypass == bypass
+                and (where - pos).manhattanLength() <= SNAP_REUSE_PX
+            ):
                 return cached
 
         from ...kernel.snapping import SnapPoint
@@ -1716,7 +1868,8 @@ class OcctViewport(QOpenGLWidget):
         # two repaint requests per motion event is how a queue that was merely
         # busy became one that never drains.
         if shape is None:
-            self._last_snap = (QPoint(pos), None)
+            self._inference_lock = None
+            self._last_snap = (QPoint(pos), None, bypass)
             return None
 
         # How much work this shape can afford -- decided from sub-shape counts
@@ -1745,8 +1898,19 @@ class OcctViewport(QOpenGLWidget):
             # other surface hits, so any named place still beats it.
             candidates = candidates + [SnapPoint(picked, "surface")]
         snap = nearest(candidates, self.project, (pos.x(), pos.y()))
+        if self._snap_reference is not None:
+            snap, self._inference_lock = inferred_snap(
+                self._snap_reference,
+                snap,
+                self.project,
+                (pos.x(), pos.y()),
+                locked=self._inference_lock,
+                bypass=bypass,
+            )
+        else:
+            self._inference_lock = None
         self._note_snap_cost(parent, time.perf_counter() - started)
-        self._last_snap = (QPoint(pos), snap)
+        self._last_snap = (QPoint(pos), snap, bypass)
         return snap
 
     def picked_point(self):
@@ -1847,20 +2011,21 @@ class OcctViewport(QOpenGLWidget):
         own work, so without this a slow snap can be entered again from inside
         itself, and a stall becomes a hang.
         """
-        pos, self._pending_snap = self._pending_snap, None
-        if pos is None or not self._picking_points or self._snapping:
+        pending, self._pending_snap = self._pending_snap, None
+        if pending is None or not self._picking_points or self._snapping:
             return
+        pos, modifiers = pending
         self._snapping = True
         try:
-            snap = self.snap_at(pos)
+            snap = self.snap_at(pos, modifiers=modifiers)
         finally:
             self._snapping = False
         self.snap_hovered.emit(snap)
         self.update()
 
-    def request_snap(self, pos: QPoint) -> None:
+    def request_snap(self, pos: QPoint, modifiers=None) -> None:
         """Note where the cursor is; the snap follows on the next event turn."""
-        self._pending_snap = QPoint(pos)
+        self._pending_snap = (QPoint(pos), modifiers)
         if not self._snap_timer.isActive():
             self._snap_timer.start()
 
@@ -1880,6 +2045,7 @@ class OcctViewport(QOpenGLWidget):
 
         self._last_snap = None
         self._pending_snap = None
+        self._inference_lock = None
         self._snap_candidates.clear()
         self._snap_tiers.clear()
         # Deliberately *not* cleared: what a body costs to snap on is a property
@@ -2010,16 +2176,13 @@ class OcctViewport(QOpenGLWidget):
         # least forgivable kind of camera surprise.
         self.animator.cancel()
 
-        if button == Qt.MiddleButton or (
-            button == Qt.LeftButton and modifiers & Qt.AltModifier
-        ):
-            if modifiers & Qt.ShiftModifier:
-                self._nav = _Nav.PAN
-            else:
-                self._nav = _Nav.ORBIT
+        camera_nav = navigation_mode(button, modifiers)
+        if camera_nav is not _Nav.NONE:
+            # Fusion-style navigation: the wheel held down slides the sheet;
+            # Shift changes the same gesture into an orbit.
+            self._nav = camera_nav
+            if camera_nav is _Nav.ORBIT:
                 self.camera.begin_orbit(self._press_pos)
-        elif button == Qt.RightButton and modifiers & Qt.ShiftModifier:
-            self._nav = _Nav.PAN
         elif button == Qt.LeftButton and self._handle_press(self._press_pos):
             pass                                  # _handle_press set the mode
         elif (
@@ -2088,6 +2251,8 @@ class OcctViewport(QOpenGLWidget):
         if self._view is None:
             return
         pos = event.position().toPoint()
+        if self._xray_cycle_pos is not None and pos != self._xray_cycle_pos:
+            self._xray_cycle_pos = None
         delta = pos - self._last_pos
         # Measured from where the button went down, not from the previous
         # event. Per-event it meant one jumpy motion report marked the whole
@@ -2103,7 +2268,7 @@ class OcctViewport(QOpenGLWidget):
             self._dragged = True
 
         if self._nav is _Nav.GIZMO and self.gizmo is not None:
-            self.gizmo.drag(*self._device_pos(pos))
+            self.gizmo.drag(*self._device_pos(pos), event.modifiers())
             self._last_pos = pos
             return
         if self._nav is _Nav.DRAG_FACE and self._drag is not None:
@@ -2124,6 +2289,12 @@ class OcctViewport(QOpenGLWidget):
             self._last_pos = pos
             return
         if self._nav is _Nav.ORBIT:
+            # A right press is both the start of an orbit and a possible context
+            # click. Do not move the camera until it has crossed the same slop
+            # threshold that distinguishes every other click from a drag.
+            if event.buttons() & Qt.RightButton and not self._dragged:
+                self._last_pos = pos
+                return
             self.camera.orbit(delta.x(), delta.y())
             self.camera_moved()
         elif self._nav is _Nav.PAN:
@@ -2134,7 +2305,7 @@ class OcctViewport(QOpenGLWidget):
             if where is not None:
                 self.sketch_moved.emit(where[0], where[1])
         elif self._picking_points:
-            self.request_snap(pos)
+            self.request_snap(pos, event.modifiers())
         elif self._picking_enabled:
             x, y = self._device_pos(pos)
             self._context.MoveTo(x, y, self._view, True)
@@ -2150,6 +2321,9 @@ class OcctViewport(QOpenGLWidget):
             return
         if was_nav is _Nav.ORBIT:
             self.camera.end_orbit()
+            if event.button() == Qt.RightButton and not self._dragged:
+                self.context_menu_requested.emit(event.position().toPoint())
+                return
         if was_nav is _Nav.RUBBER_BAND:
             rect = self._band_rect(event.position().toPoint())
             self._set_band(None)
@@ -2208,7 +2382,9 @@ class OcctViewport(QOpenGLWidget):
         if self._picking_points:
             # reuse=True: the point that gets picked is exactly the one the
             # indicator was drawn on. See snap_at.
-            snap = self.snap_at(event.position().toPoint(), reuse=True)
+            snap = self.snap_at(
+                event.position().toPoint(), reuse=True, modifiers=event.modifiers()
+            )
             if snap is not None:
                 self.snap_picked.emit(snap)
             return
@@ -2224,8 +2400,17 @@ class OcctViewport(QOpenGLWidget):
         # up means pressing on an edge and lifting a pixel to one side selects
         # the face behind it instead -- the user aimed once, and that is the
         # aim that should count.
-        x, y = self._device_pos(self._press_pos)
-        self._context.MoveTo(x, y, self._view, False)
+        # A cycled X-ray hit is already the explicitly highlighted owner. Do
+        # not rerun frontmost detection on release and throw that choice away.
+        cycled = (
+            self._xray_enabled
+            and self._xray_cycle_pos is not None
+            and (self._press_pos - self._xray_cycle_pos).manhattanLength()
+                <= CLICK_SLOP_PX
+        )
+        if not cycled:
+            x, y = self._device_pos(self._press_pos)
+            self._context.MoveTo(x, y, self._view, False)
         if self._handle_view_cube_click():
             return
         self._context.SelectDetected(scheme)
@@ -2339,6 +2524,16 @@ class OcctViewport(QOpenGLWidget):
         platform offers it, and its absence costs nothing.
         """
         kind = event.type()
+        if kind == QEvent.KeyPress and self._xray_enabled:
+            key = event.key()
+            if key in (Qt.Key_Tab, Qt.Key_Backtab):
+                backwards = (
+                    key == Qt.Key_Backtab
+                    or bool(event.modifiers() & Qt.ShiftModifier)
+                )
+                if self.cycle_detected_face(backwards):
+                    event.accept()
+                    return True
         if kind == QEvent.NativeGesture and self._native_gesture(event):
             return True
         if kind == QEvent.Gesture and self._pinch_gesture(event):

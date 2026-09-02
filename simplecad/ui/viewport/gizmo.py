@@ -12,8 +12,44 @@ history and the feature tree the single source of truth about where things are.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
+
+
+ROTATION_SNAP_STEP = 90.0
+ROTATION_SNAP_CAPTURE = 5.0
+ROTATION_SNAP_RELEASE = 8.0
+
+
+@dataclass
+class RotationSnapState:
+    """Unwrap a ring drag and magnetically lock it to quarter turns."""
+
+    previous: float | None = None
+    accumulated: float = 0.0
+    locked: float | None = None
+
+    def update(self, wrapped: float, bypass: bool = False) -> tuple[float, bool]:
+        if self.previous is None:
+            self.accumulated = wrapped
+        else:
+            delta = (wrapped - self.previous + 180.0) % 360.0 - 180.0
+            self.accumulated += delta
+        self.previous = wrapped
+
+        if bypass:
+            self.locked = None
+            return self.accumulated, False
+        if self.locked is not None:
+            if abs(self.accumulated - self.locked) <= ROTATION_SNAP_RELEASE:
+                return self.locked, True
+            self.locked = None
+        target = round(self.accumulated / ROTATION_SNAP_STEP) * ROTATION_SNAP_STEP
+        if abs(self.accumulated - target) <= ROTATION_SNAP_CAPTURE:
+            self.locked = target
+            return target, True
+        return self.accumulated, False
 
 
 class TransformGizmo(QObject):
@@ -32,9 +68,22 @@ class TransformGizmo(QObject):
         self._dragging = False
         self._start = None
         self._last = None
+        self._allow_translation = True
+        self._allow_rotation = True
+        self._pivot = (0.0, 0.0, 0.0)
+        self._rotation_state = RotationSnapState()
+        self._rotation_snapped = False
 
     # -- lifecycle -------------------------------------------------------
-    def attach(self, presentation, allow_scale: bool = False) -> bool:
+    def attach(
+        self,
+        presentation,
+        allow_scale: bool = False,
+        allow_translation: bool = True,
+        allow_rotation: bool = True,
+        allow_planes: bool = True,
+        pivot=None,
+    ) -> bool:
         """Put the gizmo on a presentation. Returns False if it cannot."""
         from OCP.AIS import (
             AIS_MM_Rotation, AIS_MM_Scaling, AIS_MM_Translation,
@@ -47,20 +96,56 @@ class TransformGizmo(QObject):
         self.detach()
 
         manipulator = AIS_Manipulator()
-        manipulator.SetPart(AIS_MM_Translation, True)
-        manipulator.SetPart(AIS_MM_Rotation, True)
-        manipulator.SetPart(AIS_MM_TranslationPlane, True)
+        manipulator.SetPart(AIS_MM_Translation, allow_translation)
+        manipulator.SetPart(AIS_MM_Rotation, allow_rotation)
+        manipulator.SetPart(
+            AIS_MM_TranslationPlane, allow_translation and allow_planes
+        )
         manipulator.SetPart(AIS_MM_Scaling, allow_scale)
         # Activating on hover is what makes the handles feel like handles:
         # the one under the cursor lights up and takes the drag.
         manipulator.SetModeActivationOnDetection(True)
+        # Keep a generous, predictable on-screen target however far the camera
+        # is from the part. Tiny world-sized arrows are the main reason a move
+        # direction becomes difficult to acquire after zooming out.
         try:
-            manipulator.Attach(presentation)
+            presentations = (
+                list(presentation)
+                if isinstance(presentation, (list, tuple))
+                else [presentation]
+            )
+            presentations = [item for item in presentations if item is not None]
+            if not presentations:
+                return False
+            if len(presentations) == 1:
+                manipulator.Attach(presentations[0])
+            else:
+                from OCP.AIS import AIS_ManipulatorObjectSequence
+
+                sequence = AIS_ManipulatorObjectSequence()
+                for item in presentations:
+                    sequence.Append(item)
+                manipulator.Attach(sequence)
+            if pivot is not None:
+                from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+                manipulator.SetPosition(
+                    gp_Ax2(gp_Pnt(*pivot), gp_Dir(0.0, 0.0, 1.0))
+                )
+            # Attach derives a world-space size from the object bounds, so the
+            # screen-persistent size has to be asserted afterwards.
+            manipulator.SetZoomPersistence(True)
+            manipulator.SetSize(96.0)
+            manipulator.SetGap(8.0)
+            manipulator.SetWidth(2.5)
         except Exception:  # noqa: BLE001 - an empty body has no box to attach to
             return False
         context.Display(manipulator, False)
         self._manipulator = manipulator
-        self._attached = presentation
+        self._attached = presentations
+        self._allow_translation = bool(allow_translation)
+        self._allow_rotation = bool(allow_rotation)
+        self._pivot = tuple(pivot) if pivot is not None else (0.0, 0.0, 0.0)
         self.viewport.refresh()
         return True
 
@@ -77,6 +162,8 @@ class TransformGizmo(QObject):
         self._dragging = False
         self._start = None
         self._last = None
+        self._rotation_state = RotationSnapState()
+        self._rotation_snapped = False
         self.viewport.refresh()
 
     @property
@@ -86,6 +173,10 @@ class TransformGizmo(QObject):
     @property
     def dragging(self) -> bool:
         return self._dragging
+
+    @property
+    def rotation_snapped(self) -> bool:
+        return self._rotation_snapped
 
     # -- interaction -----------------------------------------------------
     def press(self, device_x: int, device_y: int) -> bool:
@@ -102,21 +193,58 @@ class TransformGizmo(QObject):
         self._dragging = True
         self._start = (device_x, device_y)
         self._last = None
+        self._rotation_state = RotationSnapState()
+        self._rotation_snapped = False
         return True
 
-    def drag(self, device_x: int, device_y: int) -> None:
+    def drag(self, device_x: int, device_y: int, modifiers=None) -> None:
         if not self._dragging or self._manipulator is None:
             return
-        transform = self._manipulator.Transform(
-            device_x, device_y, self.viewport.view
-        )
+        if self._allow_rotation and not self._allow_translation:
+            from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+            raw = gp_Trsf()
+            if not self._manipulator.ObjectTransformation(
+                device_x, device_y, self.viewport.view, raw
+            ):
+                return
+            components = _decompose(
+                raw, allow_translation=False, allow_rotation=True
+            )
+            axis_index = int(self._manipulator.ActiveAxisIndex())
+            if axis_index not in (0, 1, 2):
+                return
+            wrapped = components[3 + axis_index]
+            bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
+            angle, self._rotation_snapped = self._rotation_state.update(
+                wrapped, bypass=bypass
+            )
+            axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            transform = gp_Trsf()
+            transform.SetRotation(
+                gp_Ax1(gp_Pnt(*self._pivot), gp_Dir(*axes[axis_index])),
+                math.radians(angle),
+            )
+            self._manipulator.Transform(transform)
+            values = [0.0, 0.0, 0.0]
+            values[axis_index] = angle
+            self._last = (0.0, 0.0, 0.0, *values)
+        else:
+            transform = self._manipulator.Transform(
+                device_x, device_y, self.viewport.view
+            )
+            if transform is not None:
+                self._last = _decompose(
+                    transform,
+                    allow_translation=self._allow_translation,
+                    allow_rotation=self._allow_rotation,
+                )
         self.viewport.refresh()
-        if transform is not None:
+        if self._last is not None:
             # Remember it: on release the accumulated transform has to come from
             # the last drag position. Re-querying at the *start* position -- as
             # an earlier version did -- always yields zero, so every drag
             # committed nothing.
-            self._last = _decompose(transform)
             self.changed.emit(*self._last)
 
     def release(self, apply: bool = True):
@@ -131,11 +259,15 @@ class TransformGizmo(QObject):
         manipulator.DeactivateCurrentMode()
         self._dragging = False
         self._last = None
+        self._rotation_state = RotationSnapState()
+        self._rotation_snapped = False
         self.viewport.refresh()
         return components
 
 
-def _decompose(transform) -> tuple[float, float, float, float, float, float]:
+def _decompose(
+    transform, *, allow_translation: bool = True, allow_rotation: bool = True
+) -> tuple[float, float, float, float, float, float]:
     """Split a ``gp_Trsf`` into translation and XYZ rotation, in mm and degrees.
 
     Euler angles in extrinsic XYZ order, because that is the order
@@ -143,12 +275,18 @@ def _decompose(transform) -> tuple[float, float, float, float, float, float]:
     typed one mean the same thing.
     """
     translation = transform.TranslationPart()
+    dx, dy, dz = (
+        (translation.X(), translation.Y(), translation.Z())
+        if allow_translation
+        else (0.0, 0.0, 0.0)
+    )
     rx = ry = rz = 0.0
-    try:
-        from OCP.gp import gp_Extrinsic_XYZ
+    if allow_rotation:
+        try:
+            from OCP.gp import gp_Extrinsic_XYZ
 
-        angles = transform.GetRotation().GetEulerAngles(gp_Extrinsic_XYZ)
-        rx, ry, rz = (math.degrees(a) for a in angles)
-    except Exception:  # noqa: BLE001 - a pure translation carries no rotation
-        pass
-    return (translation.X(), translation.Y(), translation.Z(), rx, ry, rz)
+            angles = transform.GetRotation().GetEulerAngles(gp_Extrinsic_XYZ)
+            rx, ry, rz = (math.degrees(a) for a in angles)
+        except Exception:  # noqa: BLE001 - a pure translation carries no rotation
+            pass
+    return (dx, dy, dz, rx, ry, rz)

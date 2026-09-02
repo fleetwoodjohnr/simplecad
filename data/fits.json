@@ -1,25 +1,25 @@
 {
-  "note": "Diametral clearances in mm, tuned for FDM. Applied to the internal (female) side so the external part keeps its nominal size.",
+  "note": "Diametral clearances in mm, tuned for separately printed 0.4 mm FDM parts. Applied to the internal (female) side so the external part keeps its nominal size.",
   "thread_clearance": {
     "tight": {
       "label": "Tight",
-      "clearance": 0.1,
-      "hint": "Snug assembly, may need force"
+      "clearance": 0.4,
+      "hint": "Close fit, 0.20 mm per side"
     },
     "normal": {
       "label": "Normal",
-      "clearance": 0.2,
-      "hint": "Recommended for most FDM prints"
+      "clearance": 0.6,
+      "hint": "Free-running default, 0.30 mm per side"
     },
     "loose": {
       "label": "Loose",
-      "clearance": 0.35,
-      "hint": "Easy turning, some play"
+      "clearance": 0.8,
+      "hint": "Easy turning, 0.40 mm per side"
     },
     "very_loose": {
       "label": "Very Loose",
-      "clearance": 0.5,
-      "hint": "Coarse printers or fast assembly"
+      "clearance": 1.0,
+      "hint": "Coarse printers, 0.50 mm per side"
     }
   },
   "default_thread_clearance": "normal",
@@ -46,7 +46,7 @@
     },
     "thread": {
       "label": "Thread Fit",
-      "clearance": 0.2,
+      "clearance": 0.6,
       "hint": "Matches the thread clearance default"
     }
   },

@@ -52,6 +52,19 @@ class CalibrationModel:
         )
 
 
+@dataclass(frozen=True)
+class ThreadCalibrationModel:
+    """A P30 plug and female gauges spanning the supported fit presets."""
+
+    pieces: tuple[tuple[str, object], ...]
+    clearances: tuple[float, ...]
+    designation: str
+
+    def describe(self) -> str:
+        values = ", ".join(f"{value:.2f}" for value in self.clearances)
+        return f"{self.designation} thread gauges at {values} mm diametral clearance"
+
+
 def _label(text: str, height: float, depth: float):
     """Raised text, for marking each test position.
 
@@ -140,6 +153,48 @@ def build_model(
         )
 
 
+def build_thread_model(
+    clearances=(0.40, 0.60, 0.80, 1.00), designation: str = "P30"
+) -> ThreadCalibrationModel:
+    """Build a short plug and separately named gauges for real thread tuning.
+
+    The pieces are deliberately separate and arranged on the active printer's
+    plate. Their object names carry the value into 3MF/slicer workflows even
+    when a host has no modelling font available for physical labels.
+    """
+    from .fasteners import make_bolt, make_nut
+    from .thread_specs import by_designation
+
+    size = by_designation(designation)
+    if size is None:
+        raise CadError(f"Unknown calibration thread {designation}.")
+    values = tuple(float(value) for value in clearances)
+    if not values or any(value < 0.0 for value in values):
+        raise CadError("Thread calibration needs non-negative clearance values.")
+
+    thread_length = size.pitch * 2.0
+    plug = make_bolt(
+        size, thread_length, thread_length=thread_length, form="printed"
+    )
+    pieces: list[tuple[str, object]] = [
+        (f"{designation} plug", transformed(
+            plug, make_transform(translate=(30.0, 30.0, 0.0))
+        ))
+    ]
+    spacing = max(55.0, size.diameter * 1.8)
+    for index, value in enumerate(values):
+        gauge = make_nut(
+            size, clearance=value, height=thread_length, form="printed"
+        )
+        x = 30.0 + spacing * (1 + index % 2)
+        y = 30.0 + spacing * (index // 2)
+        pieces.append((
+            f"{designation} gauge {value:.2f} mm",
+            transformed(gauge, make_transform(translate=(x, y, 0.0))),
+        ))
+    return ThreadCalibrationModel(tuple(pieces), values, designation)
+
+
 # ----------------------------------------------------------------------
 # Saving what the print told you
 # ----------------------------------------------------------------------
@@ -194,10 +249,23 @@ def effective_fits(printer_id: str) -> dict[str, float]:
     return values
 
 
-def effective_thread_clearance(printer_id: str, preset: str = "normal") -> float:
+def effective_thread_clearance(
+    printer_id: str, preset: str | float = "normal"
+) -> float:
+    """Resolved diametral allowance, preserving preset spacing after tuning.
+
+    Calibration records the Normal thread fit. Tight/Loose/Very Loose move by
+    the same delta, so choosing a different feel remains meaningful on a tuned
+    machine instead of every preset collapsing onto one measured number.
+    """
     from .thread_specs import clearance_for
 
+    if isinstance(preset, (int, float)):
+        return clearance_for(preset)
+    shipped = clearance_for(preset)
     measured = load_measurements(printer_id)
     if measured and "measured_thread_clearance" in measured:
-        return float(measured["measured_thread_clearance"])
-    return clearance_for(preset)
+        normal = float(measured["measured_thread_clearance"])
+        shipped_normal = clearance_for("normal")
+        return max(0.10, normal + shipped - shipped_normal)
+    return shipped

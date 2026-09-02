@@ -12,7 +12,7 @@ import itertools
 import math
 
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QGridLayout, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QGridLayout, QVBoxLayout, QWidget,
 )
 
 from ...core.document import BodyRef
@@ -22,7 +22,9 @@ from ...kernel.operations import (
     PushPullFeature, RoundPushPullFeature, ScaleFeature, ShellFeature,
     ThreadedConnectionFeature, ThreadFeature,
 )
-from ...kernel.thread_specs import clearance_presets, recommend
+from ...kernel.thread_specs import (
+    clearance_presets, effective_clearance_for, recommend,
+)
 from ..theme import METRICS
 from ..widgets.controls import GhostButton
 from .base import FeaturePreviewController, ToolPanel
@@ -41,6 +43,37 @@ def _need(window, test: bool, message: str) -> bool:
         window.set_hint(message)
         return False
     return True
+
+
+def _resize_text(size, diameter: float, internal: bool) -> str:
+    """A size, and what picking it would do to the face it lands on.
+
+    The second half is the part that matters: a size the face does not already
+    suit is still a perfectly good answer, but only if the user can see what it
+    costs before choosing it.
+    """
+    change = size.diameter - diameter
+    what = "hole" if internal else "shaft"
+    if change > 0.05:
+        effect = (
+            f"opens the {what} {change:.2f} mm" if internal
+            else f"builds the {what} up {change:.2f} mm"
+        )
+    elif change < -0.05:
+        effect = (
+            f"fills the {what} back {abs(change):.2f} mm" if internal
+            else f"turns the {what} down {abs(change):.2f} mm"
+        )
+    else:
+        effect = "fits as it is"
+    return f"{size.designation}  ·  {size.pitch:.2f} mm pitch  ·  {effect}"
+
+
+def _clearance_text(key: str, entry: dict, *, hint: bool = False) -> str:
+    """The active printer value, stated in both useful conventions."""
+    value = effective_clearance_for(key)
+    text = f"{entry['label']} — {value:.2f} mm diameter · {value / 2.0:.2f} per side"
+    return f"{text} · {entry['hint']}" if hint else text
 
 
 class _SelectionTool(ToolPanel):
@@ -64,11 +97,6 @@ class _SelectionTool(ToolPanel):
 
     def on_selection_changed(self) -> None:
         """Re-read the selection into the panel. Subclasses override."""
-
-    def relayout(self) -> None:
-        """Resize to fit whatever the panel is now showing."""
-        self.adjustSize()
-        self.window_.stage._layout_overlays()
 
 
 # ----------------------------------------------------------------------
@@ -169,57 +197,105 @@ class PushPullPanel(_SelectionTool):
         self.window_.cancel_tool()
 
 
-@register_tool("move")
-@register_tool("rotate")
-class MovePanel(_SelectionTool):
-    """Move and rotate, by dragging the gizmo or by typing exact numbers.
+class _TransformPanel(_SelectionTool):
+    """Shared implementation for the deliberately separate Move and Rotate tools."""
 
-    Both routes write the same feature, so a drag can be corrected by typing
-    afterwards and neither is second class.
-    """
-
-    title = "Move"
-    confirm_label = "Move"
+    mode = "move"
+    field_specs = (("dx", "X", Dimension.LENGTH),
+                   ("dy", "Y", Dimension.LENGTH),
+                   ("dz", "Z", Dimension.LENGTH))
 
     def build(self) -> None:
         bodies = self.selection.bodies
         groups = self.selection.groups
         subject = ", ".join(groups) if groups else ", ".join(bodies)
         if groups:
-            subject += f" ({len(bodies)} objects, moving together)"
+            subject += f" ({len(bodies)} objects, transforming together)"
+        verb = "move" if self.mode == "move" else "rotate"
         self.set_subtitle(
             f"{subject} — drag a handle, or type exact values."
-            if bodies else "Select a body to move."
+            if bodies else f"Select a body to {verb}."
         )
-        for key, label in (("dx", "X"), ("dy", "Y"), ("dz", "Z")):
-            self.add_field(key, label, 0.0)
-        self.add_section("Rotate")
-        for key, label in (("rx", "Around X"), ("ry", "Around Y"), ("rz", "Around Z")):
-            self.add_field(key, label, 0.0, Dimension.ANGLE)
+        for key, label, dimension in self.field_specs:
+            self.add_field(key, label, 0.0, dimension)
+        self._origin_ghost = False
         self._attach_gizmo()
 
     def _attach_gizmo(self) -> None:
         bodies = self.selection.bodies
         if not bodies:
             return
-        presentation = self.window_._presentations.get(bodies[0])
-        if presentation is None:
+        presentations = [
+            self.window_._presentations.get(name) for name in bodies
+            if self.window_._presentations.get(name) is not None
+        ]
+        if not presentations:
             return
-        gizmo = self.window_.attach_gizmo(presentation)
+        pivot = self._shared_pivot(bodies)
+        gizmo = self.window_.attach_gizmo(
+            presentations,
+            allow_translation=self.mode == "move",
+            allow_rotation=self.mode == "rotate",
+            allow_planes=self.mode == "move",
+            allow_scale=False,
+            pivot=pivot,
+        )
         if gizmo is not None:
             gizmo.changed.connect(self._on_gizmo_drag)
             gizmo.committed.connect(self._on_gizmo_commit)
 
     def _on_gizmo_drag(self, dx, dy, dz, rx, ry, rz) -> None:
+        from PySide6.QtGui import QCursor
+
+        if not self._origin_ghost:
+            from ...kernel.occ import compound
+
+            shapes = [
+                body.shape for body in (
+                    self.window_.document.body(name) for name in self.selection.bodies
+                ) if body is not None and body.shape is not None
+            ]
+            self.window_.stage.viewport.show_ghost(
+                compound(shapes), self.window_.palette_.text_faint, transparency=0.72
+            )
+            self._origin_ghost = True
         moved = math.sqrt(dx * dx + dy * dy + dz * dz)
-        turned = max(abs(rx), abs(ry), abs(rz))
-        if turned > 0.01:
-            self.window_.set_hint(f"Rotating {turned:.1f}°")
+        axis, angle = max(
+            (("X", rx), ("Y", ry), ("Z", rz)), key=lambda item: abs(item[1])
+        )
+        if self.mode == "rotate":
+            snapped = bool(
+                self.window_.stage.viewport.gizmo
+                and self.window_.stage.viewport.gizmo.rotation_snapped
+            )
+            suffix = " · snapped" if snapped else ""
+            self.window_.set_hint(
+                f"Rotating {axis} {angle:+.1f}°{suffix}. Shift bypasses snapping."
+            )
+            headline = f"{axis}  {angle:+.0f}°{suffix}" if snapped else f"{axis}  {angle:+.2f}°"
+            sub = f"X {rx:.2f}°  Y {ry:.2f}°  Z {rz:.2f}°"
         else:
             self.window_.set_hint(f"Moving {moved:.2f} mm")
+            active = "/".join(
+                axis for axis, value in (("X", dx), ("Y", dy), ("Z", dz))
+                if abs(value) > 1e-4
+            ) or "Move"
+            headline = f"{active}  {moved:.2f} mm"
+            sub = f"ΔX {dx:.2f}  ΔY {dy:.2f}  ΔZ {dz:.2f}"
+        for key, value in (
+            ("dx", dx), ("dy", dy), ("dz", dz),
+            ("rx", rx), ("ry", ry), ("rz", rz),
+        ):
+            if key in self.fields:
+                self.fields[key].set_value(round(value, 3))
+        self.window_.stage.drag_readout.show_text(
+            self.window_.stage.mapFromGlobal(QCursor.pos()), headline, sub,
+            self.window_.palette_.accent,
+        )
 
     def _on_gizmo_commit(self, dx, dy, dz, rx, ry, rz) -> None:
         """A released drag fills the fields, then applies them."""
+        self._clear_gizmo_feedback()
         for key, value in (
             ("dx", dx), ("dy", dy), ("dz", dz), ("rx", rx), ("ry", ry), ("rz", rz)
         ):
@@ -228,6 +304,16 @@ class MovePanel(_SelectionTool):
                 field.set_value(round(value, 3))
         if any(abs(v) > 1e-4 for v in (dx, dy, dz, rx, ry, rz)):
             self.commit()
+
+    def _clear_gizmo_feedback(self) -> None:
+        if getattr(self, "_origin_ghost", False):
+            self.window_.stage.viewport.clear_ghost()
+        self._origin_ghost = False
+        self.window_.stage.drag_readout.finish()
+
+    def teardown(self) -> None:
+        self._clear_gizmo_feedback()
+        self.window_.detach_gizmo()
 
     def _shared_pivot(self, names):
         """The centre of everything selected, for a rotation about the lot."""
@@ -247,24 +333,27 @@ class MovePanel(_SelectionTool):
 
     def commit(self) -> None:
         bodies = self.selection.bodies
-        if not _need(self.window_, bool(bodies), "Select a body to move."):
+        verb = "move" if self.mode == "move" else "rotate"
+        if not _need(self.window_, bool(bodies), f"Select a body to {verb}."):
             return
-        if all(abs(self.value(k, 0.0)) < 1e-9
-               for k in ("dx", "dy", "dz", "rx", "ry", "rz")):
-            self.window_.set_hint("Nothing to move — drag a handle or enter a value.")
+        keys = tuple(key for key, _label, _dimension in self.field_specs)
+        if all(abs(self.value(k, 0.0)) < 1e-9 for k in keys):
+            self.window_.set_hint(
+                f"Nothing to {verb} — drag a handle or enter a value."
+            )
             return
         self.window_.detach_gizmo()
-        self.window_.history.record("Move")
+        self.window_.history.record(self.title)
         # Several bodies turn about their *shared* centre. Letting each spin
         # about its own would leave a rotated group in the same places it
         # started, every part facing a new way -- which is not what turning an
         # assembly means.
-        pivot = self._shared_pivot(bodies) if len(bodies) > 1 else None
+        pivot = self._shared_pivot(bodies) if self.mode == "rotate" else None
         for name in bodies:
             inputs = {
                 "body": BodyRef(name),
                 **{k: self.expression(k, "0")
-                   for k in ("dx", "dy", "dz", "rx", "ry", "rz")},
+                   for k in keys},
             }
             if pivot is not None:
                 inputs["pivot"] = list(pivot)
@@ -276,11 +365,32 @@ class MovePanel(_SelectionTool):
         self.window_.cancel_tool()
 
 
+@register_tool("move")
+class MovePanel(_TransformPanel):
+    """Translate bodies with arrows and plane handles only."""
+
+    title = "Move"
+    confirm_label = "Move"
+
+
+@register_tool("rotate")
+class RotatePanel(_TransformPanel):
+    """Rotate bodies with rings only, about their visible centre."""
+
+    mode = "rotate"
+    title = "Rotate"
+    confirm_label = "Rotate"
+    field_specs = (("rx", "Around X", Dimension.ANGLE),
+                   ("ry", "Around Y", Dimension.ANGLE),
+                   ("rz", "Around Z", Dimension.ANGLE))
+
+
 # ----------------------------------------------------------------------
 @register_tool("align")
 @register_tool("stack")
 @register_tool("concentric")
 @register_tool("center")
+@register_tool("place_on_face")
 class AlignPanel(_SelectionTool):
     """Stack / Center / Concentric, with the right one already chosen."""
 
@@ -296,17 +406,22 @@ class AlignPanel(_SelectionTool):
     def build(self) -> None:
         from ...kernel.align import suggest
 
-        faces = self.selection.faces()
+        self._swapped = False
+        self._preview_body = None
+        self._axis_overlays = []
+        pair = self._pair()
         self.operation = "stack"
-        if len(faces) == 2:
-            self.operation = suggest(faces[0].shape, faces[1].shape)
-            moving, target = faces[0], faces[1]
+        if pair is not None:
+            moving, target = pair
+            self.operation = suggest(moving.shape, target.shape)
             self.set_subtitle(
                 f"Moving {moving.body} onto {target.body}. "
                 f"Suggested: {dict(self.OPERATIONS).get(self.operation, 'Align')}."
             )
         else:
-            self.set_subtitle("Select one face on each of two parts.")
+            self.set_subtitle(
+                "Select a moving body or face, then a target face on another part."
+            )
 
         self.add_section("Operation")
         chooser = QWidget()
@@ -324,24 +439,189 @@ class AlignPanel(_SelectionTool):
             grid.addWidget(button, 0, index)
         self.add_widget(chooser)
 
-        self.add_field("offset", "Offset", 0.0)
+        self.add_section("Position on target face")
+        self.x_anchor = QComboBox()
+        for key, label in (("left", "From left"), ("center", "From center"),
+                           ("right", "From right")):
+            self.x_anchor.addItem(label, key)
+        self.x_anchor.setCurrentIndex(1)
+        self.x_anchor.currentIndexChanged.connect(lambda _i: self.preview())
+        self.add_widget(self.x_anchor)
+        self.add_field("x", "Local X", 0.0)
+
+        self.y_anchor = QComboBox()
+        for key, label in (("bottom", "From bottom"), ("center", "From center"),
+                           ("top", "From top")):
+            self.y_anchor.addItem(label, key)
+        self.y_anchor.setCurrentIndex(1)
+        self.y_anchor.currentIndexChanged.connect(lambda _i: self.preview())
+        self.add_widget(self.y_anchor)
+        self.add_field("y", "Local Y", 0.0)
+        self.add_field("offset", "Normal gap", 0.0)
         self.flip = GhostButton("Flip")
         self.flip.setCheckable(True)
         self.flip.clicked.connect(lambda: self.preview())
         self.add_widget(self.flip)
+        self.swap = GhostButton("Swap moving / target")
+        self.swap.setEnabled(len(self.selection.faces()) == 2)
+        self.swap.clicked.connect(self._swap_pair)
+        self.add_widget(self.swap)
+        for key in ("x", "y", "offset"):
+            self.fields[key].edited_live.connect(lambda _value: self.preview())
+        self._update_position_controls()
+        self.preview()
+
+    def _pair(self):
+        """The explicit face pair, or an inferred support face for a body."""
+        faces = self.selection.faces()
+        if len(faces) == 2:
+            return (faces[1], faces[0]) if self._swapped else (faces[0], faces[1])
+        planar = self.selection.planar_faces()
+        bodies = self.selection.bodies
+        if len(planar) != 1 or len(bodies) != 2:
+            return None
+        target = planar[0]
+        moving_name = next((name for name in bodies if name != target.body), None)
+        body = self.window_.document.body(moving_name) if moving_name else None
+        if body is None or body.shape is None:
+            return None
+        from ...kernel.align import support_face
+        from ...kernel.detect import analyse_plane
+        from ..selection import Picked
+
+        shape = support_face(body.shape, target.shape)
+        info = analyse_plane(shape) if shape is not None else None
+        if info is None:
+            return None
+        return (
+            Picked(
+                body=moving_name, kind="face", shape=shape,
+                presentation=self.window_._presentations.get(moving_name), info=info,
+            ),
+            target,
+        )
+
+    def _swap_pair(self) -> None:
+        self._swapped = not self._swapped
+        self.preview()
+
+    def _update_position_controls(self) -> None:
+        enabled = self.operation in ("stack", "center")
+        self.x_anchor.setEnabled(enabled)
+        self.y_anchor.setEnabled(enabled)
+        for key in ("x", "y"):
+            self.fields[key].setEnabled(enabled)
 
     def _choose(self, key: str) -> None:
         self.operation = key
+        self._update_position_controls()
         self.preview()
 
+    def on_selection_changed(self) -> None:
+        self.preview()
+
+    def _solve(self, moving, target):
+        from ...kernel.align import solve
+
+        return solve(
+            moving.shape,
+            target.shape,
+            operation=self.operation,
+            offset=self.value("offset", 0.0),
+            flip=self.flip.isChecked(),
+            x=self.value("x", 0.0),
+            y=self.value("y", 0.0),
+            x_anchor=str(self.x_anchor.currentData()),
+            y_anchor=str(self.y_anchor.currentData()),
+        )
+
+    def preview(self) -> None:
+        self._clear_preview()
+        pair = self._pair()
+        if pair is None:
+            self.warn("Select a moving body or face and a flat target face.")
+            return
+        moving, target = pair
+        body = self.window_.document.body(moving.body)
+        if body is None or body.shape is None:
+            return
+        try:
+            result = self._solve(moving, target)
+        except Exception as exc:  # noqa: BLE001 - invalid combinations stay editable
+            from ...core.errors import translate
+
+            self.warn(str(translate(exc, "align")))
+            return
+        from ...kernel.occ import transformed
+
+        viewport = self.window_.stage.viewport
+        viewport.show_ghost(
+            transformed(body.shape, result.transform),
+            self.window_.palette_.accent,
+            transparency=0.14,
+        )
+        self._preview_body = moving.body
+        viewport.set_transparency(
+            self.window_._presentations.get(moving.body), 0.78
+        )
+        self._show_face_frame(target.shape)
+        self.warn("")
+
+    def _show_face_frame(self, face) -> None:
+        if self.operation not in ("stack", "center"):
+            return
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+        from OCP.gp import gp_Pnt
+
+        from ...kernel.align import _anchored, planar_frame
+
+        frame = planar_frame(face)
+        x = _anchored(
+            frame.x_bounds, str(self.x_anchor.currentData()), self.value("x", 0.0)
+        )
+        y = _anchored(
+            frame.y_bounds, str(self.y_anchor.currentData()), self.value("y", 0.0)
+        )
+        origin = frame.point(x, y, self.value("offset", 0.0))
+        span = min(
+            abs(frame.x_bounds[1] - frame.x_bounds[0]),
+            abs(frame.y_bounds[1] - frame.y_bounds[0]),
+        )
+        length = max(5.0, min(20.0, span * 0.28))
+        viewport = self.window_.stage.viewport
+        for axis, color in (
+            (frame.x_axis, self.window_.palette_.grid_axis_x),
+            (frame.y_axis, self.window_.palette_.grid_axis_y),
+        ):
+            end = tuple(origin[i] + axis[i] * length for i in range(3))
+            edge = BRepBuilderAPI_MakeEdge(gp_Pnt(*origin), gp_Pnt(*end)).Edge()
+            shown = viewport.show_overlay_shape(edge, color, transparency=0.0)
+            if shown is not None:
+                self._axis_overlays.append(shown)
+
+    def _clear_preview(self) -> None:
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        if self._preview_body is not None:
+            viewport.set_transparency(
+                self.window_._presentations.get(self._preview_body), 0.0
+            )
+        self._preview_body = None
+        for presentation in self._axis_overlays:
+            viewport.erase(presentation)
+        self._axis_overlays = []
+
+    def teardown(self) -> None:
+        self._clear_preview()
+
     def commit(self) -> None:
-        faces = self.selection.faces()
+        pair = self._pair()
         if not _need(
-            self.window_, len(faces) == 2,
-            "Select one face on each of the two parts you want to align.",
+            self.window_, pair is not None,
+            "Select a moving body or face and a flat target face.",
         ):
             return
-        moving, target = faces[0], faces[1]
+        moving, target = pair
         if not _need(
             self.window_, moving.body != target.body,
             "Those faces are on the same body. Pick a face on each part.",
@@ -357,6 +637,10 @@ class AlignPanel(_SelectionTool):
                     "operation": self.operation,
                     "offset": self.expression("offset", "0"),
                     "flip": self.flip.isChecked(),
+                    "x": self.expression("x", "0"),
+                    "y": self.expression("y", "0"),
+                    "x_anchor": str(self.x_anchor.currentData()),
+                    "y_anchor": str(self.y_anchor.currentData()),
                 },
                 outputs=[moving.body],
             )
@@ -410,19 +694,37 @@ class _ThreadTool(_SelectionTool):
         )
 
     def fill_sizes(self, combo: QComboBox, diameter: float, internal: bool) -> None:
-        """(Re)stock *combo* with the sizes that suit *diameter*, keeping the
-        user's choice where it is still on offer."""
+        """(Re)stock *combo* for *diameter*, closest first, keeping the choice.
+
+        The sizes that already suit the feature lead, and then **every** other
+        standard size follows, each labelled with what choosing it would do to
+        the face. Stopping at the ones within a couple of millimetres is what
+        made "thread this hole" unanswerable for a ⌀5 or a ⌀45 bore: the list
+        came back empty and Create stayed grey with nothing to click and no way
+        forward. A hole that is the wrong size for the thread you want is an
+        ordinary thing to have -- it is what a tap drill exists for -- so the
+        answer is to offer the size and say what it costs, not to withhold it.
+        """
+        from ...kernel.thread_specs import load_sizes
+
         keep = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        for option in recommend(diameter, internal=internal, limit=8):
+        suited = recommend(diameter, internal=internal, limit=8)
+        for option in suited:
             combo.addItem(option.describe(), option.size.designation)
+        offered = {option.size.designation for option in suited}
+        for size in sorted(
+            (s for s in load_sizes() if s.designation not in offered),
+            key=lambda s: abs(s.diameter - diameter),
+        ):
+            combo.addItem(_resize_text(size, diameter, internal), size.designation)
         index = combo.findData(keep)
         if index >= 0:
             combo.setCurrentIndex(index)
         combo.blockSignals(False)
 
-    def check_printability(self, designation: str | None = None) -> None:
+    def check_printability(self, designation: str | None = None) -> bool:
         """Say up front what will be wrong with printing this thread.
 
         The same sentence the kernel would put on the finished feature, said at
@@ -430,19 +732,30 @@ class _ThreadTool(_SelectionTool):
         for the nozzle after a four-hour print is not feedback, it is a bill.
         """
         from ...kernel.thread_specs import by_designation
-        from ...kernel.threads import printable_note, thread_form
+        from ...kernel.threads import thread_printability
 
         designation = designation or (
             self.sizes.currentData() if hasattr(self, "sizes") else None
         )
         size = by_designation(str(designation)) if designation else None
         if size is None:
-            return
+            if hasattr(self, "confirm"):
+                self.confirm.setEnabled(False)
+            return False
         try:
-            shape = thread_form(size.pitch, size.angle, self.chosen_form())
+            result = thread_printability(size, self.chosen_form())
         except Exception:  # noqa: BLE001 - a warning is never worth failing over
-            return
-        self.warn(printable_note(shape, size))
+            return False
+        if result.printable:
+            self.warn("")
+            if hasattr(self, "confirm"):
+                self.confirm.setEnabled(True)
+            return True
+        suffix = f" Use {result.replacement}." if result.replacement else ""
+        self.warn(result.reason + suffix)
+        if hasattr(self, "confirm"):
+            self.confirm.setEnabled(False)
+        return False
 
 
 # ----------------------------------------------------------------------
@@ -522,7 +835,7 @@ class HolePanel(_ThreadTool):
         self.clearance = QComboBox()
         for key, entry in clearance_presets().items():
             self.clearance.addItem(
-                f"{entry['label']} — {entry['clearance']:.2f} mm  ·  {entry['hint']}",
+                _clearance_text(key, entry, hint=True),
                 key,
             )
         self.clearance.setCurrentIndex(1)   # Normal
@@ -543,6 +856,7 @@ class HolePanel(_ThreadTool):
         diameter = self.value("diameter", 6.0)
         self.fill_sizes(self.sizes, diameter, internal=True)
         if self.style != "threaded":
+            self.on_selection_changed()
             return
         if self.sizes.count() == 0:
             self.warn(
@@ -551,6 +865,28 @@ class HolePanel(_ThreadTool):
             )
         else:
             self.check_printability()
+        self.on_selection_changed()
+
+    def _drill_diameter(self) -> float | None:
+        """The bore the chosen thread wants, when it is not the one typed.
+
+        The size list offers every standard size now, not only the handful that
+        happened to suit the number in the Diameter field, so the two can
+        disagree -- and a hole drilled at ⌀5 with a P12 thread asked of it is
+        not a thread, it is a failed rebuild. Drilling what the thread needs is
+        both what the user meant and the only answer that builds.
+        """
+        from ...kernel.thread_specs import by_designation
+        from ...kernel.threads import required_bore
+
+        if self.style != "threaded" or not hasattr(self, "sizes"):
+            return None
+        size = by_designation(str(self.sizes.currentData() or ""))
+        if size is None:
+            return None
+        wanted = required_bore(size, self.clearance.currentData())
+        typed = self.value("diameter", 6.0)
+        return None if abs(wanted - typed) <= 0.05 else wanted
 
     def preview(self) -> None:
         # Reached when a value field is committed, which is where the diameter
@@ -560,12 +896,19 @@ class HolePanel(_ThreadTool):
     def on_selection_changed(self) -> None:
         faces = self.selection.planar_faces()
         if faces:
-            self.set_subtitle(
+            text = (
                 f"Drilling into {faces[0].body}. The hole is centred on the face "
                 "unless you click a position first."
             )
         else:
-            self.set_subtitle("Select the flat face to drill into.")
+            text = "Select the flat face to drill into."
+        wanted = self._drill_diameter()
+        if wanted is not None:
+            text += (
+                f" {self.sizes.currentData()} will be drilled at "
+                f"⌀{wanted:.2f} mm."
+            )
+        self.set_subtitle(text)
         self.relayout()
 
     def _choose(self, key: str) -> None:
@@ -577,6 +920,7 @@ class HolePanel(_ThreadTool):
             self._refresh_sizes()
         else:
             self.warn("")
+            self.confirm.setEnabled(True)
         self.relayout()
 
     def _depth_changed(self) -> None:
@@ -615,6 +959,9 @@ class HolePanel(_ThreadTool):
             # downstream can find the thread again.
             if self.sizes.currentData():
                 inputs["designation"] = self.sizes.currentData()
+            wanted = self._drill_diameter()
+            if wanted is not None:
+                inputs["diameter"] = f"{wanted:g}"
         self.window_.add_feature(HoleFeature(inputs=inputs, outputs=[pick.body]))
         self.window_.cancel_tool()
 
@@ -640,7 +987,7 @@ class ThreadPanel(_ThreadTool):
         self.add_section("Printable clearance")
         for key, entry in clearance_presets().items():
             self.clearance.addItem(
-                f"{entry['label']} — {entry['clearance']:.2f} mm  ·  {entry['hint']}", key
+                _clearance_text(key, entry, hint=True), key
             )
         self.clearance.setCurrentIndex(1)   # Normal
         self.add_widget(self.clearance)
@@ -648,6 +995,13 @@ class ThreadPanel(_ThreadTool):
         self.add_field("length", "Length", 0.0)
         self.fields["length"].setPlaceholderText("full face")
         self.add_end_chooser()
+        # Shown only when the face is not already the size the chosen thread
+        # wants. Off by default: opening somebody's bore out by four millimetres
+        # is not a thing to do behind their back.
+        self.resize = QCheckBox("Resize to suit the thread")
+        self.resize.toggled.connect(lambda _on: self.preview())
+        self.resize.setVisible(False)
+        self.add_widget(self.resize)
         self.sizes.currentIndexChanged.connect(self._thread_choice_changed)
         self.clearance.currentIndexChanged.connect(lambda _i: self.preview())
         self.form.currentIndexChanged.connect(lambda _i: self.preview())
@@ -656,7 +1010,30 @@ class ThreadPanel(_ThreadTool):
 
     def _thread_choice_changed(self, _index: int) -> None:
         self.check_printability()
+        self._refresh_resize()
         self.preview()
+
+    def _refresh_resize(self) -> None:
+        """Offer to bring the face to the chosen size, when it is not there."""
+        from ...kernel.thread_specs import by_designation
+        from ...kernel.threads import required_bore
+
+        faces = self.selection.round_faces()
+        size = by_designation(str(self.sizes.currentData() or ""))
+        info = faces[0].info if faces else None
+        # The same 0.05 mm the kernel draws the line at, so what the panel
+        # offers and what the rebuild does cannot disagree.
+        if info is None or size is None or info.diameter >= size.diameter - 0.05:
+            self.resize.setVisible(False)
+            return
+        wanted = (
+            required_bore(size, self.clearance.currentData())
+            if info.internal else size.diameter
+        )
+        verb = "Open the hole" if info.internal else "Build the shaft up"
+        self.resize.setText(f"{verb} ⌀{info.diameter:.2f} → ⌀{wanted:.2f} mm")
+        self.resize.setVisible(True)
+        self.relayout()
 
     def on_selection_changed(self) -> None:
         """Read the face the panel is about -- now, or whenever it is picked.
@@ -671,6 +1048,7 @@ class ThreadPanel(_ThreadTool):
             self.warn("")
             self._clear_preview()
             self.confirm.setEnabled(False)
+            self.resize.setVisible(False)
             self.relayout()
             return
 
@@ -687,6 +1065,7 @@ class ThreadPanel(_ThreadTool):
             )
         else:
             self.check_printability()
+        self._refresh_resize()
         self.preview()
         self.relayout()
 
@@ -711,6 +1090,7 @@ class ThreadPanel(_ThreadTool):
                 "form": self.chosen_form(),
                 "length": self.expression("length", "0"),
                 "from_end": self.chosen_end(),
+                "resize": self.resize.isChecked(),
             },
             outputs=[pick.body],
         ).to_dict()
@@ -772,6 +1152,7 @@ class ThreadPanel(_ThreadTool):
             "form": self.chosen_form(),
             "length": self.expression("length", "0"),
             "from_end": self.chosen_end(),
+            "resize": self.resize.isChecked(),
         }
         # Omitted rather than None when there is nothing chosen: the key merely
         # existing defeats the kernel's own ``setdefault``, and the feature then
@@ -822,7 +1203,7 @@ class AlignThreadedPanel(_ThreadTool):
         self.add_widget(self.sizes)
         self.add_section("Printable clearance")
         for key, entry in clearance_presets().items():
-            self.clearance.addItem(f"{entry['label']} — {entry['clearance']:.2f} mm", key)
+            self.clearance.addItem(_clearance_text(key, entry), key)
         self.clearance.setCurrentIndex(1)
         self.add_widget(self.clearance)
         self.add_form_chooser()
@@ -928,7 +1309,7 @@ class ThreadedConnectionPanel(_ThreadTool):
         self.add_section("Printable clearance")
         for key, entry in clearance_presets().items():
             self.clearance.addItem(
-                f"{entry['label']} — {entry['clearance']:.2f} mm", key
+                _clearance_text(key, entry), key
             )
         self.clearance.setCurrentIndex(1)
         self.add_widget(self.clearance)
@@ -1409,7 +1790,7 @@ class ChamferPanel(_EdgeTool):
 
 @register_tool("scale")
 class ScalePanel(_SelectionTool):
-    """Resize a body by a factor, uniformly or per axis."""
+    """Resize bodies numerically or with centred, uniform corner handles."""
 
     title = "Scale"
     confirm_label = "Scale"
@@ -1425,7 +1806,175 @@ class ScalePanel(_SelectionTool):
         for key, label in (("sx", "X"), ("sy", "Y"), ("sz", "Z")):
             field = self.add_field(key, label, 1.0, Dimension.SCALAR)
             field.setPlaceholderText("follows Scale")
-        self._uniform = True
+        self._scale_frame = None
+        self._scale_handles = []
+        self._scale_previewing = False
+        self._pivot = None
+        self._base_corners = []
+        self._drag_radius = 0.0
+        self._attach_scale_handles()
+
+    def _bounds(self):
+        from ...kernel.occ import bounding_box
+
+        boxes = [
+            bounding_box(body.shape)
+            for body in (
+                self.window_.document.body(name) for name in self.selection.bodies
+            )
+            if body is not None and body.shape is not None
+        ]
+        if not boxes:
+            return None
+        return (
+            tuple(min(box[0][i] for box in boxes) for i in range(3)),
+            tuple(max(box[1][i] for box in boxes) for i in range(3)),
+        )
+
+    def _attach_scale_handles(self) -> None:
+        bounds = self._bounds()
+        if bounds is None:
+            return
+        low, high = bounds
+        self._pivot = tuple((low[i] + high[i]) / 2.0 for i in range(3))
+        self._base_corners = [
+            (x, y, z)
+            for x in (low[0], high[0])
+            for y in (low[1], high[1])
+            for z in (low[2], high[2])
+        ]
+
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+        from OCP.gp import gp_Pnt
+
+        from ...kernel.occ import compound
+        from ..viewport.handles import DragHandle
+
+        edges = []
+        for index, corner in enumerate(self._base_corners):
+            for bit in (1, 2, 4):
+                other = index ^ bit
+                if other <= index:
+                    continue
+                edges.append(
+                    BRepBuilderAPI_MakeEdge(
+                        gp_Pnt(*corner), gp_Pnt(*self._base_corners[other])
+                    ).Edge()
+                )
+        self._scale_frame = self.window_.stage.viewport.show_overlay_shape(
+            compound(edges), self.window_.palette_.accent, transparency=0.0
+        )
+
+        viewport = self.window_.stage.viewport
+        for index, corner in enumerate(self._base_corners):
+            direction = tuple(corner[i] - self._pivot[i] for i in range(3))
+            handle = viewport.handles.add(
+                DragHandle(corner, direction, f"uniform_scale:{index}"),
+                viewport,
+                self.window_.palette_.accent,
+            )
+            self._scale_handles.append(handle)
+        viewport.handle_pressed.connect(self._on_scale_pressed)
+        viewport.handle_dragged.connect(self._on_scale_dragged)
+        viewport.refresh()
+
+    def _on_scale_pressed(self, key: str) -> None:
+        if not key.startswith("uniform_scale:") or self._pivot is None:
+            return
+        try:
+            corner = self._base_corners[int(key.partition(":")[2])]
+        except (ValueError, IndexError):
+            return
+        self._drag_radius = math.dist(self._pivot, corner)
+        self.fields["factor"].set_value(1.0)
+        self._ensure_scale_preview()
+
+    def _ensure_scale_preview(self) -> None:
+        if self._scale_previewing:
+            return
+        from ...kernel.occ import compound
+
+        shapes = [
+            body.shape
+            for body in (
+                self.window_.document.body(name) for name in self.selection.bodies
+            )
+            if body is not None and body.shape is not None
+        ]
+        if not shapes:
+            return
+        viewport = self.window_.stage.viewport
+        viewport.show_ghost(
+            compound(shapes), self.window_.palette_.accent, transparency=0.12
+        )
+        for name in self.selection.bodies:
+            viewport.set_transparency(
+                self.window_._presentations.get(name), 0.76
+            )
+        self._scale_previewing = True
+
+    def _on_scale_dragged(self, key: str, distance: float, finished: bool) -> None:
+        if (
+            not key.startswith("uniform_scale:")
+            or self._pivot is None
+            or self._drag_radius <= 1.0e-9
+        ):
+            return
+        from PySide6.QtGui import QCursor
+        from OCP.gp import gp_Pnt, gp_Trsf
+
+        factor = max(0.01, 1.0 + distance / self._drag_radius)
+        self.fields["factor"].set_value(round(factor, 4))
+        transform = gp_Trsf()
+        transform.SetScale(gp_Pnt(*self._pivot), factor)
+        viewport = self.window_.stage.viewport
+        viewport.transform_ghost(transform)
+        if self._scale_frame is not None:
+            self._scale_frame.SetLocalTransformation(transform)
+            viewport.context.Redisplay(self._scale_frame, False)
+        for handle, corner in zip(self._scale_handles, self._base_corners):
+            handle.move_to(tuple(
+                self._pivot[i] + (corner[i] - self._pivot[i]) * factor
+                for i in range(3)
+            ))
+        self.window_.set_hint(f"Uniform scale {factor:.3f}×")
+        self.window_.stage.drag_readout.show_text(
+            self.window_.stage.mapFromGlobal(QCursor.pos()),
+            f"{factor * 100.0:.1f}%",
+            f"Uniform  {factor:.4f}×",
+            self.window_.palette_.accent,
+        )
+        viewport.refresh()
+        if finished:
+            self.window_.stage.drag_readout.finish()
+            if abs(factor - 1.0) > 1.0e-6:
+                self.commit()
+            else:
+                self._clear_scale_preview()
+
+    def _clear_scale_preview(self) -> None:
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        if self._scale_previewing:
+            for name in self.selection.bodies:
+                viewport.set_transparency(
+                    self.window_._presentations.get(name), 0.0
+                )
+        self._scale_previewing = False
+
+    def teardown(self) -> None:
+        viewport = self.window_.stage.viewport
+        self._clear_scale_preview()
+        self.window_.stage.drag_readout.finish()
+        try:
+            viewport.handle_pressed.disconnect(self._on_scale_pressed)
+            viewport.handle_dragged.disconnect(self._on_scale_dragged)
+        except (RuntimeError, TypeError):
+            pass
+        viewport.handles.clear(viewport)
+        if self._scale_frame is not None:
+            viewport.erase(self._scale_frame)
+        self._scale_frame = None
 
     def commit(self) -> None:
         bodies = self.selection.bodies
@@ -1447,9 +1996,12 @@ class ScalePanel(_SelectionTool):
 
         self.window_.history.record("Scale")
         for name in bodies:
+            feature_inputs = {"body": BodyRef(name), **inputs}
+            if self._pivot is not None:
+                feature_inputs["pivot"] = list(self._pivot)
             self.window_.document.add_feature(
                 ScaleFeature(
-                    inputs={"body": BodyRef(name), **inputs}, outputs=[name]
+                    inputs=feature_inputs, outputs=[name]
                 )
             )
         self.window_.mark_dirty()

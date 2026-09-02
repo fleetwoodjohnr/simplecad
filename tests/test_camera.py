@@ -20,10 +20,20 @@ from simplecad.ui.viewport.camera import (
     state_for_direction, view_direction, _dot, _length, _normalise, _slerp,
     _sub,
 )
+from simplecad.ui.viewport.occt_view import _Nav, navigation_mode
 
 
 def _view(eye, center):
     return _sub(center, eye)
+
+
+def test_fusion_style_mouse_navigation_mapping():
+    from PySide6.QtCore import Qt
+
+    assert navigation_mode(Qt.RightButton, Qt.NoModifier) is _Nav.ORBIT
+    assert navigation_mode(Qt.MiddleButton, Qt.NoModifier) is _Nav.PAN
+    assert navigation_mode(Qt.MiddleButton, Qt.ShiftModifier) is _Nav.ORBIT
+    assert navigation_mode(Qt.LeftButton, Qt.AltModifier) is _Nav.ORBIT
 
 
 class TestNoRoll:

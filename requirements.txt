@@ -6,3 +6,6 @@ PySide6==6.11.1
 # Sketch constraint solver (Levenberg-Marquardt) and linear algebra.
 scipy>=1.18
 numpy>=2.0
+# Robust planar erosion for Hollow's extruded-profile fallback. OCCT's own
+# planar offset crashes on dense concave outlines such as the Heart primitive.
+shapely>=2.1.2,<3

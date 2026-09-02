@@ -8,8 +8,8 @@ import pytest
 
 from simplecad.kernel import calibration
 from simplecad.kernel.calibration import (
-    DEFAULT_SWEEP, build_model, effective_fits, effective_thread_clearance,
-    load_measurements, save_measurements,
+    DEFAULT_SWEEP, build_model, build_thread_model, effective_fits,
+    effective_thread_clearance, load_measurements, save_measurements,
 )
 from simplecad.kernel.detect import cylindrical_faces
 from simplecad.kernel.occ import bounding_box, is_valid
@@ -91,9 +91,42 @@ def test_measured_values_override_the_defaults():
 
 
 def test_a_measured_thread_clearance_is_used():
-    assert effective_thread_clearance("uncalibrated") == pytest.approx(0.20)
+    assert effective_thread_clearance("uncalibrated") == pytest.approx(0.60)
     save_measurements("tuned", printer_profile(), {}, thread_clearance=0.13)
     assert effective_thread_clearance("tuned") == pytest.approx(0.13)
+
+
+def test_thread_calibration_preserves_the_feel_between_presets():
+    save_measurements("tuned", printer_profile(), {}, thread_clearance=0.50)
+    assert effective_thread_clearance("tuned", "tight") == pytest.approx(0.30)
+    assert effective_thread_clearance("tuned", "normal") == pytest.approx(0.50)
+    assert effective_thread_clearance("tuned", "loose") == pytest.approx(0.70)
+    assert effective_thread_clearance("tuned", "very_loose") == pytest.approx(0.90)
+
+
+def test_thread_calibration_builds_a_p30_plug_and_four_named_gauges(monkeypatch):
+    """The workflow is testable without spending a minute sweeping five helices."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from simplecad.kernel import fasteners
+
+    monkeypatch.setattr(
+        fasteners, "make_bolt", lambda *_args, **_kwargs:
+        BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(),
+    )
+    monkeypatch.setattr(
+        fasteners, "make_nut", lambda *_args, **_kwargs:
+        BRepPrimAPI_MakeBox(12.0, 12.0, 6.0).Shape(),
+    )
+
+    thread_model = build_thread_model()
+
+    assert thread_model.designation == "P30"
+    assert thread_model.clearances == pytest.approx((0.40, 0.60, 0.80, 1.00))
+    assert [name for name, _shape in thread_model.pieces] == [
+        "P30 plug", "P30 gauge 0.40 mm", "P30 gauge 0.60 mm",
+        "P30 gauge 0.80 mm", "P30 gauge 1.00 mm",
+    ]
+    assert all(is_valid(shape) for _name, shape in thread_model.pieces)
 
 
 def test_the_saved_profile_is_readable_json():

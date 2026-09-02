@@ -13,7 +13,7 @@ import pytest
 
 from simplecad.core import geometry_service as service
 from simplecad.core.document import Document
-from simplecad.kernel.occ import volume
+from simplecad.kernel.occ import is_valid, volume
 from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 
 
@@ -256,6 +256,44 @@ def test_a_choice_the_feature_made_comes_back(child):
     assert thread.inputs.get("designation") == "P8", (
         "the size the child chose must reach the parent"
     )
+
+
+def test_solid_text_builds_inside_the_geometry_process(child):
+    """Font discovery and glyph B-Reps must not depend on the Qt parent."""
+    from simplecad.core.document import BodyRef
+    from simplecad.core.naming import fingerprint, make_ref, sub_shapes
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.text import TextFeature
+
+    document = box_document(60)
+    document.features[0].inputs.update({"depth": 30, "height": 10})
+    document.features[0].outputs = ["Box"]
+    assert Rebuilder(document).rebuild().ok
+    shape = document.bodies["Box"].shape
+    top = max(
+        (
+            face for face in sub_shapes(shape, "face")
+            if (mark := fingerprint(face, "face")).geometry == "plane"
+            and mark.direction and mark.direction[2] > 0.99
+        ),
+        key=lambda face: fingerprint(face, "face").center[2],
+    )
+    document.add_feature(TextFeature(inputs={
+        "body": BodyRef("Box"),
+        "face": make_ref(shape, top, document.features[0].id, body="Box"),
+        "text": "A8",
+        "font_family": "sans-serif",
+        "mode": "raised",
+        "text_height": 8,
+        "depth": 1,
+    }, outputs=["Box"]))
+
+    reply = ask(child, document)
+    assert reply["kind"] == service.RESULT
+    assert reply["report"]["ok"], reply["report"]["summary"]
+    rebuilt = service.deserialise_shape(reply["bodies"]["Box"])
+    assert is_valid(rebuilt)
+    assert volume(rebuilt) > 60 * 30 * 10
 
 
 # ----------------------------------------------------------------------

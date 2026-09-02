@@ -8,9 +8,10 @@ where they are relevant. No dock widgets, no toolbar rows, no workbench picker.
 from __future__ import annotations
 
 import json
+import math
 import os
 
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QMainWindow, QSizePolicy, QVBoxLayout,
@@ -20,7 +21,9 @@ from PySide6.QtWidgets import (
 from ..core.document import BodyRef, Document
 from ..core.history import History
 from ..core.rebuild import Rebuilder
-from ..kernel.operations import PushPullFeature, RoundPushPullFeature
+from ..kernel.operations import (
+    MoveManyFeature, PushPullFeature, RoundPushPullFeature,
+)
 from .icons import icon
 from .geometry_client import GeometryClient, apply_result
 from .panels.command_search import CommandSearch
@@ -50,6 +53,30 @@ TOOL_RAIL = (
 )
 
 MODEL_CLIPBOARD_MIME = "application/x-simplecad-model-fragment+json"
+
+EXPORT_FILTERS = (
+    ("3MF for printing (*.3mf)", ".3mf"),
+    ("STEP (*.step)", ".step"),
+    ("STL (*.stl)", ".stl"),
+    ("OBJ (*.obj)", ".obj"),
+)
+EXPORT_FILTER_TEXT = ";;".join(label for label, _suffix in EXPORT_FILTERS)
+EXPORT_SUFFIXES = frozenset(suffix for _label, suffix in EXPORT_FILTERS) | {".stp"}
+
+
+def resolved_export_path(path: str, selected_filter: str) -> str:
+    """Give an export filename the suffix selected in the save dialog.
+
+    Qt's native dialog does not reliably replace a pre-filled ``.3mf`` when a
+    different filter is selected.  Start without a suffix and settle it here:
+    an extension the user typed explicitly wins; otherwise the selected filter
+    supplies one.
+    """
+    extension = os.path.splitext(path)[1].lower()
+    if extension in EXPORT_SUFFIXES:
+        return path
+    suffix = dict(EXPORT_FILTERS).get(selected_filter, ".3mf")
+    return f"{path}{suffix}"
 
 
 def _combined_bounds(shapes):
@@ -207,8 +234,12 @@ class ViewportStage(QWidget):
             ("fit", "Zoom to fit  (F)", "fit"),
             ("ortho", "Orthographic / perspective", "projection"),
             ("grid", "Grid", "grid"),
+            ("xray", "X-ray model  (X); Tab cycles hidden faces", "xray"),
         ):
-            button = IconButton(name, palette, tooltip, size=32, checkable=key == "grid")
+            button = IconButton(
+                name, palette, tooltip, size=32,
+                checkable=key in ("grid", "xray"),
+            )
             row.addWidget(button)
             self._view_buttons[key] = button
         self.view_controls.adjustSize()
@@ -258,6 +289,9 @@ class ViewportStage(QWidget):
         controls.move(width - controls.width() - margin, height - controls.height() - margin)
 
         for widget, anchor in self.overlays:
+            if anchor == "full":
+                widget.setGeometry(self.rect())
+                continue
             widget.adjustSize() if widget.sizeHint().isValid() else None
             size = widget.size()
             if anchor == "top-right":
@@ -298,8 +332,15 @@ class ViewportStage(QWidget):
         panel's edge would look like the drag had. Neither takes clicks, so
         being on top costs nothing.
         """
-        order: list[QWidget] = [self.view_controls]
-        order.extend(widget for widget, _anchor in self.overlays)
+        # Full-size drawing layers sit above the GL view but below interactive
+        # cards. Otherwise a projected marker can paint across its own panel.
+        order: list[QWidget] = [
+            widget for widget, anchor in self.overlays if anchor == "full"
+        ]
+        order.append(self.view_controls)
+        order.extend(
+            widget for widget, anchor in self.overlays if anchor != "full"
+        )
         order.extend(
             overlay
             for overlay in (self.measure_overlay, self.selection_band)
@@ -394,6 +435,14 @@ class MainWindow(QMainWindow):
         self._shown: dict[str, object] = {}
         #: Root items to select when the outstanding paste rebuild completes.
         self._select_after_rebuild: list[str] = []
+        #: Arrow presses inside one 250 ms burst share these latched camera axes
+        #: and become one feature/history operation.
+        self._nudge_state: dict | None = None
+        self._nudge_restore: dict | None = None
+        self._nudge_timer = QTimer(self)
+        self._nudge_timer.setSingleShot(True)
+        self._nudge_timer.setInterval(250)
+        self._nudge_timer.timeout.connect(self._commit_nudge)
 
         root = QWidget()
         root.setObjectName("Root")
@@ -435,6 +484,9 @@ class MainWindow(QMainWindow):
         self.stage.viewport.hover_changed.connect(self._on_hover)
         self.stage.viewport.notice.connect(self.set_hint)
         self.stage.viewport.selection_changed.connect(self._on_selection)
+        self.stage.viewport.context_menu_requested.connect(
+            self._show_viewport_context_menu
+        )
         self.stage.viewport.face_dragged.connect(self._on_face_dragged)
         self.stage.viewport.sketch_clicked.connect(self._on_sketch_click)
         self.stage.viewport.sketch_moved.connect(self._on_sketch_move)
@@ -443,6 +495,7 @@ class MainWindow(QMainWindow):
         self.stage._view_buttons["fit"].clicked.connect(self.zoom_to_fit)
         self.stage._view_buttons["projection"].clicked.connect(self._toggle_projection)
         self.stage._view_buttons["grid"].clicked.connect(self._toggle_grid)
+        self.stage._view_buttons["xray"].clicked.connect(self._toggle_xray)
         self.browser.visibility_toggled.connect(self._set_body_visible)
         self.browser.isolate_requested.connect(self.isolate_body)
         self.browser.show_all_requested.connect(self.show_all_bodies)
@@ -450,7 +503,7 @@ class MainWindow(QMainWindow):
         self.browser.duplicate_requested.connect(self.duplicate_body)
         self.browser.delete_requested.connect(self.delete_body)
         self.browser.feature_action.connect(self._feature_action)
-        self.browser.body_selected.connect(self.select_item)
+        self.browser.bodies_selected.connect(self.select_items)
         self.browser.group_requested.connect(self.group_names)
         self.browser.ungroup_requested.connect(self.ungroup)
         self.browser.group_visibility_toggled.connect(self.set_group_visible)
@@ -464,8 +517,6 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         if not os.environ.get("SIMPLECAD_NO_RECOVERY"):
             # Deferred so the window is up before any dialog appears.
-            from PySide6.QtCore import QTimer
-
             QTimer.singleShot(400, self._offer_recovery)
         self.set_hint("Pick a shape from the left to begin.")
 
@@ -552,6 +603,7 @@ class MainWindow(QMainWindow):
             "extrude": lambda: self.activate_tool("pushpull"),
             "move": lambda: self.activate_tool("move"),
             "hole": lambda: self.activate_tool("hole"),
+            "xray": self._toggle_xray,
             "fit_view": self.zoom_to_fit,
             "zoom_selection": self.zoom_to_selection,
             "undo": self.undo,
@@ -598,6 +650,21 @@ class MainWindow(QMainWindow):
                 shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             else:
                 shortcut = QShortcut(QKeySequence(binding), self, activated=handler)
+            self._shortcuts.append(shortcut)
+
+        # Auto-repeat is intentionally preserved: every repeat is one exact
+        # 0.25 mm input and the quiet timer below groups the burst into one edit.
+        for binding, direction, depth in (
+            ("Left", "left", False), ("Right", "right", False),
+            ("Up", "up", False), ("Down", "down", False),
+            ("Ctrl+Up", "up", True), ("Ctrl+Down", "down", True),
+        ):
+            shortcut = QShortcut(
+                QKeySequence(binding), self.stage.viewport,
+                activated=lambda d=direction, z=depth: self._nudge_key(d, z),
+            )
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.setAutoRepeat(True)
             self._shortcuts.append(shortcut)
 
     def reload_shortcuts(self) -> None:
@@ -671,6 +738,15 @@ class MainWindow(QMainWindow):
             "perspective" if perspective else "ortho"
         )
         self.stage._view_buttons["projection"].apply_palette(self.palette_)
+
+    def _toggle_xray(self) -> None:
+        viewport = self.stage.viewport
+        viewport.set_xray(not viewport.xray_enabled)
+        self.stage._view_buttons["xray"].setChecked(viewport.xray_enabled)
+        self.set_hint(
+            "X-ray on — Tab / Shift+Tab cycles faces under the cursor."
+            if viewport.xray_enabled else "X-ray off."
+        )
 
     def _on_viewport_rebound(self) -> None:
         """OCCT was rebuilt on a new GL context. Hand the bodies back.
@@ -759,6 +835,7 @@ class MainWindow(QMainWindow):
             report = self.rebuilder.rebuild(force=force, on_feature=progress)
             self.refresh_view()
             self.browser.refresh()
+            self._restore_nudge_selection()
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -779,6 +856,7 @@ class MainWindow(QMainWindow):
         apply_result(self.document, message)
         self.refresh_view()
         self.browser.refresh()
+        self._restore_nudge_selection()
         self._select_pasted_items()
         report = message.get("report", {})
         warnings = report.get("warnings") or []
@@ -810,13 +888,13 @@ class MainWindow(QMainWindow):
         return self.geometry.busy
 
     # -- transform gizmo ---------------------------------------------------
-    def attach_gizmo(self, presentation):
-        """Put the transform gizmo on a presentation, replacing any previous."""
+    def attach_gizmo(self, presentation, **options):
+        """Put the transform gizmo on one or several presentations."""
         from .viewport.gizmo import TransformGizmo
 
         self.detach_gizmo()
         gizmo = TransformGizmo(self.stage.viewport, self)
-        if not gizmo.attach(presentation):
+        if not gizmo.attach(presentation, **options):
             return None
         self.stage.viewport.gizmo = gizmo
         return gizmo
@@ -828,6 +906,214 @@ class MainWindow(QMainWindow):
         self.stage.viewport.gizmo = None
 
     # -- direct manipulation ---------------------------------------------
+    def _nudge_allowed(self) -> bool:
+        viewport = self.stage.viewport
+        if (
+            self.geometry.busy or self.sketching or viewport.picking_points
+            or viewport.gizmo is not None or viewport._nav.name != "NONE"
+        ):
+            return False
+        return not any(
+            getattr(widget, "is_tool_panel", False) and widget.isVisible()
+            for widget, _anchor in self.stage.overlays
+        )
+
+    @staticmethod
+    def _unit(vector):
+        length = math.sqrt(sum(value * value for value in vector))
+        return tuple(value / length for value in vector) if length else (0.0, 0.0, 0.0)
+
+    def _begin_nudge(self, direction: str) -> dict | None:
+        """Latch selection and camera axes until this arrow burst finishes."""
+        if not self._nudge_allowed():
+            return None
+        self.selection.refresh()
+        faces = self.selection.planar_faces() or self.selection.round_faces()
+        if self.selection.count == 1 and len(faces) == 1:
+            if direction not in ("up", "down"):
+                return None
+            pick = faces[0]
+            state = {
+                "kind": "face", "pick": pick, "amount": 0.0,
+                "reference": pick.reference(self.document),
+            }
+            self._nudge_state = state
+            return state
+        if not self.selection.only_bodies or not self.selection.bodies:
+            return None
+
+        from .viewport.camera import read_state, view_direction
+
+        camera = read_state(self.stage.viewport.view)
+        if camera is None:
+            return None
+        forward = view_direction(camera)
+        up = self._unit(camera[2])
+        right = self._unit((
+            forward[1] * up[2] - forward[2] * up[1],
+            forward[2] * up[0] - forward[0] * up[2],
+            forward[0] * up[1] - forward[1] * up[0],
+        ))
+        names = list(self.selection.bodies)
+        state = {
+            "kind": "move", "bodies": names,
+            "right": right, "up": up, "forward": forward,
+            "offset": [0.0, 0.0, 0.0],
+            "shapes": [self.document.body(name).shape for name in names],
+        }
+        self._nudge_state = state
+        return state
+
+    def _nudge_key(self, direction: str, depth: bool = False) -> None:
+        state = self._nudge_state or self._begin_nudge(direction)
+        if state is None:
+            return
+        step = 0.25
+        if state["kind"] == "face":
+            if depth or direction not in ("up", "down"):
+                return
+            state["amount"] += step if direction == "up" else -step
+        else:
+            if depth:
+                axis = state["forward"]
+                sign = 1.0 if direction == "up" else -1.0
+            elif direction in ("left", "right"):
+                axis = state["right"]
+                sign = 1.0 if direction == "right" else -1.0
+            else:
+                axis = state["up"]
+                sign = 1.0 if direction == "up" else -1.0
+            for index in range(3):
+                state["offset"][index] += axis[index] * step * sign
+        self._preview_nudge()
+        self._nudge_timer.start()
+
+    def _preview_nudge(self) -> None:
+        from ..kernel.occ import compound, make_transform, transformed
+
+        state = self._nudge_state
+        if state is None:
+            return
+        viewport = self.stage.viewport
+        if state["kind"] == "face":
+            pick = state["pick"]
+            amount = state["amount"]
+            surface_delta = -amount if pick.is_round_face and pick.info.internal else amount
+            viewport.show_ghost(
+                self._pull_preview(pick, surface_delta),
+                self.palette_.danger if amount < 0.0 else self.palette_.accent,
+            )
+            viewport.set_transparency(
+                self._presentations.get(pick.body), 0.6 if amount < 0.0 else 0.0
+            )
+            self.set_hint(
+                f"{'Adding' if amount >= 0 else 'Removing'} "
+                f"{abs(amount):.2f} mm — arrows continue, Esc cancels"
+            )
+            return
+
+        offset = tuple(state["offset"])
+        transform = make_transform(translate=offset)
+        preview = compound(
+            transformed(shape, transform) for shape in state["shapes"]
+        )
+        viewport.show_ghost(preview, self.palette_.accent, transparency=0.14)
+        for name in state["bodies"]:
+            viewport.set_transparency(self._presentations.get(name), 0.78)
+        self.set_hint(
+            f"Moving {math.sqrt(sum(value * value for value in offset)):.2f} mm — "
+            "arrows continue, Esc cancels"
+        )
+
+    def _clear_nudge_preview(self) -> None:
+        state = self._nudge_state
+        self.stage.viewport.clear_ghost()
+        if state is None:
+            return
+        names = [state["pick"].body] if state["kind"] == "face" else state["bodies"]
+        for name in names:
+            self.stage.viewport.set_transparency(self._presentations.get(name), 0.0)
+
+    def _cancel_nudge(self) -> bool:
+        if self._nudge_state is None:
+            return False
+        self._nudge_timer.stop()
+        self._clear_nudge_preview()
+        self._nudge_state = None
+        self.set_hint(self.selection.summary())
+        return True
+
+    def _commit_nudge(self) -> None:
+        state = self._nudge_state
+        if state is None:
+            return
+        self._clear_nudge_preview()
+        self._nudge_state = None
+        if state["kind"] == "face":
+            amount = round(float(state["amount"]), 9)
+            if abs(amount) < 1.0e-9:
+                self.set_hint(self.selection.summary())
+                return
+            pick = state["pick"]
+            feature_class = RoundPushPullFeature if pick.is_round_face else PushPullFeature
+            key = "delta" if pick.is_round_face else "distance"
+            feature = feature_class(
+                inputs={
+                    "body": BodyRef(pick.body),
+                    "face": state["reference"], key: amount,
+                },
+                outputs=[pick.body],
+            )
+            self._nudge_restore = {
+                "kind": "face", "body": pick.body,
+                "reference": state["reference"],
+            }
+            label = "Nudge face"
+        else:
+            offset = tuple(round(float(value), 9) for value in state["offset"])
+            if math.sqrt(sum(value * value for value in offset)) < 1.0e-9:
+                self.set_hint(self.selection.summary())
+                return
+            feature = MoveManyFeature(
+                inputs={
+                    "bodies": [BodyRef(name) for name in state["bodies"]],
+                    "dx": offset[0], "dy": offset[1], "dz": offset[2],
+                },
+                outputs=list(state["bodies"]),
+            )
+            self._nudge_restore = {
+                "kind": "bodies", "bodies": list(state["bodies"]),
+            }
+            label = "Nudge objects"
+
+        self.history.record(label)
+        self.document.add_feature(feature)
+        self.mark_dirty()
+        self.rebuild()
+
+    def _restore_nudge_selection(self) -> None:
+        state, self._nudge_restore = self._nudge_restore, None
+        if state is None:
+            return
+        viewport = self.stage.viewport
+        if state["kind"] == "bodies":
+            viewport.select_presentations(
+                self._presentations.get(name) for name in state["bodies"]
+            )
+            return
+        body = self.document.body(state["body"])
+        presentation = self._presentations.get(state["body"])
+        if body is None or body.shape is None or presentation is None:
+            return
+        try:
+            from ..core.naming import resolve
+
+            face = resolve(state["reference"], body.shape)
+        except Exception:  # noqa: BLE001 - retain the edited body if face matching fails
+            viewport.select_shape(presentation)
+            return
+        viewport.select_subshape(presentation, face)
+
     def _maybe_start_face_drag(self) -> None:
         """Pressing on an already-selected face starts a Pull.
 
@@ -1761,11 +2047,20 @@ class MainWindow(QMainWindow):
 
     def select_item(self, name: str) -> None:
         """Select a body or a group from the model tree."""
+        self.select_items([name])
+
+    def select_items(self, items) -> None:
+        """Mirror an ordered multi-row browser selection into the viewport."""
         viewport = self.stage.viewport
-        names = (
-            self.document.expand([name]) if name in self.document.groups
-            else [name]
-        )
+        names: list[str] = []
+        for item in items:
+            expanded = (
+                self.document.expand([item]) if item in self.document.groups
+                else [item]
+            )
+            for name in expanded:
+                if name not in names:
+                    names.append(name)
         self._expanding = True
         try:
             viewport.clear_selection()
@@ -1859,6 +2154,19 @@ class MainWindow(QMainWindow):
         else:
             self.run_command(key)
 
+    def _show_viewport_context_menu(self, position) -> None:
+        """Show the same valid actions as the contextual bar on a right click."""
+        from PySide6.QtWidgets import QMenu
+
+        self.selection.refresh()
+        actions = available_actions(self.selection)
+        if not actions:
+            return
+        menu = QMenu(self)
+        for key, label, _icon_name in actions:
+            menu.addAction(label, lambda _checked=False, k=key: self.run_action(k))
+        menu.exec(self.stage.viewport.mapToGlobal(position))
+
     def activate_tool(self, key: str) -> None:
         from .tools.registry import activate
 
@@ -1883,6 +2191,8 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
     def cancel_tool(self) -> None:
+        if self._cancel_nudge():
+            return
         # Esc during a drag has to put the scene back too, or the body stays
         # translucent with a ghost slab floating in it.
         self._end_face_drag()
@@ -1937,6 +2247,7 @@ class MainWindow(QMainWindow):
             "theme": self.toggle_theme,
             "projection": self._toggle_projection,
             "view_grid": self._toggle_grid,
+            "view_xray": self._toggle_xray,
             "view_fit": self.zoom_to_fit,
             "view_selection": self.zoom_to_selection,
             "view_iso": lambda: self._standard_view(StandardView.ISO),
@@ -2000,12 +2311,12 @@ class MainWindow(QMainWindow):
         if not items:
             self.set_hint("There is nothing to export yet.")
             return
-        path, _filter = QFileDialog.getSaveFileName(
-            self, "Export", f"{self.document.title}.3mf",
-            "3MF for printing (*.3mf);;STEP (*.step);;STL (*.stl);;OBJ (*.obj)",
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Export", self.document.title, EXPORT_FILTER_TEXT,
         )
         if not path:
             return
+        path = resolved_export_path(path, selected_filter)
         try:
             export_shapes(items, path)
         except Exception as exc:  # noqa: BLE001 - surfaced, never fatal

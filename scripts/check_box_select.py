@@ -81,7 +81,9 @@ def main() -> int:
             # extent of a rotated box is set by corners neither of those is, and
             # a rectangle drawn from two of them does not enclose the part.
             corners = []
+            body_corners = {}
             for name in ("Left", "Right"):
+                projected = []
                 low, high = bounding_box(window.document.bodies[name].shape)
                 for x in (low[0], high[0]):
                     for y in (low[1], high[1]):
@@ -89,6 +91,8 @@ def main() -> int:
                             at = viewport.project((x, y, z))
                             if at is not None:
                                 corners.append(at)
+                                projected.append(at)
+                body_corners[name] = projected
             xs = [c[0] for c in corners]
             ys = [c[1] for c in corners]
             margin = 30
@@ -101,6 +105,19 @@ def main() -> int:
             REPORT["only_bodies"] = window.selection.only_bodies
             REPORT["actions"] = [key for key, _l, _i in available_actions(window.selection)]
             REPORT["band_cleared"] = not window.stage.selection_band.isVisible()
+
+            # The original duplicate-owner bug was easiest to see with just
+            # one enclosed body: BODY and SOLID each found it, then the second
+            # additive toggle removed what the first had selected.
+            viewport.clear_selection()
+            left = body_corners["Left"]
+            left_x = [point[0] for point in left]
+            left_y = [point[1] for point in left]
+            drag(
+                QPoint(int(min(left_x)) - margin, int(min(left_y)) - margin),
+                QPoint(int(max(left_x)) + margin, int(max(left_y)) + margin),
+            )
+            REPORT["after_single_box"] = sorted(window.selection.bodies)
 
             # A crossing drag -- right to left -- catches what it merely
             # touches. A thin band straight across both parts at mid height
@@ -142,6 +159,7 @@ def main() -> int:
         print(f"  {key}: {value}")
     ok = (
         REPORT.get("after_box") == ["Left", "Right"]
+        and REPORT.get("after_single_box") == ["Left"]
         and REPORT.get("only_bodies") is True
         and REPORT.get("kinds") in (["solid"], ["body"], ["compound"])
         and "group" in (REPORT.get("actions") or [])

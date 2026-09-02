@@ -83,6 +83,10 @@ class MeasureOverlay(QWidget):
         if len(points) == 2:
             self._draw_line(painter, points[0], points[1], self.reading, False)
         elif len(points) == 1 and hover_at is not None:
+            if getattr(self.hover, "inference", None):
+                self._draw_inference(
+                    painter, points[0], hover_at, self.hover.inference
+                )
             # A rubber band to wherever the cursor has snapped, with the length
             # updating as it moves: the measurement is readable before it is
             # committed, so a wrong second point is obvious before you click it.
@@ -98,6 +102,31 @@ class MeasureOverlay(QWidget):
         if hover_at is not None and len(self.picked) < 2:
             self._draw_marker(painter, hover_at, self.hover.kind, self._palette.hover)
         painter.end()
+
+    def _draw_inference(
+        self, painter: QPainter, start: QPointF, end: QPointF, label: str
+    ) -> None:
+        """Draw the magnetic alignment line beyond the measured segment."""
+        dx, dy = end.x() - start.x(), end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return
+        ux, uy = dx / length, dy / length
+        reach = math.hypot(self.width(), self.height())
+        a = QPointF(start.x() - ux * reach, start.y() - uy * reach)
+        b = QPointF(end.x() + ux * reach, end.y() + uy * reach)
+        pen = QPen(QColor(self._palette.accent))
+        pen.setWidthF(1.0)
+        pen.setStyle(Qt.DotLine)
+        painter.setPen(pen)
+        painter.drawLine(a, b)
+
+        badge = QRectF(end.x() + 10.0, end.y() - 20.0, 58.0, 18.0)
+        painter.setPen(QPen(QColor(self._palette.border), 1.0))
+        painter.setBrush(QColor(self._palette.surface_raised))
+        painter.drawRoundedRect(badge, 5.0, 5.0)
+        painter.setPen(QPen(QColor(self._palette.accent)))
+        painter.drawText(badge, Qt.AlignCenter, label)
 
     def _live_reading(self) -> str:
         """The running distance from the first point to the cursor."""
@@ -172,6 +201,13 @@ class MeasureOverlay(QWidget):
         elif kind == "on_edge":
             painter.drawLine(
                 QPointF(at.x() - half, at.y()), QPointF(at.x() + half, at.y())
+            )
+        elif kind == "inference":
+            painter.drawLine(
+                QPointF(at.x() - half, at.y()), QPointF(at.x() + half, at.y())
+            )
+            painter.drawLine(
+                QPointF(at.x(), at.y() - half), QPointF(at.x(), at.y() + half)
             )
         else:                                   # face centre, or a point on one
             glyph.setWidthF(2.6)

@@ -249,10 +249,24 @@ def default_clearance_preset() -> str:
 def clearance_for(preset: str | float) -> float:
     """Diametral clearance in mm for a preset name, or a raw number."""
     if isinstance(preset, (int, float)):
-        return float(preset)
+        value = float(preset)
+        if value < 0.0:
+            raise ValueError("Thread clearance cannot be negative.")
+        return value
     table = clearance_presets()
-    entry = table.get(preset) or table[default_clearance_preset()]
+    entry = table.get(preset)
+    if entry is None:
+        raise ValueError(f"Unknown thread-clearance preset: {preset}")
     return float(entry["clearance"])
+
+
+def effective_clearance_for(preset: str | float) -> float:
+    """Clearance after applying the active printer's measured Normal value."""
+    if isinstance(preset, (int, float)):
+        return clearance_for(preset)
+    from .calibration import effective_thread_clearance
+
+    return effective_thread_clearance(printer_profile()["id"], preset)
 
 
 def fit_presets() -> dict[str, dict]:

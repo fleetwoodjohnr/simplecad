@@ -14,7 +14,8 @@ from ..core.document import BodyRef, BuildContext, Feature, register
 from ..core.errors import CadError, guard
 from ..core.units import Dimension
 from .occ import (
-    axis_transform, bounding_box, built_shape, make_transform, transformed, unify,
+    axis_transform, bounding_box, built_shape, is_valid, make_transform,
+    transformed, unify, volume,
 )
 
 
@@ -44,6 +45,216 @@ def _has_solid(shape) -> bool:
     if shape is None or shape.IsNull():
         return False
     return TopExp_Explorer(shape, TopAbs_SOLID).More()
+
+
+def _usable_shell(original, result) -> bool:
+    """A shell must be valid, retain its exterior bounds, and remove material."""
+    if not _has_solid(result) or not is_valid(result):
+        return False
+    before = volume(original)
+    after = volume(result)
+    if before - after <= max(1.0e-7, before * 1.0e-8):
+        return False
+    old_box, new_box = bounding_box(original), bounding_box(result)
+    return all(
+        abs(old_box[side][axis] - new_box[side][axis]) <= 1.0e-5
+        for side in (0, 1) for axis in range(3)
+    )
+
+
+def _sample_edge(edge, start_vertex, deflection: float):
+    """Ordered points along one edge, starting at WireExplorer's vertex."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+
+    curve = BRepAdaptor_Curve(edge)
+    try:
+        sampler = GCPnts_QuasiUniformDeflection(curve, deflection)
+        points = [sampler.Value(i) for i in range(1, sampler.NbPoints() + 1)] \
+            if sampler.IsDone() else []
+    except BaseException:  # noqa: BLE001 - a degenerate edge still has endpoints
+        points = []
+    if len(points) < 2:
+        points = [curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter())]
+    start = BRep_Tool.Pnt_s(start_vertex)
+    first = points[0]
+    last = points[-1]
+    first_d2 = sum((a - b) ** 2 for a, b in zip(
+        (first.X(), first.Y(), first.Z()), (start.X(), start.Y(), start.Z())
+    ))
+    last_d2 = sum((a - b) ** 2 for a, b in zip(
+        (last.X(), last.Y(), last.Z()), (start.X(), start.Y(), start.Z())
+    ))
+    return list(reversed(points)) if last_d2 < first_d2 else points
+
+
+def _face_profile(face, deflection: float):
+    """The planar face as a Shapely polygon plus its local 3-D frame."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from shapely.geometry import Polygon
+
+    plane = BRepAdaptor_Surface(face).Plane()
+    position = plane.Position()
+    origin = position.Location()
+    x_dir = position.XDirection()
+    y_dir = position.YDirection()
+    origin_xyz = (origin.X(), origin.Y(), origin.Z())
+    x_axis = (x_dir.X(), x_dir.Y(), x_dir.Z())
+    y_axis = (y_dir.X(), y_dir.Y(), y_dir.Z())
+
+    rings = []
+    explorer = TopExp_Explorer(face, TopAbs_WIRE)
+    while explorer.More():
+        wire = TopoDS.Wire_s(explorer.Current())
+        ordered = BRepTools_WireExplorer(wire, face)
+        points = []
+        while ordered.More():
+            samples = _sample_edge(
+                ordered.Current(), ordered.CurrentVertex(), deflection
+            )
+            for point in samples:
+                xyz = (point.X(), point.Y(), point.Z())
+                relative = tuple(xyz[i] - origin_xyz[i] for i in range(3))
+                uv = (
+                    sum(relative[i] * x_axis[i] for i in range(3)),
+                    sum(relative[i] * y_axis[i] for i in range(3)),
+                )
+                if not points or math.dist(points[-1], uv) > 1.0e-8:
+                    points.append(uv)
+            ordered.Next()
+        if len(points) >= 3:
+            if math.dist(points[0], points[-1]) > 1.0e-8:
+                points.append(points[0])
+            rings.append(points)
+        explorer.Next()
+    if not rings:
+        raise CadError("The selected opening has no usable boundary.")
+
+    def signed_area(ring):
+        return sum(
+            ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
+            for i in range(len(ring) - 1)
+        ) / 2.0
+
+    rings.sort(key=lambda ring: abs(signed_area(ring)), reverse=True)
+    profile = Polygon(rings[0], rings[1:])
+    if not profile.is_valid:
+        profile = profile.buffer(0)
+    if profile.is_empty or profile.geom_type not in ("Polygon", "MultiPolygon"):
+        raise CadError("The selected opening has a self-intersecting boundary.")
+    return profile, (origin_xyz, x_axis, y_axis)
+
+
+def _prism_depth(body, opening, inward) -> float:
+    """Depth of a constant-profile extrusion, or fail when the body is not one."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from .detect import analyse_plane
+
+    info = analyse_plane(opening)
+    if info is None:
+        raise CadError("The fallback hollow path needs one flat opening face.")
+    levels = []
+    explorer = TopExp_Explorer(body, TopAbs_VERTEX)
+    while explorer.More():
+        point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(explorer.Current()))
+        offset = (
+            point.X() - info.center[0],
+            point.Y() - info.center[1],
+            point.Z() - info.center[2],
+        )
+        levels.append(sum(offset[i] * inward[i] for i in range(3)))
+        explorer.Next()
+    depth = max(levels, default=0.0)
+    tolerance = max(1.0e-5, depth * 1.0e-6)
+    if depth <= tolerance or any(
+        tolerance < level < depth - tolerance for level in levels
+    ):
+        raise CadError(
+            "This body is not a constant-depth extrusion.",
+            suggestion="Try a thinner wall; this shape needs the general shell solver.",
+        )
+    return depth
+
+
+def _wire_from_coords(coords, frame, outward, epsilon: float):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    origin, x_axis, y_axis = frame
+    polygon = BRepBuilderAPI_MakePolygon()
+    for u, v in list(coords)[:-1]:
+        polygon.Add(gp_Pnt(*(
+            origin[i] + x_axis[i] * u + y_axis[i] * v + outward[i] * epsilon
+            for i in range(3)
+        )))
+    polygon.Close()
+    return polygon.Wire()
+
+
+def _profile_cavity(body, opening, thickness: float):
+    """Hollow a constant-depth solid through a robust 2-D inward offset."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+    from shapely import buffer as planar_buffer
+
+    from .detect import analyse_plane
+
+    info = analyse_plane(opening)
+    if info is None:
+        raise CadError("Select one flat face to open before hollowing.")
+    outward = info.normal
+    inward = tuple(-value for value in outward)
+    depth = _prism_depth(body, opening, inward)
+    if thickness >= depth:
+        raise CadError(
+            f"A {thickness:.2f} mm wall leaves no interior depth.",
+            suggestion=f"Use a wall below {depth:.2f} mm.",
+        )
+
+    deflection = max(0.005, min(0.05, thickness / 20.0))
+    profile, frame = _face_profile(opening, deflection)
+    inner = planar_buffer(
+        profile, -thickness, join_style="mitre", mitre_limit=2.0
+    )
+    if not inner.is_valid:
+        inner = inner.buffer(0)
+    if inner.is_empty:
+        raise CadError(
+            f"A {thickness:.2f} mm wall closes this profile completely.",
+            suggestion="Use a thinner wall.",
+        )
+    polygons = [inner] if inner.geom_type == "Polygon" else list(inner.geoms)
+    epsilon = max(1.0e-4, min(0.01, thickness * 1.0e-3))
+    result = body
+    for polygon in polygons:
+        face_builder = BRepBuilderAPI_MakeFace(
+            _wire_from_coords(polygon.exterior.coords, frame, outward, epsilon)
+        )
+        for ring in polygon.interiors:
+            face_builder.Add(
+                _wire_from_coords(ring.coords, frame, outward, epsilon)
+            )
+        cutter = BRepPrimAPI_MakePrism(
+            face_builder.Face(),
+            gp_Vec(*(inward[i] * (depth - thickness + epsilon) for i in range(3))),
+        ).Shape()
+        result = built_shape(BRepAlgoAPI_Cut(result, cutter), "shell")
+    if not _usable_shell(body, result):
+        raise CadError(
+            "The hollow cavity could not be built cleanly.",
+            suggestion="Use a thinner wall or simplify the opening profile.",
+        )
+    return result
 
 
 class _BodyOperation(Feature):
@@ -144,14 +355,43 @@ class ShellFeature(_BodyOperation):
                 f"A {thickness:.2f} mm wall is too thick to hollow this body.",
                 suggestion=f"Use a wall below {limit:.2f} mm.",
             )
-        with guard("shell"):
+        generic_result = None
+        generic_error = None
+        try:
             removed = TopTools_ListOfShape()
             for face in faces:
                 removed.Append(face)
             builder = BRepOffsetAPI_MakeThickSolid()
             # Negative offset hollows inward, leaving the outer surface where it is.
             builder.MakeThickSolidByJoin(body, removed, -abs(thickness), 1.0e-3)
-            return self._emit(built_shape(builder, "shell"))
+            generic_result = built_shape(builder, "shell")
+        except BaseException as exc:  # noqa: BLE001 - OCCT exceptions cross Python
+            generic_error = exc
+
+        # OCCT sometimes reports a successful thick-solid operation while
+        # returning the original body unchanged (notably smooth Heart and
+        # Crescent profiles). Never accept a result unless it actually has an
+        # interior and preserves the original exterior.
+        if _usable_shell(body, generic_result):
+            return self._emit(generic_result)
+
+        # A silhouette extruded to a constant depth has a much more dependable
+        # construction: offset the selected planar profile in 2-D, extrude that
+        # interior downward, then subtract it. This handles every flat profile,
+        # including curved and concave decorative shapes.
+        if len(faces) == 1:
+            with guard("shell"):
+                return self._emit(_profile_cavity(body, faces[0], thickness))
+
+        detail = ""
+        if generic_error is not None:
+            detail = f"{type(generic_error).__name__}: {generic_error}"
+        raise CadError(
+            "The selected faces did not produce a hollow body.",
+            suggestion="Try opening one flat face or using a thinner wall.",
+            detail=detail,
+            operation="shell",
+        )
 
 
 # ----------------------------------------------------------------------
@@ -408,6 +648,27 @@ class MoveFeature(_BodyOperation):
                     )
                 )
         return self._emit(transformed(body, transform))
+
+
+@register("move_many")
+class MoveManyFeature(Feature):
+    """Translate several bodies as one parametric/history operation."""
+
+    label = "Move"
+
+    def execute(self, ctx: BuildContext) -> dict:
+        names = [str(name) for name in self.inputs.get("bodies", [])]
+        if not names:
+            raise CadError("Move needs at least one body.")
+        transform = make_transform(translate=(
+            ctx.value(self, "dx", 0.0),
+            ctx.value(self, "dy", 0.0),
+            ctx.value(self, "dz", 0.0),
+        ))
+        self.outputs = names
+        return self.keep({
+            name: transformed(ctx.named_shape(name), transform) for name in names
+        })
 
 
 @register("scale")
@@ -682,7 +943,7 @@ class HoleFeature(_BodyOperation):
         fails to sweep, so the user silently got a plain hole. Measuring the
         cylindrical face the cut actually produced gives the real thickness.
         """
-        from .threads import apply_thread, require_modelled
+        from .threads import apply_thread, require_modelled, require_printable
 
         # False until the complete physical result exists. The geometry worker
         # returns portable feature inputs even on failure, so matching-part
@@ -711,6 +972,7 @@ class HoleFeature(_BodyOperation):
 
         length = ctx.value(self, "thread_length", bore.length) or bore.length
         length = min(length, bore.length)
+        require_printable(size, str(self.inputs.get("form", "printed")))
         outcome = require_modelled(apply_thread(
             shape, size=size,
             origin=thread_origin(
@@ -718,7 +980,7 @@ class HoleFeature(_BodyOperation):
             ),
             direction=bore.direction,
             length=length, internal=True,
-            clearance=str(self.inputs.get("clearance", "normal")),
+            clearance=self.inputs.get("clearance", "normal"),
             left_hand=bool(self.inputs.get("left_hand", False)),
             feature_diameter=bore.diameter,
             form=str(self.inputs.get("form", "printed")),
@@ -849,6 +1111,10 @@ class AlignFeature(_BodyOperation):
             operation=self.inputs.get("operation") or None,
             offset=ctx.value(self, "offset", 0.0),
             flip=bool(self.inputs.get("flip", False)),
+            x=ctx.value(self, "x", 0.0),
+            y=ctx.value(self, "y", 0.0),
+            x_anchor=str(self.inputs.get("x_anchor", "center")),
+            y_anchor=str(self.inputs.get("y_anchor", "center")),
         )
         self.message = result.description
         return self._emit(transformed(body, result.transform))
@@ -866,7 +1132,9 @@ class ThreadFeature(_BodyOperation):
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
         from .thread_specs import best_match, by_designation
-        from .threads import apply_thread, require_modelled
+        from .threads import (
+            apply_thread, require_modelled, require_printable, resize_target,
+        )
 
         body = ctx.shape(self, "body")
         face = ctx.resolve(self, "face")
@@ -894,21 +1162,37 @@ class ThreadFeature(_BodyOperation):
 
         length = ctx.value(self, "length", info.length) or info.length
         length = min(length, info.length)
+        form = str(self.inputs.get("form", "printed"))
+        clearance = self.inputs.get("clearance", "normal")
+        require_printable(size, form)
+        origin = thread_origin(
+            info, length, str(self.inputs.get("from_end", "top"))
+        )
+        # Threading a hole that was drilled for something else is an ordinary
+        # thing to want. Opening it to the size first is what a tap drill is
+        # for, and it is the difference between "this size is not on offer" and
+        # a thread.
+        body, diameter, resized = resize_target(
+            body, info, size, length=length, origin=origin,
+            clearance=clearance, form=form,
+            resize=bool(self.inputs.get("resize", False)),
+        )
         outcome = require_modelled(apply_thread(
             body, size=size,
-            origin=thread_origin(
-                info, length, str(self.inputs.get("from_end", "top"))
-            ),
+            origin=origin,
             direction=info.direction,
             length=length, internal=info.internal,
-            clearance=str(self.inputs.get("clearance", "normal")),
+            clearance=clearance,
             left_hand=bool(self.inputs.get("left_hand", False)),
-            feature_diameter=info.diameter,
-            form=str(self.inputs.get("form", "printed")),
+            feature_diameter=diameter,
+            form=form,
         ))
         if outcome.message:
             ctx.warn(outcome.message)
             self.message = outcome.message
+        if resized:
+            ctx.warn(resized)
+            self.message = f"{resized} {self.message}".strip()
         self.inputs.setdefault("designation", size.designation)
         self.inputs["thread_modelled"] = True
         return self._emit(outcome.shape)
@@ -928,7 +1212,7 @@ class ThreadedConnectionFeature(Feature):
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
         from .thread_specs import best_match, by_designation
-        from .threads import apply_thread, require_modelled
+        from .threads import apply_thread, require_modelled, require_printable
 
         first_name = str(self.inputs["body_a"])
         second_name = str(self.inputs["body_b"])
@@ -968,8 +1252,9 @@ class ThreadedConnectionFeature(Feature):
                 suggestion="Adjust the diameter, or choose a size manually.",
             )
 
-        clearance = str(self.inputs.get("clearance", "normal"))
+        clearance = self.inputs.get("clearance", "normal")
         form = str(self.inputs.get("form", "printed"))
+        require_printable(size, form)
         length = ctx.value(self, "length", 0.0) or min(male.length, female.length)
 
         outputs: dict[str, object] = {}

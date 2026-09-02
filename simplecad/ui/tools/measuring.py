@@ -211,6 +211,7 @@ class MeasurePanel(ToolPanel):
 
     def clear_points(self) -> None:
         self.points = []
+        self.window_.stage.viewport.set_snap_reference(None)
         overlay = self.window_.stage.measure_overlay
         overlay.picked = []
         overlay.reading = ""
@@ -250,7 +251,11 @@ class MeasurePanel(ToolPanel):
         # A third click starts a fresh measurement rather than doing nothing.
         if len(self.points) >= 2:
             self.points = []
+            self.window_.stage.viewport.set_snap_reference(None)
         self.points.append(snap)
+        self.window_.stage.viewport.set_snap_reference(
+            snap if len(self.points) == 1 else None
+        )
         overlay = self.window_.stage.measure_overlay
         overlay.picked = list(self.points)
         overlay.update()

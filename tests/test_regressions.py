@@ -273,6 +273,67 @@ def test_rotation_decomposes_to_the_axis_it_was_made_about(axis, degrees):
     )
 
 
+def test_rotation_about_a_body_centre_never_becomes_a_move():
+    """A non-origin pivot is encoded as translation, but Rotate must ignore it."""
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    from simplecad.ui.viewport.gizmo import _decompose
+
+    transform = gp_Trsf()
+    transform.SetRotation(
+        gp_Ax1(gp_Pnt(125.0, -40.0, 18.0), gp_Dir(0.0, 0.0, 1.0)),
+        math.radians(37.0),
+    )
+    dx, dy, dz, rx, ry, rz = _decompose(
+        transform, allow_translation=False, allow_rotation=True
+    )
+
+    assert (dx, dy, dz) == pytest.approx((0.0, 0.0, 0.0))
+    assert (rx, ry, rz) == pytest.approx((0.0, 0.0, 37.0), abs=1e-6)
+
+
+def test_move_mode_never_inherits_rotation_components():
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    from simplecad.ui.viewport.gizmo import _decompose
+
+    transform = gp_Trsf()
+    transform.SetRotation(
+        gp_Ax1(gp_Pnt(), gp_Dir(1.0, 0.0, 0.0)), math.radians(22.0)
+    )
+    components = _decompose(
+        transform, allow_translation=True, allow_rotation=False
+    )
+    assert components[3:] == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_rotation_magnetically_locks_to_quarter_turns_with_hysteresis():
+    from simplecad.ui.viewport.gizmo import RotationSnapState
+
+    state = RotationSnapState()
+    assert state.update(87.0) == pytest.approx((90.0, True))
+    assert state.update(96.0) == pytest.approx((90.0, True))
+    assert state.update(99.0) == pytest.approx((99.0, False))
+
+
+def test_rotation_unwraps_through_270_and_360_degrees():
+    from simplecad.ui.viewport.gizmo import RotationSnapState
+
+    state = RotationSnapState()
+    state.update(170.0)
+    state.update(-170.0)
+    assert state.update(-90.0) == pytest.approx((270.0, True))
+    assert state.update(0.0) == pytest.approx((360.0, True))
+
+
+def test_shift_temporarily_bypasses_rotation_snapping():
+    from simplecad.ui.viewport.gizmo import RotationSnapState
+
+    state = RotationSnapState()
+    assert state.update(88.0) == pytest.approx((90.0, True))
+    assert state.update(89.0, bypass=True) == pytest.approx((89.0, False))
+
+
 # ----------------------------------------------------------------------
 # Reaching the tools at all
 # ----------------------------------------------------------------------

@@ -26,6 +26,7 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "extrude": "E",
     "move": "M",
     "hole": "H",
+    "xray": "X",
     "fit_view": "F",
     "zoom_selection": "Ctrl+Shift+F",
     "undo": "Ctrl+Z",

@@ -184,3 +184,32 @@ class TestSelectionQueries:
         document.add_group(["A", "B"], "Frame")
         model = self._model(document, ["A", "B", "C"])
         assert model.items == ["Frame", "C"]
+
+    def test_three_whole_bodies_offer_arrange(self, document):
+        from simplecad.ui.selection import available_actions
+
+        model = self._model(document, ["A", "B", "C"])
+        actions = {key for key, _label, _icon in available_actions(model)}
+        assert "arrange" in actions
+
+    def test_two_whole_bodies_offer_boolean_actions(self, document):
+        from simplecad.ui.selection import available_actions
+
+        model = self._model(document, ["A", "B"])
+        actions = {key for key, _label, _icon in available_actions(model)}
+        assert {"join", "subtract", "intersect"} <= actions
+
+    def test_a_body_and_a_target_face_offer_place_on_face(self, document):
+        from simplecad.kernel.detect import PlaneInfo
+        from simplecad.ui.selection import Picked, SelectionModel, available_actions
+
+        model = SelectionModel(document, None, {})
+        model.picks = [
+            Picked(body="A", kind="body", shape=object()),
+            Picked(
+                body="B", kind="face", shape=object(),
+                info=PlaneInfo((0, 0, 0), (0, 0, 1), 100.0),
+            ),
+        ]
+        actions = {key for key, _label, _icon in available_actions(model)}
+        assert "place_on_face" in actions

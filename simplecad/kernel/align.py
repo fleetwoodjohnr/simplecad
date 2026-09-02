@@ -109,6 +109,105 @@ class AlignResult:
     description: str
 
 
+@dataclass(frozen=True)
+class PlanarFrame:
+    """A stable local frame and trimmed bounds for one planar face.
+
+    Coordinates are relative to the face's area centre.  ``x_axis`` follows
+    the underlying plane's authored X direction; ``y_axis`` is re-derived from
+    the outward normal so the visible frame remains right-handed on reversed
+    faces as well.
+    """
+
+    center: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    x_axis: tuple[float, float, float]
+    y_axis: tuple[float, float, float]
+    x_bounds: tuple[float, float]
+    y_bounds: tuple[float, float]
+
+    def point(self, x: float = 0.0, y: float = 0.0, normal: float = 0.0):
+        return tuple(
+            self.center[i]
+            + self.x_axis[i] * x
+            + self.y_axis[i] * y
+            + self.normal[i] * normal
+            for i in range(3)
+        )
+
+
+def planar_frame(face) -> PlanarFrame:
+    """Return the face-local X/Y frame used by placement and arrangement."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS
+
+    info = analyse_plane(face)
+    if info is None:
+        raise CadError(
+            "Placement needs a flat target face.",
+            suggestion="Select a planar face on the receiving object.",
+        )
+    face = TopoDS.Face_s(face)
+    plane = BRepAdaptor_Surface(face).Plane()
+    position = plane.Position()
+    x_dir = position.XDirection()
+    x_axis = _unit((x_dir.X(), x_dir.Y(), x_dir.Z()))
+    y_axis = _unit(_cross(info.normal, x_axis))
+
+    location = position.Location()
+    origin = (location.X(), location.Y(), location.Z())
+    center_delta = _sub(info.center, origin)
+    center_x = _dot(center_delta, x_axis)
+    center_y = _dot(center_delta, y_axis)
+
+    u_min, u_max, v_min, v_max = BRepTools.UVBounds_s(face)
+    surface_y = position.YDirection()
+    surface_y = (surface_y.X(), surface_y.Y(), surface_y.Z())
+    if _dot(surface_y, y_axis) < 0.0:
+        v_min, v_max = -v_max, -v_min
+    return PlanarFrame(
+        center=info.center,
+        normal=info.normal,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        x_bounds=(u_min - center_x, u_max - center_x),
+        y_bounds=(v_min - center_y, v_max - center_y),
+    )
+
+
+def _anchored(bounds, anchor: str, value: float) -> float:
+    """Resolve an edge/centre offset; positive edge values point inward."""
+    low, high = bounds
+    if anchor in ("left", "bottom"):
+        return low + value
+    if anchor in ("right", "top"):
+        return high - value
+    return value
+
+
+def support_face(body, target_face):
+    """Infer a useful planar support face for placing a whole body.
+
+    Area is the primary signal. Equal caps (the common cylinder case) are
+    broken by proximity to the target plane, so the cap already facing the
+    receiving surface is chosen.
+    """
+    from ..core.naming import sub_shapes
+
+    target = analyse_plane(target_face)
+    if target is None:
+        return None
+    candidates = []
+    for index, face in enumerate(sub_shapes(body, "face")):
+        info = analyse_plane(face)
+        if info is None:
+            continue
+        distance = abs(_dot(_sub(info.center, target.center), target.normal))
+        candidates.append((-info.area, distance, index, face))
+    return min(candidates)[-1] if candidates else None
+
+
 # ----------------------------------------------------------------------
 # Operations
 # ----------------------------------------------------------------------
@@ -118,6 +217,11 @@ def stack(
     *,
     offset: float = 0.0,
     flip: bool = False,
+    target_frame: PlanarFrame | None = None,
+    x: float = 0.0,
+    y: float = 0.0,
+    x_anchor: str = "center",
+    y_anchor: str = "center",
 ) -> AlignResult:
     """Seat the moving face flat against the target face.
 
@@ -129,7 +233,14 @@ def stack(
     """
     wanted = target.normal if flip else _scale(target.normal, -1.0)
     rotate = rotation_between(moving.normal, wanted, moving.center)
-    destination = _add(target.center, _scale(target.normal, offset))
+    if target_frame is None:
+        destination = _add(target.center, _scale(target.normal, offset))
+    else:
+        destination = target_frame.point(
+            _anchored(target_frame.x_bounds, x_anchor, x),
+            _anchored(target_frame.y_bounds, y_anchor, y),
+            offset,
+        )
     move = translation(_sub(destination, moving.center))
     combined = move.Multiplied(rotate)
     gap = f", offset {offset:g} mm" if offset else ""
@@ -140,9 +251,27 @@ def stack(
     )
 
 
-def center(moving: PlaneInfo, target: PlaneInfo, *, offset: float = 0.0) -> AlignResult:
+def center(
+    moving: PlaneInfo,
+    target: PlaneInfo,
+    *,
+    offset: float = 0.0,
+    target_frame: PlanarFrame | None = None,
+    x: float = 0.0,
+    y: float = 0.0,
+    x_anchor: str = "center",
+    y_anchor: str = "center",
+) -> AlignResult:
     """Line the moving face's centre up with the target's, without rotating."""
-    destination = _add(target.center, _scale(target.normal, offset))
+    destination = (
+        target_frame.point(
+            _anchored(target_frame.x_bounds, x_anchor, x),
+            _anchored(target_frame.y_bounds, y_anchor, y),
+            offset,
+        )
+        if target_frame is not None
+        else _add(target.center, _scale(target.normal, offset))
+    )
     return AlignResult(
         translation(_sub(destination, moving.center)),
         "center",
@@ -237,6 +366,10 @@ def solve(
     operation: str | None = None,
     offset: float = 0.0,
     flip: bool = False,
+    x: float = 0.0,
+    y: float = 0.0,
+    x_anchor: str = "center",
+    y_anchor: str = "center",
 ) -> AlignResult:
     """Solve a placement for two selected faces, choosing the operation if not given."""
     operation = operation or suggest(moving_face, target_face)
@@ -261,6 +394,13 @@ def solve(
             "Stack needs a flat face on both parts.",
             suggestion="Select a planar face on each, or use Concentric for round features.",
         )
+    frame = planar_frame(target_face)
     if operation == "center":
-        return center(moving, target, offset=offset)
-    return stack(moving, target, offset=offset, flip=flip)
+        return center(
+            moving, target, offset=offset, target_frame=frame,
+            x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor,
+        )
+    return stack(
+        moving, target, offset=offset, flip=flip, target_frame=frame,
+        x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor,
+    )

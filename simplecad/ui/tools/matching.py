@@ -3,18 +3,29 @@
 Select something threaded and ask for the part that fits it. The thread is read
 off the feature history, so the size, hand and clearance are already known --
 the user picks *what* they want, never *what size*.
+
+The panel opens on whatever the selection is asking for: a flat face on another
+part means "drill and thread it here", a bore or a shaft means "thread that",
+and nothing selected means a free-standing bolt or nut. Opening on a nut while
+the user is plainly pointing at the face they want threaded is the panel
+answering a question nobody asked, and it was the single thing that made the
+obvious two-part workflow -- thread a post, select the post and the plate, get a
+hole that fits -- read as broken.
 """
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QGridLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QWidget
 
 from ...core.document import BodyRef
 from ...kernel.fasteners import (
     ApplyMatchingThreadFeature, MatchingBoltFeature, MatchingNutFeature, complement,
 )
 from ...kernel.occ import make_transform, transformed
-from ...kernel.thread_specs import by_designation, clearance_presets
+from ...kernel.thread_specs import (
+    by_designation, clearance_presets, effective_clearance_for,
+)
+from ..selection import WHOLE_OBJECT_KINDS, Picked
 from ..theme import METRICS
 from ..widgets.controls import GhostButton
 from .base import FeaturePreviewController, ToolPanel
@@ -31,41 +42,19 @@ class MatchingPartPanel(ToolPanel):
         ("bolt", "Bolt"),
         ("nut", "Nut"),
         ("hole", "Threaded hole"),
-        ("apply", "Apply to selection"),
+        ("apply", "Thread a face"),
     )
 
     def build(self) -> None:
         self.selection = self.window_.selection
         self.thread = self._detect_thread()
-        self.kind = (
-            "bolt" if self.thread is None or self._existing_is_internal() else "nut"
-        )
+        self.kind = self._default_kind()
         self._preview_valid = False
         self._preview_body: str | None = None
         self._placement = (0.0, 0.0, 0.0)
         self._preview = FeaturePreviewController(
             self, self._preview_answered, delay_ms=140
         )
-
-        if self.thread is None:
-            self.set_subtitle(
-                "No thread found yet. Create one first, then come back — the "
-                "matching part is built from it."
-            )
-        else:
-            size = by_designation(self.thread["designation"])
-            if size is None:
-                self.set_subtitle("The selected feature names an unknown thread size.")
-            else:
-                pairing = complement(
-                    size, existing_internal=self._existing_is_internal()
-                )
-                hand = "left-hand" if self.thread.get("left_hand") else "right-hand"
-                self.set_subtitle(
-                    f"Locked to {self.thread['designation']} on "
-                    f"{self.thread['feature']}: {self.thread.get('form', 'printed')} "
-                    f"form, {hand}. The mate needs a {pairing.describe()}."
-                )
 
         self.add_section("What to create")
         chooser = QWidget()
@@ -101,19 +90,43 @@ class MatchingPartPanel(ToolPanel):
 
         self.add_field("length", "Length", 20.0)
 
+        # Only shown, and only needed, when the face the mate goes on is not
+        # already the size the thread wants. Off by default: opening somebody's
+        # bore out by four millimetres is not something to do behind their back.
+        self.resize = QCheckBox("Resize to suit the thread")
+        self.resize.toggled.connect(lambda _on: self.preview())
+        self.resize.setVisible(False)
+        self.add_widget(self.resize)
+
         self.add_section("Printable clearance")
         self.clearance = QComboBox()
         for key, entry in clearance_presets().items():
+            value = effective_clearance_for(key)
             self.clearance.addItem(
-                f"{entry['label']} — {entry['clearance']:.2f} mm", key
+                f"{entry['label']} — {value:.2f} mm diameter · "
+                f"{value / 2.0:.2f} per side", key
             )
         source_clearance = (self.thread or {}).get("clearance", "normal")
         index = self.clearance.findData(source_clearance)
+        if index < 0 and isinstance(source_clearance, (int, float)):
+            self.clearance.addItem(
+                f"Custom — {source_clearance:.2f} mm diameter",
+                source_clearance,
+            )
+            index = self.clearance.count() - 1
         self.clearance.setCurrentIndex(index if index >= 0 else 1)
         self.clearance.setEnabled(False)
         self.add_widget(self.clearance)
         self._apply_kind_compatibility()
-        self.choose(self.kind)
+        if any(button.isEnabled() for button in self._buttons.values()):
+            self.choose(self.kind)
+        else:
+            # Nothing in the document to match. Say so and leave Create off,
+            # rather than inviting a click that cannot go anywhere. ``choose``
+            # declines disabled kinds, so without this the panel would open
+            # blank -- no subtitle, and a live Create button.
+            self._describe()
+            self.confirm.setEnabled(False)
 
     # -- detection -------------------------------------------------------
     def _detect_thread(self) -> dict | None:
@@ -131,10 +144,28 @@ class MatchingPartPanel(ToolPanel):
         faces = self.selection.round_faces()
         return bool(faces and faces[0].info.internal)
 
+    def _source_size(self):
+        return by_designation(str((self.thread or {}).get("designation", "")))
+
+    def _default_kind(self) -> str:
+        """The kind the current selection is asking for."""
+        if self.thread is None or self._source_size() is None:
+            return "bolt"
+        if self._target_round_face() is not None:
+            return "apply"
+        if not self._existing_is_internal() and self._target_planar_face() is not None:
+            return "hole"
+        return "bolt" if self._existing_is_internal() else "nut"
+
+    def _has_target(self, kind: str) -> bool:
+        if kind == "apply":
+            return self._target_round_face() is not None
+        if kind == "hole":
+            return self._target_planar_face() is not None
+        return True
+
     def _apply_kind_compatibility(self) -> None:
-        has_thread = self.thread is not None and by_designation(
-            self.thread.get("designation", "")
-        ) is not None
+        has_thread = self.thread is not None and self._source_size() is not None
         existing_internal = self._existing_is_internal()
         # A bolt supplies an external mate; a nut and threaded hole supply an
         # internal one.  Do not offer a same-polarity part that can never mate.
@@ -155,25 +186,86 @@ class MatchingPartPanel(ToolPanel):
             button.setChecked(name == key)
         self.head.setVisible(key == "bolt")
         self.fields["length"].setEnabled(key in ("bolt", "hole"))
+        self._refresh_resize()
+        self._describe()
         self.preview()
 
     def on_selection_changed(self) -> None:
         # The source thread remains locked while the user selects the receiving
-        # face. Re-detecting here would silently change the specification.
+        # face. Re-detecting here would silently change the specification. What
+        # must follow the selection is which kinds have something to act on, and
+        # which one the panel is currently offering.
+        self._apply_kind_compatibility()
+        if not self._has_target(self.kind):
+            wanted = self._default_kind()
+            if wanted != self.kind and self._has_target(wanted):
+                self.choose(wanted)
+                return
+        self._refresh_resize()
+        self._describe()
         self.preview()
+
+    # -- targets ---------------------------------------------------------
+    def _round_faces_available(self) -> list:
+        """Round faces the mate could go on, whole bodies included.
+
+        Selecting a tube and asking for its matching thread is how a cap gets
+        made, and answering "select a round face" to that is pedantry: a tube
+        has exactly one bore, so there is nothing to disambiguate and no reason
+        to make anyone hunt for it.
+        """
+        from ...core.naming import sub_shapes
+        from ...kernel.detect import analyse_cylinder
+
+        # Memoised on the selection itself. Half a dozen methods ask this
+        # question every time the selection moves, and walking every face of a
+        # body that already carries a modelled thread -- which is hundreds of
+        # them, each analysed -- once per question is a stall the user feels.
+        signature = tuple(
+            (pick.body, pick.kind, id(pick.shape)) for pick in self.selection.picks
+        )
+        if getattr(self, "_round_cache_key", None) == signature:
+            return self._round_cache
+
+        found = list(self.selection.round_faces())
+        document = self.window_.document
+        source = (self.thread or {}).get("body")
+        for pick in self.selection.picks:
+            # The source body is never its own mate, and it is the expensive one
+            # to walk, so it is skipped rather than filtered out afterwards.
+            if pick.kind not in WHOLE_OBJECT_KINDS or pick.body == source:
+                continue
+            body = document.body(pick.body)
+            if body is None or body.shape is None:
+                continue
+            for face in sub_shapes(body.shape, "face"):
+                info = analyse_cylinder(face)
+                if info is None:
+                    continue
+                found.append(Picked(
+                    body=pick.body, kind="face", shape=face,
+                    presentation=pick.presentation, info=info,
+                ))
+        self._round_cache_key = signature
+        self._round_cache = found
+        return found
 
     def _target_round_face(self):
         if self.thread is None:
             return None
         required_internal = not self._existing_is_internal()
         source = self.thread.get("body")
-        return next(
-            (
-                face for face in self.selection.round_faces()
-                if face.body != source and bool(face.info.internal) == required_internal
-            ),
-            None,
-        )
+        size = self._source_size()
+        nominal = size.diameter if size is not None else 0.0
+        candidates = [
+            face for face in self._round_faces_available()
+            if face.body != source and bool(face.info.internal) == required_internal
+        ]
+        if not candidates:
+            return None
+        # Several bores on one body: the one nearest the thread's own size is
+        # the one that was meant.
+        return min(candidates, key=lambda f: abs(f.info.diameter - nominal))
 
     def _target_planar_face(self):
         source = (self.thread or {}).get("body")
@@ -182,6 +274,82 @@ class MatchingPartPanel(ToolPanel):
             None,
         )
 
+    def _resize_wanted(self) -> tuple[object, float] | None:
+        """The target face and the diameter it would have to become, or None."""
+        from ...kernel.threads import required_bore
+
+        if self.kind != "apply":
+            return None
+        pick = self._target_round_face()
+        size = self._source_size()
+        if pick is None or size is None:
+            return None
+        clearance = (self.thread or {}).get("clearance", "normal")
+        wanted = (
+            required_bore(size, clearance) if pick.info.internal else size.diameter
+        )
+        # Offered only when the feature is meaningfully undersize -- the same
+        # 0.05 mm the kernel uses. A bore already at the thread's nominal size
+        # needs nothing, and offering to change it there is noise.
+        if pick.info.diameter >= size.diameter - 0.05:
+            return None
+        return pick, wanted
+
+    def _refresh_resize(self) -> None:
+        """Say what resizing would actually do, in millimetres."""
+        wanted = self._resize_wanted()
+        self.resize.setVisible(wanted is not None)
+        if wanted is None:
+            return
+        pick, diameter = wanted
+        verb = "Open the hole" if pick.info.internal else "Build the shaft up"
+        self.resize.setText(
+            f"{verb} ⌀{pick.info.diameter:.2f} → ⌀{diameter:.2f} mm"
+        )
+        self.relayout()
+
+    # -- description -----------------------------------------------------
+    def _describe(self) -> None:
+        """One sentence saying exactly what Create will do."""
+        if self.thread is None:
+            self.set_subtitle(
+                "No thread found yet. Create one first, then come back — the "
+                "matching part is built from it."
+            )
+            return
+        size = self._source_size()
+        if size is None:
+            self.set_subtitle("The selected feature names an unknown thread size.")
+            return
+        pairing = complement(size, existing_internal=self._existing_is_internal())
+        hand = "left-hand" if self.thread.get("left_hand") else "right-hand"
+        locked = (
+            f"Locked to {self.thread['designation']} on {self.thread['feature']}: "
+            f"{self.thread.get('form', 'printed')} form, {hand}. "
+            f"The mate needs a {pairing.describe()}."
+        )
+        if self.kind == "apply":
+            pick = self._target_round_face()
+            detail = (
+                f" It will be cut into {pick.body}'s "
+                f"⌀{pick.info.diameter:.2f} mm {pick.info.kind}."
+                if pick is not None else
+                f" Select the {'hole' if pairing.internal else 'shaft'} on the "
+                "other part to cut it into."
+            )
+        elif self.kind == "hole":
+            pick = self._target_planar_face()
+            detail = (
+                f" A ⌀{size.diameter:.2f} mm threaded hole will be drilled into "
+                f"{pick.body}, centred on the selected face."
+                if pick is not None else
+                " Select the flat face on the other part to drill into."
+            )
+        else:
+            detail = " It will be placed beside the model."
+        self.set_subtitle(locked + detail)
+
+    # -- feature ---------------------------------------------------------
     def _build_feature(self, *, for_preview: bool = False):
         if self.thread is None:
             return None
@@ -227,6 +395,7 @@ class MatchingPartPanel(ToolPanel):
                     **common,
                     "body": BodyRef(pick.body),
                     "face": pick.reference(document),
+                    "resize": self.resize.isChecked(),
                 },
                 outputs=[pick.body],
             )
@@ -266,13 +435,7 @@ class MatchingPartPanel(ToolPanel):
         if shape is None:
             self._clear_preview()
             self.confirm.setText(self.confirm_label)
-            if self.kind == "apply":
-                default = "Select a round face on the other part with the opposite polarity."
-            elif self.kind == "hole":
-                default = "Select a flat face on the other part for the matching hole."
-            else:
-                default = "The physical matching thread could not be built."
-            self.warn(message.get("error") or default)
+            self.warn(message.get("error") or self._nothing_to_act_on())
             return
 
         self._clear_preview()
@@ -302,6 +465,27 @@ class MatchingPartPanel(ToolPanel):
         self.confirm.setEnabled(True)
         self.confirm.setText(self.confirm_label)
         self.warn(" · ".join(message.get("warnings") or []))
+
+    def _nothing_to_act_on(self) -> str:
+        """Why there is no preview, said in terms of what to do next."""
+        if self.thread is None or self._source_size() is None:
+            return (
+                "No thread to match yet. Thread a shaft or a hole first, then "
+                "come back with the other part selected."
+            )
+        if self.kind == "apply":
+            if self._target_round_face() is None:
+                needed = "hole" if not self._existing_is_internal() else "shaft"
+                return (
+                    f"Select the {needed} on the other part — a round face, or "
+                    "the whole part if it only has one."
+                )
+            return "The matching thread could not be built on that face."
+        if self.kind == "hole":
+            if self._target_planar_face() is None:
+                return "Select a flat face on the other part to drill into."
+            return "The threaded hole could not be built on that face."
+        return "The physical matching thread could not be built."
 
     def _clear_preview(self) -> None:
         viewport = self.window_.stage.viewport

@@ -99,7 +99,7 @@ def make_bolt(size: ThreadSize, length: float, thread_length: float | None = Non
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
-    from .threads import apply_thread, require_modelled
+    from .threads import apply_thread, require_modelled, require_printable
 
     if length <= 0:
         raise CadError("A bolt needs a length greater than zero.")
@@ -125,6 +125,7 @@ def make_bolt(size: ThreadSize, length: float, thread_length: float | None = Non
 
     # Thread the free end of the shank.
     start = head_height + length - thread_length
+    require_printable(size, form)
     outcome = require_modelled(apply_thread(
         body, size=size, origin=(0.0, 0.0, start), direction=(0.0, 0.0, 1.0),
         length=thread_length, internal=False, feature_diameter=size.diameter,
@@ -140,12 +141,13 @@ def make_nut(size: ThreadSize, clearance: str | float = "normal",
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
-    from .thread_specs import clearance_for
-    from .threads import apply_thread, require_modelled
+    from .threads import (
+        apply_thread, require_modelled, require_printable, required_bore,
+    )
 
     dimensions = head_for(size)
     thickness = height or dimensions["nut_height"]
-    bore = size.diameter + clearance_for(clearance)
+    bore = required_bore(size, clearance)
 
     with guard("nut"):
         blank = _hex_prism(dimensions["across_flats"], thickness)
@@ -155,6 +157,7 @@ def make_nut(size: ThreadSize, clearance: str | float = "normal",
         )
         drilled = built_shape(BRepAlgoAPI_Cut(blank, drill), "nut")
 
+    require_printable(size, form)
     outcome = require_modelled(apply_thread(
         drilled, size=size, origin=(0.0, 0.0, 0.0), direction=(0.0, 0.0, 1.0),
         length=thickness, internal=True, clearance=clearance,
@@ -172,9 +175,9 @@ def make_threaded_hole_tool(size: ThreadSize, depth: float,
     """
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 
-    from .thread_specs import clearance_for
+    from .threads import required_bore
 
-    bore = size.diameter + clearance_for(clearance)
+    bore = required_bore(size, clearance)
     with guard("threaded hole"):
         return BRepPrimAPI_MakeCylinder(bore / 2.0, depth).Shape()
 
@@ -241,7 +244,7 @@ class MatchingNutFeature(Feature):
         self.inputs.setdefault("form", "printed")
         self.inputs.setdefault("left_hand", False)
         shape = make_nut(
-            size, str(self.inputs.get("clearance", "normal")), height,
+            size, self.inputs.get("clearance", "normal"), height,
             str(self.inputs.get("form", "printed")),
             bool(self.inputs.get("left_hand", False)),
         )
@@ -261,7 +264,9 @@ class ApplyMatchingThreadFeature(Feature):
 
     def execute(self, ctx: BuildContext) -> dict:
         from .detect import analyse_cylinder
-        from .threads import apply_thread, require_modelled
+        from .threads import (
+            apply_thread, require_modelled, require_printable, resize_target,
+        )
 
         name = str(self.inputs["body"])
         body = ctx.shape(self, "body")
@@ -279,21 +284,35 @@ class ApplyMatchingThreadFeature(Feature):
         self.inputs.setdefault("left_hand", False)
 
         size = _resolve_size(self, ctx)
-        clearance = str(self.inputs.get("clearance", "normal"))
-        length = ctx.value(self, "length", 0.0) or info.length
+        clearance = self.inputs.get("clearance", "normal")
+        form = str(self.inputs.get("form", "printed"))
+        length = min(ctx.value(self, "length", 0.0) or info.length, info.length)
+        require_printable(size, form)
+
+        # A hole that was not drilled for this thread is the ordinary case, not
+        # an error: open it to the size the thread wants, when the user has said
+        # to. Without that, a matching thread can only ever land on a feature
+        # that was already exactly right.
+        body, diameter, resized = resize_target(
+            body, info, size,
+            length=length, clearance=clearance, form=form,
+            resize=bool(self.inputs.get("resize", False)),
+        )
         outcome = require_modelled(apply_thread(
             body, size=size, origin=info.origin, direction=info.direction,
-            length=min(length, info.length), internal=info.internal,
-            clearance=clearance, feature_diameter=info.diameter,
-            form=str(self.inputs.get("form", "printed")),
+            length=length, internal=info.internal,
+            clearance=clearance, feature_diameter=diameter,
+            form=form,
             left_hand=bool(self.inputs.get("left_hand", False)),
         ))
         if outcome.message:
             ctx.warn(outcome.message)
+        if resized:
+            ctx.warn(resized)
         self.message = (
             f"{size.designation} {'internal' if info.internal else 'external'} "
             f"thread to match"
-        )
+        ) + (f" — {resized}" if resized else "")
         self.inputs["thread_modelled"] = True
         self.outputs = [name]
         return {name: outcome.shape}

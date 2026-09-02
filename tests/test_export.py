@@ -16,6 +16,7 @@ import pytest
 
 from simplecad.core.document import Body, Document
 from simplecad.kernel.io_formats import as_items, export_shapes, flatten
+from simplecad.ui.main_window import resolved_export_path
 
 MODEL_NS = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
 
@@ -207,3 +208,24 @@ def test_a_grouped_stl_holds_every_body(document, tmp_path):
     assert boxes
     assert min(low[0] for low, _high in boxes) == pytest.approx(0.0, abs=1e-3)
     assert max(high[0] for _low, high in boxes) == pytest.approx(30.0, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "selected_filter,suffix",
+    [
+        ("3MF for printing (*.3mf)", ".3mf"),
+        ("STEP (*.step)", ".step"),
+        ("STL (*.stl)", ".stl"),
+        ("OBJ (*.obj)", ".obj"),
+    ],
+)
+def test_export_filter_supplies_the_missing_extension(selected_filter, suffix):
+    assert resolved_export_path("bracket", selected_filter) == f"bracket{suffix}"
+
+
+def test_an_explicit_supported_export_extension_wins_over_the_filter():
+    assert resolved_export_path("bracket.stl", "3MF for printing (*.3mf)") == "bracket.stl"
+
+
+def test_unknown_filename_suffix_is_kept_and_the_export_suffix_is_appended():
+    assert resolved_export_path("bracket.final", "STL (*.stl)") == "bracket.final.stl"

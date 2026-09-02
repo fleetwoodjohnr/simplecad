@@ -11,6 +11,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ...core.units import Dimension
+from ...kernel.decorative import (
+    CrescentFeature, CrossFeature, HeartFeature, LightningFeature, StarFeature,
+)
 from ...kernel.primitives import PRIMITIVES
 from ...kernel.vent import VentPlateFeature
 from ..icons import icon
@@ -32,6 +35,11 @@ FIELDS: dict[str, tuple[tuple[str, str, float], ...]] = {
     "tube": (("outer_radius", "Outer", 15.0), ("inner_radius", "Inner", 10.0), ("height", "Height", 30.0)),
     "wedge": (("width", "Width", 40.0), ("depth", "Depth", 30.0), ("height", "Height", 20.0)),
     "polygon_prism": (("sides", "Sides", 6.0), ("across_flats", "Across flats", 17.0), ("height", "Height", 8.0)),
+    "star": (("size", "Size", 30.0), ("inner_ratio", "Inset", 0.45), ("height", "Height", 10.0)),
+    "heart": (("size", "Size", 30.0), ("height", "Height", 10.0)),
+    "cross": (("size", "Size", 30.0), ("arm_width", "Arm width", 10.0), ("height", "Height", 10.0)),
+    "crescent": (("size", "Size", 30.0), ("thickness", "Thickness", 8.0), ("height", "Height", 10.0)),
+    "lightning": (("size", "Size", 30.0), ("height", "Height", 10.0)),
     # Polygon presets: the side count is fixed, so only size and height are asked
     # for. Even-sided ones are measured across flats, because that is how a
     # spanner, a nut and a caliper all measure one. Odd-sided ones have no
@@ -62,6 +70,11 @@ FIXED_INPUTS: dict[str, dict[str, float]] = {
 #: UI tile -> the feature class it builds.
 FEATURES: dict[str, type] = {
     **PRIMITIVES,
+    "star": StarFeature,
+    "heart": HeartFeature,
+    "cross": CrossFeature,
+    "crescent": CrescentFeature,
+    "lightning": LightningFeature,
     "triangle": PRIMITIVES["polygon_prism"],
     "pentagon": PRIMITIVES["polygon_prism"],
     "hexagon": PRIMITIVES["polygon_prism"],
@@ -78,6 +91,11 @@ LABELS = (
     ("tube", "tube", "Tube"),
     ("wedge", "wedge", "Wedge"),
     ("vent_plate", "vent", "Vent"),
+    ("star", "star", "Star"),
+    ("heart", "heart", "Heart"),
+    ("cross", "cross", "Cross"),
+    ("crescent", "crescent", "Crescent"),
+    ("lightning", "lightning", "Lightning"),
     ("triangle", "triangle", "Triangle"),
     ("pentagon", "pentagon", "Pentagon"),
     ("hexagon", "hexagon", "Hexagon"),
@@ -169,7 +187,11 @@ class ShapePanel(FloatingCard):
                 item.widget().deleteLater()
         self.fields = {}
         for key, label, default in FIELDS[self._kind]:
-            dimension = Dimension.SCALAR if key == "sides" else Dimension.LENGTH
+            dimension = (
+                Dimension.SCALAR
+                if key in {"sides", "inner_ratio"}
+                else Dimension.LENGTH
+            )
             field = ValueField(
                 self._palette,
                 self.window_.document.parameters,

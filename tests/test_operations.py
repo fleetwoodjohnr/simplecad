@@ -19,7 +19,10 @@ from simplecad.kernel.occ import bounding_box, is_valid, volume
 from simplecad.core.errors import CadError
 from simplecad.kernel.operations import (
     BooleanFeature, ChamferFeature, HoleFeature, MoveFeature, PushPullFeature,
-    RoundPushPullFeature, ShellFeature,
+    RoundPushPullFeature, ScaleFeature, ShellFeature,
+)
+from simplecad.kernel.decorative import (
+    CrescentFeature, CrossFeature, HeartFeature, LightningFeature, StarFeature,
 )
 from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 
@@ -81,6 +84,41 @@ def test_shell_hollows_a_box_and_leaves_the_wall(doc):
     assert volume(shelled) == pytest.approx(expected, rel=0.02)
 
 
+@pytest.mark.parametrize(
+    "feature_type",
+    [StarFeature, HeartFeature, CrossFeature, CrescentFeature, LightningFeature],
+)
+def test_shell_hollows_every_decorative_profile(doc, feature_type):
+    """A successful no-op from OCCT must fall back to a real cavity."""
+    feature = doc.add_feature(
+        feature_type(inputs={"size": 30, "height": 10}, outputs=["Shape"])
+    )
+    build(doc)
+    original = doc.bodies["Shape"].shape
+    before = volume(original)
+    before_box = bounding_box(original)
+    opening = upward_face(original)
+
+    doc.add_feature(
+        ShellFeature(
+            inputs={
+                "body": BodyRef("Shape"),
+                "faces": [make_ref(original, opening, feature.id, body="Shape")],
+                "thickness": 1.0,
+            },
+            outputs=["Shape"],
+        )
+    )
+    build(doc)
+
+    hollow = doc.bodies["Shape"].shape
+    assert is_valid(hollow)
+    assert volume(hollow) < before * 0.8
+    after_box = bounding_box(hollow)
+    for side in (0, 1):
+        assert after_box[side] == pytest.approx(before_box[side], abs=1e-5)
+
+
 def test_shell_refuses_a_wall_thicker_than_the_body(doc):
     """Opposite walls meeting in the middle is a friendly error, not a crash.
 
@@ -109,6 +147,34 @@ def test_shell_refuses_a_wall_thicker_than_the_body(doc):
     assert "too thick" in report.summary().lower()
     # The limit is named, so the message is actionable.
     assert "10.00 mm" in report.summary()
+
+
+def test_uniform_scale_keeps_the_object_centre_fixed(doc):
+    feature = plate(doc, width=20, depth=30, height=10)
+    doc.add_feature(
+        MoveFeature(
+            inputs={"body": BodyRef("Plate"), "dx": 100, "dy": -45, "dz": 12},
+            outputs=["Plate"],
+        )
+    )
+    build(doc)
+    before = bounding_box(doc.bodies["Plate"].shape)
+    centre_before = tuple((before[0][i] + before[1][i]) / 2 for i in range(3))
+
+    doc.add_feature(
+        ScaleFeature(
+            inputs={"body": BodyRef("Plate"), "factor": 0.5},
+            outputs=["Plate"],
+        )
+    )
+    build(doc)
+    after = bounding_box(doc.bodies["Plate"].shape)
+    centre_after = tuple((after[0][i] + after[1][i]) / 2 for i in range(3))
+
+    assert centre_after == pytest.approx(centre_before, abs=1e-6)
+    assert tuple(after[1][i] - after[0][i] for i in range(3)) == pytest.approx(
+        (10.0, 15.0, 5.0), abs=1e-6
+    )
 
 
 def test_push_pull_refuses_to_cut_straight_through(doc):
@@ -447,39 +513,20 @@ def test_threaded_through_hole_is_actually_threaded(doc):
     assert doc.features[-1].inputs["designation"] == "P6"
 
 
-@pytest.mark.slow
-def test_a_threaded_hole_honours_the_size_it_was_given(doc):
-    """The panel now offers a size, so the kernel has to use the one chosen.
-
-    Left to itself a ⌀6 hole gets P6, whose printed tooth is 0.75 mm deep. Asked
-    for M6 it must get M6 -- 0.31 mm, shallow enough that the panel warns about
-    it, and the warning has to reach the feature rather than a hint line the next
-    click wipes.
-    """
+def test_a_threaded_hole_blocks_an_unprintable_size_and_redirects(doc):
+    """A real but sub-nozzle thread is a failed print, not a valid feature."""
     feature = plate(doc, height=6)
     build(doc)
     _hole(
         doc, feature, style="threaded", position=(20.0, 20.0, 6.0),
         diameter=6, designation="M6",
     )
-    report = build(doc)
+    report = Rebuilder(doc).rebuild()
+    assert not report.ok
     assert doc.features[-1].inputs["designation"] == "M6"
-    assert any("M6" in w for w in report.warnings), report.warnings
-    assert "M6" in (doc.features[-1].message or ""), (
-        "the warning must survive on the feature, not only in the hint line"
-    )
-
-    shape = doc.bodies["Plate"].shape
-    assert is_valid(shape)
-    crests = sorted(
-        round(info.diameter, 2) for face in sub_shapes(shape, "face")
-        if (info := analyse_cylinder(face)) is not None and info.internal
-    )
-    assert any(d < 5.95 for d in crests), (
-        f"nothing protrudes into the bore, so there is no thread: {crests}"
-    )
-    # M6's tooth is 0.31 mm, so the crest sits near 5.4 -- not at P6's 4.7.
-    assert min(crests) > 5.0, f"that is a P6 thread, not the M6 asked for: {crests}"
+    assert "feature limit" in report.summary()
+    assert "P6" in report.summary()
+    assert doc.features[-1].inputs["thread_modelled"] is False
 
 
 @pytest.mark.slow

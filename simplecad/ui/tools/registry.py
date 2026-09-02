@@ -34,7 +34,8 @@ def load() -> dict[str, Callable]:
     picking an edge and pressing Fillet is exactly that first thing.
     """
     from . import (  # noqa: F401 - registers the built-in tools
-        combining, matching, measuring, modeling, shapes, sketching, splitting,
+        clips, combining, matching, measuring, modeling, arranging, shapes, sketching,
+        splitting, text,
     )
     from ..printws import fit_panel, panel  # noqa: F401
 

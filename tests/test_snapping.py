@@ -15,7 +15,9 @@ import pytest
 
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 
-from simplecad.kernel.snapping import SnapPoint, nearest, snap_points
+from simplecad.kernel.snapping import (
+    SnapPoint, inferred_snap, nearest, snap_points,
+)
 
 
 @pytest.fixture
@@ -91,3 +93,67 @@ def test_distance_between_two_snaps_is_the_real_distance(box):
     high = max(corners, key=lambda s: sum(s.position))
     measured = math.dist(low.position, high.position)
     assert measured == pytest.approx(math.sqrt(40**2 + 30**2 + 20**2), abs=1e-9)
+
+
+def test_corners_remember_the_straight_edges_that_meet_there(box):
+    origin = next(
+        snap for snap in snap_points(box)
+        if snap.kind == "vertex" and snap.position == pytest.approx((0.0, 0.0, 0.0))
+    )
+    assert set(origin.directions) == {
+        (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+    }
+
+
+def test_second_point_magnetically_infers_a_world_axis():
+    reference = SnapPoint((0.0, 0.0, 0.0), "vertex")
+    raw = SnapPoint((10.0, 0.4, 0.0), "surface")
+    inferred, lock = inferred_snap(
+        reference, raw, lambda point: point[:2], (10.0, 0.4)
+    )
+    assert inferred.position == pytest.approx((10.0, 0.0, 0.0))
+    assert inferred.inference == "X"
+    assert lock is not None
+
+
+def test_second_point_can_follow_a_rotated_geometry_edge():
+    diagonal = math.sqrt(0.5)
+    reference = SnapPoint(
+        (0.0, 0.0, 0.0), "vertex", ((diagonal, diagonal, 0.0),)
+    )
+    raw = SnapPoint((5.0, 5.3, 0.0), "surface")
+    inferred, _lock = inferred_snap(
+        reference, raw, lambda point: point[:2], (5.0, 5.3)
+    )
+    assert inferred.position == pytest.approx((5.15, 5.15, 0.0))
+    assert inferred.inference == "Parallel"
+
+
+def test_named_geometry_beats_alignment_inference():
+    reference = SnapPoint((0.0, 0.0, 0.0), "vertex")
+    corner = SnapPoint((10.0, 0.4, 0.0), "vertex")
+    inferred, lock = inferred_snap(
+        reference, corner, lambda point: point[:2], (10.0, 0.4)
+    )
+    assert inferred is corner
+    assert lock is None
+
+
+def test_inference_has_hysteresis_and_shift_bypasses_it():
+    reference = SnapPoint((0.0, 0.0, 0.0), "vertex")
+    first = SnapPoint((10.0, 0.4, 0.0), "surface")
+    _inferred, lock = inferred_snap(
+        reference, first, lambda point: point[:2], (10.0, 0.4)
+    )
+    drifting = SnapPoint((10.0, 8.0, 0.0), "surface")
+    held, lock = inferred_snap(
+        reference, drifting, lambda point: point[:2], (10.0, 8.0), locked=lock
+    )
+    assert held.inference == "X", "the guide must not flicker at its capture edge"
+
+    free, cleared = inferred_snap(
+        reference, drifting, lambda point: point[:2], (10.0, 8.0),
+        locked=lock, bypass=True,
+    )
+    assert free is drifting
+    assert cleared is None

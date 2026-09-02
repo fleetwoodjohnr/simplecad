@@ -127,6 +127,11 @@ class ToolPanel(FloatingCard):
         self.subtitle.setText(text)
         self.subtitle.setVisible(bool(text))
 
+    def relayout(self) -> None:
+        """Resize to fit whatever the panel is now showing."""
+        self.adjustSize()
+        self.window_.stage._layout_overlays()
+
     # -- lifecycle -------------------------------------------------------
     def build(self) -> None:
         """Populate the panel. Subclasses override."""
@@ -197,12 +202,37 @@ class FeaturePreviewController:
         if self._closed or self._state is None:
             return
         self._token = next(_preview_tokens)
-        if not self.panel.window_.geometry.preview(self._state, self._token):
-            self.callback({
-                "token": self._token,
+        if self.panel.window_.geometry.preview(self._state, self._token):
+            return
+        self.callback({"token": self._token, **self._in_process()})
+
+    def _in_process(self) -> dict:
+        """Answer the preview here, because the geometry child is not there.
+
+        Rebuilds already fall back to in-process when the child cannot start --
+        the application is documented as staying usable that way. Previews did
+        not, and the difference is not cosmetic: a preview-gated tool keeps its
+        Create button disabled until a shape comes back, so Thread and Create
+        Matching Part were permanently dead on any machine whose child process
+        failed to launch, saying only "the geometry engine is unavailable".
+
+        The same pure function the child runs, run here, and serialised the same
+        way so the callback cannot tell the two apart.
+        """
+        from ...core.geometry_service import build_preview_result, serialise_shape
+
+        try:
+            result = build_preview_result(self.panel.window_.document, self._state)
+            shape = result.get("shape")
+            return {**result, "shape": serialise_shape(shape) if shape else None}
+        except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
+            return {
                 "shape": None,
-                "error": "The geometry engine is unavailable; no physical preview was built.",
-            })
+                "error": str(exc) or "The preview could not be built.",
+                "warnings": [],
+                "inputs": {},
+                "message": "",
+            }
 
     def _answered(self, message: dict) -> None:
         if self._closed or message.get("token") != self._token:

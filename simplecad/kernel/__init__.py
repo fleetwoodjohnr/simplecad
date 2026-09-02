@@ -5,6 +5,6 @@ lets a saved document be loaded back by name.
 """
 
 from . import (  # noqa: F401
-    advanced, construction, fasteners, importing, operations, primitives,
-    sketch_features, split, vent,
+    advanced, arrange, clips, construction, decorative, fasteners, importing,
+    operations, primitives, sketch_features, split, text, vent,
 )

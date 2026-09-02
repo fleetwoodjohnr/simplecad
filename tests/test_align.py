@@ -12,7 +12,7 @@ import math
 import pytest
 
 from simplecad.core.naming import sub_shapes
-from simplecad.kernel.align import solve, suggest
+from simplecad.kernel.align import planar_frame, solve, suggest, support_face
 from simplecad.kernel.detect import analyse_cylinder, analyse_plane
 from simplecad.kernel.occ import bounding_box, transformed, volume
 
@@ -199,3 +199,106 @@ def test_mixing_a_flat_and_a_round_face_reports_a_useful_error():
     with pytest.raises(CadError) as caught:
         solve(round_face, flat, operation="concentric")
     assert "cylindrical" in str(caught.value).lower()
+
+
+def test_stack_places_a_face_center_from_the_target_left_and_bottom_edges():
+    moving = box(10, 10, 10, at=(100, 100, 100))
+    target = box(80, 60, 12)
+    moving_face = face_with_normal(moving, (0, 0, -1))
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    frame = planar_frame(target_face)
+
+    result = solve(
+        moving_face,
+        target_face,
+        operation="stack",
+        x=28.0,
+        y=25.0,
+        x_anchor="left",
+        y_anchor="bottom",
+    )
+    placed_face = transformed(moving_face, result.transform)
+    center = analyse_plane(placed_face).center
+    expected = frame.point(frame.x_bounds[0] + 28.0, frame.y_bounds[0] + 25.0)
+    assert center == pytest.approx(expected, abs=1e-6)
+
+
+def test_right_and_top_anchor_offsets_point_inward():
+    moving = box(10, 10, 10, at=(100, 100, 100))
+    target = box(80, 60, 12)
+    moving_face = face_with_normal(moving, (0, 0, -1))
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    frame = planar_frame(target_face)
+
+    placed_face = transformed(
+        moving_face,
+        solve(
+            moving_face,
+            target_face,
+            x=8.0,
+            y=5.0,
+            x_anchor="right",
+            y_anchor="top",
+        ).transform,
+    )
+    expected = frame.point(frame.x_bounds[1] - 8.0, frame.y_bounds[1] - 5.0)
+    assert analyse_plane(placed_face).center == pytest.approx(expected, abs=1e-6)
+
+
+def test_whole_body_support_inference_chooses_the_cylinder_cap_nearest_the_target():
+    target = box(60, 60, 12)
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    moving = cylinder(8, 30, at=(100, 100, 70))
+    inferred = support_face(moving, target_face)
+    info = analyse_plane(inferred)
+    assert info is not None
+    assert info.center[2] == pytest.approx(70.0, abs=1e-6)
+
+
+def test_align_feature_persists_face_local_anchor_inputs():
+    from simplecad.core.document import BodyRef, Document
+    from simplecad.core.naming import make_ref
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.operations import AlignFeature
+    from simplecad.kernel.primitives import BoxFeature
+
+    document = Document("Placed")
+    target_feature = document.add_feature(
+        BoxFeature(inputs={"width": 80, "depth": 60, "height": 12}, outputs=["Base"])
+    )
+    moving_feature = document.add_feature(
+        BoxFeature(
+            inputs={"width": 10, "depth": 10, "height": 10, "x": 100},
+            outputs=["Post"],
+        )
+    )
+    builder = Rebuilder(document)
+    assert builder.rebuild().ok
+    target_face = face_with_normal(document.bodies["Base"].shape, (0, 0, 1), 12)
+    moving_face = face_with_normal(document.bodies["Post"].shape, (0, 0, -1))
+    frame = planar_frame(target_face)
+    document.add_feature(
+        AlignFeature(
+            inputs={
+                "body": BodyRef("Post"),
+                "moving_face": make_ref(
+                    document.bodies["Post"].shape, moving_face,
+                    moving_feature.id, body="Post",
+                ),
+                "target_face": make_ref(
+                    document.bodies["Base"].shape, target_face,
+                    target_feature.id, body="Base",
+                ),
+                "operation": "stack",
+                "x_anchor": "left",
+                "y_anchor": "bottom",
+                "x": 28,
+                "y": 25,
+            },
+            outputs=["Post"],
+        )
+    )
+    assert builder.rebuild().ok
+    placed_face = face_with_normal(document.bodies["Post"].shape, (0, 0, -1))
+    expected = frame.point(frame.x_bounds[0] + 28, frame.y_bounds[0] + 25)
+    assert analyse_plane(placed_face).center == pytest.approx(expected, abs=1e-5)

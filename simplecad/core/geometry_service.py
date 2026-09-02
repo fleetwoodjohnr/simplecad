@@ -90,9 +90,11 @@ def build_preview(document, feature_state: dict):
         return None
     if not outputs:
         return None
-    # One body in, one body out; a preview of several is not a thing any tool
-    # asks for, and picking arbitrarily would be worse than saying no.
-    return next(iter(outputs.values()), None)
+    if len(outputs) == 1:
+        return next(iter(outputs.values()), None)
+    from ..kernel.occ import compound
+
+    return compound(outputs.values())
 
 
 def build_preview_result(document, feature_state: dict) -> dict:
@@ -114,7 +116,14 @@ def build_preview_result(document, feature_state: dict) -> dict:
             if body.shape is not None
         }
         outputs = feature.execute(context)
-        shape = next(iter(outputs.values()), None) if outputs else None
+        if len(outputs) == 1:
+            shape = next(iter(outputs.values()), None)
+        elif outputs:
+            from ..kernel.occ import compound
+
+            shape = compound(outputs.values())
+        else:
+            shape = None
         return {
             "shape": shape,
             "error": None if shape is not None else "This preview produced no solid.",

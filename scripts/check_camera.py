@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Camera navigation: does the view behave, and behave predictably?
 
-Drives real middle-button orbits and real wheel events over a model and checks
+Drives real middle-button pans, Shift+middle orbits, and wheel events over a
+model and checks
 the four things that separate a CAD camera from a free-flying one: it turns
 about what you have selected, the horizon never tilts, the view never flips
 through a pole however hard you push it at one, and a trackpad's burst of small
@@ -67,7 +68,7 @@ def main() -> int:
                 """A real middle-button drag across the viewport."""
                 start = QPoint(viewport.width() // 2, viewport.height() // 2)
                 QTest.mouseMove(viewport, start)
-                QTest.mousePress(viewport, Qt.MiddleButton, Qt.NoModifier, start)
+                QTest.mousePress(viewport, Qt.MiddleButton, Qt.ShiftModifier, start)
                 for step in range(1, steps + 1):
                     QTest.mouseMove(
                         viewport,
@@ -75,7 +76,7 @@ def main() -> int:
                                round(start.y() + dy * step / steps)),
                     )
                 end = QPoint(start.x() + dx, start.y() + dy)
-                QTest.mouseRelease(viewport, Qt.MiddleButton, Qt.NoModifier, end)
+                QTest.mouseRelease(viewport, Qt.MiddleButton, Qt.ShiftModifier, end)
 
             # -- the pivot is what is selected -----------------------------
             viewport.select_shape(window._presentations["Far"])

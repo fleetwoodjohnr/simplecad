@@ -20,8 +20,8 @@ from simplecad.kernel.thread_specs import (
 )
 from simplecad.kernel.printing import Severity, check_overhangs
 from simplecad.kernel.threads import (
-    ThreadResult, apply_thread, require_modelled, thread_form,
-    thread_profile_points, thread_solid,
+    ThreadResult, apply_thread, require_modelled, require_printable,
+    thread_form, thread_printability, thread_profile_points, thread_solid,
 )
 
 from .fit import TOLERANCE
@@ -197,7 +197,10 @@ def _pair(designation: str, clearance, length: float = 10.0):
     from simplecad.kernel.occ import make_transform, transformed
 
     size = by_designation(designation)
-    bolt = thread_solid(size.diameter, size.pitch, length)
+    bolt = thread_solid(
+        size.diameter, size.pitch, length, angle=size.angle,
+        form="printed", taper=size.taper,
+    )
     plate = plate_with_hole(size=40.0, thickness=length, hole_radius=size.diameter / 2)
     nut = apply_thread(
         plate, size=size, origin=(20, 20, 0), direction=(0, 0, 1),
@@ -237,7 +240,9 @@ def test_the_fit_check_can_actually_detect_a_misfit():
     bolt, nut, _size = _pair("P12", "normal")
     clean = _buried(bolt, nut)
 
-    clashing = _buried(turned_in_place(bolt, 60.0, (20.0, 20.0, 0.0)), nut)
+    # A quarter turn is 0.75 mm of phase on P12, beyond the 0.60 mm free-fit
+    # allowance. A sixth turn is only 0.50 mm and is correctly absorbed by it.
+    clashing = _buried(turned_in_place(bolt, 90.0, (20.0, 20.0, 0.0)), nut)
 
     assert clashing > 0.10, "a bolt turned without advancing must bind"
     assert clashing > clean * 5, (
@@ -266,7 +271,49 @@ def test_tighter_clearance_leaves_less_room():
 def test_clearance_presets_cover_the_documented_range():
     presets = clearance_presets()
     assert set(presets) == {"tight", "normal", "loose", "very_loose"}
-    assert presets["normal"]["clearance"] == pytest.approx(0.20)
+    assert presets["normal"]["clearance"] == pytest.approx(0.60)
+    assert presets["tight"]["clearance"] == pytest.approx(0.40)
+    assert presets["loose"]["clearance"] == pytest.approx(0.80)
+    assert presets["very_loose"]["clearance"] == pytest.approx(1.00)
+
+
+def test_unprintable_fine_threads_are_blocked_with_a_usable_replacement():
+    from simplecad.core.errors import CadError
+
+    result = thread_printability(by_designation("M6"), "printed")
+    assert result.printable is False
+    assert "0.31 mm tooth" in result.reason
+    assert result.replacement == "P6"
+    with pytest.raises(CadError, match="feature limit"):
+        require_printable(by_designation("M6"), "printed")
+
+
+def test_p30_is_printable_on_the_default_04_mm_fdm_profile():
+    assert thread_printability(by_designation("P30"), "printed").printable
+
+
+def test_tapered_standards_create_conical_thread_faces():
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Cone
+    from OCP.TopoDS import TopoDS
+    from simplecad.core.naming import sub_shapes
+
+    size = by_designation("NPT 1")
+    solid = thread_solid(
+        size.diameter, size.pitch, 8.0, angle=size.angle,
+        form="printed", taper=size.taper,
+    )
+    cones = []
+    for face in sub_shapes(solid, "face"):
+        surface = BRepAdaptor_Surface(TopoDS.Face_s(face))
+        if surface.GetType() == GeomAbs_Cone:
+            cones.append(surface.Cone())
+
+    assert is_valid(solid)
+    assert cones, "NPT must narrow along its axis, not become a straight thread"
+    assert 2.0 * math.tan(abs(cones[0].SemiAngle())) == pytest.approx(
+        size.taper, rel=1e-3
+    )
 
 
 # ----------------------------------------------------------------------
@@ -498,8 +545,8 @@ def test_a_printed_pair_turns_rather_than_merely_seating():
     """
     from simplecad.kernel.occ import make_transform, transformed
 
-    bolt, nut, size = _pair("P12", "normal")
-    for step in range(1, 4):
+    bolt, nut, size = _pair("P30", "normal")
+    for step in range(1, 5):
         angle = 360.0 * step / 4.0
         turned = transformed(
             bolt,

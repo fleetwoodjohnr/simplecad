@@ -33,7 +33,7 @@ from functools import lru_cache
 
 from ..core.errors import CadError, guard
 from .occ import axis_transform, built_shape, transformed
-from .thread_specs import ThreadSize, clearance_for
+from .thread_specs import ThreadSize, effective_clearance_for
 
 #: Fraction of the pitch left flat at the crest and at the root of an ISO form
 #: (ISO 68-1 truncation). ``ROOT_FLAT`` is the width of the *groove* at the root,
@@ -179,6 +179,75 @@ class ThreadResult:
         return not self.modelled
 
 
+@dataclass(frozen=True)
+class ThreadPrintability:
+    """Whether a physical thread is credible on the active printer."""
+
+    printable: bool
+    reason: str = ""
+    replacement: str = ""
+
+
+def thread_printability(
+    size: ThreadSize, form: str = "printed", profile: dict | None = None
+) -> ThreadPrintability:
+    """Validate feature size and overhang, and name a usable alternative."""
+    from .thread_specs import load_sizes, printer_profile
+
+    profile = profile or printer_profile()
+
+    def reason_for(candidate: ThreadSize, candidate_form: str) -> str:
+        tooth = thread_form(candidate.pitch, candidate.angle, candidate_form)
+        minimum = float(profile.get("min_feature_size", 0.0))
+        limit = float(profile.get("max_overhang_angle", 90.0))
+        if minimum and tooth.depth < minimum:
+            return (
+                f"{candidate.designation}'s {tooth.depth:.2f} mm tooth is below "
+                f"this printer's {minimum:.2f} mm feature limit."
+            )
+        if tooth.overhang > limit + 0.5:
+            return (
+                f"Its {tooth.overhang:.0f}° overhang is beyond this printer's "
+                f"{limit:.0f}° support-free limit."
+            )
+        return ""
+
+    reason = reason_for(size, form)
+    if not reason:
+        return ThreadPrintability(True)
+
+    if form != "printed" and not reason_for(size, "printed"):
+        return ThreadPrintability(False, reason, f"{size.designation} printed form")
+
+    candidates = [
+        candidate for candidate in load_sizes()
+        if not reason_for(candidate, "printed")
+    ]
+    candidates.sort(key=lambda candidate: (
+        abs(candidate.diameter - size.diameter),
+        0 if candidate.code == "printed" else 1,
+        -candidate.pitch,
+    ))
+    replacement = candidates[0].designation if candidates else ""
+    return ThreadPrintability(False, reason, replacement)
+
+
+def require_printable(size: ThreadSize, form: str = "printed") -> None:
+    """Refuse geometry the selected FDM profile cannot reproduce reliably."""
+    result = thread_printability(size, form)
+    if result.printable:
+        return
+    suggestion = (
+        f"Use {result.replacement}." if result.replacement
+        else "Choose a coarser pitch or a larger thread."
+    )
+    raise CadError(
+        result.reason,
+        suggestion=suggestion,
+        operation="thread",
+    )
+
+
 def require_modelled(result: ThreadResult) -> ThreadResult:
     """Return *result* only when it contains physical helical geometry.
 
@@ -206,23 +275,34 @@ def helix_edge(
     length: float,
     left_hand: bool = False,
     base_z: float = 0.0,
+    taper: float = 0.0,
 ):
-    """A true helical edge on a cylinder of *radius*, climbing +Z from *base_z*."""
+    """A true helical edge on a cylinder or tapered cone.
+
+    ``taper`` is the change in diameter per unit axial length. A positive value
+    narrows toward +Z, matching NPT's 1:16 diametral taper.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
     from OCP.BRepLib import BRepLib
-    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.Geom import Geom_ConicalSurface, Geom_CylindricalSurface
     from OCP.Geom2d import Geom2d_Line, Geom2d_TrimmedCurve
     from OCP.gp import gp_Ax3, gp_Dir, gp_Dir2d, gp_Lin2d, gp_Pnt, gp_Pnt2d
 
     if radius <= 0 or pitch <= 0 or length <= 0:
         raise CadError("A thread needs a positive diameter, pitch and length.")
 
-    surface = Geom_CylindricalSurface(
-        gp_Ax3(gp_Pnt(0, 0, base_z), gp_Dir(0, 0, 1)), radius
+    radial_slope = taper / 2.0
+    cone_angle = -math.atan(radial_slope) if taper else 0.0
+    axis = gp_Ax3(gp_Pnt(0, 0, base_z), gp_Dir(0, 0, 1))
+    surface = (
+        Geom_ConicalSurface(axis, cone_angle, radius)
+        if taper else Geom_CylindricalSurface(axis, radius)
     )
     # In the surface's UV space, u is the angle and v is the height, so a helix
     # is simply a straight line of slope pitch / 2pi.
-    slope = pitch / (2.0 * math.pi)
+    # A cone's v parameter follows its sloping generatrix, so its axial
+    # component is v*cos(angle). Correcting for that keeps pitch axial.
+    slope = pitch / (2.0 * math.pi * math.cos(cone_angle))
     direction = gp_Dir2d(-1.0 if left_hand else 1.0, slope)
     line = Geom2d_Line(gp_Lin2d(gp_Pnt2d(0.0, 0.0), direction))
 
@@ -300,22 +380,24 @@ def thread_solid(
     left_hand: bool = False,
     form: str = "printed",
     swell: float = 0.0,
+    taper: float = 0.0,
 ) -> object:
     """Cached wrapper around :func:`_build_thread_solid`."""
     return _cached_thread_solid(
         round(major_diameter, 4), round(pitch, 4), round(length, 4),
         round(angle, 3), bool(left_hand), str(form), round(swell, 4),
+        round(taper, 6),
     )
 
 
 @lru_cache(maxsize=64)
 def _cached_thread_solid(
     major_diameter: float, pitch: float, length: float, angle: float,
-    left_hand: bool, form: str, swell: float,
+    left_hand: bool, form: str, swell: float, taper: float,
 ):
     return _build_thread_solid(
         major_diameter, pitch, length, angle=angle, left_hand=left_hand,
-        form=form, swell=swell,
+        form=form, swell=swell, taper=taper,
     )
 
 
@@ -328,22 +410,24 @@ def _build_thread_solid(
     left_hand: bool = False,
     form: str = "printed",
     swell: float = 0.0,
+    taper: float = 0.0,
 ) -> object:
     """The solid a bolt of this size occupies: core cylinder plus helical tooth.
 
     Raises :class:`CadError` if the sweep fails; callers that must not fail
     should use :func:`apply_thread`, which falls back to a plain cylinder.
     """
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Fuse
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
     from OCP.gp import gp_Dir
 
     shape = thread_form(pitch, angle, form)
     major_radius = major_diameter / 2.0
     minor_radius = major_radius - shape.depth
-    if minor_radius <= 0:
+    end_minor_radius = minor_radius - taper * length / 2.0
+    if min(minor_radius, end_minor_radius) <= 0:
         raise CadError(
             "This pitch is too coarse for that diameter.",
             suggestion="Choose a finer pitch or a larger diameter.",
@@ -353,6 +437,12 @@ def _build_thread_solid(
     # pitch beyond each end and trimmed it back, which cost an extra boolean on
     # the most expensive solid in the program for no visible benefit.
     with guard("thread"):
+        # Sweep on the parallel reference cylinder, then trim the complete bolt
+        # with the standard's major-diameter cone. This is considerably more
+        # robust than PipeShell on a conical spine (whose fixed-binormal frame
+        # twists the profile differently at different radii), and most
+        # importantly preserves the containment invariant between nominal and
+        # clearance-grown mating solids.
         spine = BRepBuilderAPI_MakeWire(
             helix_edge(minor_radius, pitch, length, left_hand)
         ).Wire()
@@ -381,6 +471,25 @@ def _build_thread_solid(
             # trusted. Sinking the tooth deeper gives the kernel more overlap
             # to work with and is invisible in the finished thread.
             if _volume(bolt) >= core_volume * 0.99:
+                if taper:
+                    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+                    end_major_radius = major_radius - taper * length / 2.0
+                    start_limit = (
+                        major_radius + ENVELOPE_MARGIN + taper * NUDGE / 2.0
+                    )
+                    end_limit = (
+                        end_major_radius + ENVELOPE_MARGIN - taper * NUDGE / 2.0
+                    )
+                    limiter = BRepPrimAPI_MakeCone(
+                        gp_Ax2(gp_Pnt(0.0, 0.0, -NUDGE), gp_Dir(0.0, 0.0, 1.0)),
+                        start_limit, end_limit, length + 2.0 * NUDGE,
+                    ).Shape()
+                    bolt = built_shape(
+                        BRepAlgoAPI_Common(bolt, limiter), "tapered thread"
+                    )
+                    if _volume(bolt) <= 0.0:
+                        continue
                 return bolt
 
         raise CadError(
@@ -581,6 +690,142 @@ def _cut_away(shape, tools, placement=None):
     return shape
 
 
+def required_bore(size: ThreadSize, clearance: str | float = "normal") -> float:
+    """The bore an internal thread of *size* is cut into.
+
+    Nominal plus the printable clearance -- the tap drill, in the only sense
+    that matters here. Shared with :func:`fasteners.make_threaded_hole_tool` so
+    a hole drilled for a thread and a hole re-bored for one can never disagree
+    about what size that is.
+    """
+    return size.diameter + effective_clearance_for(clearance)
+
+
+def thread_needs_resizing(
+    measured_diameter: float,
+    size: ThreadSize,
+    *,
+    internal: bool,
+    clearance: str | float = "normal",
+    form: str = "printed",
+) -> bool:
+    """Would this thread fail outright on a feature of this diameter?
+
+    Not "is it a bit off" -- :func:`apply_thread` already copes with a bore
+    somewhat wider or narrower than nominal, filling one and shallowing the
+    other, and says so. This is the case where there is no thread to be had at
+    all: a bore at or inside the carving bolt's own minor diameter leaves the
+    fuse nothing to add, so the kernel reports the body unchanged and the
+    feature fails. Threading a 8 mm hole as P12 is exactly that.
+    """
+    if measured_diameter <= 0:
+        return False
+    tooth = thread_form(size.pitch, size.angle, form)
+    if internal:
+        gap = effective_clearance_for(clearance) + NUDGE
+        minor = (size.diameter + gap) / 2.0 - tooth.depth
+        return measured_diameter / 2.0 <= minor + ENVELOPE_MARGIN
+    # A shaft has to carry the full tooth; thinner than the root and there is
+    # nothing left to cut a thread into.
+    return measured_diameter / 2.0 <= size.diameter / 2.0 - tooth.depth
+
+
+def resize_for_thread(
+    body,
+    *,
+    diameter: float,
+    origin: tuple[float, float, float],
+    direction: tuple[float, float, float],
+    length: float,
+    internal: bool,
+):
+    """Open a bore out, or build a shaft up, to *diameter* over *length*.
+
+    What a tap drill does before the tap, and what makes "thread this hole"
+    answerable for a hole that was never drilled with a thread in mind. Cut for
+    a bore, fused for a shaft; both extended a whisker past each end so the
+    boolean is never asked to resolve coincident end faces, which is the one
+    thing OCCT reliably gets wrong on this geometry.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+    if diameter <= 0 or length <= 0:
+        return body
+    with guard("thread"):
+        tool = BRepPrimAPI_MakeCylinder(
+            diameter / 2.0, length + 2.0 * NUDGE
+        ).Shape()
+        tool = transformed(
+            tool,
+            axis_transform(
+                tuple(o - d * NUDGE for o, d in zip(origin, direction)), direction
+            ),
+        )
+        return built_shape(
+            (BRepAlgoAPI_Cut if internal else BRepAlgoAPI_Fuse)(body, tool),
+            "thread",
+        )
+
+
+def resize_target(
+    body,
+    info,
+    size: ThreadSize,
+    *,
+    length: float,
+    origin: tuple[float, float, float] | None = None,
+    clearance: str | float = "normal",
+    form: str = "printed",
+    resize: bool = False,
+) -> tuple[object, float, str]:
+    """Bring a feature to the diameter *size* wants, when asked -- or explain.
+
+    The one place that decides what "thread this hole" means when the hole was
+    not drilled for this thread. Returns the body, the diameter the thread
+    should be told it is cutting into, and a sentence describing what moved --
+    empty when nothing did.
+
+    Only ever *adds room*: a bore is opened, a shaft is thickened. A feature
+    already larger than the thread needs is left alone, because
+    :func:`apply_thread` handles that case itself by taking its envelope out to
+    the wall.
+    """
+    wanted = required_bore(size, clearance) if info.internal else size.diameter
+    if not resize:
+        if thread_needs_resizing(
+            info.diameter, size, internal=info.internal,
+            clearance=clearance, form=form,
+        ):
+            raise CadError(
+                f"This {info.kind} is ⌀{info.diameter:.2f} mm and "
+                f"{size.designation} needs ⌀{wanted:.2f} mm, so there is nothing "
+                "for the thread to bite into.",
+                suggestion=(
+                    "Turn on “Resize to suit the thread”, or choose a size "
+                    "nearer this diameter."
+                ),
+                operation="thread",
+            )
+        return body, info.diameter, ""
+    # Only when the feature is meaningfully off. A bore drilled at the thread's
+    # nominal size is already right -- apply_thread's envelope takes it out to
+    # the wall -- and "opening" it by the clearance would be a change the user
+    # can measure for no gain they can. Same 0.05 mm the shallow-thread warning
+    # uses, so the panel and the kernel draw the line in one place.
+    if info.diameter >= size.diameter - 0.05:
+        return body, info.diameter, ""
+    body = resize_for_thread(
+        body, diameter=wanted, origin=origin or info.origin,
+        direction=info.direction, length=length, internal=info.internal,
+    )
+    verb = "opened" if info.internal else "built up"
+    return body, wanted, (
+        f"The {info.kind} was {verb} from ⌀{info.diameter:.2f} mm to "
+        f"⌀{wanted:.2f} mm to take {size.designation}."
+    )
+
+
 def apply_thread(
     body,
     *,
@@ -610,14 +855,21 @@ def apply_thread(
     unchanged and marked cosmetic rather than raising, so a fragile thread never
     blocks the user or empties the model.
     """
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
 
     tooth = thread_form(size.pitch, size.angle, form)
-    gap = clearance_for(clearance) if internal else 0.0
+    try:
+        gap = effective_clearance_for(clearance) if internal else 0.0
+    except ValueError as exc:
+        return ThreadResult(body, modelled=False, message=str(exc))
     if internal:
         # The bolt this nut must accept: nominal plus the printable clearance.
-        diameter = size.diameter + gap
+        # One micron of surplus keeps common decimal clearances (notably P6 at
+        # 0.60 mm) away from an OCCT coincident-surface failure. It is far below
+        # printer resolution and makes the physical fit no tighter than asked.
+        geometry_gap = gap + NUDGE
+        diameter = size.diameter + geometry_gap
     else:
         # Oversize very slightly so the crest pokes through the shaft surface
         # rather than resting exactly on it. Coincident faces are what makes the
@@ -625,6 +877,7 @@ def apply_thread(
         # shaft and is trimmed away by the cut itself, leaving the crest at
         # exactly the nominal diameter.
         diameter = size.diameter + 2.0 * ENVELOPE_MARGIN
+        geometry_gap = 0.0
     placement = axis_transform(origin, direction)
 
     notes: list[str] = []
@@ -635,11 +888,17 @@ def apply_thread(
             # A bore wider than the thread needs the envelope to reach the wall,
             # or a ring of the original bore survives between the thread crests.
             envelope_radius = max(envelope_radius, feature_diameter / 2.0 + ENVELOPE_MARGIN)
-            if feature_diameter > nominal + 0.05:
+            # Two bore sizes are both right: the thread's nominal diameter, and
+            # nominal plus the clearance, which is the tap size and what a hole
+            # opened for this thread becomes. Anything between them is the
+            # ordinary case and says nothing; only outside the band is there
+            # something to tell the user. Warning at nominal alone made the
+            # kernel complain about a hole it had just bored itself.
+            if feature_diameter > diameter + 0.05:
                 notes.append(
-                    f"The hole is ⌀{feature_diameter:.2f} mm, wider than "
-                    f"{size.designation}'s ⌀{nominal:.2f} mm. The thread was cut "
-                    "to the standard size; the fit will be loose."
+                    f"The hole was ⌀{feature_diameter:.2f} mm, wider than "
+                    f"{size.designation}'s ⌀{diameter:.2f} mm, and has been filled "
+                    "back to the standard size over the threaded length."
                 )
             elif feature_diameter < nominal - 0.05:
                 notes.append(
@@ -672,7 +931,17 @@ def apply_thread(
             left_hand=left_hand, form=form,
             # The female side alone: the male part is the nominal size, and the
             # gap between them is opened once, on the part that carves the nut.
-            swell=gap / 2.0 if internal else 0.0,
+            swell=geometry_gap / 2.0 if internal else 0.0,
+            taper=size.taper,
+        )
+        carving_bolt = (
+            thread_solid(
+                diameter, size.pitch, length, angle=size.angle,
+                left_hand=left_hand, form=form,
+                swell=geometry_gap / 2.0 if internal else 0.0,
+                taper=0.0,
+            )
+            if size.taper else bolt
         )
     except CadError as exc:
         return ThreadResult(
@@ -685,19 +954,68 @@ def apply_thread(
         )
 
     minor_radius = diameter / 2.0 - tooth.depth
+    end_envelope_radius = envelope_radius - size.taper * length / 2.0
+    end_minor_radius = minor_radius - size.taper * length / 2.0
 
     with guard("thread"):
         # A hair oversize so the crest faces are not tangential to the envelope.
         # The surplus lies outside the shaft (external) or inside solid material
         # (internal), so it changes nothing about the resulting geometry.
-        envelope = BRepPrimAPI_MakeCylinder(envelope_radius, length).Shape()
+        envelope = (
+            BRepPrimAPI_MakeCone(
+                envelope_radius, end_envelope_radius, length
+            ).Shape()
+            if size.taper else
+            BRepPrimAPI_MakeCylinder(envelope_radius, length).Shape()
+        )
         # The bolt comes out of the *plain* cylinder, always, and any relief is
         # taken off the ribbon afterwards. Subtracting a helix from an envelope
         # that had already been countersunk reported success and returned the
         # envelope untouched -- a nut with a solid plug where its thread should
         # be. Simplest shape first is the order that survives.
-        groove = built_shape(BRepAlgoAPI_Cut(envelope, bolt), "thread")
-        if not _carved(groove, envelope_radius, minor_radius, length):
+        groove = None
+        groove_envelope = (
+            BRepPrimAPI_MakeCylinder(envelope_radius, length).Shape()
+            if size.taper else envelope
+        )
+        # Coarse, generously cleared teeth can put an end face exactly on the
+        # envelope's end. OCCT then reports success while returning an operand
+        # with the wrong volume. The same micron nudge used for applying the
+        # finished tool makes this subtraction dependable too.
+        for candidate in _tool_attempts(carving_bolt, (0.0, 0.0, 1.0)):
+            try:
+                attempt = built_shape(
+                    BRepAlgoAPI_Cut(groove_envelope, candidate), "thread"
+                )
+            except BaseException:  # noqa: BLE001 - try the next harmless nudge
+                continue
+            if _carved(
+                attempt, envelope_radius, minor_radius, length,
+                envelope_radius if size.taper else end_envelope_radius,
+                minor_radius if size.taper else end_minor_radius,
+            ):
+                groove = attempt
+                break
+        if groove is not None and size.taper:
+            from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+            # Intersecting the already carved ribbon is dependable; cutting a
+            # swept thread directly from a cone is not. Extend the cone a micron
+            # past both end faces to keep the boolean off coincident planes.
+            start = envelope_radius + NUDGE + size.taper * NUDGE / 2.0
+            end = end_envelope_radius + NUDGE - size.taper * NUDGE / 2.0
+            cone = BRepPrimAPI_MakeCone(
+                gp_Ax2(gp_Pnt(0.0, 0.0, -NUDGE), gp_Dir(0.0, 0.0, 1.0)),
+                start, end, length + 2.0 * NUDGE,
+            ).Shape()
+            try:
+                tapered = built_shape(
+                    BRepAlgoAPI_Common(groove, cone), "tapered thread"
+                )
+                groove = tapered if _volume(tapered) > 0.0 else None
+            except BaseException:  # noqa: BLE001 - handled by failure below
+                groove = None
+        if groove is None:
             return ThreadResult(
                 body,
                 modelled=False,
@@ -741,8 +1059,11 @@ def apply_thread(
     return ThreadResult(shape, modelled=True, message=" ".join(notes))
 
 
-def _carved(groove, envelope_radius: float, minor_radius: float,
-            length: float) -> bool:
+def _carved(
+    groove, envelope_radius: float, minor_radius: float, length: float,
+    end_envelope_radius: float | None = None,
+    end_minor_radius: float | None = None,
+) -> bool:
     """Did subtracting the bolt from the envelope actually remove the bolt?
 
     OCCT can report a boolean done and hand back an operand untouched, and on
@@ -755,8 +1076,22 @@ def _carved(groove, envelope_radius: float, minor_radius: float,
     from .occ import volume
 
     try:
-        envelope = math.pi * envelope_radius ** 2 * length
-        core = math.pi * minor_radius ** 2 * length
+        end_envelope_radius = (
+            envelope_radius if end_envelope_radius is None else end_envelope_radius
+        )
+        end_minor_radius = (
+            minor_radius if end_minor_radius is None else end_minor_radius
+        )
+        envelope = math.pi * length * (
+            envelope_radius ** 2
+            + envelope_radius * end_envelope_radius
+            + end_envelope_radius ** 2
+        ) / 3.0
+        core = math.pi * length * (
+            minor_radius ** 2
+            + minor_radius * end_minor_radius
+            + end_minor_radius ** 2
+        ) / 3.0
     except Exception:  # noqa: BLE001
         return True
     if envelope <= 0:

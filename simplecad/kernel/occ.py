@@ -130,6 +130,24 @@ def bounding_box(shape, optimal: bool = True):
     return ((low.X(), low.Y(), low.Z()), (high.X(), high.Y(), high.Z()))
 
 
+def compound(shapes):
+    """Bundle shapes for display without fusing or changing their identity."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    shapes = [shape for shape in shapes if shape is not None]
+    if not shapes:
+        return None
+    if len(shapes) == 1:
+        return shapes[0]
+    result = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(result)
+    for shape in shapes:
+        builder.Add(result, shape)
+    return result
+
+
 def volume(shape) -> float:
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps

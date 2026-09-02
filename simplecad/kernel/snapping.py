@@ -32,6 +32,7 @@ PRIORITY = {
     "edge": 0,
     "on_edge": -5,
     "surface": -10,
+    "inference": 15,
 }
 
 #: How the tool names each kind of snap to the user.
@@ -43,6 +44,7 @@ LABELS = {
     "edge": "on edge",
     "on_edge": "on edge",
     "surface": "on face",
+    "inference": "aligned point",
 }
 
 #: Above this many edges, on-edge snapping is skipped. Ray-to-curve extrema are
@@ -107,6 +109,8 @@ class SnapPoint:
 
     position: tuple[float, float, float]
     kind: str
+    directions: tuple[tuple[float, float, float], ...] = ()
+    inference: str | None = None
 
     @property
     def priority(self) -> int:
@@ -114,7 +118,42 @@ class SnapPoint:
 
     @property
     def label(self) -> str:
+        if self.inference:
+            return {
+                "X": "X-aligned point",
+                "Y": "Y-aligned point",
+                "Z": "Z-aligned point",
+                "Parallel": "edge-aligned point",
+            }.get(self.inference, "aligned point")
         return LABELS.get(self.kind, self.kind)
+
+
+def _unit(vector) -> tuple[float, float, float] | None:
+    length = math.sqrt(sum(value * value for value in vector))
+    if length < 1e-12:
+        return None
+    result = tuple(value / length for value in vector)
+    # A direction and its negative describe the same inference line. Canonical
+    # sign makes them deduplicate at shared corners.
+    for value in result:
+        if abs(value) > 1e-9:
+            return tuple(-part for part in result) if value < 0.0 else result
+    return result
+
+
+def _linear_direction(edge) -> tuple[float, float, float] | None:
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Line
+
+    try:
+        curve = BRepAdaptor_Curve(edge)
+        if curve.GetType() != GeomAbs_Line:
+            return None
+        first = curve.Value(curve.FirstParameter())
+        last = curve.Value(curve.LastParameter())
+        return _unit((last.X() - first.X(), last.Y() - first.Y(), last.Z() - first.Z()))
+    except Exception:  # noqa: BLE001 - degenerate edges have no direction
+        return None
 
 
 def _point(pnt) -> tuple[float, float, float]:
@@ -127,6 +166,22 @@ def _vertices(shape) -> list[SnapPoint]:
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
+    directions: dict[tuple[float, float, float], set] = {}
+    from OCP.TopAbs import TopAbs_EDGE
+    edge_explorer = TopExp_Explorer(shape, TopAbs_EDGE)
+    while edge_explorer.More():
+        edge = TopoDS.Edge_s(edge_explorer.Current())
+        direction = _linear_direction(edge)
+        if direction is not None:
+            from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+            curve = BRepAdaptor_Curve(edge)
+            for parameter in (curve.FirstParameter(), curve.LastParameter()):
+                point = curve.Value(parameter)
+                key = tuple(round(value, 6) for value in _point(point))
+                directions.setdefault(key, set()).add(direction)
+        edge_explorer.Next()
+
     found, seen = [], set()
     explorer = TopExp_Explorer(shape, TopAbs_VERTEX)
     while explorer.More():
@@ -134,7 +189,9 @@ def _vertices(shape) -> list[SnapPoint]:
         key = tuple(round(v, 6) for v in _point(pnt))
         if key not in seen:
             seen.add(key)
-            found.append(SnapPoint(_point(pnt), "vertex"))
+            found.append(SnapPoint(
+                _point(pnt), "vertex", tuple(sorted(directions.get(key, set())))
+            ))
         explorer.Next()
     return found
 
@@ -148,7 +205,11 @@ def _edge_points(edge) -> list[SnapPoint]:
     try:
         curve = BRepAdaptor_Curve(edge)
         first, last = curve.FirstParameter(), curve.LastParameter()
-        found.append(SnapPoint(_point(curve.Value((first + last) / 2.0)), "midpoint"))
+        direction = _linear_direction(edge)
+        found.append(SnapPoint(
+            _point(curve.Value((first + last) / 2.0)), "midpoint",
+            (direction,) if direction is not None else (),
+        ))
         if curve.GetType() == GeomAbs_Circle:
             # A hole's centre is the thing people actually measure between.
             found.append(
@@ -369,7 +430,10 @@ def ray_snaps(shape, ray, parent=None) -> list[SnapPoint]:
         found.append(SnapPoint(surface, "surface"))
     on_edge = _edge_hit(shape, origin, direction)
     if on_edge is not None:
-        found.append(SnapPoint(on_edge, "on_edge"))
+        position, direction = on_edge
+        found.append(SnapPoint(
+            position, "on_edge", (direction,) if direction is not None else ()
+        ))
     return found
 
 
@@ -435,10 +499,70 @@ def _edge_hit(shape, origin, direction):
             point = adaptor.Value(parameter)
             distance = extrema.LowerDistance()
             if best is None or distance < best[0]:
-                best = (distance, (point.X(), point.Y(), point.Z()))
+                best = (
+                    distance, (point.X(), point.Y(), point.Z()),
+                    _linear_direction(edge),
+                )
         except Exception:  # noqa: BLE001 - a degenerate edge offers no snap
             continue
-    return best[1] if best is not None else None
+    return (best[1], best[2]) if best is not None else None
+
+
+def inferred_snap(
+    reference: SnapPoint,
+    raw: SnapPoint | None,
+    project,
+    cursor,
+    *,
+    locked: tuple[str, tuple[float, float, float]] | None = None,
+    bypass: bool = False,
+    capture: float = 6.0,
+    release: float = 10.0,
+) -> tuple[SnapPoint | None, tuple[str, tuple[float, float, float]] | None]:
+    """Magnetically align a generic second hit to axes through the first.
+
+    Real named geometry remains authoritative; inference only refines the
+    generic edge/surface point that otherwise follows the cursor.
+    """
+    if bypass or raw is None or raw.kind not in {"edge", "on_edge", "surface"}:
+        return raw, None
+    axes = [
+        ("X", (1.0, 0.0, 0.0)),
+        ("Y", (0.0, 1.0, 0.0)),
+        ("Z", (0.0, 0.0, 1.0)),
+    ]
+    seen = {direction for _label, direction in axes}
+    for direction in reference.directions:
+        direction = _unit(direction)
+        if direction is not None and direction not in seen:
+            seen.add(direction)
+            axes.append(("Parallel", direction))
+
+    origin = reference.position
+    choices = []
+    for label, direction in axes:
+        delta = tuple(raw.position[i] - origin[i] for i in range(3))
+        along = sum(delta[i] * direction[i] for i in range(3))
+        if abs(along) < 1e-9:
+            continue
+        point = tuple(origin[i] + direction[i] * along for i in range(3))
+        screen = project(point)
+        if screen is None:
+            continue
+        distance = math.hypot(screen[0] - cursor[0], screen[1] - cursor[1])
+        choices.append((distance, label, direction, point))
+
+    if locked is not None:
+        for distance, label, direction, point in choices:
+            if label == locked[0] and direction == locked[1] and distance <= release:
+                return SnapPoint(point, "inference", inference=label), locked
+    if not choices:
+        return raw, None
+    distance, label, direction, point = min(choices, key=lambda item: item[0])
+    if distance <= capture:
+        key = (label, direction)
+        return SnapPoint(point, "inference", inference=label), key
+    return raw, None
 
 
 def nearest(candidates, project, cursor, radius: float = 22.0):

@@ -183,9 +183,37 @@ def _threadable_pair(model: SelectionModel) -> bool:
     )
 
 
+def _body_and_target_face(model: SelectionModel) -> bool:
+    faces = model.planar_faces()
+    if len(faces) != 1 or len(model.bodies) != 2:
+        return False
+    return any(
+        pick.body != faces[0].body and pick.kind in WHOLE_OBJECT_KINDS
+        for pick in model.picks
+    )
+
+
 def _has_a_thread(model: SelectionModel) -> bool:
     """Is anything selected already threaded?"""
     return any(model.document.threads_on(name) for name in model.bodies)
+
+
+def _matchable_target(model: SelectionModel) -> bool:
+    """A face that could take the mate of a thread that exists elsewhere.
+
+    The primary entry needs the threaded body itself in the selection, and that
+    is the right thing to lead with when it is there. But "select the thread,
+    then select the face its mate goes on" is an ordinary way to work, and
+    clicking the target *replaces* the selection -- so the command the user was
+    reaching for vanished from the bar at the moment they reached for it. The
+    panel already falls back to the newest thread in the document, so the only
+    thing missing was the way back in.
+    """
+    if _has_a_thread(model):
+        return False        # already offered above, and led with
+    if model.document.any_thread() is None:
+        return False
+    return bool(model.round_faces() or model.planar_faces())
 
 
 def _roundable(model: SelectionModel) -> bool:
@@ -226,8 +254,22 @@ def _combinable(model: SelectionModel) -> bool:
     return model.only_bodies and len(model.bodies) >= 2
 
 
+def _arrangeable(model: SelectionModel) -> bool:
+    targets = model.planar_faces()
+    if len(targets) > 1:
+        return False
+    target_body = targets[0].body if targets else None
+    moving = [name for name in model.bodies if name != target_body]
+    return len(moving) >= 3 and all(
+        pick.kind in WHOLE_OBJECT_KINDS
+        or (bool(targets) and pick is targets[0])
+        for pick in model.picks
+    )
+
+
 CONTEXT_ACTIONS = (
     # -- relationships between two parts, which are the most specific reading
+    ("clip_joint", "Create Clip Joint", "clip", _two_planar_faces),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
     ("threaded_connection", "Create Threaded Connection", "thread", _threadable_pair),
     ("matching_part", "Create Matching Part", "thread", _has_a_thread),
@@ -235,6 +277,7 @@ CONTEXT_ACTIONS = (
     ("stack", "Stack", "stack", _two_planar_faces),
     ("align_stack", "Align & Stack", "align", _two_planar_faces),
     ("center", "Center", "align", _two_planar_faces),
+    ("place_on_face", "Place on Face", "align", _body_and_target_face),
     # -- a face
     #
     # Pull answers for round faces too, and leads on them. Dragging the side of
@@ -250,7 +293,12 @@ CONTEXT_ACTIONS = (
     ("hole", "Hole", "hole", lambda m: len(m.planar_faces()) >= 1),
     ("sketch", "Sketch on face", "sketch",
      lambda m: len(m.planar_faces()) == 1 and m.count == 1),
+    ("text", "Add text", "text",
+     lambda m: len(m.planar_faces()) == 1 and m.count == 1),
     ("shell", "Hollow", "shell", lambda m: len(m.planar_faces()) >= 1),
+    # Below the face actions on purpose: threading a face to match something
+    # else is a real thing to want, but not more likely than pulling it.
+    ("matching_part", "Create Matching Part", "thread", _matchable_target),
     # -- an edge or a corner
     ("fillet", "Fillet", "fillet", _roundable),
     ("chamfer", "Chamfer", "chamfer", _roundable),
@@ -259,8 +307,9 @@ CONTEXT_ACTIONS = (
     ("join", "Join", "union", _combinable),
     ("intersect", "Intersect", "intersect", _combinable),
     # -- whole objects
+    ("arrange", "Arrange", "pattern", _arrangeable),
     ("group", "Group", "group", _groupable),
-    ("move", "Move", "move", lambda m: m.count >= 1),
+    ("move", "Move", "move", _bodies),
     ("rotate", "Rotate", "rotate", _bodies),
     ("scale", "Scale", "scale", _bodies),
     ("split", "Split", "split", _one_body),

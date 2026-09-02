@@ -68,8 +68,8 @@ class ModelBrowser(FloatingCard):
 
     visibility_toggled = Signal(str, bool)
     feature_selected = Signal(str)
-    #: A row was clicked: a body name or a group name.
-    body_selected = Signal(str)
+    #: The ordered body/group rows selected in the tree.
+    bodies_selected = Signal(list)
     #: (body name, new name)
     rename_requested = Signal(str, str)
     isolate_requested = Signal(str)
@@ -89,6 +89,8 @@ class ModelBrowser(FloatingCard):
     def __init__(self, palette: Palette, document, parent=None) -> None:
         super().__init__(palette, parent)
         self.document = document
+        self._selection_order: list[str] = []
+        self._refreshing = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -132,7 +134,7 @@ class ModelBrowser(FloatingCard):
 
         self.tab_bodies.clicked.connect(lambda: self.show_tab(0))
         self.tab_history.clicked.connect(lambda: self.show_tab(1))
-        self.bodies_tree.itemClicked.connect(self._row_clicked)
+        self.bodies_tree.itemSelectionChanged.connect(self._rows_selected)
         self.history_list.itemClicked.connect(self._feature_clicked)
         self.bodies_tree.itemDoubleClicked.connect(self._rename_row)
         self.history_list.itemDoubleClicked.connect(self._rename_feature)
@@ -164,8 +166,12 @@ class ModelBrowser(FloatingCard):
 
     # -- contents -------------------------------------------------------
     def refresh(self) -> None:
-        self._fill_bodies()
-        self._fill_history()
+        self._refreshing = True
+        try:
+            self._fill_bodies()
+            self._fill_history()
+        finally:
+            self._refreshing = False
         showing_bodies = self.stack.currentIndex() == 0
         count = (
             self.bodies_tree.topLevelItemCount() if showing_bodies
@@ -224,6 +230,8 @@ class ModelBrowser(FloatingCard):
             "box": "box", "cylinder": "cylinder", "sphere": "sphere",
             "cone": "cone", "torus": "torus", "tube": "tube",
             "wedge": "wedge", "polygon_prism": "polygon",
+            "star": "star", "heart": "heart", "cross": "cross",
+            "crescent": "crescent", "lightning": "lightning", "text": "text",
             "split": "split", "import": "import",
         }
         for feature in self.document.features:
@@ -247,8 +255,21 @@ class ModelBrowser(FloatingCard):
                 item.setForeground(_color(colour))
             self.history_list.addItem(item)
 
-    def _row_clicked(self, item: QTreeWidgetItem, _column: int = 0) -> None:
-        self.body_selected.emit(item.data(0, NAME_ROLE))
+    def _rows_selected(self) -> None:
+        """Relay the complete tree selection, preserving the order rows were added."""
+        if self._refreshing:
+            return
+        selected = [
+            item.data(0, NAME_ROLE) for item in self.bodies_tree.selectedItems()
+            if item.data(0, NAME_ROLE)
+        ]
+        self._selection_order = [
+            name for name in self._selection_order if name in selected
+        ]
+        self._selection_order.extend(
+            name for name in selected if name not in self._selection_order
+        )
+        self.bodies_selected.emit(list(self._selection_order))
 
     # -- context menus ---------------------------------------------------
     def _selected_names(self) -> list[str]:

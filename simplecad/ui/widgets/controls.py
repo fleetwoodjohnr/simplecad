@@ -202,7 +202,12 @@ class ValueField(QLineEdit):
         self._parameters = parameters
 
     def value(self) -> float:
-        return self._value
+        # Live previews read while the editor still has focus, before
+        # ``editingFinished`` promotes the text to ``_value``. Return the
+        # current valid expression so typing a gap or placement offset moves
+        # the preview immediately; invalid partial text keeps the last value.
+        current = self._evaluate(self.text())
+        return self._value if current is None else current
 
     def set_value(self, value: float) -> None:
         from ...core.units import format_quantity
