@@ -892,6 +892,25 @@ class HoleFeature(_BodyOperation):
         style = str(self.inputs.get("style", "simple"))
         depth_mode = str(self.inputs.get("depth_mode", "through"))
 
+        thread_size = None
+        if style == "threaded":
+            from .threads import required_bore, require_printable
+
+            self.inputs["thread_modelled"] = False
+            # Choose from the requested diameter, before adding clearance. The
+            # internal thread adds metal to this bore; it cannot open its root
+            # beyond the drilled wall afterwards.
+            thread_size = self._thread_size(diameter)
+            if thread_size is None:
+                raise CadError(
+                    f"No standard thread matches ⌀{diameter:.2f} mm.",
+                    suggestion="Change the diameter or choose a standard size.",
+                )
+            require_printable(thread_size, str(self.inputs.get("form", "printed")))
+            diameter = max(diameter, required_bore(
+                thread_size, self.inputs.get("clearance", "normal")
+            ))
+
         # Drill along the inward normal.
         inward = tuple(-v for v in info.normal)
         low, high = bounding_box(body)
@@ -928,12 +947,13 @@ class HoleFeature(_BodyOperation):
 
         if style == "threaded":
             result = self._thread_the_bore(
-                ctx, result, diameter, inward, position
+                ctx, result, diameter, inward, position, size=thread_size
             )
         return self._emit(result)
 
     def _thread_the_bore(
-        self, ctx: BuildContext, shape, diameter: float, inward, position=None
+        self, ctx: BuildContext, shape, diameter: float, inward, position=None,
+        *, size=None,
     ):
         """Thread the bore that was just cut, over the material it passes through.
 
@@ -962,7 +982,7 @@ class HoleFeature(_BodyOperation):
                 suggestion="Try a shorter blind hole or select another face.",
             )
 
-        size = self._thread_size(bore.diameter)
+        size = size or self._thread_size(diameter)
         if size is None:
             raise CadError(
                 f"No standard thread matches ⌀{bore.diameter:.2f} mm, so the "

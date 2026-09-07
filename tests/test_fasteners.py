@@ -377,7 +377,7 @@ def test_a_matching_threaded_hole_accepts_the_part_it_was_matched_to():
     bore and the share of it buried in the plate's metal is counted, exactly as
     the bolt/nut pair is checked in ``test_threads``.
     """
-    from simplecad.kernel.occ import make_transform, transformed
+    from simplecad.kernel.occ import axis_transform, make_transform, transformed
 
     from .fit import TOLERANCE, buried_fraction, turned_in_place
 
@@ -394,11 +394,13 @@ def test_a_matching_threaded_hole_accepts_the_part_it_was_matched_to():
     assert recorded and recorded[0]["designation"] == "P12"
     assert recorded[0]["internal"] is True
 
-    # The post's thread starts 8 mm up its own shaft; dropping it 8 mm puts that
-    # thread at the plate's bore. A pure axial move is not a cheat -- for a
-    # helix it is the same as turning, which is what screwing it in *is*.
+    # Give both helices the same origin and direction. The post starts at z=8;
+    # the drilled thread starts at the top of the plate and runs downwards.
+    # Merely translating the post leaves an arbitrary phase difference, so
+    # turning it 90 degrees could improve the fit instead of being a misfit.
     seated = transformed(
-        document.body("Post").shape, make_transform(translate=(80.0, 20.0, -8.0))
+        transformed(document.body("Post").shape, make_transform(translate=(0, 0, -8))),
+        axis_transform((80, 20, 10), (0, 0, -1)),
     )
     plate_shape = document.body("Plate").shape
     buried = buried_fraction(seated, plate_shape)
@@ -411,7 +413,7 @@ def test_a_matching_threaded_hole_accepts_the_part_it_was_matched_to():
     clashing = buried_fraction(
         turned_in_place(seated, 90.0, (80.0, 20.0, 0.0)), plate_shape
     )
-    assert clashing > buried, (
+    assert clashing > .05 and clashing > buried * 5, (
         f"a post turned in place measured {clashing:.1%}, no worse than the "
         f"seated {buried:.1%} -- the fit check is not measuring anything"
     )

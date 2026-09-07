@@ -63,6 +63,9 @@ EXPORT_FILTERS = (
 EXPORT_FILTER_TEXT = ";;".join(label for label, _suffix in EXPORT_FILTERS)
 EXPORT_SUFFIXES = frozenset(suffix for _label, suffix in EXPORT_FILTERS) | {".stp"}
 
+#: Every accepted arrow-key press moves geometry by this exact distance.
+NUDGE_STEP_MM = 0.25
+
 
 def resolved_export_path(path: str, selected_filter: str) -> str:
     """Give an export filename the suffix selected in the save dialog.
@@ -439,6 +442,9 @@ class MainWindow(QMainWindow):
         #: and become one feature/history operation.
         self._nudge_state: dict | None = None
         self._nudge_restore: dict | None = None
+        self._nudge_keys: set[int] = set()
+        self._nudge_queue: list[tuple[str, bool]] = []
+        self._nudge_refreshing = False
         self._nudge_timer = QTimer(self)
         self._nudge_timer.setSingleShot(True)
         self._nudge_timer.setInterval(250)
@@ -510,6 +516,20 @@ class MainWindow(QMainWindow):
         self.browser.group_rename_requested.connect(self.rename_group)
         self.browser.group_delete_requested.connect(self.delete_group)
         self.browser.group_duplicate_requested.connect(self._duplicate_group)
+
+        # Arrow nudging belongs to the two places a model selection is made.
+        # A narrow event filter lets an unhandled key fall through normally --
+        # important for tree navigation and for every editor elsewhere in the
+        # window. A window-wide QShortcut would consume the key even when the
+        # nudge guard declined to act.
+        self._nudge_key_sources = (
+            self.stage.viewport,
+            self.browser.bodies_tree,
+            self.browser.bodies_tree.viewport(),
+        )
+        for source in self._nudge_key_sources:
+            source.installEventFilter(self)
+        self.installEventFilter(self)
 
 
         self._install_shortcuts()
@@ -652,21 +672,6 @@ class MainWindow(QMainWindow):
                 shortcut = QShortcut(QKeySequence(binding), self, activated=handler)
             self._shortcuts.append(shortcut)
 
-        # Auto-repeat is intentionally preserved: every repeat is one exact
-        # 0.25 mm input and the quiet timer below groups the burst into one edit.
-        for binding, direction, depth in (
-            ("Left", "left", False), ("Right", "right", False),
-            ("Up", "up", False), ("Down", "down", False),
-            ("Ctrl+Up", "up", True), ("Ctrl+Down", "down", True),
-        ):
-            shortcut = QShortcut(
-                QKeySequence(binding), self.stage.viewport,
-                activated=lambda d=direction, z=depth: self._nudge_key(d, z),
-            )
-            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-            shortcut.setAutoRepeat(True)
-            self._shortcuts.append(shortcut)
-
     def reload_shortcuts(self) -> None:
         """Re-read the bindings after they have been changed."""
         for shortcut in getattr(self, "_shortcuts", []):
@@ -792,6 +797,7 @@ class MainWindow(QMainWindow):
 
     def add_feature(self, feature) -> None:
         """Add a feature, rebuild, and show the result."""
+        self._cancel_nudge()
         self.history.record(feature.label)
         self.document.add_feature(feature)
         self.mark_dirty()
@@ -833,9 +839,7 @@ class MainWindow(QMainWindow):
             self.rebuilder.invalidate(self._stale)
             self._stale.clear()
             report = self.rebuilder.rebuild(force=force, on_feature=progress)
-            self.refresh_view()
-            self.browser.refresh()
-            self._restore_nudge_selection()
+            self._refresh_rebuilt_model(report.ok)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -854,15 +858,14 @@ class MainWindow(QMainWindow):
 
     def _on_geometry_finished(self, message) -> None:
         apply_result(self.document, message)
-        self.refresh_view()
-        self.browser.refresh()
-        self._restore_nudge_selection()
+        self._refresh_rebuilt_model(message.get("report", {}).get("ok", True))
         self._select_pasted_items()
         report = message.get("report", {})
         warnings = report.get("warnings") or []
         self.set_hint(warnings[-1] if warnings else report.get("summary", ""))
 
     def _on_geometry_failed(self, error: str) -> None:
+        self._cancel_nudge()
         self.set_hint(error)
         if self.geometry.available:
             # The child died and came back. It came back *empty* -- a fresh
@@ -906,10 +909,67 @@ class MainWindow(QMainWindow):
         self.stage.viewport.gizmo = None
 
     # -- direct manipulation ---------------------------------------------
-    def _nudge_allowed(self) -> bool:
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        """Route model nudges without stealing arrows from unrelated controls."""
+        source = watched in getattr(self, "_nudge_key_sources", ())
+        if (source and event.type() == QEvent.FocusOut and not self._nudge_refreshing) or (
+            watched is self and event.type() == QEvent.WindowDeactivate
+        ):
+            # A release may go to another window after focus changes.
+            self._nudge_keys.clear()
+            if self._nudge_state is not None:
+                self._nudge_timer.start()
+        if source and event.type() == QEvent.MouseButtonPress:
+            self._cancel_nudge()
+        if source and event.type() in (
+            QEvent.ShortcutOverride, QEvent.KeyPress, QEvent.KeyRelease,
+        ):
+            key = event.key()
+            pending = self._nudge_state is not None or self._nudge_restore is not None
+            if key == Qt.Key_Escape and pending:
+                if event.type() == QEvent.ShortcutOverride:
+                    event.accept()
+                    return True
+                if event.type() == QEvent.KeyPress:
+                    self._cancel_nudge()
+                    event.accept()
+                    return True
+            if event.type() == QEvent.KeyRelease and key in self._nudge_keys:
+                if not event.isAutoRepeat():
+                    self._nudge_keys.discard(key)
+                    if not self._nudge_keys and self._nudge_state is not None:
+                        self._nudge_timer.start()
+                event.accept()
+                return True
+            directions = {
+                Qt.Key_Left: "left", Qt.Key_Right: "right",
+                Qt.Key_Up: "up", Qt.Key_Down: "down",
+            }
+            direction = directions.get(key)
+            if direction is not None and event.type() == QEvent.KeyPress:
+                if self._is_typing():
+                    return super().eventFilter(watched, event)
+                if event.isAutoRepeat() and key not in self._nudge_keys:
+                    return super().eventFilter(watched, event)
+                relevant = event.modifiers() & (
+                    Qt.ShiftModifier | Qt.ControlModifier
+                    | Qt.AltModifier | Qt.MetaModifier
+                )
+                plain = relevant == Qt.NoModifier
+                depth = relevant == Qt.ControlModifier
+                if (plain or depth) and (not depth or direction in ("up", "down")):
+                    if self._nudge_key(direction, depth):
+                        self._nudge_keys.add(key)
+                        self._nudge_timer.stop()
+                        event.accept()
+                        return True
+        return super().eventFilter(watched, event)
+
+    def _nudge_allowed(self, *, allow_busy: bool = False) -> bool:
         viewport = self.stage.viewport
         if (
-            self.geometry.busy or self.sketching or viewport.picking_points
+            (self.geometry.busy and not allow_busy)
+            or self.sketching or viewport.picking_points
             or viewport.gizmo is not None or viewport._nav.name != "NONE"
         ):
             return False
@@ -923,14 +983,14 @@ class MainWindow(QMainWindow):
         length = math.sqrt(sum(value * value for value in vector))
         return tuple(value / length for value in vector) if length else (0.0, 0.0, 0.0)
 
-    def _begin_nudge(self, direction: str) -> dict | None:
+    def _begin_nudge(self, direction: str, depth: bool = False) -> dict | None:
         """Latch selection and camera axes until this arrow burst finishes."""
         if not self._nudge_allowed():
             return None
         self.selection.refresh()
         faces = self.selection.planar_faces() or self.selection.round_faces()
         if self.selection.count == 1 and len(faces) == 1:
-            if direction not in ("up", "down"):
+            if depth or direction not in ("up", "down"):
                 return None
             pick = faces[0]
             state = {
@@ -964,15 +1024,24 @@ class MainWindow(QMainWindow):
         self._nudge_state = state
         return state
 
-    def _nudge_key(self, direction: str, depth: bool = False) -> None:
-        state = self._nudge_state or self._begin_nudge(direction)
+    def _nudge_key(self, direction: str, depth: bool = False) -> bool:
+        if self._nudge_restore is not None:
+            if not self._nudge_allowed(allow_busy=True):
+                return False
+            if self._nudge_restore["kind"] == "face" and (
+                depth or direction not in ("up", "down")
+            ):
+                return False
+            self._nudge_queue.append((direction, depth))
+            self.set_hint("Finishing the previous step — additional arrows are queued")
+            return True
+        state = self._nudge_state or self._begin_nudge(direction, depth)
         if state is None:
-            return
-        step = 0.25
+            return False
         if state["kind"] == "face":
             if depth or direction not in ("up", "down"):
-                return
-            state["amount"] += step if direction == "up" else -step
+                return False
+            state["amount"] += NUDGE_STEP_MM if direction == "up" else -NUDGE_STEP_MM
         else:
             if depth:
                 axis = state["forward"]
@@ -984,9 +1053,10 @@ class MainWindow(QMainWindow):
                 axis = state["up"]
                 sign = 1.0 if direction == "up" else -1.0
             for index in range(3):
-                state["offset"][index] += axis[index] * step * sign
+                state["offset"][index] += axis[index] * NUDGE_STEP_MM * sign
         self._preview_nudge()
         self._nudge_timer.start()
+        return True
 
     def _preview_nudge(self) -> None:
         from ..kernel.occ import compound, make_transform, transformed
@@ -1035,17 +1105,21 @@ class MainWindow(QMainWindow):
             self.stage.viewport.set_transparency(self._presentations.get(name), 0.0)
 
     def _cancel_nudge(self) -> bool:
-        if self._nudge_state is None:
-            return False
+        pending = self._nudge_state is not None or self._nudge_restore is not None
         self._nudge_timer.stop()
-        self._clear_nudge_preview()
+        if self._nudge_state is not None:
+            self._clear_nudge_preview()
         self._nudge_state = None
-        self.set_hint(self.selection.summary())
-        return True
+        self._nudge_restore = None
+        self._nudge_queue.clear()
+        self._nudge_keys.clear()
+        if pending:
+            self.set_hint(self.selection.summary())
+        return pending
 
     def _commit_nudge(self) -> None:
         state = self._nudge_state
-        if state is None:
+        if state is None or self._nudge_keys or self.geometry.busy:
             return
         self._clear_nudge_preview()
         self._nudge_state = None
@@ -1083,6 +1157,7 @@ class MainWindow(QMainWindow):
             )
             self._nudge_restore = {
                 "kind": "bodies", "bodies": list(state["bodies"]),
+                "axes": {key: state[key] for key in ("right", "up", "forward")},
             }
             label = "Nudge objects"
 
@@ -1091,28 +1166,57 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.rebuild()
 
+    def _refresh_rebuilt_model(self, ok: bool) -> None:
+        # Replacing AIS presentations emits selection changes too. Those are
+        # not user input and must not discard queued arrows or their target.
+        self._nudge_refreshing = True
+        try:
+            self.refresh_view()
+            self.browser.refresh()
+            if ok:
+                self._restore_nudge_selection()
+            else:
+                self._cancel_nudge()
+        finally:
+            self._nudge_refreshing = False
+
     def _restore_nudge_selection(self) -> None:
         state, self._nudge_restore = self._nudge_restore, None
         if state is None:
             return
         viewport = self.stage.viewport
+        restored = False
         if state["kind"] == "bodies":
-            viewport.select_presentations(
-                self._presentations.get(name) for name in state["bodies"]
-            )
-            return
-        body = self.document.body(state["body"])
-        presentation = self._presentations.get(state["body"])
-        if body is None or body.shape is None or presentation is None:
-            return
-        try:
-            from ..core.naming import resolve
+            restored = all(self._presentations.get(name) for name in state["bodies"])
+            if restored:
+                viewport.select_presentations(
+                    self._presentations[name] for name in state["bodies"]
+                )
+        else:
+            body = self.document.body(state["body"])
+            presentation = self._presentations.get(state["body"])
+            if body is not None and body.shape is not None and presentation is not None:
+                try:
+                    from ..core.naming import resolve
 
-            face = resolve(state["reference"], body.shape)
-        except Exception:  # noqa: BLE001 - retain the edited body if face matching fails
-            viewport.select_shape(presentation)
+                    face = resolve(state["reference"], body.shape)
+                    restored = viewport.select_subshape(presentation, face)
+                except Exception:  # noqa: BLE001 - never apply queued arrows to another face
+                    viewport.select_shape(presentation)
+        self.selection.refresh()
+        queued, self._nudge_queue = self._nudge_queue, []
+        if not restored:
+            self._cancel_nudge()
             return
-        viewport.select_subshape(presentation, face)
+        if queued:
+            direction, depth = queued[0]
+            resumed = self._begin_nudge(direction, depth)
+            if resumed is not None:
+                resumed.update(state.get("axes", {}))
+                for direction, depth in queued:
+                    self._nudge_key(direction, depth)
+                if self._nudge_keys:
+                    self._nudge_timer.stop()
 
     def _maybe_start_face_drag(self) -> None:
         """Pressing on an already-selected face starts a Pull.
@@ -1484,6 +1588,7 @@ class MainWindow(QMainWindow):
 
     # -- undo / redo -----------------------------------------------------
     def undo(self) -> None:
+        self._cancel_nudge()
         label = self.history.undo_label
         stale = self.history.undo()
         if stale is None:
@@ -1495,6 +1600,7 @@ class MainWindow(QMainWindow):
         self.set_hint(f"Undid {label}." if label else "Undone.")
 
     def redo(self) -> None:
+        self._cancel_nudge()
         label = self.history.redo_label
         stale = self.history.redo()
         if stale is None:
@@ -2170,6 +2276,7 @@ class MainWindow(QMainWindow):
     def activate_tool(self, key: str) -> None:
         from .tools.registry import activate
 
+        self._cancel_nudge()
         # A flat face already selected is an unambiguous request to sketch on
         # it, so skip the plane picker.
         if key == "sketch" and self.sketch_on_selection():
@@ -2209,6 +2316,7 @@ class MainWindow(QMainWindow):
 
     def delete_selection(self) -> None:
         """Delete the selected bodies, and the features that produced them."""
+        self._cancel_nudge()
         self.selection.refresh()
         names = self.selection.bodies
         if not names:
@@ -2553,6 +2661,7 @@ class MainWindow(QMainWindow):
 
     def set_document(self, document, path: str | None = None) -> None:
         """Replace the open document, clearing anything left on screen."""
+        self._cancel_nudge()
         for presentation in self._presentations.values():
             self.stage.viewport.erase(presentation)
         self._presentations.clear()
@@ -2600,6 +2709,8 @@ class MainWindow(QMainWindow):
     def _on_selection(self) -> None:
         if self._expanding:
             return
+        if not self._nudge_refreshing:
+            self._cancel_nudge()
         self.selection.refresh()
         self._expand_selection_to_groups()
         self.refresh_context_bar()

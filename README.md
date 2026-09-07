@@ -88,7 +88,9 @@ FreeCAD does, and not something you will notice.
 | Select | Left-click. Shift or Ctrl to add |
 | Select several | Drag a box over them. Left-to-right surrounds, right-to-left touches |
 | Push / pull a face | Select it, then drag it |
+| Push / pull by an exact step | Select a face, then press Up / Down; each press moves the surface 0.25 mm |
 | Make a shaft or tube thinner | Select its round side, then drag it inward |
+| Nudge selected bodies | Arrow keys move 0.25 mm in the screen plane; Ctrl+Up / Ctrl+Down move in depth |
 | Draw a sketch | Sketch → pick a plane → Draw it instead |
 | Dimension | `D`, then click geometry, type, Enter |
 | Measure | Select geometry, then Measure |
@@ -102,6 +104,7 @@ FreeCAD does, and not something you will notice.
 | Move / rotate a body | Move, then drag the gizmo handles |
 | Place exactly on a face | Select the moving body and target face, then Place on Face |
 | Space several objects evenly | Select at least three bodies, then Arrange |
+| Create a removable clip joint | Select one flat face on each part, choose Create Clip Joint, then click the clip positions |
 | Make the part that screws into this one | Select the thread **and** where its mate goes — a flat face, a hole, or the whole part — then Create Matching Part |
 | Command search | `S` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
@@ -113,6 +116,10 @@ FreeCAD does, and not something you will notice.
 | Export | `Ctrl+E` |
 | Copy / paste bodies or groups | `Ctrl+C` / `Ctrl+V` |
 | Delete | `Delete` |
+
+Arrow steps work from the viewport or Bodies tree. Hold an arrow to repeat;
+release it and pause to finish one undoable edit. Further presses during that
+edit's rebuild are retained. Escape cancels pending steps.
 
 Dimension fields take expressions: `12`, `12mm`, `0.5in`, `wall`, `width / 2`,
 `hole + 0.4mm`.
@@ -143,11 +150,14 @@ Dimension fields take expressions: `12`, `12mm`, `0.5in`, `wall`, `width / 2`,
 .venv/bin/python scripts/check_measure_points.py  # snap to a corner, measure to another
 .venv/bin/python scripts/check_measure_snap.py    # the indicator follows, and tells the truth
 .venv/bin/python scripts/check_push.py       # push a face in: preview, readout, guard
+.venv/bin/python scripts/check_nudge.py      # exact 0.25 mm face and body arrow steps
+.venv/bin/python scripts/check_clips.py      # place sockets and a separate removable connector
 .venv/bin/python scripts/check_camera.py     # orbit the selection, never roll, never flip
 .venv/bin/python scripts/check_fillet_drag.py    # pull a fillet out with the mouse
 .venv/bin/python scripts/check_split.py      # drag a plane through a part, get two
 .venv/bin/python scripts/check_context_bar.py    # the bar loads completely, every time
 .venv/bin/python scripts/check_matching_hole.py   # thread a post, then mate it to a face, a bore and a tube
+.venv/bin/python scripts/check_matching_hole.py --m24  # verify M24 matching-hole clearance
 .venv/bin/python scripts/check_import.py     # STEP, STL and a slicer 3MF, selectable and editable
 .venv/bin/python scripts/check_subtract.py   # cut one body out of another, cutter consumed
 .venv/bin/python scripts/check_group.py      # group, move together, reach inside, ungroup

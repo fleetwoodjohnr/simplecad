@@ -102,11 +102,14 @@ class ClipJointPanel(_SelectionTool):
         self.add_widget(point_host)
 
         self.add_section("Clip")
-        self.size = QComboBox()
+        # Do not call this ``size``: ClipJointPanel is a QWidget, and replacing
+        # QWidget.size() with a combo box makes ViewportStage crash as soon as
+        # it asks the new overlay how large it is.
+        self.clip_size = QComboBox()
         for key in ("small", "medium", "large"):
-            self.size.addItem(key.title(), key)
-        self.size.setCurrentIndex(1)
-        self.add_widget(self.size)
+            self.clip_size.addItem(key.title(), key)
+        self.clip_size.setCurrentIndex(1)
+        self.add_widget(self.clip_size)
         self.material = QComboBox()
         self.material.addItem("PLA", "pla")
         self.material.addItem("PETG", "petg")
@@ -154,7 +157,7 @@ class ClipJointPanel(_SelectionTool):
         self.advanced_host.hide()
 
         for combo in (
-            self.size, self.material, self.retention, self.clearance,
+            self.clip_size, self.material, self.retention, self.clearance,
         ):
             combo.currentIndexChanged.connect(self._preset_changed)
         self.count.valueChanged.connect(lambda _value: self.preview())
@@ -301,7 +304,7 @@ class ClipJointPanel(_SelectionTool):
         self.preview()
 
     def _sync_advanced(self) -> None:
-        values = dict(SIZE_PRESETS[str(self.size.currentData())])
+        values = dict(SIZE_PRESETS[str(self.clip_size.currentData())])
         retention = RETENTION_PRESETS[str(self.retention.currentData())]
         if self.material.currentData() == "pla":
             values["engagement"] *= 1.25
@@ -359,7 +362,7 @@ class ClipJointPanel(_SelectionTool):
             "columns": self.columns.value(),
             "spacing_mode": str(self.spacing_mode.currentData()),
             "spacing": self.expression("spacing", "10"),
-            "size": str(self.size.currentData()),
+            "size": str(self.clip_size.currentData()),
             "material": str(self.material.currentData()),
             "retention": str(self.retention.currentData()),
             "clearance": str(self.clearance.currentData()),

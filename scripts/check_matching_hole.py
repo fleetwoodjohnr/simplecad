@@ -25,6 +25,8 @@ from _harness import grab_composited, run_and_capture  # noqa: E402
 
 REPORT: dict[str, object] = {}
 CASES = ("flat_face", "existing_bore", "whole_tube", "undersize_bore")
+M24 = "--m24" in sys.argv
+OUT_PATH = "/tmp/simplecad-matching-hole-m24.png" if M24 else "/tmp/simplecad-matching-hole.png"
 
 
 def main() -> int:
@@ -67,7 +69,7 @@ def main() -> int:
             first.
             """
             try:
-                grab_composited(window).save("/tmp/simplecad-matching-hole.png")
+                grab_composited(window).save(OUT_PATH)
             except Exception:  # noqa: BLE001 - the picture is a courtesy
                 pass
             QApplication.instance().quit()
@@ -111,25 +113,27 @@ def main() -> int:
                 )
 
             # -- the source thread, and three parts to mate with it ----------
+            radius = 12 if M24 else 6
+            diameter = 2 * radius
             post = document.add_feature(
-                CylinderFeature(inputs={"radius": 6, "height": 20}, outputs=["Post"])
+                CylinderFeature(inputs={"radius": radius, "height": 20}, outputs=["Post"])
             )
             plates = {}
             for name, x, hole in (
-                ("Plate", 60, None), ("Bored", 120, 12.0), ("Small", 180, 8.0)
+                ("Plate", 60, None), ("Bored", 120, diameter), ("Small", 180, diameter - 4)
             ):
                 plates[name] = document.add_feature(BoxFeature(
                     inputs={"width": 40, "depth": 40, "height": 10, "x": x},
                     outputs=[name],
                 ))
             cap = document.add_feature(TubeFeature(
-                inputs={"outer_radius": 10, "inner_radius": 6, "height": 14, "x": 240},
+                inputs={"outer_radius": radius + 4, "inner_radius": radius, "height": 14, "x": 240},
                 outputs=["Cap"],
             ))
             window.rebuild()
             window.wait_for_rebuild()
 
-            for name, diameter in (("Bored", 12.0), ("Small", 8.0)):
+            for name, bore_diameter in (("Bored", diameter), ("Small", diameter - 4)):
                 face = top_face(document.body(name).shape)
                 document.add_feature(HoleFeature(
                     inputs={
@@ -137,7 +141,7 @@ def main() -> int:
                         "face": make_ref(
                             document.body(name).shape, face, plates[name].id, body=name
                         ),
-                        "diameter": diameter,
+                        "diameter": bore_diameter,
                         "depth_mode": "through",
                         "position": tuple(analyse_plane(face).center),
                     },
@@ -149,6 +153,7 @@ def main() -> int:
             face = cylindrical_faces(document.body("Post").shape)[0][0]
             document.add_feature(ThreadFeature(
                 inputs={
+                    **({"designation": "M24"} if M24 else {}),
                     "body": BodyRef("Post"),
                     "face": make_ref(
                         document.body("Post").shape, face, post.id, body="Post"
@@ -161,6 +166,8 @@ def main() -> int:
             window.rebuild()
             window.wait_for_rebuild()
             REPORT["source_thread"] = bool(document.threads_on("Post"))
+            if M24:
+                REPORT["source_m24"] = document.threads_on("Post")[0]["designation"] == "M24"
 
             # -- one pass per shape of target --------------------------------
             def attempt(case: str, target: Picked, kind: str, allow_resize=False):
@@ -201,6 +208,14 @@ def main() -> int:
 
             plate_face = top_face(document.body("Plate").shape)
             attempt("flat_face", picked("Plate", plate_face, "face"), "hole")
+            from simplecad.kernel.thread_specs import by_designation
+            from simplecad.kernel.threads import required_bore
+
+            source = document.threads_on("Post")[0]
+            wanted = required_bore(by_designation(source["designation"]), source["clearance"])
+            bores = [info.diameter for _face, info in cylindrical_faces(document.body("Plate").shape)
+                     if info.internal]
+            REPORT["flat_face_clearance"] = bool(bores) and abs(max(bores) - wanted) < .01
 
             bored_face, _info = bore(document.body("Bored").shape)
             attempt("existing_bore", picked("Bored", bored_face, "face"), "apply")
@@ -231,13 +246,14 @@ def main() -> int:
         return window
 
     run_and_capture(
-        build, "/tmp/simplecad-matching-hole.png", settle_ms=600000, size=(1300, 820)
+        build, OUT_PATH, settle_ms=600000, size=(1300, 820)
     )
     print("--- matching hole ---")
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
     expected = {
         "source_thread": True,
+        "flat_face_clearance": True,
         "flat_face": True, "flat_face_offered": True, "flat_face_default_kind": "hole",
         "existing_bore": True, "existing_bore_offered": True,
         "existing_bore_default_kind": "apply",
@@ -246,6 +262,8 @@ def main() -> int:
         "undersize_bore": True, "undersize_bore_refused": True,
         "undersize_bore_asks_visible": True,
     }
+    if M24:
+        expected["source_m24"] = True
     bad = [k for k, want in expected.items() if REPORT.get(k) != want]
     for key in bad:
         print(f"  MISMATCH {key}: {REPORT.get(key)!r} (wanted {expected[key]!r})")

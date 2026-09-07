@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from simplecad.core.document import BodyRef, Document
-from simplecad.core.geometry_service import build_preview_result
+from simplecad.core.geometry_service import build_preview_result, serialise_shape
 from simplecad.core.naming import fingerprint, make_ref, sub_shapes
+from simplecad.core.project import load, save
 from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel.clips import ClipJointFeature, layout_points
 from simplecad.kernel.occ import is_valid, volume
@@ -112,3 +113,37 @@ def test_calibrated_press_fit_may_use_a_small_negative_clearance():
 def test_more_than_64_grid_positions_is_rejected():
     with pytest.raises(Exception, match="at most 64"):
         layout_points("grid", [(0, 0), (10, 10)], rows=9, columns=8)
+
+
+def test_clip_joint_survives_save_and_rebuilds_all_three_linked_parts(tmp_path):
+    document, rebuilder, feature = _document_and_feature([(0, 0)], ["Clip"])
+    document.add_feature(feature)
+    assert rebuilder.rebuild().ok
+
+    path = save(document, str(tmp_path / "clipped.scad3"))
+    reopened, cached = load(path)
+    assert cached
+    assert set(reopened.bodies) == {"Moving", "Target", "Clip"}
+
+    joint = next(item for item in reopened.features if item.type_name == "clip_joint")
+    assert joint.outputs == ["Moving", "Target", "Clip"]
+    before = {
+        name: serialise_shape(reopened.bodies[name].shape)
+        for name in joint.outputs
+    }
+
+    # Moving the connector location must rebuild the connector and both socketed
+    # parents from the same persistent feature rather than baking three unrelated
+    # snapshots into the project.
+    joint.inputs["anchors"] = [[3.0, 0.0]]
+    reopened_builder = Rebuilder(reopened)
+    reopened_builder.invalidate({joint.id})
+    report = reopened_builder.rebuild()
+
+    assert report.ok, report.summary()
+    assert set(reopened.bodies) == {"Moving", "Target", "Clip"}
+    assert all(is_valid(reopened.bodies[name].shape) for name in joint.outputs)
+    assert all(
+        serialise_shape(reopened.bodies[name].shape) != before[name]
+        for name in joint.outputs
+    )
