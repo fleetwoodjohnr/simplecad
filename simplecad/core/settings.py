@@ -188,6 +188,27 @@ def set_view_preference(name: str, value: bool) -> bool:
     return _write(data)
 
 
+# ----------------------------------------------------------------------
+# Interface preferences
+# ----------------------------------------------------------------------
+def ui_preference(name: str, default: bool = True) -> bool:
+    """A remembered shell setting, such as the model-browser expansion."""
+    stored = _read().get("ui", {})
+    value = stored.get(name) if isinstance(stored, dict) else None
+    return default if not isinstance(value, bool) else value
+
+
+def set_ui_preference(name: str, value: bool) -> bool:
+    """Store a boolean shell preference without disturbing other settings."""
+    data = _read()
+    ui = data.get("ui")
+    if not isinstance(ui, dict):
+        ui = {}
+    ui[name] = bool(value)
+    data["ui"] = ui
+    return _write(data)
+
+
 def theme_choice() -> str | None:
     """The theme the user picked, or None if they have never said.
 

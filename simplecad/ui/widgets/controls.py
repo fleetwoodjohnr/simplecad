@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
+    QButtonGroup, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -68,7 +68,7 @@ class IconButton(QToolButton):
 
 
 class ToolTile(QToolButton):
-    """A large icon-over-label tile for the tool rail."""
+    """A compact icon-over-label tile for navigation and sketch tools."""
 
     def __init__(self, name: str, label: str, palette: Palette, parent=None) -> None:
         super().__init__(parent)
@@ -78,13 +78,14 @@ class ToolTile(QToolButton):
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        self.setIconSize(QSize(24, 24))
-        self.setFixedSize(64, 62)
+        self.setIconSize(QSize(22, 22))
+        self.setFixedSize(58, 52)
         self.apply_palette(palette)
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
-        self.setIcon(icon(self._name, palette.text_muted, 24))
+        colour = palette.accent_hover if self.isChecked() else palette.text_muted
+        self.setIcon(icon(self._name, colour, 22))
         self.setStyleSheet(
             f"""
             QToolButton {{
@@ -92,8 +93,9 @@ class ToolTile(QToolButton):
                 border-radius: {METRICS.radius}px;
                 background: transparent;
                 color: {palette.text_muted};
-                font-size: 10.5px;
-                padding-top: 6px;
+                font-size: 9.5px;
+                font-weight: 600;
+                padding-top: 3px;
             }}
             QToolButton:hover   {{ background: {palette.surface_raised}; color: {palette.text}; }}
             QToolButton:checked {{ background: {palette.accent_soft}; color: {palette.accent_hover}; }}
@@ -101,12 +103,12 @@ class ToolTile(QToolButton):
         )
 
     def enterEvent(self, event) -> None:  # noqa: N802
-        self.setIcon(icon(self._name, self._palette.text, 24))
+        self.setIcon(icon(self._name, self._palette.text, 22))
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         color = self._palette.accent_hover if self.isChecked() else self._palette.text_muted
-        self.setIcon(icon(self._name, color, 24))
+        self.setIcon(icon(self._name, color, 22))
         super().leaveEvent(event)
 
 
@@ -127,9 +129,9 @@ class FloatingCard(QFrame):
         self._apply_card_style(palette)
         if shadow:
             effect = QGraphicsDropShadowEffect(self)
-            effect.setBlurRadius(36)
-            effect.setOffset(0, 8)
-            effect.setColor(QColor(0, 0, 0, 90))
+            effect.setBlurRadius(24)
+            effect.setOffset(0, 6)
+            effect.setColor(QColor(0, 0, 0, 72))
             self.setGraphicsEffect(effect)
 
     def _apply_card_style(self, palette: Palette) -> None:
@@ -188,6 +190,7 @@ class ValueField(QLineEdit):
         self._parameters = parameters
         self._dimension = dimension or Dimension.LENGTH
         self._value = value
+        self.setObjectName("ValueField")
         self.setAlignment(Qt.AlignRight)
         self.setMinimumHeight(METRICS.control_height)
         self.set_value(value)
@@ -197,6 +200,10 @@ class ValueField(QLineEdit):
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
+        self.setStyleSheet(
+            'QLineEdit#ValueField { font-family:"JetBrains Mono"; '
+            "font-size:12px; font-weight:600; }"
+        )
 
     def set_parameters(self, parameters) -> None:
         self._parameters = parameters
@@ -281,6 +288,72 @@ class GhostButton(QPushButton):
         self.setMinimumHeight(METRICS.control_height)
 
 
+class AnchorGrid(QWidget):
+    """A compact 3×3 face-anchor picker with real, generous hit targets."""
+
+    changed = Signal(str)
+    _keys = (
+        ("top_left", "↖"), ("top", "↑"), ("top_right", "↗"),
+        ("left", "←"), ("center", "●"), ("right", "→"),
+        ("bottom_left", "↙"), ("bottom", "↓"), ("bottom_right", "↘"),
+    )
+
+    def __init__(self, palette: Palette, value: str = "center", parent=None) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self._value = value
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(5)
+        layout.setVerticalSpacing(5)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.buttons = {}
+        for index, (key, glyph) in enumerate(self._keys):
+            button = QToolButton(self)
+            button.setText(glyph)
+            button.setToolTip(key.replace("_", " ").title())
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setFixedSize(36, 32)
+            button.setProperty("anchor", key)
+            button.setChecked(key == value)
+            button.clicked.connect(lambda _checked=False, selected=key: self.set_value(selected))
+            self.group.addButton(button)
+            self.buttons[key] = button
+            layout.addWidget(button, index // 3, index % 3)
+        self.apply_palette(palette)
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str, *, emit: bool = True) -> None:
+        if value not in self.buttons:
+            return
+        changed = value != self._value
+        self._value = value
+        self.buttons[value].setChecked(True)
+        if changed and emit:
+            self.changed.emit(value)
+
+    def apply_palette(self, palette: Palette) -> None:
+        self._palette = palette
+        self.setStyleSheet(
+            f"""
+            QToolButton {{
+                border:1px solid {palette.border}; border-radius:8px;
+                background:{palette.surface}; color:{palette.text_muted};
+                font-size:16px;
+            }}
+            QToolButton:hover {{ border-color:{palette.accent}; color:{palette.text}; }}
+            QToolButton:checked {{
+                background:{palette.accent_soft}; border-color:{palette.accent};
+                color:{palette.accent_hover}; font-weight:700;
+            }}
+            """
+        )
+
+
 class Hint(QLabel):
     """The quiet line that tells the user what to do next.
 
@@ -298,6 +371,7 @@ class Hint(QLabel):
 
     def setText(self, text: str) -> None:  # noqa: N802 - Qt naming
         self._full = text
+        self.setVisible(bool(text))
         self._relayout()
 
     def full_text(self) -> str:
@@ -321,4 +395,6 @@ class Hint(QLabel):
     def apply_palette(self, palette: Palette) -> None:
         self.setStyleSheet(
             f"color:{palette.text_muted}; font-size:{METRICS.font_size_sm}px;"
+            f"background:{palette.surface_raised}; border:1px solid {palette.border};"
+            f"border-radius:{METRICS.radius_sm}px; padding:6px 10px;"
         )

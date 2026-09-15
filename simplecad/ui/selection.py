@@ -193,6 +193,10 @@ def _body_and_target_face(model: SelectionModel) -> bool:
     )
 
 
+def _section_replaceable(model: SelectionModel) -> bool:
+    return _two_planar_faces(model) or _body_and_target_face(model)
+
+
 def _has_a_thread(model: SelectionModel) -> bool:
     """Is anything selected already threaded?"""
     return any(model.document.threads_on(name) for name in model.bodies)
@@ -278,6 +282,7 @@ CONTEXT_ACTIONS = (
     ("align_stack", "Align & Stack", "align", _two_planar_faces),
     ("center", "Center", "align", _two_planar_faces),
     ("place_on_face", "Place on Face", "align", _body_and_target_face),
+    ("section_replace", "Section Replace", "cut", _section_replaceable),
     # -- a face
     #
     # Pull answers for round faces too, and leads on them. Dragging the side of

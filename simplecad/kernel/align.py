@@ -136,6 +136,93 @@ class PlanarFrame:
         )
 
 
+ANCHOR_PRESETS = (
+    "top_left", "top", "top_right",
+    "left", "center", "right",
+    "bottom_left", "bottom", "bottom_right",
+)
+
+
+def _projected_bounds(shape, axis, center):
+    """Exact bounds along *axis*, expressed relative to *center*.
+
+    OCCT's UV bounds inherit arbitrary surface parameter directions.  Rotating
+    a copy so the requested axis becomes world X lets its geometry-aware bounder
+    provide stable face extents for lines, arcs, and splines alike.
+    """
+    from .occ import bounding_box, transformed
+
+    rotate = rotation_between(axis, (1.0, 0.0, 0.0), center)
+    low, high = bounding_box(transformed(shape, rotate))
+    point = _transformed_point(rotate, center)
+    return (low[0] - point[0], high[0] - point[0])
+
+
+def _transformed_point(transform, point):
+    from OCP.gp import gp_Pnt
+
+    result = gp_Pnt(*point)
+    result.Transform(transform)
+    return (result.X(), result.Y(), result.Z())
+
+
+def reference_frame(face) -> PlanarFrame:
+    """Return the user-facing U/V frame for a planar reference face.
+
+    The frame is intrinsic to the face, not the camera.  V follows the authored
+    face direction that most nearly points toward world-up (world-Y is used for
+    horizontal faces); U is then derived so U-right, V-up and the outward normal
+    stay right-handed.  Orbiting the camera therefore only changes how the
+    arrows are projected on screen, never what entered coordinates mean.
+    """
+    legacy = planar_frame(face)
+    candidates = (legacy.x_axis, legacy.y_axis)
+    guide = (0.0, 0.0, 1.0)
+    if max(abs(_dot(axis, guide)) for axis in candidates) < 0.25:
+        guide = (0.0, 1.0, 0.0)
+    v_axis = max(candidates, key=lambda axis: abs(_dot(axis, guide)))
+    if _dot(v_axis, guide) < 0.0:
+        v_axis = _scale(v_axis, -1.0)
+    u_axis = _unit(_cross(v_axis, legacy.normal))
+    return PlanarFrame(
+        center=legacy.center,
+        normal=legacy.normal,
+        x_axis=u_axis,
+        y_axis=v_axis,
+        x_bounds=_projected_bounds(face, u_axis, legacy.center),
+        y_bounds=_projected_bounds(face, v_axis, legacy.center),
+    )
+
+
+def anchor_coordinates(frame: PlanarFrame, preset: str) -> tuple[float, float]:
+    """Coordinates of a clickable centre/edge/corner anchor preset."""
+    if preset not in ANCHOR_PRESETS:
+        raise CadError(f"Unknown placement anchor: {preset!r}.")
+    low_u, high_u = frame.x_bounds
+    low_v, high_v = frame.y_bounds
+    horizontal = {
+        "left": low_u,
+        "center": 0.0,
+        "right": high_u,
+    }
+    vertical = {
+        "bottom": low_v,
+        "center": 0.0,
+        "top": high_v,
+    }
+    words = preset.split("_")
+    h_key = next((word for word in words if word in ("left", "right")), "center")
+    v_key = next((word for word in words if word in ("bottom", "top")), "center")
+    return horizontal[h_key], vertical[v_key]
+
+
+def anchor_point(
+    frame: PlanarFrame, preset: str = "center", *, normal: float = 0.0,
+) -> tuple[float, float, float]:
+    u, v = anchor_coordinates(frame, preset)
+    return frame.point(u, v, normal)
+
+
 def planar_frame(face) -> PlanarFrame:
     """Return the face-local X/Y frame used by placement and arrangement."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -370,6 +457,12 @@ def solve(
     y: float = 0.0,
     x_anchor: str = "center",
     y_anchor: str = "center",
+    moving_anchor: str | None = None,
+    target_anchor: str | None = None,
+    u: float | None = None,
+    v: float | None = None,
+    moving_frame: PlanarFrame | None = None,
+    target_frame: PlanarFrame | None = None,
 ) -> AlignResult:
     """Solve a placement for two selected faces, choosing the operation if not given."""
     operation = operation or suggest(moving_face, target_face)
@@ -394,6 +487,36 @@ def solve(
             "Stack needs a flat face on both parts.",
             suggestion="Select a planar face on each, or use Concentric for round features.",
         )
+    # New placement features use independent anchor presets and signed U/V.
+    # Keep the legacy edge-distance path for documents saved before that UI was
+    # introduced; their authored meaning must not change on rebuild.
+    if moving_anchor is not None or target_anchor is not None or u is not None or v is not None:
+        moving_frame = moving_frame or reference_frame(moving_face)
+        target_frame = target_frame or reference_frame(target_face)
+        source_anchor = anchor_point(moving_frame, moving_anchor or "center")
+        destination = anchor_point(target_frame, target_anchor or "center", normal=offset)
+        destination = _add(
+            destination,
+            _add(
+                _scale(target_frame.x_axis, float(u or 0.0)),
+                _scale(target_frame.y_axis, float(v or 0.0)),
+            ),
+        )
+        if operation == "center":
+            rotate = translation((0.0, 0.0, 0.0))
+        else:
+            wanted = target.normal if flip else _scale(target.normal, -1.0)
+            rotate = rotation_between(moving.normal, wanted, moving.center)
+        rotated_anchor = _transformed_point(rotate, source_anchor)
+        move = translation(_sub(destination, rotated_anchor))
+        gap = f", offset {offset:g} mm" if offset else ""
+        return AlignResult(
+            move.Multiplied(rotate),
+            operation,
+            f"Placed {moving_anchor or 'center'} anchor on "
+            f"{target_anchor or 'center'}{gap}.",
+        )
+
     frame = planar_frame(target_face)
     if operation == "center":
         return center(

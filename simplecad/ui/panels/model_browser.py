@@ -16,12 +16,12 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..icons import icon
 from ..theme import METRICS, Palette
-from ..widgets.controls import FloatingCard
+from ..widgets.controls import FloatingCard, IconButton
 
 #: Item data roles: the name, and whether the row is a group or a body.
 NAME_ROLE = Qt.UserRole
@@ -53,10 +53,12 @@ class _Tab(QLabel):
     def refresh(self) -> None:
         p = self._palette
         color = p.text if self._current else p.text_faint
-        border = p.accent if self._current else "transparent"
+        background = p.accent_soft if self._current else "transparent"
+        border = p.border_strong if self._current else "transparent"
         self.setStyleSheet(
             f"color:{color}; font-size:12.5px; font-weight:600;"
-            f"border-bottom:2px solid {border}; padding:0 2px;"
+            f"background:{background}; border:1px solid {border};"
+            f"border-radius:{METRICS.radius_sm}px; padding:0 8px;"
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -85,27 +87,46 @@ class ModelBrowser(FloatingCard):
     group_rename_requested = Signal(str, str)
     group_delete_requested = Signal(str)
     group_duplicate_requested = Signal(str)
+    collapsed_changed = Signal(bool)
 
     def __init__(self, palette: Palette, document, parent=None) -> None:
         super().__init__(palette, parent)
         self.document = document
         self._selection_order: list[str] = []
         self._refreshing = False
+        self._collapsed = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(
+        self.layout_ = QVBoxLayout(self)
+        self.layout_.setContentsMargins(
             METRICS.space(2), METRICS.space(2), METRICS.space(2), METRICS.space(2)
         )
-        layout.setSpacing(METRICS.space(1.5))
+        self.layout_.setSpacing(METRICS.space(1.5))
 
-        tabs = QHBoxLayout()
-        tabs.setSpacing(METRICS.space(3))
+        self.header = QWidget(self)
+        self.header.setObjectName("BrowserHeader")
+        tabs = QHBoxLayout(self.header)
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setSpacing(METRICS.space(2))
         self.tab_bodies = _Tab("Bodies", palette)
         self.tab_history = _Tab("History", palette)
         tabs.addWidget(self.tab_bodies)
         tabs.addWidget(self.tab_history)
         tabs.addStretch(1)
-        layout.addLayout(tabs)
+        self.collapse_button = IconButton(
+            "chevron_right", palette, "Collapse model browser", size=30
+        )
+        self.collapse_button.clicked.connect(self.toggle_collapsed)
+        tabs.addWidget(self.collapse_button)
+        self.layout_.addWidget(self.header)
+
+        # In compact mode this badge sits over the expand button without
+        # consuming layout space, keeping the collapsed inspector genuinely
+        # small while still saying whether the document contains geometry.
+        self.count_badge = QLabel("0", self)
+        self.count_badge.setObjectName("BrowserCountBadge")
+        self.count_badge.setAlignment(Qt.AlignCenter)
+        self.count_badge.setFixedSize(18, 18)
+        self.count_badge.hide()
 
         self.stack = QStackedWidget()
         self.bodies_tree = QTreeWidget()
@@ -126,11 +147,11 @@ class ModelBrowser(FloatingCard):
         self.history_list.setMaximumHeight(320)
         self.stack.addWidget(self.bodies_tree)
         self.stack.addWidget(self.history_list)
-        layout.addWidget(self.stack)
+        self.layout_.addWidget(self.stack)
 
         self.empty = QLabel("No bodies yet")
         self.empty.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.empty)
+        self.layout_.addWidget(self.empty)
 
         self.tab_bodies.clicked.connect(lambda: self.show_tab(0))
         self.tab_history.clicked.connect(lambda: self.show_tab(1))
@@ -159,10 +180,55 @@ class ModelBrowser(FloatingCard):
         self._palette = palette
         for tab in (self.tab_bodies, self.tab_history):
             tab.apply_palette(palette)
+        self.collapse_button.apply_palette(palette)
+        self.count_badge.setStyleSheet(
+            f"background:{palette.accent}; color:{palette.text_on_accent};"
+            "border:none; border-radius:9px; font-size:9px; font-weight:700;"
+        )
         self.empty.setStyleSheet(
             f"color:{palette.text_faint}; font-size:12px; padding:{METRICS.space(4)}px 0;"
         )
         self.refresh()
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool, *, emit: bool = True) -> None:
+        """Show the full inspector or reduce it to one unobtrusive button."""
+        collapsed = bool(collapsed)
+        changed = collapsed != self._collapsed
+        self._collapsed = collapsed
+        self.tab_bodies.setVisible(not collapsed)
+        self.tab_history.setVisible(not collapsed)
+        self.collapse_button._name = (
+            "chevron_left" if collapsed else "chevron_right"
+        )
+        self.collapse_button.setToolTip(
+            "Expand model browser" if collapsed else "Collapse model browser"
+        )
+        self.collapse_button.apply_palette(self._palette)
+        self.layout_.setContentsMargins(
+            METRICS.space(1.5) if collapsed else METRICS.space(2),
+            METRICS.space(1.5) if collapsed else METRICS.space(2),
+            METRICS.space(1.5) if collapsed else METRICS.space(2),
+            METRICS.space(1.5) if collapsed else METRICS.space(2),
+        )
+        self.setFixedWidth(48 if collapsed else 280)
+        self.refresh()
+        self.count_badge.setVisible(collapsed and bool(self.document.bodies))
+        self.count_badge.raise_()
+        self.adjustSize()
+        if changed and emit:
+            self.collapsed_changed.emit(collapsed)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.count_badge.move(self.width() - 18, 0)
+        self.count_badge.raise_()
 
     # -- contents -------------------------------------------------------
     def refresh(self) -> None:
@@ -172,14 +238,17 @@ class ModelBrowser(FloatingCard):
             self._fill_history()
         finally:
             self._refreshing = False
+        body_count = self.bodies_tree.topLevelItemCount()
+        history_count = self.history_list.count()
+        self.tab_bodies.setText(f"Bodies  {body_count}")
+        self.tab_history.setText(f"History  {history_count}")
+        self.count_badge.setText(str(min(99, len(self.document.bodies))))
         showing_bodies = self.stack.currentIndex() == 0
-        count = (
-            self.bodies_tree.topLevelItemCount() if showing_bodies
-            else self.history_list.count()
-        )
+        count = body_count if showing_bodies else history_count
         self.empty.setText("No bodies yet" if showing_bodies else "No features yet")
-        self.empty.setVisible(count == 0)
-        self.stack.setVisible(count > 0)
+        self.empty.setVisible(not self._collapsed and count == 0)
+        self.stack.setVisible(not self._collapsed and count > 0)
+        self.count_badge.setVisible(self._collapsed and bool(self.document.bodies))
         self.adjustSize()
 
     def _fill_bodies(self) -> None:

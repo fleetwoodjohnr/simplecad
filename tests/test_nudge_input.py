@@ -174,7 +174,17 @@ def test_round_face_steps_change_radius_and_restore_the_same_surface(model, inte
     viewport.select_subshape(window._presentations["Tube"], face)
     for key, change in ((Qt.Key_Up, .25), (Qt.Key_Down, 0)):
         QTest.keyClick(viewport, key)
+        expected_delta = "−0.25 mm" if (key == Qt.Key_Up) == internal else "+0.25 mm"
+        expected_diameter = (
+            (5.5 if internal else 10.5)
+            if key == Qt.Key_Up else (6.0 if internal else 10.0)
+        )
+        assert window.stage.drag_readout.delta_label.text() == expected_delta
+        assert window.stage.drag_readout.size_label.text() == (
+            f"Diameter {expected_diameter:.2f} mm"
+        )
         window._commit_nudge()
+        assert window.stage.drag_readout.isHidden()
         assert model.finish().ok
         radii = {info.internal: info.radius
                  for _, info in cylindrical_faces(window.document.body("Tube").shape)}
@@ -263,3 +273,146 @@ def test_editors_and_unsupported_face_keys_keep_their_normal_behavior(model):
     QTest.keyClick(editor, Qt.Key_Left)
     assert editor.cursorPosition() == 1
     assert window._nudge_state is None
+
+
+def test_active_move_tool_receives_exact_arrows_and_can_undo_redo(model):
+    window = model.window
+    model.select("A")
+    window.activate_tool("move")
+    panel = next(w for w, _a in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    for _ in range(4):
+        QTest.keyClick(panel, Qt.Key_Right)
+    assert panel.value("dx") == pytest.approx(1.0)
+    for _ in range(2):
+        QTest.keyClick(panel, Qt.Key_Left)
+    assert panel.value("dx") == pytest.approx(.5)
+    QTest.mouseClick(panel.confirm, Qt.LeftButton)
+    assert model.finish().ok
+    assert bounding_box(window.document.body("A").shape)[0][0] == pytest.approx(.5)
+    window.undo()
+    assert model.finish().ok
+    assert bounding_box(window.document.body("A").shape)[0][0] == pytest.approx(0, abs=1e-6)
+    window.redo()
+    assert model.finish().ok
+    assert bounding_box(window.document.body("A").shape)[0][0] == pytest.approx(.5)
+
+
+def test_active_push_pull_arrows_are_quarter_mm_and_fields_keep_arrows(model):
+    window = model.window
+    model.select("A", face=True)
+    window.activate_tool("pushpull")
+    panel = next(w for w, _a in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    start = panel.value("distance")
+    for _ in range(4):
+        QTest.keyClick(panel, Qt.Key_Up)
+    assert panel.value("distance") - start == pytest.approx(1.0)
+    for _ in range(4):
+        QTest.keyClick(panel, Qt.Key_Down)
+    assert panel.value("distance") == pytest.approx(start)
+
+    field = panel.fields["distance"]
+    field.setFocus()
+    field.setCursorPosition(1)
+    QTest.keyClick(field, Qt.Key_Left)
+    assert field.cursorPosition() == 0
+    assert panel.value("distance") == pytest.approx(start)
+
+
+def test_direct_push_pull_arrows_show_delta_and_resulting_total(model):
+    window, viewport = model.window, model.viewport
+    model.select("A", face=True)
+    QTest.keyClick(viewport, Qt.Key_Up)
+    assert window.stage.drag_readout.size_label.text() == "Height 10.25 mm"
+    assert window.stage.drag_readout.delta_label.text() == "+0.25 mm"
+    window._commit_nudge()
+    assert window.stage.drag_readout.isHidden()
+    assert model.finish().ok
+    assert bounding_box(window.document.body("A").shape)[1][2] == pytest.approx(10.25)
+
+
+@pytest.mark.parametrize(("entered", "height"), [("3", 13.0), ("-3", 7.0)])
+def test_typed_push_pull_value_is_visible_and_click_commits(model, entered, height):
+    window = model.window
+    model.select("A", face=True)
+    window.activate_tool("pushpull")
+    panel = next(w for w, _a in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    field = panel.fields["distance"]
+    field.setFocus()
+    field.selectAll()
+    QTest.keyClicks(field, entered)
+    assert field.text() == entered
+    assert window.palette_.text in QApplication.instance().styleSheet()
+    assert window.stage.drag_readout.size_label.text() == f"Height {height:.2f} mm"
+    signed = float(entered)
+    sign = "+" if signed >= 0 else "−"
+    assert window.stage.drag_readout.delta_label.text() == f"{sign}{abs(signed):.2f} mm"
+    QTest.mouseClick(panel.confirm, Qt.LeftButton)
+    assert model.finish().ok
+    low, high = bounding_box(window.document.body("A").shape)
+    assert high[2] - low[2] == pytest.approx(height, abs=1e-6)
+
+
+def test_push_pull_input_contrast_tracks_both_themes(model):
+    window = model.window
+    model.select("A", face=True)
+    window.activate_tool("pushpull")
+    dark_rules = QApplication.instance().styleSheet().split(
+        "/* ---- Inputs ---- */", 1
+    )[1].split("/* ---- Lists", 1)[0]
+    assert f"background: {window.palette_.surface_sunken};" in dark_rules
+    assert f"color: {window.palette_.text};" in dark_rules
+    window.toggle_theme()
+    light_rules = QApplication.instance().styleSheet().split(
+        "/* ---- Inputs ---- */", 1
+    )[1].split("/* ---- Lists", 1)[0]
+    assert f"background: {window.palette_.surface_sunken};" in light_rules
+    assert f"color: {window.palette_.text};" in light_rules
+
+
+def test_move_magnets_capture_release_and_shift_override(model):
+    window = model.window
+    model.select("A")
+    window.activate_tool("move")
+    panel = next(w for w, _a in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    # A spans X=0..10 and B starts at X=20, so 10 mm aligns their edges.
+    assert panel._snap_translation((9.98, 0, 0)) == pytest.approx((10, 0, 0))
+    # The release radius is wider than capture, preventing edge jitter.
+    assert panel._snap_translation((9.94, 0, 0)) == pytest.approx((10, 0, 0))
+    # Shift is an unconditional freeform override.
+    assert panel._snap_translation((9.94, 0, 0), bypass=True) == pytest.approx(
+        (9.94, 0, 0)
+    )
+
+
+def test_push_pull_opened_before_selection_reconfigures_for_round_face(model):
+    from simplecad.kernel.detect import cylindrical_faces
+    from simplecad.kernel.primitives import TubeFeature
+
+    window, viewport = model.window, model.viewport
+    window.document.add_feature(TubeFeature(
+        inputs={"outer_radius": 5, "inner_radius": 3, "height": 10},
+        outputs=["Tube"],
+    ))
+    assert model.finish().ok
+    viewport.clear_selection()
+    window.activate_tool("pushpull")
+    panel = next(w for w, _a in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    face = next(
+        face for face, info in cylindrical_faces(window.document.body("Tube").shape)
+        if not info.internal
+    )
+    viewport.select_subshape(window._presentations["Tube"], face)
+    assert "diameter" in panel.fields and "distance" not in panel.fields
+    start = panel.value("diameter")
+    for _ in range(4):
+        QTest.keyClick(panel, Qt.Key_Up)
+    assert panel.value("diameter") == pytest.approx(start + 2.0)
+    assert window.stage.drag_readout.size_label.text() == (
+        f"Diameter {start + 2.0:.2f} mm"
+    )
+    assert window.stage.drag_readout.delta_label.text() == "+1.00 mm"

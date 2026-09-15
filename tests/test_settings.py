@@ -163,3 +163,17 @@ def test_a_conflicting_override_is_reported():
     clashes = settings.conflicts()
     assert "Ctrl+Z" in clashes
     assert set(clashes["Ctrl+Z"]) >= {"search", "undo"}
+
+
+# ----------------------------------------------------------------------
+def test_ui_preferences_have_safe_defaults_and_round_trip():
+    assert settings.ui_preference("browser_expanded", True) is True
+    assert settings.set_ui_preference("browser_expanded", False) is True
+    assert settings.ui_preference("browser_expanded", True) is False
+
+
+def test_a_malformed_ui_preference_uses_the_requested_default():
+    os.makedirs(settings.CONFIG_DIR, exist_ok=True)
+    with open(settings.SETTINGS_PATH, "w") as handle:
+        json.dump({"ui": {"browser_expanded": "sometimes"}}, handle)
+    assert settings.ui_preference("browser_expanded", True) is True

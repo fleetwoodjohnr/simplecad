@@ -63,25 +63,25 @@ class Palette:
 
 
 DARK = Palette(
-    bg="#14161B",
-    surface="#1C1F26",
-    surface_raised="#252932",
-    surface_sunken="#111318",
-    border="#2E333D",
-    border_strong="#414856",
-    text="#E7EAF0",
-    text_muted="#98A1B0",
-    text_faint="#666E7D",
+    bg="#0B1018",
+    surface="#111823",
+    surface_raised="#18212E",
+    surface_sunken="#0C121B",
+    border="#253247",
+    border_strong="#3A4D68",
+    text="#EAF2FF",
+    text_muted="#9AABC0",
+    text_faint="#61738A",
     text_on_accent="#FFFFFF",
-    accent="#3D8BFD",
-    accent_hover="#5B9EFF",
-    accent_press="#2F76DE",
-    accent_soft="#1E3050",
+    accent="#2F9BFF",
+    accent_hover="#55B0FF",
+    accent_press="#1E79D0",
+    accent_soft="#163452",
     danger="#F0616D",
     warning="#E8A33D",
     success="#3FBF7F",
-    view_top="#2A2F3A",
-    view_bottom="#15181E",
+    view_top="#1B2635",
+    view_bottom="#090E15",
     face="#B9C2CF",
     body_tints=(
         "#B9C2CF",  # slate
@@ -93,37 +93,37 @@ DARK = Palette(
         "#9FC3C4",  # teal
         "#CBA9AE",  # rose
     ),
-    edge="#2B303A",
-    hover="#5B9EFF",
+    edge="#263447",
+    hover="#55B0FF",
     selected="#FF9A3D",
-    ghost="#3D8BFD",
-    grid="#2A2F39",
-    grid_axis_x="#C4574F",
-    grid_axis_y="#5B9A4A",
-    cube_box="#4A515F",
-    cube_text="#E7EAF0",
+    ghost="#2F9BFF",
+    grid="#172130",
+    grid_axis_x="#87505A",
+    grid_axis_y="#477765",
+    cube_box="#33445B",
+    cube_text="#EAF2FF",
 )
 
 LIGHT = Palette(
-    bg="#EDEFF3",
-    surface="#FFFFFF",
+    bg="#E8EEF6",
+    surface="#F6F9FC",
     surface_raised="#FFFFFF",
-    surface_sunken="#F2F4F7",
-    border="#DCE0E7",
-    border_strong="#B9C0CC",
-    text="#1B1E24",
-    text_muted="#5F6773",
-    text_faint="#8E96A3",
+    surface_sunken="#ECF2F8",
+    border="#D2DDE9",
+    border_strong="#9DB1C7",
+    text="#142033",
+    text_muted="#5E7086",
+    text_faint="#8798AB",
     text_on_accent="#FFFFFF",
-    accent="#1F6FEB",
-    accent_hover="#3A82F0",
-    accent_press="#175BC4",
-    accent_soft="#E3EDFD",
+    accent="#0A84F3",
+    accent_hover="#2999FF",
+    accent_press="#0568BF",
+    accent_soft="#DDEFFF",
     danger="#D93F4C",
     warning="#B7791F",
     success="#1F9D5F",
-    view_top="#FBFCFE",
-    view_bottom="#C6D0DE",
+    view_top="#F8FBFF",
+    view_bottom="#CFDBE9",
     face="#C9D2DE",
     body_tints=(
         "#C9D2DE",  # slate
@@ -135,32 +135,32 @@ LIGHT = Palette(
         "#AFD2D3",  # teal
         "#DBB9BE",  # rose
     ),
-    edge="#3E4753",
-    hover="#1F6FEB",
+    edge="#344457",
+    hover="#0A84F3",
     selected="#E8730C",
-    ghost="#1F6FEB",
-    grid="#D3D9E1",
-    grid_axis_x="#C4574F",
-    grid_axis_y="#4F9040",
-    cube_box="#D6DEE9",
-    cube_text="#2A2F3A",
+    ghost="#0A84F3",
+    grid="#C6D2DF",
+    grid_axis_x="#A86B73",
+    grid_axis_y="#67917F",
+    cube_box="#D2DEEB",
+    cube_text="#142033",
 )
 
 
 @dataclass(frozen=True)
 class Metrics:
-    """Spacing, radius and type scale. Generous by design."""
+    """Spacing, radius and type scale for the compact studio shell."""
 
     unit: int = 4
-    radius_sm: int = 6
-    radius: int = 10
-    radius_lg: int = 16
-    control_height: int = 34
-    control_height_lg: int = 42
-    font_size: int = 14
-    font_size_sm: int = 12
-    font_size_lg: int = 16
-    font_size_title: int = 20
+    radius_sm: int = 8
+    radius: int = 12
+    radius_lg: int = 14
+    control_height: int = 36
+    control_height_lg: int = 40
+    font_size: int = 13
+    font_size_sm: int = 11
+    font_size_lg: int = 15
+    font_size_title: int = 18
     font_family: str = field(
         default="Inter, 'Adwaita Sans', 'Cantarell', 'Segoe UI', system-ui, sans-serif"
     )
@@ -283,9 +283,8 @@ def _qt_prefers_dark() -> bool | None:
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     """Generate the application stylesheet from tokens.
 
-    Deliberately restrained: large controls, hairline borders, generous padding,
-    no gradients or bevels. Anything that would read as "dated desktop software"
-    is avoided.
+    Deliberately restrained: compact controls, crisp hairlines and clearly
+    layered surfaces. The 3D content remains the visual focus.
     """
     p, m = palette, metrics
     return f"""
@@ -316,7 +315,8 @@ QFrame#FloatingPanel {{
 }}
 QLabel#PanelTitle {{
     font-size: {m.font_size_lg}px;
-    font-weight: 600;
+    font-weight: 650;
+    letter-spacing: 0.15px;
     color: {p.text};
 }}
 QLabel#Muted, QLabel#Hint {{ color: {p.text_muted}; font-size: {m.font_size_sm}px; }}
@@ -326,7 +326,7 @@ QPushButton {{
     background: {p.surface_raised};
     border: 1px solid {p.border};
     border-radius: {m.radius_sm}px;
-    padding: 0 {m.space(3.5)}px;
+    padding: 0 {m.space(3)}px;
     min-height: {m.control_height}px;
     color: {p.text};
 }}
@@ -352,6 +352,7 @@ QPushButton:checked {{
 /* ---- Inputs ---- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     background: {p.surface_sunken};
+    color: {p.text};
     border: 1px solid {p.border};
     border-radius: {m.radius_sm}px;
     padding: 0 {m.space(2.5)}px;
@@ -360,9 +361,12 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     selection-color: {p.text_on_accent};
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-    border: 1px solid {p.accent};
+    border: 2px solid {p.accent};
 }}
 QLineEdit[invalid="true"] {{ border: 1px solid {p.danger}; }}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+    color: {p.text_muted};
+}}
 QComboBox::drop-down {{ border: none; width: {m.space(6)}px; }}
 QComboBox QAbstractItemView {{
     background: {p.surface_raised};
@@ -380,11 +384,11 @@ QTreeView, QListView {{
     show-decoration-selected: 1;
 }}
 QTreeView::item, QListView::item {{
-    min-height: {m.space(7)}px;
+    min-height: {m.space(8)}px;
     border-radius: {m.radius_sm}px;
     padding: {m.space(0.5)}px {m.space(1.5)}px;
 }}
-QTreeView::item:hover, QListView::item:hover {{ background: {p.surface_raised}; }}
+QTreeView::item:hover, QListView::item:hover {{ background: {p.surface_sunken}; }}
 QTreeView::item:selected, QListView::item:selected {{
     background: {p.accent_soft};
     color: {p.text};

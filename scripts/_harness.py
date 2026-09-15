@@ -22,7 +22,12 @@ os.environ.pop("QT_XCB_GL_INTEGRATION", None)
 # at module scope here. Without it a screenshot script that toggles the theme
 # silently rewrites the user's saved preference, and a recovery check plants
 # files in the recovery folder the user's own session reads.
-_SANDBOX = os.path.join(tempfile.gettempdir(), f"simplecad-scripts-{os.getuid()}")
+# Each invocation gets a clean profile. Persistent test settings made one
+# screenshot's collapsed inspector or theme choice silently leak into the next
+# script, so visual checks no longer described their own setup.
+_SANDBOX = os.path.join(
+    tempfile.gettempdir(), f"simplecad-scripts-{os.getuid()}-{os.getpid()}"
+)
 os.environ.setdefault("XDG_CONFIG_HOME", os.path.join(_SANDBOX, "config"))
 os.environ.setdefault("XDG_DATA_HOME", os.path.join(_SANDBOX, "data"))
 

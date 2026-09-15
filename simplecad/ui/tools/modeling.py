@@ -11,8 +11,10 @@ from __future__ import annotations
 import itertools
 import math
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QGridLayout, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel,
+    QVBoxLayout, QWidget,
 )
 
 from ...core.document import BodyRef
@@ -22,11 +24,12 @@ from ...kernel.operations import (
     PushPullFeature, RoundPushPullFeature, ScaleFeature, ShellFeature,
     ThreadedConnectionFeature, ThreadFeature,
 )
+from ...kernel.section_replace import SectionReplaceFeature
 from ...kernel.thread_specs import (
     clearance_presets, effective_clearance_for, recommend,
 )
 from ..theme import METRICS
-from ..widgets.controls import GhostButton
+from ..widgets.controls import AnchorGrid, GhostButton
 from .base import FeaturePreviewController, ToolPanel
 from ...kernel.vent import VentCutFeature
 from .registry import register_tool
@@ -116,10 +119,12 @@ class PushPullPanel(_SelectionTool):
     confirm_label = "Pull"
 
     def build(self) -> None:
+        self._direction_added = False
         self.pick = self._pick()
         if self.pick is None:
             self.set_subtitle("Select a flat face, or the side of a shaft or hole.")
             self.add_field("distance", "Distance", 5.0)
+            self.fields["distance"].edited_live.connect(lambda _value: self.preview())
             return
         if self.pick.is_round_face:
             info = self.pick.info
@@ -128,11 +133,141 @@ class PushPullPanel(_SelectionTool):
                 + self._wall_note(info)
             )
             self.add_field("diameter", "Diameter", round(info.diameter, 3))
+            self.fields["diameter"].edited_live.connect(lambda _value: self.preview())
         else:
             self.set_subtitle(
                 f"{self.pick.describe()} — positive adds material, negative cuts."
             )
             self.add_field("distance", "Distance", 5.0)
+            self.fields["distance"].edited_live.connect(lambda _value: self.preview())
+        self._ensure_direction()
+        self.preview()
+
+    def _ensure_direction(self) -> None:
+        if self._direction_added:
+            return
+        self._direction_added = True
+        self.direction = QLabel(
+            "↑ increases along the face normal by 0.25 mm\n"
+            "↓ decreases by 0.25 mm"
+        )
+        self.direction.setAlignment(Qt.AlignCenter)
+        self.direction.setStyleSheet(f"color:{self._palette.text_muted}; padding:5px;")
+        self.add_widget(self.direction)
+
+    def _remove_field(self, key: str) -> None:
+        field = self.fields.pop(key, None)
+        if field is None:
+            return
+        row = field.parentWidget()
+        if row is not None:
+            self.body.removeWidget(row)
+            row.deleteLater()
+
+    def on_selection_changed(self) -> None:
+        pick = self._pick()
+        if pick is None:
+            self._clear_preview()
+            self.pick = None
+            self.set_subtitle("Select a flat face, or the side of a shaft or hole.")
+            return
+        changed = self.pick is None or not pick.shape.IsSame(self.pick.shape)
+        if not changed:
+            return
+        self._clear_preview()
+        self.pick = pick
+        if pick.is_round_face:
+            self._remove_field("distance")
+            if "diameter" not in self.fields:
+                field = self.add_field("diameter", "Diameter", round(pick.info.diameter, 3))
+                field.edited_live.connect(lambda _value: self.preview())
+            else:
+                self.fields["diameter"].set_value(round(pick.info.diameter, 3))
+            self.set_subtitle(
+                f"{pick.describe()} — set the diameter it should end up."
+                + self._wall_note(pick.info)
+            )
+        else:
+            self._remove_field("diameter")
+            if "distance" not in self.fields:
+                field = self.add_field("distance", "Distance", 5.0)
+                field.edited_live.connect(lambda _value: self.preview())
+            else:
+                self.fields["distance"].set_value(5.0)
+            self.set_subtitle(
+                f"{pick.describe()} — positive adds material, negative cuts."
+            )
+        self._ensure_direction()
+        self.relayout()
+        self.preview()
+
+    def handle_arrow_key(self, key: int) -> bool:
+        if self.pick is None or key not in (Qt.Key_Up, Qt.Key_Down):
+            return False
+        sign = 1.0 if key == Qt.Key_Up else -1.0
+        if self.pick.is_round_face:
+            # The editor displays diameter; 0.25 mm of radial surface travel is
+            # exactly 0.50 mm of diameter.
+            field = self.fields["diameter"]
+            field.set_value(field.value() + sign * 0.5)
+        else:
+            field = self.fields["distance"]
+            field.set_value(field.value() + sign * 0.25)
+        self.preview()
+        return True
+
+    def preview(self) -> None:
+        pick = getattr(self, "pick", None)
+        if pick is None:
+            return
+        if pick.is_round_face:
+            surface_delta = (
+                self.value("diameter", pick.info.diameter) - pick.info.diameter
+            ) / 2.0
+            material_delta = (
+                -surface_delta if pick.info.internal else surface_delta
+            )
+        else:
+            surface_delta = self.value("distance", 0.0)
+            material_delta = surface_delta
+        try:
+            shape = self.window_._pull_preview(pick, surface_delta)
+        except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
+            return
+        viewport = self.window_.stage.viewport
+        viewport.show_ghost(
+            shape,
+            self.window_.palette_.danger
+            if material_delta < 0 else self.window_.palette_.accent,
+            transparency=0.42,
+        )
+        viewport.set_transparency(
+            self.window_._presentations.get(pick.body),
+            0.62 if material_delta < 0 else 0.0,
+        )
+        self.window_._show_drag_readout(
+            pick,
+            surface_delta,
+            at=self.window_._pull_readout_anchor(pick),
+            material_change=material_delta,
+        )
+        self.window_.set_hint(
+            "Face normal: ↑ +0.25 mm  ↓ −0.25 mm  ·  "
+            f"current {surface_delta:+.2f} mm"
+        )
+
+    def _clear_preview(self) -> None:
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        self.window_.stage.drag_readout.finish()
+        pick = getattr(self, "pick", None)
+        if pick is not None:
+            viewport.set_transparency(
+                self.window_._presentations.get(pick.body), 0.0
+            )
+
+    def teardown(self) -> None:
+        self._clear_preview()
 
     def _pick(self):
         faces = self.selection.planar_faces() or self.selection.round_faces()
@@ -216,10 +351,58 @@ class _TransformPanel(_SelectionTool):
             f"{subject} — drag a handle, or type exact values."
             if bodies else f"Select a body to {verb}."
         )
+        if self.mode == "move" and bodies:
+            self.set_subtitle(
+                f"{subject} — ←/→ changes X, ↓/↑ changes Y, exactly 0.25 mm per press."
+            )
         for key, label, dimension in self.field_specs:
             self.add_field(key, label, 0.0, dimension)
         self._origin_ghost = False
+        self._translation_locks = {}
+        self._translation_geometry = None
+        self._snap_presentation = None
         self._attach_gizmo()
+
+    def handle_arrow_key(self, key: int) -> bool:
+        if self.mode != "move" or key not in (
+            Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
+        ):
+            return False
+        field_key, sign = {
+            Qt.Key_Left: ("dx", -1.0), Qt.Key_Right: ("dx", 1.0),
+            Qt.Key_Down: ("dy", -1.0), Qt.Key_Up: ("dy", 1.0),
+        }[key]
+        field = self.fields[field_key]
+        field.set_value(field.value() + sign * 0.25)
+        self._preview_keyboard_move()
+        return True
+
+    def _preview_keyboard_move(self) -> None:
+        from ...kernel.occ import compound, make_transform
+
+        bodies = self.selection.bodies
+        shapes = [
+            body.shape for body in (self.window_.document.body(name) for name in bodies)
+            if body is not None and body.shape is not None
+        ]
+        if not shapes:
+            return
+        viewport = self.window_.stage.viewport
+        if not self._origin_ghost:
+            viewport.show_ghost(
+                compound(shapes), self.window_.palette_.accent, transparency=0.14
+            )
+            self._origin_ghost = True
+        transform = make_transform(translate=(
+            self.value("dx"), self.value("dy"), self.value("dz")
+        ))
+        viewport.transform_ghost(transform)
+        for name in bodies:
+            viewport.set_transparency(self.window_._presentations.get(name), 0.78)
+        self.window_.set_hint(
+            f"Keyboard move  ΔX {self.value('dx'):+.2f}  "
+            f"ΔY {self.value('dy'):+.2f} mm — arrows are exact; snapping is bypassed"
+        )
 
     def _attach_gizmo(self) -> None:
         bodies = self.selection.bodies
@@ -241,8 +424,102 @@ class _TransformPanel(_SelectionTool):
             pivot=pivot,
         )
         if gizmo is not None:
+            if self.mode == "move":
+                gizmo.translation_filter = self._snap_translation
             gizmo.changed.connect(self._on_gizmo_drag)
             gizmo.committed.connect(self._on_gizmo_commit)
+
+    def _snap_translation(self, values, bypass: bool = False):
+        """Magnetically align moved bounds to nearby centres, edges and corners."""
+        from ...kernel.occ import bounding_box
+
+        if bypass:
+            self._translation_locks.clear()
+            self._show_snap_target(None)
+            return tuple(values)
+        selected = set(self.selection.bodies)
+        if self._translation_geometry is None:
+            selected_shapes = [
+                body.shape for body in (
+                    self.window_.document.body(name) for name in selected
+                ) if body is not None and body.shape is not None
+            ]
+            if not selected_shapes:
+                return tuple(values)
+            boxes = [bounding_box(shape) for shape in selected_shapes]
+            source_low = tuple(min(box[0][i] for box in boxes) for i in range(3))
+            source_high = tuple(max(box[1][i] for box in boxes) for i in range(3))
+            source = tuple(
+                (source_low[i], (source_low[i] + source_high[i]) / 2.0, source_high[i])
+                for i in range(3)
+            )
+            targets = []
+            for name, body in self.window_.document.bodies.items():
+                if name in selected or body.shape is None or not body.visible:
+                    continue
+                low, high = bounding_box(body.shape)
+                targets.append((name, tuple(
+                    (low[i], (low[i] + high[i]) / 2.0, high[i])
+                    for i in range(3)
+                )))
+            self._translation_geometry = (
+                source, targets, self._shared_pivot(selected)
+            )
+        source, targets, pivot = self._translation_geometry
+        capture = max(
+            0.05,
+            min(1.0, self.window_.stage.viewport.mm_per_pixel(pivot) * 10.0),
+        )
+        release = capture * 1.6
+        output = list(values)
+        labels = ("near edge", "centre", "far edge")
+        active = None
+        for axis in range(3):
+            raw = float(values[axis])
+            lock = self._translation_locks.get(axis)
+            if lock is not None and abs(raw - lock[0]) <= release:
+                output[axis] = lock[0]
+                active = lock[1]
+                continue
+            self._translation_locks.pop(axis, None)
+            if abs(raw) < 1.0e-8:
+                continue
+            best = None
+            for name, target in targets:
+                for source_index, source_value in enumerate(source[axis]):
+                    for target_index, target_value in enumerate(target[axis]):
+                        delta = target_value - source_value
+                        if abs(delta) < 1.0e-7:
+                            continue
+                        distance = abs(raw - delta)
+                        if best is None or distance < best[0]:
+                            best = (
+                                distance, delta,
+                                f"{name}: {labels[source_index]} to {labels[target_index]}",
+                            )
+            if best is not None and best[0] <= capture:
+                output[axis] = best[1]
+                self._translation_locks[axis] = (best[1], best[2])
+                active = best[2]
+        self._show_snap_target(active)
+        gizmo = self.window_.stage.viewport.gizmo
+        if gizmo is not None:
+            gizmo.translation_snap = active or ""
+        return tuple(output)
+
+    def _show_snap_target(self, label) -> None:
+        viewport = self.window_.stage.viewport
+        name = str(label).split(":", 1)[0] if label else ""
+        wanted = self.window_._presentations.get(name) if name else None
+        if wanted is self._snap_presentation:
+            return
+        if self._snap_presentation is not None:
+            viewport.set_highlight(self._snap_presentation, False)
+            self._snap_presentation = None
+        if wanted is None:
+            return
+        self._snap_presentation = wanted
+        viewport.set_highlight(self._snap_presentation, True)
 
     def _on_gizmo_drag(self, dx, dy, dz, rx, ry, rz) -> None:
         from PySide6.QtGui import QCursor
@@ -275,7 +552,12 @@ class _TransformPanel(_SelectionTool):
             headline = f"{axis}  {angle:+.0f}°{suffix}" if snapped else f"{axis}  {angle:+.2f}°"
             sub = f"X {rx:.2f}°  Y {ry:.2f}°  Z {rz:.2f}°"
         else:
-            self.window_.set_hint(f"Moving {moved:.2f} mm")
+            snap = (
+                self.window_.stage.viewport.gizmo.translation_snap
+                if self.window_.stage.viewport.gizmo is not None else ""
+            )
+            suffix = f" · snapped to {snap}" if snap else " · Shift bypasses snapping"
+            self.window_.set_hint(f"Moving {moved:.2f} mm{suffix}")
             active = "/".join(
                 axis for axis, value in (("X", dx), ("Y", dy), ("Z", dz))
                 if abs(value) > 1e-4
@@ -309,7 +591,13 @@ class _TransformPanel(_SelectionTool):
         if getattr(self, "_origin_ghost", False):
             self.window_.stage.viewport.clear_ghost()
         self._origin_ghost = False
+        for name in self.selection.bodies:
+            self.window_.stage.viewport.set_transparency(
+                self.window_._presentations.get(name), 0.0
+            )
         self.window_.stage.drag_readout.finish()
+        self._translation_locks.clear()
+        self._show_snap_target(None)
 
     def teardown(self) -> None:
         self._clear_gizmo_feedback()
@@ -392,7 +680,7 @@ class RotatePanel(_TransformPanel):
 @register_tool("center")
 @register_tool("place_on_face")
 class AlignPanel(_SelectionTool):
-    """Stack / Center / Concentric, with the right one already chosen."""
+    """A role-led, anchored placement workflow with a live face frame."""
 
     title = "Align"
     confirm_label = "Done"
@@ -406,76 +694,127 @@ class AlignPanel(_SelectionTool):
     def build(self) -> None:
         from ...kernel.align import suggest
 
-        self._swapped = False
         self._preview_body = None
+        self._placement_ghost = None
         self._axis_overlays = []
-        pair = self._pair()
+        self._role_overlays = []
+        self._role_signature = None
+        self._moving_role_overlay = None
+        self._frame_overlay = None
+        self._snap_lock = None
+        self._placement_snap_candidates = []
+        self._placement_snap_presentation = None
+        self._cached_frames = None
+        self._moving = None
+        self._target = None
+        self._moving_name = None
+        self._capture_role = None
+        pair = self._selection_pair()
+        if pair is not None:
+            self._moving, self._target = pair
+            self._moving_name = self._moving.body
         self.operation = "stack"
         if pair is not None:
             moving, target = pair
             self.operation = suggest(moving.shape, target.shape)
             self.set_subtitle(
-                f"Moving {moving.body} onto {target.body}. "
-                f"Suggested: {dict(self.OPERATIONS).get(self.operation, 'Align')}."
+                "Choose the two anchors, then drag or type an exact offset."
             )
         else:
             self.set_subtitle(
-                "Select a moving body or face, then a target face on another part."
+                "1. Pick the object to move.  2. Pick a flat target face."
             )
 
-        self.add_section("Operation")
-        chooser = QWidget()
-        grid = QGridLayout(chooser)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(METRICS.space(1))
+        self.add_section("What moves where")
+        roles = QWidget()
+        role_layout = QGridLayout(roles)
+        role_layout.setContentsMargins(0, 0, 0, 0)
+        role_layout.setSpacing(METRICS.space(1))
+        self.moving_status = QLabel()
+        self.target_status = QLabel()
+        self.pick_moving = GhostButton("Pick moving object")
+        self.pick_target = GhostButton("Pick target face")
+        self.pick_moving.clicked.connect(lambda: self._start_pick("moving"))
+        self.pick_target.clicked.connect(lambda: self._start_pick("target"))
+        role_layout.addWidget(self.moving_status, 0, 0)
+        role_layout.addWidget(self.pick_moving, 0, 1)
+        role_layout.addWidget(self.target_status, 1, 0)
+        role_layout.addWidget(self.pick_target, 1, 1)
+        self.add_widget(roles)
+
         self._buttons = QButtonGroup(self)
         self._buttons.setExclusive(True)
-        for index, (key, label) in enumerate(self.OPERATIONS):
-            button = GhostButton(label)
-            button.setCheckable(True)
-            button.setChecked(key == self.operation)
-            button.clicked.connect(lambda _=False, k=key: self._choose(k))
-            self._buttons.addButton(button)
-            grid.addWidget(button, 0, index)
-        self.add_widget(chooser)
+        if not getattr(self, "fixed_operation", False):
+            self.add_section("Operation")
+            chooser = QWidget()
+            grid = QGridLayout(chooser)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(METRICS.space(1))
+            for index, (key, label) in enumerate(self.OPERATIONS):
+                button = GhostButton(label)
+                button.setCheckable(True)
+                button.setChecked(key == self.operation)
+                button.clicked.connect(lambda _=False, k=key: self._choose(k))
+                self._buttons.addButton(button)
+                grid.addWidget(button, 0, index)
+            self.add_widget(chooser)
 
-        self.add_section("Position on target face")
-        self.x_anchor = QComboBox()
-        for key, label in (("left", "From left"), ("center", "From center"),
-                           ("right", "From right")):
-            self.x_anchor.addItem(label, key)
-        self.x_anchor.setCurrentIndex(1)
-        self.x_anchor.currentIndexChanged.connect(lambda _i: self.preview())
-        self.add_widget(self.x_anchor)
-        self.add_field("x", "Local X", 0.0)
+        self.add_section("Anchor to anchor")
+        anchor_row = QWidget()
+        anchor_layout = QHBoxLayout(anchor_row)
+        anchor_layout.setContentsMargins(0, 0, 0, 0)
+        anchor_layout.setSpacing(METRICS.space(3))
+        moving_column = QVBoxLayout()
+        moving_column.addWidget(QLabel("Moving object"))
+        self.moving_anchor = AnchorGrid(self._palette)
+        moving_column.addWidget(self.moving_anchor)
+        target_column = QVBoxLayout()
+        target_column.addWidget(QLabel("Target face"))
+        self.target_anchor = AnchorGrid(self._palette)
+        target_column.addWidget(self.target_anchor)
+        anchor_layout.addLayout(moving_column)
+        anchor_layout.addLayout(target_column)
+        self.add_widget(anchor_row)
+        self.moving_anchor.changed.connect(lambda _value: self.preview())
+        self.target_anchor.changed.connect(lambda _value: self.preview())
 
-        self.y_anchor = QComboBox()
-        for key, label in (("bottom", "From bottom"), ("center", "From center"),
-                           ("top", "From top")):
-            self.y_anchor.addItem(label, key)
-        self.y_anchor.setCurrentIndex(1)
-        self.y_anchor.currentIndexChanged.connect(lambda _i: self.preview())
-        self.add_widget(self.y_anchor)
-        self.add_field("y", "Local Y", 0.0)
+        self.add_section("Signed face offsets")
+        self.direction_hint = QLabel("←  −U / Left     Right / +U  →\n↓  −V / Down       Up / +V  ↑")
+        self.direction_hint.setAlignment(Qt.AlignCenter)
+        self.direction_hint.setStyleSheet(
+            f"color:{self._palette.text_muted}; padding:5px;"
+        )
+        self.add_widget(self.direction_hint)
+        self.add_field("u", "U  (+ right)", 0.0)
+        self.add_field("v", "V  (+ up)", 0.0)
         self.add_field("offset", "Normal gap", 0.0)
         self.flip = GhostButton("Flip")
         self.flip.setCheckable(True)
         self.flip.clicked.connect(lambda: self.preview())
         self.add_widget(self.flip)
         self.swap = GhostButton("Swap moving / target")
-        self.swap.setEnabled(len(self.selection.faces()) == 2)
+        self.swap.setEnabled(pair is not None)
         self.swap.clicked.connect(self._swap_pair)
         self.add_widget(self.swap)
-        for key in ("x", "y", "offset"):
+        for key in ("u", "v", "offset"):
             self.fields[key].edited_live.connect(lambda _value: self.preview())
+        self._refresh_roles()
         self._update_position_controls()
+        from ..widgets.placement import PlacementOverlay
+
+        self._frame_overlay = PlacementOverlay(
+            self.window_.stage.viewport, self._palette, self.window_.stage
+        )
+        self.window_.stage.add_overlay(self._frame_overlay, "full")
+        self._frame_overlay.show()
+        self.window_.stage.viewport.plane_dragged.connect(self._on_plane_drag)
         self.preview()
 
-    def _pair(self):
+    def _selection_pair(self):
         """The explicit face pair, or an inferred support face for a body."""
         faces = self.selection.faces()
         if len(faces) == 2:
-            return (faces[1], faces[0]) if self._swapped else (faces[0], faces[1])
+            return faces[0], faces[1]
         planar = self.selection.planar_faces()
         bodies = self.selection.bodies
         if len(planar) != 1 or len(bodies) != 2:
@@ -501,15 +840,75 @@ class AlignPanel(_SelectionTool):
             target,
         )
 
+    def _pair(self):
+        return (self._moving, self._target) if self._moving and self._target else None
+
+    def _start_pick(self, role: str) -> None:
+        self._capture_role = role
+        self.warn(
+            "Select the object or its mounting face."
+            if role == "moving" else "Select a flat face on the receiving object."
+        )
+
+    def _capture_current(self) -> None:
+        if self._capture_role is None or not self.selection.picks:
+            return
+        pick = self.selection.picks[-1]
+        if self._capture_role == "moving":
+            self._moving_name = pick.body
+            self._moving = pick if pick.is_planar_face else None
+            self._target = None if self._target and self._target.body == pick.body else self._target
+            self._capture_role = "target"
+            self.warn("Moving object selected. Now select a flat target face.")
+        else:
+            if not pick.is_planar_face:
+                self.warn("The target must be a flat face.")
+                return
+            if pick.body == self._moving_name:
+                self.warn("Pick a target face on a different object.")
+                return
+            self._target = pick
+            if self._moving is None:
+                body = self.window_.document.body(self._moving_name)
+                if body is not None and body.shape is not None:
+                    from ...kernel.align import support_face
+                    from ...kernel.detect import analyse_plane
+                    from ..selection import Picked
+
+                    shape = support_face(body.shape, pick.shape)
+                    info = analyse_plane(shape) if shape is not None else None
+                    if info is not None:
+                        self._moving = Picked(
+                            body=self._moving_name, kind="face", shape=shape,
+                            presentation=self.window_._presentations.get(self._moving_name),
+                            info=info,
+                        )
+            self._capture_role = None
+            self.warn("")
+
+    def _refresh_roles(self) -> None:
+        self.moving_status.setText(
+            f"●  {self._moving_name or 'Moving object'}"
+        )
+        self.target_status.setText(
+            f"◆  {self._target.body if self._target else 'Target face'}"
+        )
+        self.swap.setEnabled(self._pair() is not None)
+
     def _swap_pair(self) -> None:
-        self._swapped = not self._swapped
+        if self._pair() is None:
+            return
+        self._moving, self._target = self._target, self._moving
+        self._moving_name = self._moving.body
+        self._cached_frames = None
+        self._refresh_roles()
         self.preview()
 
     def _update_position_controls(self) -> None:
         enabled = self.operation in ("stack", "center")
-        self.x_anchor.setEnabled(enabled)
-        self.y_anchor.setEnabled(enabled)
-        for key in ("x", "y"):
+        self.moving_anchor.setEnabled(enabled)
+        self.target_anchor.setEnabled(enabled)
+        for key in ("u", "v"):
             self.fields[key].setEnabled(enabled)
 
     def _choose(self, key: str) -> None:
@@ -518,10 +917,16 @@ class AlignPanel(_SelectionTool):
         self.preview()
 
     def on_selection_changed(self) -> None:
+        self._capture_current()
+        self._refresh_roles()
         self.preview()
 
     def _solve(self, moving, target):
         from ...kernel.align import solve
+
+        moving_frame = target_frame = None
+        if self.operation in ("stack", "center"):
+            moving_frame, target_frame = self._reference_frames(moving, target)
 
         return solve(
             moving.shape,
@@ -529,16 +934,137 @@ class AlignPanel(_SelectionTool):
             operation=self.operation,
             offset=self.value("offset", 0.0),
             flip=self.flip.isChecked(),
-            x=self.value("x", 0.0),
-            y=self.value("y", 0.0),
-            x_anchor=str(self.x_anchor.currentData()),
-            y_anchor=str(self.y_anchor.currentData()),
+            moving_anchor=self.moving_anchor.value(),
+            target_anchor=self.target_anchor.value(),
+            u=self.value("u", 0.0),
+            v=self.value("v", 0.0),
+            moving_frame=moving_frame,
+            target_frame=target_frame,
         )
 
-    def preview(self) -> None:
-        self._clear_preview()
+    def _reference_frames(self, moving, target):
+        from ...kernel.align import reference_frame
+
+        if self._cached_frames is None or not (
+            moving.shape.IsSame(self._cached_frames[0])
+            and target.shape.IsSame(self._cached_frames[1])
+        ):
+            self._cached_frames = (
+                moving.shape, target.shape,
+                reference_frame(moving.shape), reference_frame(target.shape),
+            )
+        return self._cached_frames[2], self._cached_frames[3]
+
+    def begin_freeform_drag(self, pos) -> bool:
+        """Claim a drag that starts on the selected reference face."""
+        pair = self._pair()
+        if pair is None or self.operation not in ("stack", "center"):
+            return False
+        _moving, target = pair
+        viewport = self.window_.stage.viewport
+        under_cursor = viewport.detected_shape(pos)
+        if under_cursor is None or not under_cursor.IsSame(target.shape):
+            return False
+        from ...kernel.align import ANCHOR_PRESETS, anchor_coordinates
+
+        frame = self._reference_frames(pair[0], target)[1]
+        self._snap_lock = None
+        origin_u, origin_v = anchor_coordinates(frame, self.target_anchor.value())
+        self._placement_snap_candidates = [
+            (key.replace("_", " ").title(), u - origin_u, v - origin_v, None)
+            for key in ANCHOR_PRESETS
+            for u, v in (anchor_coordinates(frame, key),)
+        ]
+        # Nearby-object bbox extrema cover centres, edge midpoints and corners
+        # without enumerating imported topology on the UI thread.
+        from ...kernel.occ import bounding_box
+
+        for name, body in self.window_.document.bodies.items():
+            if name in (target.body, self._moving_name) or body.shape is None or not body.visible:
+                continue
+            low, high = bounding_box(body.shape)
+            coordinates = tuple(
+                (low[i], (low[i] + high[i]) / 2.0, high[i]) for i in range(3)
+            )
+            seen = set()
+            for x in coordinates[0]:
+                for y in coordinates[1]:
+                    for z in coordinates[2]:
+                        relative = (x - frame.center[0], y - frame.center[1], z - frame.center[2])
+                        candidate_u = sum(relative[i] * frame.x_axis[i] for i in range(3)) - origin_u
+                        candidate_v = sum(relative[i] * frame.y_axis[i] for i in range(3)) - origin_v
+                        key = (round(candidate_u, 6), round(candidate_v, 6))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        self._placement_snap_candidates.append(
+                            (f"Aligned with {name}", candidate_u, candidate_v, name)
+                        )
+        return viewport.begin_plane_drag(
+            frame.center, frame.normal, frame.x_axis, frame.y_axis,
+            self.value("u"), self.value("v"),
+        )
+
+    def _on_plane_drag(self, value: dict) -> None:
         pair = self._pair()
         if pair is None:
+            return
+        from ...kernel.align import anchor_coordinates
+
+        frame = self._reference_frames(*pair)[1]
+        raw_u, raw_v = float(value["u"]), float(value["v"])
+        modifiers = value.get("modifiers", Qt.NoModifier)
+        snapped = ""
+        if not (modifiers & Qt.ShiftModifier):
+            origin_u, origin_v = anchor_coordinates(frame, self.target_anchor.value())
+            candidates = self._placement_snap_candidates
+            by_key = {item[0]: item for item in candidates}
+            allowed = candidates
+            if self._snap_lock in by_key:
+                allowed = [by_key[self._snap_lock]]
+            best = None
+            cursor = value.get("pos")
+            target_name = None
+            for key, u, v, body_name in allowed:
+                projected = self.window_.stage.viewport.project(frame.point(origin_u + u, origin_v + v))
+                if projected is None or cursor is None:
+                    continue
+                distance = math.hypot(projected[0] - cursor.x(), projected[1] - cursor.y())
+                if best is None or distance < best[0]:
+                    best = (distance, key, u, v, body_name)
+            limit = 16.0 if self._snap_lock else 10.0
+            if best is not None and best[0] <= limit:
+                _distance, self._snap_lock, raw_u, raw_v, target_name = best
+                snapped = self._snap_lock
+                self._show_placement_snap(target_name)
+            else:
+                self._snap_lock = None
+                self._show_placement_snap(None)
+        else:
+            self._snap_lock = None
+            self._show_placement_snap(None)
+        self.fields["u"].set_value(raw_u)
+        self.fields["v"].set_value(raw_v)
+        self.preview()
+        if snapped:
+            self.warn(f"Snapped to {snapped}. Hold Shift for free placement.")
+
+    def _show_placement_snap(self, body_name) -> None:
+        viewport = self.window_.stage.viewport
+        wanted = self.window_._presentations.get(body_name) if body_name else None
+        if wanted is self._placement_snap_presentation:
+            return
+        if self._placement_snap_presentation is not None:
+            viewport.set_highlight(self._placement_snap_presentation, False)
+            self._placement_snap_presentation = None
+        if wanted is not None:
+            self._placement_snap_presentation = wanted
+            viewport.set_highlight(self._placement_snap_presentation, True)
+
+    def preview(self) -> None:
+        pair = self._pair()
+        if pair is None:
+            self._clear_preview()
             self.warn("Select a moving body or face and a flat target face.")
             return
         moving, target = pair
@@ -552,52 +1078,70 @@ class AlignPanel(_SelectionTool):
 
             self.warn(str(translate(exc, "align")))
             return
-        from ...kernel.occ import transformed
-
         viewport = self.window_.stage.viewport
-        viewport.show_ghost(
-            transformed(body.shape, result.transform),
-            self.window_.palette_.accent,
-            transparency=0.14,
-        )
+        # Keep one AIS preview and move its presentation. Re-tessellating the
+        # entire body for every typed character was the main source of stutter.
+        if (
+            self._preview_body != moving.body
+            or getattr(viewport, "_ghost", None) is not self._placement_ghost
+        ):
+            self._placement_ghost = viewport.show_ghost(
+                body.shape, self.window_.palette_.accent, transparency=0.14,
+            )
+        viewport.transform_ghost(result.transform)
         self._preview_body = moving.body
         viewport.set_transparency(
             self.window_._presentations.get(moving.body), 0.78
         )
+        signature = (moving.body, target.body)
+        if signature != self._role_signature:
+            for presentation in self._role_overlays:
+                viewport.erase(presentation)
+            self._role_overlays = []
+            target_overlay = viewport.show_overlay_shape(
+                target.shape, self.window_.palette_.grid_axis_y, transparency=0.72
+            )
+            self._moving_role_overlay = viewport.show_overlay_shape(
+                moving.shape, self.window_.palette_.accent, transparency=0.45
+            )
+            self._role_overlays = [
+                presentation for presentation in (
+                    target_overlay, self._moving_role_overlay
+                ) if presentation is not None
+            ]
+            self._role_signature = signature
+        if self._moving_role_overlay is not None:
+            self._moving_role_overlay.SetLocalTransformation(result.transform)
+            if viewport.context is not None:
+                viewport.context.Redisplay(self._moving_role_overlay, False)
         self._show_face_frame(target.shape)
         self.warn("")
 
     def _show_face_frame(self, face) -> None:
         if self.operation not in ("stack", "center"):
             return
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-        from OCP.gp import gp_Pnt
+        from ...kernel.align import anchor_point, reference_frame
 
-        from ...kernel.align import _anchored, planar_frame
-
-        frame = planar_frame(face)
-        x = _anchored(
-            frame.x_bounds, str(self.x_anchor.currentData()), self.value("x", 0.0)
+        pair = self._pair()
+        frame = (
+            self._reference_frames(*pair)[1]
+            if pair is not None and pair[1].shape.IsSame(face)
+            else reference_frame(face)
         )
-        y = _anchored(
-            frame.y_bounds, str(self.y_anchor.currentData()), self.value("y", 0.0)
+        anchor = anchor_point(
+            frame, self.target_anchor.value(), normal=self.value("offset", 0.0)
         )
-        origin = frame.point(x, y, self.value("offset", 0.0))
-        span = min(
-            abs(frame.x_bounds[1] - frame.x_bounds[0]),
-            abs(frame.y_bounds[1] - frame.y_bounds[0]),
+        origin = tuple(
+            anchor[i]
+            + frame.x_axis[i] * self.value("u", 0.0)
+            + frame.y_axis[i] * self.value("v", 0.0)
+            for i in range(3)
         )
-        length = max(5.0, min(20.0, span * 0.28))
-        viewport = self.window_.stage.viewport
-        for axis, color in (
-            (frame.x_axis, self.window_.palette_.grid_axis_x),
-            (frame.y_axis, self.window_.palette_.grid_axis_y),
-        ):
-            end = tuple(origin[i] + axis[i] * length for i in range(3))
-            edge = BRepBuilderAPI_MakeEdge(gp_Pnt(*origin), gp_Pnt(*end)).Edge()
-            shown = viewport.show_overlay_shape(edge, color, transparency=0.0)
-            if shown is not None:
-                self._axis_overlays.append(shown)
+        if self._frame_overlay is not None:
+            self._frame_overlay.set_placement(
+                frame, origin, self.value("u"), self.value("v"),
+                self._snap_lock or "",
+            )
 
     def _clear_preview(self) -> None:
         viewport = self.window_.stage.viewport
@@ -607,12 +1151,27 @@ class AlignPanel(_SelectionTool):
                 self.window_._presentations.get(self._preview_body), 0.0
             )
         self._preview_body = None
+        self._placement_ghost = None
         for presentation in self._axis_overlays:
             viewport.erase(presentation)
         self._axis_overlays = []
+        for presentation in self._role_overlays:
+            viewport.erase(presentation)
+        self._role_overlays = []
+        self._role_signature = None
+        self._moving_role_overlay = None
+        self._show_placement_snap(None)
 
     def teardown(self) -> None:
         self._clear_preview()
+        try:
+            self.window_.stage.viewport.plane_dragged.disconnect(self._on_plane_drag)
+        except (RuntimeError, TypeError):
+            pass
+        if self._frame_overlay is not None:
+            self.window_.stage.remove_overlay(self._frame_overlay)
+            self._frame_overlay.deleteLater()
+            self._frame_overlay = None
 
     def commit(self) -> None:
         pair = self._pair()
@@ -637,15 +1196,171 @@ class AlignPanel(_SelectionTool):
                     "operation": self.operation,
                     "offset": self.expression("offset", "0"),
                     "flip": self.flip.isChecked(),
-                    "x": self.expression("x", "0"),
-                    "y": self.expression("y", "0"),
-                    "x_anchor": str(self.x_anchor.currentData()),
-                    "y_anchor": str(self.y_anchor.currentData()),
+                    "u": self.expression("u", "0"),
+                    "v": self.expression("v", "0"),
+                    "moving_anchor": self.moving_anchor.value(),
+                    "target_anchor": self.target_anchor.value(),
                 },
                 outputs=[moving.body],
             )
         )
         self.window_.cancel_tool()
+
+
+@register_tool("section_replace")
+class SectionReplacePanel(AlignPanel):
+    """Align an insert, clear its silhouette, and merge it into the target."""
+
+    title = "Section Replace"
+    confirm_label = "Replace section"
+    width = 332
+    fixed_operation = True
+
+    def build(self) -> None:
+        self._section_ready = False
+        self._section_overlays = []
+        self._preview_controller = None
+        self._valid_preview_signature = None
+        self._requested_preview_signature = None
+        super().build()
+        self.operation = "stack"
+        self.flip.hide()
+        if self.fields["offset"].parentWidget() is not None:
+            self.fields["offset"].parentWidget().hide()
+        self.add_section("Integration")
+        self.add_field("boundary", "Join boundary", 0.5)
+        self.add_field("setback", "Setback depth", 0.0)
+        for key in ("boundary", "setback"):
+            self.fields[key].edited_live.connect(lambda _value: self.preview())
+        self.set_subtitle(
+            "The outer silhouette clears the target through; vent openings stay open. "
+            "Drag on the target face, then refine U/V numerically. Positive setback "
+            "sinks the insert; negative values let it protrude."
+        )
+        self._preview_controller = FeaturePreviewController(
+            self, self._section_previewed, delay_ms=70
+        )
+        self._section_ready = True
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, self.preview)
+        self.relayout()
+
+    def _feature(self):
+        pair = self._pair()
+        if pair is None:
+            return None
+        replacement, target = pair
+        document = self.window_.document
+        return SectionReplaceFeature(
+            inputs={
+                "target": BodyRef(target.body),
+                "target_face": target.reference(document),
+                "replacement": BodyRef(replacement.body),
+                "replacement_face": replacement.reference(document),
+                "moving_anchor": self.moving_anchor.value(),
+                "target_anchor": self.target_anchor.value(),
+                "u": self.expression("u", "0"),
+                "v": self.expression("v", "0"),
+                "boundary": self.expression("boundary", "0.5"),
+                "setback": self.expression("setback", "0"),
+            },
+            outputs=[target.body],
+        )
+
+    def preview(self) -> None:
+        feature = self._feature() if getattr(self, "_section_ready", False) else None
+        state = feature.to_dict() if feature else None
+        pair = self._pair()
+        signature = None
+        if pair is not None:
+            replacement, target = pair
+            signature = (
+                replacement.body, target.body,
+                id(replacement.shape), id(target.shape),
+                self.moving_anchor.value(), self.target_anchor.value(),
+                self.value("u"), self.value("v"),
+                self.value("boundary", 0.5), self.value("setback"),
+            )
+        # A ValueField commits once more when clicking Confirm takes focus.
+        # Re-requesting an identical Boolean used to disable the button between
+        # mouse-down and mouse-up, so an entirely normal click was swallowed.
+        # Keep the already validated preview live when its inputs are unchanged.
+        if signature is not None and signature == self._valid_preview_signature:
+            self.confirm.setEnabled(True)
+            return
+        # Always provide the instant alignment preview while the process works
+        # on the boolean; the result replaces it when ready.
+        AlignPanel.preview(self)
+        if not getattr(self, "_section_ready", False):
+            return
+        self.confirm.setEnabled(False)
+        self._requested_preview_signature = signature
+        self._preview_controller.request(state)
+
+    def _section_previewed(self, message: dict) -> None:
+        from ...core.geometry_service import deserialise_shape
+
+        viewport = self.window_.stage.viewport
+        for presentation in self._section_overlays:
+            viewport.erase(presentation)
+        self._section_overlays = []
+        error = message.get("error")
+        blob = message.get("shape")
+        if error or not blob:
+            self._valid_preview_signature = None
+            self.confirm.setEnabled(False)
+            if error:
+                self.warn(error)
+            return
+        result = deserialise_shape(blob)
+        viewport.show_ghost(result, self.window_.palette_.accent, transparency=0.24)
+        pair = self._pair()
+        if pair is not None:
+            viewport.set_transparency(
+                self.window_._presentations.get(pair[1].body), 0.76
+            )
+        colors = {
+            "removed": self.window_.palette_.danger,
+            "replacement": self.window_.palette_.success,
+        }
+        for role, color in colors.items():
+            part_blob = (message.get("parts") or {}).get(role)
+            if not part_blob:
+                continue
+            shown = viewport.show_overlay_shape(
+                deserialise_shape(part_blob), color,
+                transparency=0.30 if role == "removed" else 0.56,
+            )
+            if shown is not None:
+                self._section_overlays.append(shown)
+        self._valid_preview_signature = self._requested_preview_signature
+        self.confirm.setEnabled(True)
+        self.warn("Red is removed; green is the integrated replacement.")
+
+    def commit(self) -> None:
+        feature = self._feature()
+        if not _need(
+            self.window_, feature is not None,
+            "Pick the replacement object and a flat target face.",
+        ):
+            return
+        self.window_.add_feature(feature)
+        self.window_.cancel_tool()
+
+    def teardown(self) -> None:
+        if self._preview_controller is not None:
+            self._preview_controller.close()
+        viewport = self.window_.stage.viewport
+        for presentation in self._section_overlays:
+            viewport.erase(presentation)
+        pair = self._pair()
+        if pair is not None:
+            viewport.set_transparency(
+                self.window_._presentations.get(pair[1].body), 0.0
+            )
+        self._section_overlays = []
+        super().teardown()
 
 
 # ----------------------------------------------------------------------

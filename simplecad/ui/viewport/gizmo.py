@@ -73,6 +73,8 @@ class TransformGizmo(QObject):
         self._pivot = (0.0, 0.0, 0.0)
         self._rotation_state = RotationSnapState()
         self._rotation_snapped = False
+        self.translation_filter = None
+        self.translation_snap = ""
 
     # -- lifecycle -------------------------------------------------------
     def attach(
@@ -164,6 +166,8 @@ class TransformGizmo(QObject):
         self._last = None
         self._rotation_state = RotationSnapState()
         self._rotation_snapped = False
+        self.translation_filter = None
+        self.translation_snap = ""
         self.viewport.refresh()
 
     @property
@@ -230,15 +234,56 @@ class TransformGizmo(QObject):
             values[axis_index] = angle
             self._last = (0.0, 0.0, 0.0, *values)
         else:
-            transform = self._manipulator.Transform(
-                device_x, device_y, self.viewport.view
-            )
-            if transform is not None:
-                self._last = _decompose(
-                    transform,
-                    allow_translation=self._allow_translation,
-                    allow_rotation=self._allow_rotation,
+            if self.translation_filter is not None and self._allow_translation:
+                from OCP.AIS import AIS_MM_Translation, AIS_MM_TranslationPlane
+                from OCP.gp import gp_Trsf, gp_Vec
+
+                raw = gp_Trsf()
+                if not self._manipulator.ObjectTransformation(
+                    device_x, device_y, self.viewport.view, raw
+                ):
+                    return
+                values = _decompose(
+                    raw, allow_translation=True, allow_rotation=False
                 )
+                axis_index = int(self._manipulator.ActiveAxisIndex())
+                mode = self._manipulator.ActiveMode()
+                translation = list(values[:3])
+                if int(mode) == int(AIS_MM_Translation) and axis_index in (0, 1, 2):
+                    translation = [
+                        value if index == axis_index else 0.0
+                        for index, value in enumerate(translation)
+                    ]
+                elif int(mode) == int(AIS_MM_TranslationPlane) and axis_index in (0, 1, 2):
+                    # The plane handle's axis is its normal, so that component
+                    # is numerical drift rather than an intended move.
+                    translation[axis_index] = 0.0
+                # Some OCCT builds report an axis drag as a dominant component
+                # plus tiny numerical leakage even when ActiveMode is exposed
+                # inconsistently. Do not turn that leakage into authored Y/Z
+                # expressions on release.
+                dominant = max(range(3), key=lambda index: abs(translation[index]))
+                magnitude = abs(translation[dominant])
+                if magnitude > 1.0e-8:
+                    for index in range(3):
+                        if index != dominant and abs(translation[index]) < magnitude * .002:
+                            translation[index] = 0.0
+                bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
+                dx, dy, dz = self.translation_filter(tuple(translation), bypass)
+                transform = gp_Trsf()
+                transform.SetTranslation(gp_Vec(dx, dy, dz))
+                self._manipulator.Transform(transform)
+                self._last = (dx, dy, dz, 0.0, 0.0, 0.0)
+            else:
+                transform = self._manipulator.Transform(
+                    device_x, device_y, self.viewport.view
+                )
+                if transform is not None:
+                    self._last = _decompose(
+                        transform,
+                        allow_translation=self._allow_translation,
+                        allow_rotation=self._allow_rotation,
+                    )
         self.viewport.refresh()
         if self._last is not None:
             # Remember it: on release the accumulated transform has to come from

@@ -12,7 +12,7 @@ import math
 import pytest
 
 from simplecad.core.naming import sub_shapes
-from simplecad.kernel.align import planar_frame, solve, suggest, support_face
+from simplecad.kernel.align import planar_frame, reference_frame, solve, suggest, support_face
 from simplecad.kernel.detect import analyse_cylinder, analyse_plane
 from simplecad.kernel.occ import bounding_box, transformed, volume
 
@@ -135,6 +135,43 @@ def test_stack_offset_leaves_a_gap():
     )
     low, _high = bounding_box(transformed(moving, result.transform))
     assert low[2] == pytest.approx(14.0, abs=1e-6)
+
+
+def test_signed_reference_offsets_match_left_right_up_down_labels():
+    moving = box(10, 10, 5, at=(100, 100, 30))
+    target = box(40, 40, 4)
+    moving_face = face_with_normal(moving, (0, 0, -1))
+    target_face = face_with_normal(target, (0, 0, 1), at_height=4)
+    frame = reference_frame(target_face)
+
+    for u, v in ((-21, 0), (21, 0), (0, -21), (0, 21)):
+        result = solve(
+            moving_face, target_face, operation="stack",
+            moving_anchor="center", target_anchor="center", u=u, v=v,
+        )
+        placed = transformed(moving, result.transform)
+        centre = tuple(sum(pair) / 2 for pair in zip(*bounding_box(placed)))
+        relative = tuple(centre[i] - frame.center[i] for i in range(3))
+        assert sum(relative[i] * frame.x_axis[i] for i in range(3)) == pytest.approx(u)
+        assert sum(relative[i] * frame.y_axis[i] for i in range(3)) == pytest.approx(v)
+
+
+def test_signed_reference_offsets_stay_correct_on_a_rotated_face():
+    moving = box(8, 8, 3, at=(100, 100, 100))
+    target = box(4, 40, 40)
+    moving_face = face_with_normal(moving, (0, 0, -1))
+    target_face = face_with_normal(target, (1, 0, 0))
+    frame = reference_frame(target_face)
+    placed = transformed(moving, solve(
+        moving_face, target_face,
+        moving_anchor="center", target_anchor="center", u=-7, v=9,
+    ).transform)
+    centre = tuple(sum(pair) / 2 for pair in zip(*bounding_box(placed)))
+    # The moving box centre is also its selected-face centre plus half its
+    # thickness along the target normal, so in-plane coordinates are exact.
+    relative = tuple(centre[i] - frame.center[i] for i in range(3))
+    assert sum(relative[i] * frame.x_axis[i] for i in range(3)) == pytest.approx(-7)
+    assert sum(relative[i] * frame.y_axis[i] for i in range(3)) == pytest.approx(9)
 
 
 def test_stacked_parts_do_not_overlap():

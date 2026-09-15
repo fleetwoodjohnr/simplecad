@@ -1,10 +1,11 @@
-"""The number that follows the cursor while a face is being dragged.
+"""The live dimension shown while a face is dragged, nudged, or typed.
 
 Dragging a face used to report only a delta, in the hint at the far corner of
 the window -- a long way from where the user is looking, and the wrong quantity.
 What you are steering toward when you push a wall in is the size the part ends
-up, not how far you have moved so far. So this shows both, at the cursor:
-the resulting extent large, the delta underneath.
+up, not how far you have moved so far. So this shows both: the resulting extent
+large, the delta underneath. Mouse drags follow the cursor; keyboard and typed
+changes stay beside the selected face.
 
 A Qt widget rather than an OCCT annotation, for the same reason the dimension
 labels are: this OCP build does not wrap ``PrsDim``.
@@ -89,7 +90,22 @@ class DragReadout(QWidget):
         self.delta_label.setText(sub)
         self.delta_label.setVisible(bool(sub))
         self.adjustSize()
-        self.move(at + OFFSET)
+        position = at + OFFSET
+        parent = self.parentWidget()
+        if parent is not None:
+            # Keyboard-driven tools anchor this label to geometry rather than
+            # to a moving pointer. Keep that projected point useful even when
+            # the face is close to an edge of the stage.
+            padding = METRICS.space(2)
+            position.setX(max(
+                padding,
+                min(position.x(), parent.width() - self.width() - padding),
+            ))
+            position.setY(max(
+                padding,
+                min(position.y(), parent.height() - self.height() - padding),
+            ))
+        self.move(position)
         # Raised on the way in only. This runs on every motion event of a drag,
         # and ``raise_`` over the GL viewport re-composites it and re-blurs the
         # drop shadow -- per frame, for a widget that is already on top.
@@ -98,17 +114,28 @@ class DragReadout(QWidget):
             self.raise_()
 
     def show_drag(
-        self, at: QPoint, distance: float, resulting: float | None, label: str
+        self,
+        at: QPoint,
+        distance: float,
+        resulting: float | None,
+        label: str,
+        material_change: float | None = None,
     ) -> None:
-        """Update and place the readout. *resulting* may be None if unknown."""
-        cutting = distance < 0
+        """Update and place the readout. *resulting* may be None if unknown.
+
+        ``distance`` is the signed travel of the surface, which is the useful
+        delta to display. ``material_change`` may have the opposite sign for
+        the inside of a hole: moving that surface outward makes the hole larger
+        and therefore removes material.
+        """
+        cutting = (distance if material_change is None else material_change) < 0
         tone = self._palette.danger if cutting else self._palette.accent
         if resulting is None:
             headline = f"{abs(distance):.2f} mm"
             sub = "Cutting" if cutting else "Adding"
         else:
             headline = f"{label} {resulting:.2f} mm"
-            sign = "−" if cutting else "+"
+            sign = "−" if distance < 0 else "+"
             sub = f"{sign}{abs(distance):.2f} mm"
         self.show_text(at, headline, sub, tone)
 

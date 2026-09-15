@@ -7,15 +7,17 @@ where they are relevant. No dock widgets, no toolbar rows, no workbench picker.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import math
 import os
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMainWindow, QSizePolicy, QVBoxLayout,
-    QWidget,
+    QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ..core.document import BodyRef, Document
@@ -32,25 +34,71 @@ from .panels.sketch_bar import SketchBar
 from .panels.context_bar import ContextBar
 from .panels.model_browser import ModelBrowser
 from .selection import SelectionModel, available_actions
-from .theme import METRICS, Mode, Palette, resolve, stylesheet
+from .theme import DARK, METRICS, Mode, Palette, resolve, stylesheet
 from .viewport.occt_view import OcctViewport, SelectionMode, StandardView
 from .widgets.controls import FloatingCard, Hint, IconButton, ToolTile
 
-#: The tool rail. Kept short on purpose -- these are the things a user reaches
-#: for constantly; everything else lives in search (S) and context menus.
-TOOL_RAIL = (
-    ("box", "Shape", "shapes"),
-    ("sketch", "Sketch", "sketch"),
-    ("extrude", "Pull", "pushpull"),
-    ("move", "Move", "move"),
-    ("stack", "Align", "align"),
-    ("hole", "Hole", "hole"),
-    ("thread", "Thread", "thread"),
-    ("fillet", "Fillet", "fillet"),
-    ("shell", "Hollow", "shell"),
-    ("measure", "Measure", "measure"),
-    ("print", "Print", "print"),
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """One tool entry shared by the pinned rail and grouped flyouts."""
+
+    icon: str
+    label: str
+    key: str
+
+
+@dataclass(frozen=True)
+class ToolGroup:
+    """A named family of less-frequent tools."""
+
+    icon: str
+    label: str
+    key: str
+    tools: tuple[ToolSpec, ...]
+
+
+PINNED_TOOLS = (
+    ToolSpec("box", "Shape", "shapes"),
+    ToolSpec("sketch", "Sketch", "sketch"),
+    ToolSpec("extrude", "Pull", "pushpull"),
+    ToolSpec("move", "Move", "move"),
+    ToolSpec("measure", "Measure", "measure"),
 )
+
+TOOL_GROUPS = (
+    ToolGroup("create", "Create", "create", (
+        ToolSpec("text", "Text", "text"),
+        ToolSpec("thread", "Threaded pair", "threaded_connection"),
+        ToolSpec("clip", "Clip joint", "clip_joint"),
+        ToolSpec("thread", "Matching part", "matching_part"),
+    )),
+    ToolGroup("modify", "Modify", "modify", (
+        ToolSpec("align", "Align", "align"),
+        ToolSpec("pattern", "Arrange", "arrange"),
+        ToolSpec("rotate", "Rotate", "rotate"),
+        ToolSpec("scale", "Scale", "scale"),
+        ToolSpec("hole", "Hole", "hole"),
+        ToolSpec("thread", "Thread", "thread"),
+        ToolSpec("fillet", "Fillet", "fillet"),
+        ToolSpec("chamfer", "Chamfer", "chamfer"),
+        ToolSpec("shell", "Hollow", "shell"),
+        ToolSpec("vent", "Vent", "vent"),
+        ToolSpec("split", "Split", "split"),
+        ToolSpec("subtract", "Subtract", "subtract"),
+        ToolSpec("union", "Join", "join"),
+        ToolSpec("intersect", "Intersect", "intersect"),
+        ToolSpec("cut", "Section replace", "section_replace"),
+    )),
+    ToolGroup("inspect", "Inspect", "inspect", (
+        ToolSpec("measure", "Point to point", "measure_points"),
+        ToolSpec("settings", "Fit & clearance", "fit"),
+        ToolSpec("print", "3D Print", "print"),
+    )),
+)
+
+# Backwards-compatible flattened form used by the completeness smoke check.
+TOOL_RAIL = tuple((tool.icon, tool.label, tool.key) for tool in PINNED_TOOLS)
 
 MODEL_CLIPBOARD_MIME = "application/x-simplecad-model-fragment+json"
 
@@ -101,7 +149,7 @@ def _extent_label(normal) -> str:
 
 
 class TopBar(QWidget):
-    """Slim application bar: identity on the left, actions on the right."""
+    """Studio header: project identity, command search and grouped actions."""
 
     theme_toggled = Signal()
     search_requested = Signal()
@@ -111,23 +159,45 @@ class TopBar(QWidget):
         super().__init__(parent)
         self._palette = palette
         self.setObjectName("TopBar")
-        self.setFixedHeight(52)
+        self.setFixedHeight(56)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(METRICS.space(4), 0, METRICS.space(3), 0)
-        layout.setSpacing(METRICS.space(2))
+        layout.setContentsMargins(14, 0, 12, 0)
+        layout.setSpacing(8)
 
+        self.brand_icon = QLabel()
+        self.brand_icon.setObjectName("BrandIcon")
+        self.brand_icon.setFixedSize(28, 28)
+        app_icon = QApplication.instance().windowIcon()
+        if app_icon.isNull():
+            icon_path = Path(__file__).resolve().parents[2] / "assets" / "simplecad.svg"
+            if icon_path.exists():
+                app_icon = QIcon(str(icon_path))
+        if not app_icon.isNull():
+            self.brand_icon.setPixmap(app_icon.pixmap(28, 28))
         self.wordmark = QLabel("SimpleCAD")
         self.title = QLabel("Untitled")
+        self.title.setMaximumWidth(220)
+        layout.addWidget(self.brand_icon)
         layout.addWidget(self.wordmark)
-        layout.addSpacing(METRICS.space(3))
+        layout.addSpacing(4)
         layout.addWidget(self.title)
         layout.addStretch(1)
 
-        self.buttons: dict[str, IconButton] = {}
+        self.search_control = QPushButton("Search tools and commands", self)
+        self.search_control.setObjectName("CommandSearchButton")
+        self.search_control.setCursor(Qt.PointingHandCursor)
+        self.search_control.setFixedSize(224, 36)
+        self.search_control.clicked.connect(
+            lambda _=False: self.action_triggered.emit("search")
+        )
+        layout.addWidget(self.search_control)
+        layout.addSpacing(4)
+
+        self.buttons: dict[str, QWidget] = {"search": self.search_control}
+        self._dividers: list[QFrame] = []
         for name, tooltip, action in (
             ("folder", "Open  (Ctrl+O)", "open"),
             ("import", "Import a 3D file  (Ctrl+I)", "import"),
-            ("search", "Search commands  (S)", "search"),
             ("undo", "Undo  (Ctrl+Z)", "undo"),
             ("redo", "Redo  (Ctrl+Shift+Z)", "redo"),
             ("save", "Save  (Ctrl+S)", "save"),
@@ -137,65 +207,249 @@ class TopBar(QWidget):
             button.clicked.connect(lambda _=False, a=action: self.action_triggered.emit(a))
             layout.addWidget(button)
             self.buttons[action] = button
+            if action in ("import", "redo", "export"):
+                divider = QFrame(self)
+                divider.setFrameShape(QFrame.VLine)
+                divider.setFixedSize(1, 22)
+                layout.addWidget(divider)
+                self._dividers.append(divider)
 
         self.theme_button = IconButton("moon", palette, "Light / dark")
         self.theme_button.clicked.connect(self.theme_toggled.emit)
         layout.addWidget(self.theme_button)
         self.apply_palette(palette)
+        self._update_responsive()
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
         self.wordmark.setStyleSheet(
-            f"color:{palette.text}; font-size:15px; font-weight:650;"
-            "letter-spacing:0.2px;"
+            f"color:{palette.text}; font-size:14px; font-weight:700;"
+            "letter-spacing:0.35px;"
         )
-        self.title.setStyleSheet(f"color:{palette.text_faint}; font-size:13px;")
+        self.title.setStyleSheet(f"color:{palette.text_muted}; font-size:12px;")
+        self.brand_icon.setStyleSheet("background:transparent; border:none;")
+        self.search_control.setIcon(icon("search", palette.text_muted, 18))
         self.setStyleSheet(
             f"QWidget#TopBar {{ background:{palette.surface}; "
             f"border-bottom:1px solid {palette.border}; }}"
             f"QWidget#TopBar QLabel {{ background:transparent; border:none; }}"
         )
-        for button in list(self.buttons.values()) + [self.theme_button]:
+        for divider in self._dividers:
+            divider.setStyleSheet(f"background:{palette.border}; border:none;")
+        for button in [
+            value for key, value in self.buttons.items() if key != "search"
+        ] + [self.theme_button]:
             button.apply_palette(palette)
+        self._update_responsive()
+
+    def _update_responsive(self) -> None:
+        compact = self.width() < 980
+        self.wordmark.setVisible(not compact)
+        self.search_control.setText("" if compact else "Search tools and commands")
+        self.search_control.setToolTip(
+            "Search tools & commands  (S)" if compact else "Press S to search"
+        )
+        self.search_control.setFixedWidth(36 if compact else 224)
+        palette = self._palette
+        alignment = "center" if compact else "left"
+        padding = "0" if compact else "0 12px"
+        self.search_control.setStyleSheet(
+            f"QPushButton#CommandSearchButton {{ background:{palette.surface_sunken};"
+            f"border:1px solid {palette.border}; border-radius:{METRICS.radius_sm}px;"
+            f"color:{palette.text_muted}; text-align:{alignment}; padding:{padding}; }}"
+            f"QPushButton#CommandSearchButton:hover {{ background:{palette.surface_raised};"
+            f"border-color:{palette.border_strong}; color:{palette.text}; }}"
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self._update_responsive()
+        super().resizeEvent(event)
 
 
 class ToolRail(QWidget):
-    """The narrow strip of primary tools down the left edge."""
+    """Pinned tools plus three compact, discoverable tool families."""
 
     tool_selected = Signal(str)
+    group_requested = Signal(str)
 
     def __init__(self, palette: Palette, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ToolRail")
-        self.setFixedWidth(76)
+        self.setFixedWidth(72)
         self._tiles: dict[str, ToolTile] = {}
+        self._group_tiles: dict[str, ToolTile] = {}
+        self._active_key: str | None = None
+        self._open_group: str | None = None
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(METRICS.space(1.5), METRICS.space(2), METRICS.space(1.5), METRICS.space(2))
+        layout.setContentsMargins(7, METRICS.space(3), 7, METRICS.space(3))
         layout.setSpacing(METRICS.space(1))
-        for icon_name, label, key in TOOL_RAIL:
-            tile = ToolTile(icon_name, label, palette)
-            tile.clicked.connect(lambda _=False, k=key: self._pick(k))
-            layout.addWidget(tile)
-            self._tiles[key] = tile
+        for spec in PINNED_TOOLS:
+            tile = ToolTile(spec.icon, spec.label, palette)
+            tile.clicked.connect(lambda _=False, k=spec.key: self._pick(k))
+            layout.addWidget(tile, 0, Qt.AlignHCenter)
+            self._tiles[spec.key] = tile
+
         layout.addStretch(1)
+        divider = QFrame(self)
+        divider.setObjectName("RailDivider")
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
+        self._divider = divider
+
+        for group in TOOL_GROUPS:
+            tile = ToolTile(group.icon, group.label, palette)
+            tile.setToolTip(f"Open {group.label} tools")
+            tile.clicked.connect(lambda _=False, k=group.key: self._open(k))
+            layout.addWidget(tile, 0, Qt.AlignHCenter)
+            self._group_tiles[group.key] = tile
         self.apply_palette(palette)
 
     def _pick(self, key: str) -> None:
-        for name, tile in self._tiles.items():
-            tile.setChecked(name == key)
+        self.set_active(key)
         self.tool_selected.emit(key)
 
+    def _open(self, key: str) -> None:
+        self.group_requested.emit(key)
+
+    def group_button(self, key: str) -> ToolTile | None:
+        return self._group_tiles.get(key)
+
+    def set_group_open(self, key: str | None) -> None:
+        self._open_group = key
+        self._refresh_selection()
+
+    def set_active(self, key: str | None) -> None:
+        self._active_key = key
+        self._refresh_selection()
+
+    def _refresh_selection(self) -> None:
+        for name, tile in self._tiles.items():
+            tile.setChecked(name == self._active_key)
+            tile.apply_palette(self._palette)
+        for group in TOOL_GROUPS:
+            owns_active = any(tool.key == self._active_key for tool in group.tools)
+            tile = self._group_tiles[group.key]
+            tile.setChecked(group.key == self._open_group or owns_active)
+            tile.apply_palette(self._palette)
+
     def clear_selection(self) -> None:
-        for tile in self._tiles.values():
-            tile.setChecked(False)
+        self._active_key = None
+        self._open_group = None
+        self._refresh_selection()
 
     def apply_palette(self, palette: Palette) -> None:
+        self._palette = palette
         self.setStyleSheet(
             f"QWidget#ToolRail {{ background:{palette.surface}; "
             f"border-right:1px solid {palette.border}; }}"
         )
-        for tile in self._tiles.values():
+        self._divider.setStyleSheet(
+            f"background:{palette.border}; border:none; margin:0 8px;"
+        )
+        for tile in list(self._tiles.values()) + list(self._group_tiles.values()):
             tile.apply_palette(palette)
+
+
+class ToolFlyout(FloatingCard):
+    """A keyboard-friendly child overlay for one rail tool family."""
+
+    tool_selected = Signal(str)
+    dismissed = Signal()
+
+    def __init__(self, group: ToolGroup, palette: Palette, parent=None) -> None:
+        super().__init__(palette, parent)
+        self.group = group
+        self._palette = palette
+        self._buttons: list[QPushButton] = []
+        self.setProperty("role", "tool-flyout")
+        self.setFixedWidth(288)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+        eyebrow = QLabel("TOOL LIBRARY")
+        eyebrow.setObjectName("FlyoutEyebrow")
+        title = QLabel(group.label)
+        title.setObjectName("PanelTitle")
+        root.addWidget(eyebrow)
+        root.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 2, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        for index, spec in enumerate(group.tools):
+            button = QPushButton(spec.label, self)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(42)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.installEventFilter(self)
+            button.clicked.connect(
+                lambda _=False, key=spec.key: self.tool_selected.emit(key)
+            )
+            grid.addWidget(button, index // 2, index % 2)
+            self._buttons.append(button)
+        root.addLayout(grid)
+        self._eyebrow = eyebrow
+        self._specs = group.tools
+        self.apply_palette(palette)
+
+    def apply_palette(self, palette: Palette) -> None:
+        super().apply_palette(palette)
+        self._palette = palette
+        self._eyebrow.setStyleSheet(
+            f"color:{palette.accent_hover}; font-size:9px; font-weight:700;"
+            "letter-spacing:1px;"
+        )
+        for button, spec in zip(self._buttons, self._specs):
+            button.setIcon(icon(spec.icon, palette.text_muted, 18))
+            button.setStyleSheet(
+                f"QPushButton {{ text-align:left; background:{palette.surface_sunken};"
+                f"border:1px solid {palette.border}; padding:0 10px; }}"
+                f"QPushButton:hover, QPushButton:focus {{ background:{palette.accent_soft};"
+                f"border-color:{palette.accent}; color:{palette.text}; }}"
+            )
+
+    def focus_first(self) -> None:
+        if self._buttons:
+            self._buttons[0].setFocus()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key_Escape:
+            self.dismissed.emit()
+            event.accept()
+            return
+        if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            focused = QApplication.focusWidget()
+            try:
+                index = self._buttons.index(focused)
+            except ValueError:
+                index = 0
+            delta = {
+                Qt.Key_Left: -1, Qt.Key_Right: 1,
+                Qt.Key_Up: -2, Qt.Key_Down: 2,
+            }[event.key()]
+            self._buttons[max(0, min(index + delta, len(self._buttons) - 1))].setFocus()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched in self._buttons and event.type() in (
+            QEvent.ShortcutOverride, QEvent.KeyPress,
+        ):
+            key = event.key()
+            handled = key == Qt.Key_Escape or key in (
+                Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
+            )
+            if handled and event.type() == QEvent.ShortcutOverride:
+                event.accept()
+                return True
+            if handled:
+                self.keyPressEvent(event)
+                return True
+        return super().eventFilter(watched, event)
 
 
 class ViewportStage(QWidget):
@@ -295,6 +549,9 @@ class ViewportStage(QWidget):
             if anchor == "full":
                 widget.setGeometry(self.rect())
                 continue
+            fitter = getattr(widget, "fit_to_height", None)
+            if fitter is not None:
+                fitter(height - margin * 2)
             widget.adjustSize() if widget.sizeHint().isValid() else None
             size = widget.size()
             if anchor == "top-right":
@@ -302,6 +559,10 @@ class ViewportStage(QWidget):
                 widget.move(width - size.width() - margin, margin + 128)
             elif anchor == "top-left":
                 widget.move(margin, margin)
+            elif anchor == "rail-flyout":
+                preferred = int(getattr(widget, "anchor_y", margin))
+                y = max(margin, min(preferred, height - size.height() - margin))
+                widget.move(margin, y)
             elif anchor == "top-center":
                 widget.move((width - size.width()) // 2, margin + 24)
             elif anchor == "bottom-center":
@@ -355,7 +616,7 @@ class ViewportStage(QWidget):
         """Raise the overlays into order, but only when the order has changed.
 
         ``raise_()`` over a ``QOpenGLWidget`` is not free: it re-composites the
-        whole viewport and re-blurs the 36 px drop shadow on every floating
+        whole viewport and re-blurs the drop shadow on every floating
         panel. Measured at 23.7 ms of a 26.5 ms layout pass with two panels
         open, and 58 ms with three. ``_layout_overlays`` is reached from
         ``set_hint``, which the hover path calls on every mouse move, so paying
@@ -449,6 +710,8 @@ class MainWindow(QMainWindow):
         self._nudge_timer.setSingleShot(True)
         self._nudge_timer.setInterval(250)
         self._nudge_timer.timeout.connect(self._commit_nudge)
+        self._tool_flyout: ToolFlyout | None = None
+        self._browser_narrow: bool | None = None
 
         root = QWidget()
         root.setObjectName("Root")
@@ -471,7 +734,14 @@ class MainWindow(QMainWindow):
         outer.addWidget(body, 1)
 
         self.browser = ModelBrowser(self.palette_, self.document)
-        self.browser.setFixedWidth(268)
+        from ..core import settings
+
+        self._browser_preferred_expanded = settings.ui_preference(
+            "browser_expanded", True
+        )
+        self.browser.set_collapsed(
+            not self._browser_preferred_expanded, emit=False
+        )
         self.stage.add_overlay(self.browser, "top-right")
 
         self.selection = SelectionModel(
@@ -485,6 +755,7 @@ class MainWindow(QMainWindow):
         self.top_bar.theme_toggled.connect(self.toggle_theme)
         self.top_bar.action_triggered.connect(self.run_command)
         self.rail.tool_selected.connect(self.activate_tool)
+        self.rail.group_requested.connect(self._open_tool_group)
         self.stage.viewport.ready.connect(self._on_viewport_ready)
         self.stage.viewport.rebound.connect(self._on_viewport_rebound)
         self.stage.viewport.hover_changed.connect(self._on_hover)
@@ -516,6 +787,7 @@ class MainWindow(QMainWindow):
         self.browser.group_rename_requested.connect(self.rename_group)
         self.browser.group_delete_requested.connect(self.delete_group)
         self.browser.group_duplicate_requested.connect(self._duplicate_group)
+        self.browser.collapsed_changed.connect(self._browser_collapsed)
 
         # Arrow nudging belongs to the two places a model selection is made.
         # A narrow event filter lets an unhandled key fall through normally --
@@ -527,9 +799,10 @@ class MainWindow(QMainWindow):
             self.browser.bodies_tree,
             self.browser.bodies_tree.viewport(),
         )
-        for source in self._nudge_key_sources:
-            source.installEventFilter(self)
-        self.installEventFilter(self)
+        # Application-level routing is intentional. Tool cards and their
+        # buttons can own keyboard focus while the model remains the subject;
+        # filtering only the viewport made arrows appear randomly broken.
+        QApplication.instance().installEventFilter(self)
 
 
         self._install_shortcuts()
@@ -561,7 +834,7 @@ class MainWindow(QMainWindow):
             if widget is not self.browser and hasattr(widget, "apply_palette"):
                 widget.apply_palette(palette)
         self.top_bar.theme_button.setIcon(
-            icon("sun" if palette.bg == "#14161B" else "moon", palette.text_muted, 20)
+            icon("sun" if palette is DARK else "moon", palette.text_muted, 20)
         )
         # The viewport deliberately no longer recolours bodies itself, so that a
         # per-body tint survives. Re-display them here instead -- and clear the
@@ -911,7 +1184,31 @@ class MainWindow(QMainWindow):
     # -- direct manipulation ---------------------------------------------
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         """Route model nudges without stealing arrows from unrelated controls."""
-        source = watched in getattr(self, "_nudge_key_sources", ())
+        flyout = getattr(self, "_tool_flyout", None)
+        inside_flyout = flyout is not None and (
+            watched is flyout or (
+                isinstance(watched, QWidget) and flyout.isAncestorOf(watched)
+            )
+        )
+        if flyout is not None and flyout.isVisible() and event.type() == QEvent.MouseButtonPress:
+            group_trigger = watched in self.rail._group_tiles.values()
+            if not inside_flyout and not group_trigger:
+                self.close_tool_flyout()
+        if inside_flyout and event.type() in (
+            QEvent.ShortcutOverride, QEvent.KeyPress, QEvent.KeyRelease,
+        ):
+            return super().eventFilter(watched, event)
+        active_panel = next((
+            widget for widget, _anchor in reversed(self.stage.overlays)
+            if getattr(widget, "is_tool_panel", False) and not widget.isHidden()
+        ), None)
+        inside_window = isinstance(watched, QWidget) and (
+            watched is self or self.isAncestorOf(watched)
+        )
+        source = (
+            watched in getattr(self, "_nudge_key_sources", ())
+            or active_panel is not None or inside_window
+        )
         if (source and event.type() == QEvent.FocusOut and not self._nudge_refreshing) or (
             watched is self and event.type() == QEvent.WindowDeactivate
         ):
@@ -949,6 +1246,11 @@ class MainWindow(QMainWindow):
             if direction is not None and event.type() == QEvent.KeyPress:
                 if self._is_typing():
                     return super().eventFilter(watched, event)
+                if active_panel is not None and event.modifiers() == Qt.NoModifier:
+                    arrow_handler = getattr(active_panel, "handle_arrow_key", None)
+                    if callable(arrow_handler) and arrow_handler(key):
+                        event.accept()
+                        return True
                 if event.isAutoRepeat() and key not in self._nudge_keys:
                     return super().eventFilter(watched, event)
                 relevant = event.modifiers() & (
@@ -1076,6 +1378,12 @@ class MainWindow(QMainWindow):
             viewport.set_transparency(
                 self._presentations.get(pick.body), 0.6 if amount < 0.0 else 0.0
             )
+            self._show_drag_readout(
+                pick,
+                surface_delta,
+                at=self._pull_readout_anchor(pick),
+                material_change=amount,
+            )
             self.set_hint(
                 f"{'Adding' if amount >= 0 else 'Removing'} "
                 f"{abs(amount):.2f} mm — arrows continue, Esc cancels"
@@ -1098,6 +1406,7 @@ class MainWindow(QMainWindow):
     def _clear_nudge_preview(self) -> None:
         state = self._nudge_state
         self.stage.viewport.clear_ghost()
+        self.stage.drag_readout.finish()
         if state is None:
             return
         names = [state["pick"].body] if state["kind"] == "face" else state["bodies"]
@@ -1119,7 +1428,13 @@ class MainWindow(QMainWindow):
 
     def _commit_nudge(self) -> None:
         state = self._nudge_state
-        if state is None or self._nudge_keys or self.geometry.busy:
+        if state is None or self._nudge_keys:
+            return
+        if self.geometry.busy:
+            # The old path simply returned here and discarded the only timer.
+            # A rebuild that happened to overlap the timeout left the visible
+            # preview pending forever and the next click cancelled it.
+            self._nudge_timer.start()
             return
         self._clear_nudge_preview()
         self._nudge_state = None
@@ -1230,6 +1545,11 @@ class MainWindow(QMainWindow):
         is how a shaft or a tube is made thinner: the same gesture, aimed at the
         one direction a cylinder can actually move in.
         """
+        for widget, _anchor in reversed(self.stage.overlays):
+            starter = getattr(widget, "begin_freeform_drag", None)
+            if getattr(widget, "isVisible", lambda: False)() and starter is not None:
+                if starter(self.stage.viewport._press_pos):
+                    return
         if self.selection.count != 1:
             return
         faces = self.selection.planar_faces() or self.selection.round_faces()
@@ -1306,7 +1626,7 @@ class MainWindow(QMainWindow):
             # The slab a cut removes lies inside the solid, so the body has to
             # get out of its own way for the preview to be visible at all.
             self._set_drag_transparency(pick.body, 0.6 if cutting else 0.0)
-            self._show_drag_readout(pick, distance)
+            self._show_drag_readout(pick, distance, material_change=adds)
             verb = "Adding" if adds >= 0 else "Cutting"
             self.set_hint(f"{verb} {abs(adds):.2f} mm — release to apply")
             return
@@ -1346,20 +1666,30 @@ class MainWindow(QMainWindow):
         self.stage.viewport.set_transparency(presentation, value)
         self._drag_transparent = body if value else None
 
-    def _show_drag_readout(self, pick, distance: float) -> None:
-        """Put the resulting size at the cursor, not the delta in the corner."""
-        from PySide6.QtGui import QCursor
+    def _show_drag_readout(
+        self,
+        pick,
+        distance: float,
+        *,
+        at: QPoint | None = None,
+        material_change: float | None = None,
+    ) -> None:
+        """Show signed surface travel and the resulting overall dimension."""
+        if at is None:
+            from PySide6.QtGui import QCursor
 
+            at = self.stage.mapFromGlobal(QCursor.pos())
         readout = self.stage.drag_readout
         body = self.document.body(pick.body)
         if pick.is_round_face:
             # A cylinder has one size worth reading, and it is not how far the
             # surface travelled.
             readout.show_drag(
-                self.stage.mapFromGlobal(QCursor.pos()),
+                at,
                 distance,
                 pick.info.diameter + 2.0 * distance,
                 "Diameter",
+                material_change,
             )
             return
         resulting, label = None, ""
@@ -1375,8 +1705,23 @@ class MainWindow(QMainWindow):
                 resulting = extent + distance
                 label = _extent_label(normal)
         readout.show_drag(
-            self.stage.mapFromGlobal(QCursor.pos()), distance, resulting, label
+            at, distance, resulting, label, material_change
         )
+
+    def _pull_readout_anchor(self, pick) -> QPoint:
+        """Project the affected face into the stage for keyboard feedback."""
+        try:
+            from ..kernel.occ import bounding_box
+
+            low, high = bounding_box(pick.shape)
+            centre = tuple((low[index] + high[index]) / 2.0 for index in range(3))
+            projected = self.stage.viewport.project(centre)
+        except Exception:  # noqa: BLE001 - a readout must never block modelling
+            projected = None
+        if projected is None:
+            return self.stage.rect().center()
+        point = QPoint(round(projected[0]), round(projected[1]))
+        return self.stage.viewport.mapTo(self.stage, point)
 
     def _end_face_drag(self) -> None:
         """Undo every temporary thing a drag turned on.
@@ -2276,12 +2621,53 @@ class MainWindow(QMainWindow):
     def activate_tool(self, key: str) -> None:
         from .tools.registry import activate
 
+        self.close_tool_flyout()
+        self.rail.set_active(key)
         self._cancel_nudge()
         # A flat face already selected is an unambiguous request to sketch on
         # it, so skip the plane picker.
         if key == "sketch" and self.sketch_on_selection():
             return
         activate(self, key)
+
+    def _open_tool_group(self, key: str) -> None:
+        """Open one non-native flyout beside the category that requested it."""
+        current = self._tool_flyout
+        if current is not None and current.group.key == key and current.isVisible():
+            self.close_tool_flyout()
+            return
+        self.close_tool_flyout()
+        self.close_search()
+        group = next((item for item in TOOL_GROUPS if item.key == key), None)
+        if group is None:
+            return
+        flyout = ToolFlyout(group, self.palette_, self.stage)
+        button = self.rail.group_button(key)
+        if button is not None:
+            origin = button.mapToGlobal(QPoint(0, 0))
+            flyout.anchor_y = self.stage.mapFromGlobal(origin).y()
+        flyout.tool_selected.connect(self._run_flyout_tool)
+        flyout.dismissed.connect(self.close_tool_flyout)
+        self.stage.add_overlay(flyout, "rail-flyout")
+        self._tool_flyout = flyout
+        self.rail.set_group_open(key)
+        flyout.show()
+        self.stage._layout_overlays()
+        flyout.focus_first()
+
+    def _run_flyout_tool(self, key: str) -> None:
+        self.close_tool_flyout()
+        self.run_action(key)
+
+    def close_tool_flyout(self) -> None:
+        flyout = getattr(self, "_tool_flyout", None)
+        if flyout is None:
+            return
+        self.stage.remove_overlay(flyout)
+        flyout.hide()
+        flyout.deleteLater()
+        self._tool_flyout = None
+        self.rail.set_group_open(None)
 
     def close_tool_panels(self) -> None:
         """Dismiss any open tool panel without touching the selection."""
@@ -2298,6 +2684,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
     def cancel_tool(self) -> None:
+        if self._tool_flyout is not None:
+            self.close_tool_flyout()
+            return
         if self._cancel_nudge():
             return
         # Esc during a drag has to put the scene back too, or the body stays
@@ -2388,6 +2777,7 @@ class MainWindow(QMainWindow):
         if existing is not None:
             self.close_search()
             return
+        self.close_tool_flyout()
         panel = CommandSearch(self.palette_, self.stage)
         panel.chosen.connect(self._run_searched)
         panel.dismissed.connect(self.close_search)
@@ -2716,7 +3106,10 @@ class MainWindow(QMainWindow):
         self.refresh_context_bar()
         self._retell_open_tools()
         if self.selection.count:
-            self.set_hint(self.selection.summary())
+            # The context bar already carries the selection summary. Keep the
+            # bottom-left chip for instructions and results instead of saying
+            # the same thing twice.
+            self.set_hint("" if self.context_bar.isVisible() else self.selection.summary())
         else:
             self.set_hint("Pick a shape from the left, or select geometry to act on it.")
 
@@ -2757,8 +3150,23 @@ class MainWindow(QMainWindow):
 
     def _on_stage_resized(self) -> None:
         """A narrower window means fewer buttons fit, so re-flow the bar."""
+        narrow = self.stage.width() < 900
+        if narrow != self._browser_narrow:
+            self._browser_narrow = narrow
+            self.browser.set_collapsed(
+                True if narrow else not self._browser_preferred_expanded,
+                emit=False,
+            )
         if self.context_bar.isVisible():
             self.refresh_context_bar()
+
+    def _browser_collapsed(self, collapsed: bool) -> None:
+        """Remember an explicit inspector choice without treating reflow as one."""
+        from ..core import settings
+
+        self._browser_preferred_expanded = not collapsed
+        settings.set_ui_preference("browser_expanded", not collapsed)
+        self.stage._layout_overlays()
 
     def _context_bar_width(self) -> int:
         """How wide the bar may be without colliding with its neighbours.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 
 def configure_environment() -> None:
@@ -32,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     install_diagnostics("app")
 
     from PySide6.QtCore import QCoreApplication
-    from PySide6.QtGui import QGuiApplication, QSurfaceFormat
+    from PySide6.QtGui import QGuiApplication, QIcon, QSurfaceFormat
     from PySide6.QtWidgets import QApplication
 
     from .ui.main_window import MainWindow
@@ -60,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     QGuiApplication.setDesktopFileName("simplecad")
     app = QApplication(arguments)
     app.setApplicationDisplayName("SimpleCAD")
+    icon_path = Path(__file__).resolve().parent.parent / "assets" / "simplecad.svg"
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     instance = SingleInstance()
     if not instance.claim():

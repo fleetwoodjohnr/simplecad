@@ -1135,6 +1135,10 @@ class AlignFeature(_BodyOperation):
             y=ctx.value(self, "y", 0.0),
             x_anchor=str(self.inputs.get("x_anchor", "center")),
             y_anchor=str(self.inputs.get("y_anchor", "center")),
+            moving_anchor=self.inputs.get("moving_anchor"),
+            target_anchor=self.inputs.get("target_anchor"),
+            u=(ctx.value(self, "u", 0.0) if "u" in self.inputs else None),
+            v=(ctx.value(self, "v", 0.0) if "v" in self.inputs else None),
         )
         self.message = result.description
         return self._emit(transformed(body, result.transform))

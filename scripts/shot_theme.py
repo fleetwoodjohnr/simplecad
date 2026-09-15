@@ -20,7 +20,7 @@ import sys
 from _harness import grab_composited, run_and_capture  # noqa: E402
 
 #: How far the mean background brightness has to move for the switch to count.
-#: The two gradients are far apart (#FBFCFE/#C6D0DE against #2A2F3A/#15181E), so
+#: The two gradients are far apart, so
 #: this only asks that something happened, it does not measure a colour.
 MIN_SHIFT = 40.0
 
@@ -113,7 +113,7 @@ def main() -> int:
                 before is not None and after is not None
                 and after - before >= MIN_SHIFT
             )
-            REPORT["palette"] = "light" if window.palette_.bg == "#EDEFF3" else "dark"
+            REPORT["palette"] = "light" if window.mode is Mode.LIGHT else "dark"
             bar = window.context_bar
             REPORT["bar_themed"] = window.palette_.surface_raised in bar.styleSheet()
             panels = [w for w, _a in window.stage.overlays

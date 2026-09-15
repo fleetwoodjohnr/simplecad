@@ -136,6 +136,7 @@ class _Nav(Enum):
     GIZMO = 5
     DRAG_HANDLE = 6
     RUBBER_BAND = 7
+    DRAG_PLANE = 8
 
 
 def navigation_mode(button, modifiers) -> _Nav:
@@ -234,6 +235,8 @@ class OcctViewport(QOpenGLWidget):
     #: because a drag reports distance from the press and needs somewhere to
     #: add it to.
     handle_pressed = Signal(str)
+    #: Free placement on a reference face: {u, v, pos, modifiers, finished}.
+    plane_dragged = Signal(object)
     #: While sketching: the cursor's position in sketch coordinates (u, v).
     sketch_moved = Signal(float, float)
     #: A click on the sketch plane, in sketch coordinates.
@@ -2134,6 +2137,39 @@ class OcctViewport(QOpenGLWidget):
         """Start dragging a face along its normal. Returns False if edge-on."""
         return self.begin_axis_drag(center, normal, "face")
 
+    @staticmethod
+    def _ray_plane(ray, origin, normal):
+        if ray is None:
+            return None
+        start, direction = ray
+        denominator = sum(direction[i] * normal[i] for i in range(3))
+        if abs(denominator) < 1.0e-9:
+            return None
+        distance = sum((origin[i] - start[i]) * normal[i] for i in range(3)) / denominator
+        return tuple(start[i] + direction[i] * distance for i in range(3))
+
+    def begin_plane_drag(self, origin, normal, u_axis, v_axis, u: float, v: float) -> bool:
+        """Start a camera-independent drag constrained to one reference face."""
+        hit = self._ray_plane(self.cursor_ray(self._press_pos), origin, normal)
+        if hit is None:
+            return False
+        self._plane_drag = (hit, origin, u_axis, v_axis, float(u), float(v))
+        self._plane_normal = normal
+        self._nav = _Nav.DRAG_PLANE
+        return True
+
+    def _plane_drag_value(self, pos: QPoint, modifiers, finished: bool):
+        start, origin, u_axis, v_axis, initial_u, initial_v = self._plane_drag
+        hit = self._ray_plane(self.cursor_ray(pos), origin, self._plane_normal)
+        if hit is None:
+            return None
+        delta = tuple(hit[i] - start[i] for i in range(3))
+        return {
+            "u": initial_u + sum(delta[i] * u_axis[i] for i in range(3)),
+            "v": initial_v + sum(delta[i] * v_axis[i] for i in range(3)),
+            "pos": QPoint(pos), "modifiers": modifiers, "finished": finished,
+        }
+
     def _handle_press(self, pos: QPoint) -> bool:
         """Begin a handle drag if one is under the cursor.
 
@@ -2283,6 +2319,12 @@ class OcctViewport(QOpenGLWidget):
             )
             self._last_pos = pos
             return
+        if self._nav is _Nav.DRAG_PLANE and getattr(self, "_plane_drag", None) is not None:
+            value = self._plane_drag_value(pos, event.modifiers(), False)
+            if value is not None:
+                self.plane_dragged.emit(value)
+            self._last_pos = pos
+            return
         if self._nav is _Nav.RUBBER_BAND:
             rect = self._band_rect(pos)
             self._set_band(rect if self._band_is_a_drag(rect) else None)
@@ -2349,6 +2391,14 @@ class OcctViewport(QOpenGLWidget):
             )
             kind, self._drag, self._active_handle = self._drag_kind, None, None
             self.handle_dragged.emit(kind, distance, True)
+            return
+        if was_nav is _Nav.DRAG_PLANE and getattr(self, "_plane_drag", None) is not None:
+            value = self._plane_drag_value(
+                event.position().toPoint(), event.modifiers(), True
+            )
+            self._plane_drag = None
+            if value is not None:
+                self.plane_dragged.emit(value)
             return
         if was_nav is _Nav.GIZMO and self.gizmo is not None:
             components = self.gizmo.release()

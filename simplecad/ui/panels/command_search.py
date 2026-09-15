@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ..icons import icon
@@ -27,6 +28,8 @@ class Command:
     icon: str
     hint: str = ""
     keywords: str = ""
+    category: str = ""
+    shortcut: str = ""
 
     def matches(self, query: str) -> int:
         """Score against *query*; 0 means no match, higher is better."""
@@ -122,6 +125,9 @@ def catalogue() -> list[Command]:
         Command("place_on_face", "Place on Face", "align",
                 "Position a body from a face edge or centre",
                 "align x y left right bottom top offset"),
+        Command("section_replace", "Section Replace", "cut",
+                "Clear a silhouette and integrate an aligned insert",
+                "vent grille replace merge opening panel inset"),
         Command("hole", "Hole", "hole",
                 "Simple, counterbore, countersink or threaded", "drill bore"),
         Command("thread", "Thread", "thread",
@@ -199,7 +205,10 @@ class CommandSearch(FloatingCard):
         super().__init__(palette, parent)
         self._palette = palette
         self._commands = catalogue()
-        self.setFixedWidth(460)
+        from ...core.settings import shortcuts
+
+        self._bindings = shortcuts()
+        self.setFixedWidth(520)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -207,20 +216,75 @@ class CommandSearch(FloatingCard):
         )
         layout.setSpacing(METRICS.space(1.5))
 
+        top = QHBoxLayout()
+        self.eyebrow = QLabel("COMMAND PALETTE")
+        self.key_hint = QLabel("↑↓  Navigate    Enter  Run    Esc  Close")
+        top.addWidget(self.eyebrow)
+        top.addStretch(1)
+        top.addWidget(self.key_hint)
+        layout.addLayout(top)
+
         self.query = QLineEdit()
-        self.query.setPlaceholderText("Search commands…")
+        self.query.setObjectName("CommandQuery")
+        self.query.setPlaceholderText("Search tools, actions, and views…")
         self.query.setMinimumHeight(METRICS.control_height_lg)
         self.query.textChanged.connect(self.refilter)
         layout.addWidget(self.query)
 
         self.results = QListWidget()
         self.results.setFrameShape(QListWidget.NoFrame)
-        self.results.setMinimumHeight(300)
+        self.results.setFixedHeight(340)
         self.results.itemActivated.connect(self._activate)
         self.results.itemClicked.connect(self._activate)
         layout.addWidget(self.results)
 
+        self.apply_palette(palette)
         self.refilter("")
+
+    @staticmethod
+    def _category(command: Command) -> str:
+        if command.category:
+            return command.category
+        key = command.key
+        if key.startswith("view_") or key in {"projection", "theme"}:
+            return "View"
+        if key in {"save", "save_as", "open", "import", "export"}:
+            return "File"
+        if key in {
+            "duplicate", "copy", "paste", "group", "ungroup", "hide",
+            "delete", "undo", "redo",
+        }:
+            return "Edit"
+        if key.startswith("shape_") or key in {
+            "shapes", "text", "sketch", "threaded_connection", "clip_joint",
+            "matching_part", "sweep", "loft",
+        }:
+            return "Create"
+        if key.startswith("measure") or key in {"fit", "print"}:
+            return "Inspect"
+        return "Modify"
+
+    def _shortcut(self, command: Command) -> str:
+        if command.shortcut:
+            return command.shortcut
+        aliases = {
+            "pushpull": "extrude", "view_fit": "fit_view",
+            "view_xray": "xray", "save_as": "save_as",
+        }
+        return self._bindings.get(aliases.get(command.key, command.key), "")
+
+    def apply_palette(self, palette: Palette) -> None:
+        super().apply_palette(palette)
+        self._palette = palette
+        self.eyebrow.setStyleSheet(
+            f"color:{palette.accent_hover}; font-size:9px; font-weight:700;"
+            "letter-spacing:1px;"
+        )
+        self.key_hint.setStyleSheet(
+            f"color:{palette.text_faint}; font-size:10px;"
+        )
+        if hasattr(self, "query"):
+            self.refilter(self.query.text())
 
     def refilter(self, text: str) -> None:
         from PySide6.QtCore import QSize
@@ -234,18 +298,59 @@ class CommandSearch(FloatingCard):
 
         self.results.clear()
         for _score, command in scored:
-            item = QListWidgetItem(
-                f"{command.label}    {command.hint}" if command.hint else command.label
-            )
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, command.key)
-            item.setIcon(icon(command.icon, self._palette.text_muted, 18))
-            item.setSizeHint(QSize(0, 36))
+            item.setSizeHint(QSize(0, 50))
+            self.results.addItem(item)
+            self.results.setItemWidget(item, self._result_widget(command))
+        if not scored:
+            item = QListWidgetItem("No matching commands")
+            item.setFlags(Qt.NoItemFlags)
+            item.setSizeHint(QSize(0, 56))
             self.results.addItem(item)
         if self.results.count():
             self.results.setCurrentRow(0)
 
+    def _result_widget(self, command: Command) -> QWidget:
+        palette = self._palette
+        row = QWidget(self.results)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(8, 4, 10, 4)
+        layout.setSpacing(10)
+        mark = QLabel()
+        mark.setFixedSize(24, 24)
+        mark.setPixmap(icon(command.icon, palette.text_muted, 20).pixmap(20, 20))
+        layout.addWidget(mark)
+        copy = QVBoxLayout()
+        copy.setContentsMargins(0, 0, 0, 0)
+        copy.setSpacing(1)
+        title = QLabel(command.label)
+        title.setStyleSheet(f"color:{palette.text}; font-size:12.5px; font-weight:600;")
+        detail = QLabel(
+            f"{self._category(command)}  ·  {command.hint}"
+            if command.hint else self._category(command)
+        )
+        detail.setStyleSheet(f"color:{palette.text_faint}; font-size:10.5px;")
+        copy.addWidget(title)
+        copy.addWidget(detail)
+        layout.addLayout(copy, 1)
+        shortcut = self._shortcut(command)
+        if shortcut:
+            badge = QLabel(shortcut)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet(
+                f"color:{palette.text_muted}; background:{palette.surface_sunken};"
+                f"border:1px solid {palette.border}; border-radius:5px;"
+                "padding:3px 6px; font-size:9.5px;"
+            )
+            badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            layout.addWidget(badge)
+        return row
+
     def _activate(self, item: QListWidgetItem) -> None:
-        self.chosen.emit(item.data(Qt.UserRole))
+        key = item.data(Qt.UserRole)
+        if key:
+            self.chosen.emit(key)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()

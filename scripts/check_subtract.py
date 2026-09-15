@@ -109,8 +109,13 @@ def main() -> int:
             FAILURES.append("Swap did not come back to where it started")
 
         # -- the preview is the real result, before anything is committed ----
-        panel._refresh_preview()
-        QApplication.processEvents()
+        for _index in range(30):
+            if getattr(window.stage.viewport, "_ghost", None) is not None:
+                break
+            QApplication.processEvents()
+            from PySide6.QtTest import QTest
+
+            QTest.qWait(50)
         REPORT["preview_shown"] = getattr(window.stage.viewport, "_ghost", None) is not None
         REPORT["bodies_before_apply"] = sorted(window.document.bodies)
         if sorted(window.document.bodies) != ["Block", "Pin"]:

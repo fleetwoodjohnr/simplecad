@@ -28,8 +28,8 @@ MINOR = 10.0
 MAJOR = 50.0
 
 _MINOR_WIDTH = 1.0
-_MAJOR_WIDTH = 1.6
-_AXIS_WIDTH = 2.0
+_MAJOR_WIDTH = 1.25
+_AXIS_WIDTH = 1.6
 
 
 def _mix(first: str, second: str, amount: float) -> tuple[float, float, float]:
@@ -161,13 +161,17 @@ class GroundGrid:
         # emphasis holds in both themes without a second palette entry.
         colors = (
             rgb(palette.grid),
-            _mix(palette.grid, palette.text_faint, 0.55),
+            _mix(palette.grid, palette.text_faint, 0.35),
             rgb(palette.grid_axis_x),
             rgb(palette.grid_axis_y),
         )
         widths = (_MINOR_WIDTH, _MAJOR_WIDTH, _AXIS_WIDTH, _AXIS_WIDTH)
-        for obj, color, width in zip(self._objects, colors, widths):
+        transparencies = (0.58, 0.38, 0.16, 0.16)
+        for obj, color, width, transparency in zip(
+            self._objects, colors, widths, transparencies
+        ):
             obj.SetColor(Quantity_Color(*color, Quantity_TOC_sRGB))
             obj.SetWidth(width)
+            obj.SetTransparency(transparency)
             if self._context is not None:
                 self._context.Redisplay(obj, False)

@@ -125,7 +125,7 @@ class ShapePanel(FloatingCard):
         self._palette = palette
         self._kind = "box"
         self.fields: dict[str, ValueField] = {}
-        self.setFixedWidth(292)
+        self.setFixedWidth(312)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(

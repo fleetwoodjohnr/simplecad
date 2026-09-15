@@ -102,9 +102,9 @@ def main() -> int:
 
             cases = [
                 ("planar face", [pick("Base", "face", sub(base, "face"))],
-                 {"pushpull", "hole", "sketch", "shell", "move", "measure"}),
+                 {"pushpull", "hole", "sketch", "shell", "measure"}),
                 ("edge", [pick("Base", "edge", sub(base, "edge"))],
-                 {"fillet", "chamfer", "move", "measure"}),
+                 {"fillet", "chamfer", "measure"}),
                 ("corner", [pick("Base", "vertex", sub(base, "vertex"))],
                  {"fillet", "chamfer", "measure"}),
                 ("one body", [pick("Base", "body", base)],

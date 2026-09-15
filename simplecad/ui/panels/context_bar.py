@@ -62,8 +62,8 @@ class ActionButton(QPushButton):
             QPushButton {{
                 background:{background}; color:{colour};
                 border:1px solid {border};
-                border-radius:{METRICS.radius_sm}px;
-                padding:0 {METRICS.space(4)}px;
+                border-radius:{METRICS.control_height_lg // 2}px;
+                padding:0 {METRICS.space(3.5)}px;
                 font-weight:{600 if self._primary else 500};
             }}
             QPushButton:hover {{ background:{hover}; }}
@@ -113,7 +113,8 @@ class ContextBar(FloatingCard):
         self._palette = palette
         self.summary.setStyleSheet(
             f"color:{palette.text_muted}; font-size:12.5px;"
-            f"padding:0 {METRICS.space(2)}px;"
+            f"background:{palette.surface_sunken}; border:1px solid {palette.border};"
+            f"border-radius:{METRICS.radius_sm}px; padding:6px {METRICS.space(2)}px;"
         )
         self.separator.setStyleSheet(f"background:{palette.border}; border:none;")
         self.overflow.setStyleSheet(
@@ -121,7 +122,7 @@ class ContextBar(FloatingCard):
             QToolButton {{
                 background:transparent; color:{palette.text};
                 border:1px solid {palette.border};
-                border-radius:{METRICS.radius_sm}px;
+                border-radius:{METRICS.control_height_lg // 2}px;
                 padding:0 {METRICS.space(2)}px; font-size:15px;
             }}
             QToolButton:hover {{ background:{palette.surface_sunken}; }}

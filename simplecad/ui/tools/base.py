@@ -11,7 +11,10 @@ from __future__ import annotations
 import itertools
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractScrollArea, QFrame, QHBoxLayout, QLabel, QScrollArea,
+    QVBoxLayout, QWidget,
+)
 
 from ...core.units import Dimension
 from ..theme import METRICS, Palette
@@ -28,7 +31,7 @@ class ToolPanel(FloatingCard):
     is_tool_panel = True
     title = "Tool"
     confirm_label = "Done"
-    width = 292
+    width = 312
 
     def __init__(self, window, palette: Palette | None = None) -> None:
         # The registry instantiates tools with just the window; the palette is
@@ -42,9 +45,10 @@ class ToolPanel(FloatingCard):
 
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(
-            METRICS.space(4), METRICS.space(3.5), METRICS.space(4), METRICS.space(3.5)
+            METRICS.space(3.5), METRICS.space(3.5),
+            METRICS.space(3.5), METRICS.space(3.5),
         )
-        self.root.setSpacing(METRICS.space(2.5))
+        self.root.setSpacing(METRICS.space(2))
 
         header = QHBoxLayout()
         self.title_label = QLabel(self.title)
@@ -63,9 +67,24 @@ class ToolPanel(FloatingCard):
         )
         self.root.addWidget(self.subtitle)
 
-        self.body = QVBoxLayout()
+        self.body_host = QWidget(self)
+        self.body_host.setObjectName("ToolBody")
+        self.body = QVBoxLayout(self.body_host)
+        self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(METRICS.space(1.5))
-        self.root.addLayout(self.body)
+        self.body_scroll = QScrollArea(self)
+        self.body_scroll.setObjectName("ToolBodyScroll")
+        self.body_scroll.setFrameShape(QFrame.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.body_scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        self.body_scroll.setWidget(self.body_host)
+        self.body_scroll.setStyleSheet(
+            "QScrollArea#ToolBodyScroll, QScrollArea#ToolBodyScroll > QWidget > QWidget "
+            "{ background: transparent; border: none; }"
+        )
+        self.root.addWidget(self.body_scroll, 1)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
@@ -84,6 +103,7 @@ class ToolPanel(FloatingCard):
         self.root.addLayout(buttons)
 
         self.build()
+        self.fit_to_height(max(460, self.window_.stage.height() - METRICS.space(8)))
         self.adjustSize()
 
     # -- construction helpers -------------------------------------------
@@ -119,9 +139,17 @@ class ToolPanel(FloatingCard):
         return field.expression() if field else default
 
     def warn(self, message: str) -> None:
+        visible = bool(message)
+        if self.status.text() == message and self.status.isVisible() == visible:
+            return
         self.status.setText(message)
-        self.status.setVisible(bool(message))
+        self.status.setVisible(visible)
+        # Status text is fixed chrome below the scroll area. Re-budget the body
+        # whenever it appears or changes height so the last control never sits
+        # underneath the message or Confirm row.
+        self.fit_to_height(max(460, self.window_.stage.height() - METRICS.space(8)))
         self.adjustSize()
+        self.window_.stage._layout_overlays()
 
     def set_subtitle(self, text: str) -> None:
         self.subtitle.setText(text)
@@ -129,8 +157,33 @@ class ToolPanel(FloatingCard):
 
     def relayout(self) -> None:
         """Resize to fit whatever the panel is now showing."""
+        self.fit_to_height(max(460, self.window_.stage.height() - METRICS.space(8)))
         self.adjustSize()
         self.window_.stage._layout_overlays()
+
+    def fit_to_height(self, maximum: int) -> None:
+        """Keep panel actions visible; scroll only a long tool's controls."""
+        maximum = max(360, int(maximum))
+        self.body_host.adjustSize()
+        margins = self.root.contentsMargins()
+        chrome = margins.top() + margins.bottom()
+        visible_items = []
+        for index in range(self.root.count()):
+            item = self.root.itemAt(index)
+            widget = item.widget()
+            if widget is self.body_scroll:
+                continue
+            if widget is not None and widget.isHidden():
+                continue
+            height = item.sizeHint().height()
+            if height > 0:
+                visible_items.append(height)
+        chrome += sum(visible_items)
+        chrome += self.root.spacing() * max(0, len(visible_items))
+        content = max(40, self.body_host.sizeHint().height())
+        available = max(120, maximum - chrome)
+        self.body_scroll.setFixedHeight(min(content, available))
+        self.setMaximumHeight(maximum)
 
     # -- lifecycle -------------------------------------------------------
     def build(self) -> None:
@@ -153,6 +206,10 @@ class ToolPanel(FloatingCard):
         which is how the measure tool used to leave the viewport stuck in
         point-picking mode with its overlay still on screen.
         """
+
+    def handle_arrow_key(self, key: int) -> bool:
+        """Handle a model-space arrow key while this tool is active."""
+        return False
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key_Escape:
@@ -224,10 +281,20 @@ class FeaturePreviewController:
         try:
             result = build_preview_result(self.panel.window_.document, self._state)
             shape = result.get("shape")
-            return {**result, "shape": serialise_shape(shape) if shape else None}
+            parts = {
+                name: serialise_shape(part)
+                for name, part in result.get("parts", {}).items()
+                if part is not None
+            }
+            return {
+                **result,
+                "shape": serialise_shape(shape) if shape else None,
+                "parts": parts,
+            }
         except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
             return {
                 "shape": None,
+                "parts": {},
                 "error": str(exc) or "The preview could not be built.",
                 "warnings": [],
                 "inputs": {},

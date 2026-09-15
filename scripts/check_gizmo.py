@@ -106,6 +106,10 @@ def main() -> int:
             REPORT["moved_yz"] = (round(after[1] - before[1], 2),
                                   round(after[2] - before[2], 2))
             REPORT["features"] = [f.type_name for f in window.document.features]
+            REPORT["move_inputs"] = {
+                key: window.document.features[-1].inputs.get(key)
+                for key in ("dx", "dy", "dz")
+            }
             REPORT["undoable"] = window.history.can_undo
             REPORT["gizmo_released"] = (
                 viewport.gizmo is None or not viewport.gizmo.dragging

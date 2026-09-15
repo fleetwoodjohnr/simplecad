@@ -49,6 +49,7 @@ PATHS: dict[str, str] = {
     "text": '<path d="M5 5h14M12 5v14M8 19h8"/>',
     "measure": '<path d="m3 15 12-12 6 6-12 12z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/>',
     "boolean": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
+    "cut": '<path d="M4 5h6v14H4zM14 5h6v14h-6z"/><path d="M12 3v18" stroke-dasharray="2 2"/><path d="m9 8 3 4-3 4" opacity=".55"/>',
     # The three combines differ only in which region is emphasised, which is
     # exactly how they differ in meaning.
     "subtract": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6" stroke-dasharray="2.5 2.5"/>',
@@ -57,6 +58,9 @@ PATHS: dict[str, str] = {
     "pattern": '<circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="18" r="2.2"/><circle cx="12" cy="12" r="2.2" opacity=".5"/>',
     "print": '<path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/>',
     # --- chrome ---
+    "create": '<path d="M12 4v16M4 12h16"/><path d="m18.5 3 .6 1.4L20.5 5l-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/>',
+    "modify": '<path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h9M17 18h3"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/>',
+    "inspect": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6M10.5 7.5v6"/>',
     "search": '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/>',
     "undo": '<path d="M3 8h11a6 6 0 0 1 0 12h-6"/><path d="m7 4-4 4 4 4"/>',
     "redo": '<path d="M21 8H10a6 6 0 0 0 0 12h6"/><path d="m17 4 4 4-4 4"/>',
@@ -70,6 +74,7 @@ PATHS: dict[str, str] = {
     "check": '<path d="m4.5 12.5 5 5 10-11"/>',
     "close": '<path d="M6 6 18 18M18 6 6 18"/>',
     "chevron_down": '<path d="m6 9 6 6 6-6"/>',
+    "chevron_left": '<path d="m15 6-6 6 6 6"/>',
     "chevron_right": '<path d="m9 6 6 6-6 6"/>',
     "fit": '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
     "ortho": '<path d="M4 5h16v14H4z"/><path d="M4 9h16M9 5v14" opacity=".5"/>',

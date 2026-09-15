@@ -41,7 +41,7 @@ Add Hole → Create Automatic Thread Pair → Fillet → Export
 | **Import / Export** | Written: STEP, STL, OBJ, 3MF. **Read: STEP, IGES, B-Rep, STL, OBJ, 3MF and glTF**, from the toolbar, `Ctrl+I` or search. 3MF includes the **production extension** — the layout Bambu Studio, OrcaSlicer, ElegooSlicer and PrusaSlicer project files all use, where the root part holds only references and the meshes live in parts of their own — with each object's authored placement and scale honoured rather than everything piled at the origin. Dimensions and units are preserved (a STEP file in inches arrives in millimetres, not scaled by 25.4), separate bodies stay separate where the format describes them, and STEP part names come through. A mesh is rebuilt into a **solid** so an imported STL can be split, cut and shelled like anything else. That is done from the mesh's own vertex indices, which already describe which triangles share an edge, rather than by asking the kernel to rediscover it geometrically — linear instead of catastrophic, and the difference between 0.3 s and over six minutes on a 3,000-triangle slicer part. Zero-area slivers, which real meshes are full of, are mended rather than left as holes. Where a mesh is too large or genuinely does not close, the body still imports and says so rather than failing quietly. An unreadable file gets a message, not silence |
 | **Project file** | Native `.scad3`: save and reopen a model that is still fully parametric, with a geometry cache so opening is instant |
 | **Contextual toolbar** | The bar over the viewport offers **everything** that applies to what is selected, and refreshes the instant the selection changes. A face exposes Pull, Hole, Sketch, Add Text and Hollow; an edge or a corner exposes Fillet and Chamfer; a body exposes Move, Rotate, Scale, Split, Duplicate, Measure, Hide and Delete; two bodies lead with Group; a group leads with Ungroup. What does not fit goes behind a visible `⋯` rather than being silently dropped |
-| **Quality of life** | Undo / redo with named actions, autosave and crash recovery, command search (`S`), light / dark / system themes |
+| **Quality of life** | A compact precision-studio shell keeps Shape, Sketch, Pull, Move and Measure one click away, with the rest organized into Create / Modify / Inspect flyouts. The Bodies / History inspector collapses and remembers its state. Undo / redo have named actions, command search (`S`) groups tools and shows shortcuts, and light / dark / system themes share the same visual hierarchy |
 | **Responsiveness** | Geometry runs in a separate process, so the window never freezes while the kernel works. Falls back to in-process if it cannot start |
 
 Everything in the specification is implemented. What is left is depth: there is
@@ -88,7 +88,7 @@ FreeCAD does, and not something you will notice.
 | Select | Left-click. Shift or Ctrl to add |
 | Select several | Drag a box over them. Left-to-right surrounds, right-to-left touches |
 | Push / pull a face | Select it, then drag it |
-| Push / pull by an exact step | Select a face, then press Up / Down; each press moves the surface 0.25 mm |
+| Push / pull by an exact step | Select a face, then press Up / Down; each press moves the surface 0.25 mm and shows both the signed change and resulting total beside the face |
 | Make a shaft or tube thinner | Select its round side, then drag it inward |
 | Nudge selected bodies | Arrow keys move 0.25 mm in the screen plane; Ctrl+Up / Ctrl+Down move in depth |
 | Draw a sketch | Sketch → pick a plane → Draw it instead |

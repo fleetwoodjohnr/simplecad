@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from ..core.document import BuildContext, Feature, register
 from ..core.errors import CadError
 from .align import (
-    _dot, _scale, _sub, planar_frame, rotation_between, support_face, translation,
+    _dot, _scale, _sub, planar_frame, reference_frame, rotation_between,
+    support_face, translation,
 )
 from .detect import analyse_plane
 from .occ import bounding_box, transformed
@@ -37,8 +38,8 @@ class Arrangement:
     warnings: tuple[str, ...] = ()
 
 
-def _oriented_and_seated(name, shape, target_face, orient: bool):
-    frame = planar_frame(target_face)
+def _oriented_and_seated(name, shape, target_face, orient: bool, *, stable_frame=False):
+    frame = reference_frame(target_face) if stable_frame else planar_frame(target_face)
     warnings = []
     placed = shape
     if orient:
@@ -77,6 +78,7 @@ def arrange_shapes(
     orient: bool = True,
     normal_offset: float = 0.0,
     group_offset=(0.0, 0.0, 0.0),
+    stable_frame: bool = False,
 ) -> Arrangement:
     """Return separately named bodies distributed and aligned in one row."""
     items = [(str(name), shape) for name, shape in items if shape is not None]
@@ -93,12 +95,14 @@ def arrange_shapes(
 
     warnings = []
     if target_face is not None:
-        frame = planar_frame(target_face)
+        frame = reference_frame(target_face) if stable_frame else planar_frame(target_face)
         row_axis = frame.x_axis if axis == "x" else frame.y_axis
         cross_axes = (frame.y_axis,) if axis == "x" else (frame.x_axis,)
         prepared = []
         for name, shape in items:
-            placed, notes = _oriented_and_seated(name, shape, target_face, orient)
+            placed, notes = _oriented_and_seated(
+                name, shape, target_face, orient, stable_frame=stable_frame
+            )
             if normal_offset:
                 placed = transformed(
                     placed, translation(_scale(frame.normal, normal_offset))
@@ -170,7 +174,11 @@ class ArrangeFeature(Feature):
         items = [(name, ctx.named_shape(name)) for name in names]
         target_face = ctx.resolve(self, "target_face", required=False)
         if target_face is not None:
-            frame = planar_frame(target_face)
+            frame = (
+                reference_frame(target_face)
+                if self.inputs.get("frame_mode") == "reference"
+                else planar_frame(target_face)
+            )
             offset = _add(
                 _scale(frame.x_axis, ctx.value(self, "move_x", 0.0)),
                 _scale(frame.y_axis, ctx.value(self, "move_y", 0.0)),
@@ -191,6 +199,7 @@ class ArrangeFeature(Feature):
             orient=bool(self.inputs.get("orient", True)),
             normal_offset=ctx.value(self, "normal_offset", 0.0),
             group_offset=offset,
+            stable_frame=self.inputs.get("frame_mode") == "reference",
         )
         for warning in result.warnings:
             ctx.warn(warning)

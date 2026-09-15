@@ -115,17 +115,23 @@ def build_preview_result(document, feature_state: dict) -> dict:
             for name, body in document.bodies.items()
             if body.shape is not None
         }
-        outputs = feature.execute(context)
-        if len(outputs) == 1:
-            shape = next(iter(outputs.values()), None)
-        elif outputs:
-            from ..kernel.occ import compound
-
-            shape = compound(outputs.values())
+        preview_parts = getattr(feature, "preview_parts", None)
+        parts = preview_parts(context) if callable(preview_parts) else None
+        if parts is not None:
+            shape = parts.get("result")
         else:
-            shape = None
+            outputs = feature.execute(context)
+            if len(outputs) == 1:
+                shape = next(iter(outputs.values()), None)
+            elif outputs:
+                from ..kernel.occ import compound
+
+                shape = compound(outputs.values())
+            else:
+                shape = None
         return {
             "shape": shape,
+            "parts": parts or {},
             "error": None if shape is not None else "This preview produced no solid.",
             "warnings": list(context.warnings),
             "inputs": _portable_inputs(feature),
@@ -134,6 +140,7 @@ def build_preview_result(document, feature_state: dict) -> dict:
     except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
         return {
             "shape": None,
+            "parts": {},
             "error": str(exc) or "The geometry kernel could not build this preview.",
             "warnings": [],
             "inputs": {},
@@ -208,6 +215,7 @@ def serve(connection) -> None:
             # honest one.
             result = {
                 "shape": None,
+                "parts": {},
                 "error": "The geometry engine is not ready yet.",
                 "warnings": [],
                 "inputs": {},
@@ -220,11 +228,17 @@ def serve(connection) -> None:
             blob = None
             if result["shape"] is not None:
                 blob = serialise_shape(result["shape"])
+            parts = {
+                name: serialise_shape(shape)
+                for name, shape in result.get("parts", {}).items()
+                if shape is not None
+            }
             try:
                 connection.send({
                     "kind": PREVIEWED,
                     "token": message.get("token"),
                     "shape": blob,
+                    "parts": parts,
                     "error": result["error"],
                     "warnings": result["warnings"],
                     "inputs": result["inputs"],

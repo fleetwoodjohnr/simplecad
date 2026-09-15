@@ -14,14 +14,14 @@ afterwards is exactly the kind of mistake undo exists for and nobody enjoys.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 
 from ...core.document import BodyRef
 from ...kernel.operations import BooleanFeature
 from ..theme import METRICS
 from ..widgets.controls import GhostButton
-from .base import ToolPanel
+from .base import FeaturePreviewController, ToolPanel
 from .modeling import _need
 from .registry import register_tool
 
@@ -54,10 +54,9 @@ class CombinePanel(ToolPanel):
     # -- construction ----------------------------------------------------
     def build(self) -> None:
         self._bodies = list(self.selection.bodies)
-        self._preview_timer = QTimer(self)
-        self._preview_timer.setSingleShot(True)
-        self._preview_timer.setInterval(PREVIEW_DELAY_MS)
-        self._preview_timer.timeout.connect(self._refresh_preview)
+        self._preview_controller = FeaturePreviewController(
+            self, self._previewed, delay_ms=PREVIEW_DELAY_MS
+        )
 
         self.add_section("Operation")
         chooser = QWidget()
@@ -129,57 +128,45 @@ class CombinePanel(ToolPanel):
 
     # -- preview ---------------------------------------------------------
     def preview(self) -> None:
-        self._preview_timer.start()
+        feature = self._feature()
+        self._preview_controller.request(feature.to_dict() if feature else None)
 
-    def _refresh_preview(self) -> None:
+    def _previewed(self, message: dict) -> None:
+        from ...core.geometry_service import deserialise_shape
+
         viewport = self.window_.stage.viewport
-        shape = self._build()
-        if shape is None:
+        blob = message.get("shape")
+        error = message.get("error")
+        if not blob:
             viewport.clear_ghost()
             if len(self._bodies) >= 2:
-                self.warn(
-                    "These bodies do not overlap in a way this operation can "
-                    "use."
-                )
+                self.warn(error or "These bodies do not overlap in a usable way.")
+            if hasattr(self, "confirm"):
+                self.confirm.setEnabled(False)
             return
         self.warn("")
-        viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.12)
+        viewport.show_ghost(
+            deserialise_shape(blob), self.window_.palette_.accent, transparency=0.12
+        )
+        if hasattr(self, "confirm"):
+            self.confirm.setEnabled(True)
 
-    def _build(self):
-        """The real kernel result, or None if it cannot be built."""
-        from ...kernel.occ import built_shape, unify
-
+    def _feature(self):
         if len(self._bodies) < 2:
             return None
-        from OCP.BRepAlgoAPI import (
-            BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse,
+        return BooleanFeature(
+            inputs={
+                "body": BodyRef(self.target),
+                "tools": [BodyRef(name) for name in self.tools],
+                "operation": self.operation,
+                "keep_tool": self.keep.isChecked(),
+            },
+            outputs=[self.target],
         )
-
-        builders = {
-            "cut": BRepAlgoAPI_Cut,
-            "join": BRepAlgoAPI_Fuse,
-            "intersect": BRepAlgoAPI_Common,
-        }
-        document = self.window_.document
-        target = document.body(self.target)
-        if target is None or target.shape is None:
-            return None
-        try:
-            result = target.shape
-            for name in self.tools:
-                tool = document.body(name)
-                if tool is None or tool.shape is None:
-                    return None
-                result = built_shape(
-                    builders[self.operation](result, tool.shape), self.operation
-                )
-            return unify(result)
-        except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
-            return None
 
     # -- lifecycle -------------------------------------------------------
     def teardown(self) -> None:
-        self._preview_timer.stop()
+        self._preview_controller.close()
         self.window_.stage.viewport.clear_ghost()
 
     def commit(self) -> None:
