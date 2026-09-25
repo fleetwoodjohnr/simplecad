@@ -11,6 +11,8 @@ Head and nut dimensions come from ``data/fasteners.json`` (ISO 4014 and ISO
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import json
 import math
 import os
@@ -121,7 +123,7 @@ def make_bolt(size: ThreadSize, length: float, thread_length: float | None = Non
             BRepPrimAPI_MakeCylinder(size.diameter / 2.0, length).Shape(),
             make_transform(translate=(0.0, 0.0, head_height)),
         )
-        body = built_shape(BRepAlgoAPI_Fuse(crown, shank), "bolt")
+        body = built_shape(boolean_builder(BRepAlgoAPI_Fuse, crown, shank), "bolt")
 
     # Thread the free end of the shank.
     start = head_height + length - thread_length
@@ -155,7 +157,7 @@ def make_nut(size: ThreadSize, clearance: str | float = "normal",
             BRepPrimAPI_MakeCylinder(bore / 2.0, thickness + 4.0).Shape(),
             make_transform(translate=(0.0, 0.0, -2.0)),
         )
-        drilled = built_shape(BRepAlgoAPI_Cut(blank, drill), "nut")
+        drilled = built_shape(boolean_builder(BRepAlgoAPI_Cut, blank, drill), "nut")
 
     require_printable(size, form)
     outcome = require_modelled(apply_thread(

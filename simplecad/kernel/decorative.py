@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BuildContext, register
@@ -136,7 +138,7 @@ class CrescentFeature(_Decorative):
                 cutter,
                 make_transform(translate=(thickness, 0.0, -height)),
             )
-            crescent = unify(built_shape(BRepAlgoAPI_Cut(outer, cutter), "crescent"))
+            crescent = unify(built_shape(boolean_builder(BRepAlgoAPI_Cut, outer, cutter), "crescent"))
             return self._finish(ctx, crescent)
 
 

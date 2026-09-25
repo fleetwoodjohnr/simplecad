@@ -114,11 +114,12 @@ class ToolPanel(FloatingCard):
         value: float,
         dimension: Dimension = Dimension.LENGTH,
         into=None,
+        commit_on_return: bool = True,
     ) -> ValueField:
         field = ValueField(
             self._palette, self.window_.document.parameters, dimension, value
         )
-        field.returnPressed.connect(self.commit)
+        field.returnPressed.connect(self.commit if commit_on_return else self.preview)
         field.committed.connect(lambda _v: self.preview())
         (into or self.body).addWidget(LabeledField(label, field, self._palette))
         self.fields[key] = field
@@ -230,12 +231,16 @@ class FeaturePreviewController:
     shape and the kernel's failure text before enabling their Create button.
     """
 
-    def __init__(self, panel: ToolPanel, callback, delay_ms: int = 110) -> None:
+    def __init__(self, panel: ToolPanel, callback, delay_ms: int = 110,
+                 allow_in_process: bool = False) -> None:
         self.panel = panel
         self.callback = callback
         self._state: dict | None = None
         self._token: int | None = None
+        self._tokens: set[int] = set()
         self._closed = False
+        self._retried = False
+        self.allow_in_process = allow_in_process
         self.timer = QTimer(panel)
         self.timer.setSingleShot(True)
         self.timer.setInterval(delay_ms)
@@ -245,6 +250,12 @@ class FeaturePreviewController:
     def request(self, state: dict | None) -> None:
         self._state = state
         self._token = None
+        cancel = getattr(self.panel.window_.geometry, "cancel_preview", None)
+        if cancel is not None and state is None:
+            for token in tuple(self._tokens):
+                cancel(token)
+            self._tokens.clear()
+        self._retried = False
         self.timer.stop()
         if state is None:
             self.callback({
@@ -259,22 +270,26 @@ class FeaturePreviewController:
         if self._closed or self._state is None:
             return
         self._token = next(_preview_tokens)
+        self._tokens.add(self._token)
+        geometry = self.panel.window_.geometry
+        if not geometry.available and not self.allow_in_process:
+            if geometry.start():
+                geometry.sync_cached(self.panel.window_.document)
         if self.panel.window_.geometry.preview(self._state, self._token):
             return
-        self.callback({"token": self._token, **self._in_process()})
+        if self.allow_in_process:
+            self.callback({"token": self._token, **self._in_process()})
+        else:
+            self.callback({
+                "token": self._token, "shape": None,
+                "error": "The geometry engine is unavailable.",
+            })
 
     def _in_process(self) -> dict:
-        """Answer the preview here, because the geometry child is not there.
+        """Explicit synchronous helper for controlled tests and diagnostics.
 
-        Rebuilds already fall back to in-process when the child cannot start --
-        the application is documented as staying usable that way. Previews did
-        not, and the difference is not cosmetic: a preview-gated tool keeps its
-        Create button disabled until a shape comes back, so Thread and Create
-        Matching Part were permanently dead on any machine whose child process
-        failed to launch, saying only "the geometry engine is unavailable".
-
-        The same pure function the child runs, run here, and serialised the same
-        way so the callback cannot tell the two apart.
+        Interactive tools leave allow_in_process=False so a failed worker
+        cannot move expensive or crash-prone OCCT work into the window.
         """
         from ...core.geometry_service import build_preview_result, serialise_shape
 
@@ -302,7 +317,16 @@ class FeaturePreviewController:
             }
 
     def _answered(self, message: dict) -> None:
+        self._tokens.discard(message.get("token"))
         if self._closed or message.get("token") != self._token:
+            return
+        if message.get("retryable") and not message.get("timeout") and self._state is not None and not self._retried:
+            # The engine let go of this request -- it crashed, or restarted --
+            # rather than answering it. It has been brought back and given the
+            # document again, so ask once more before telling the user their
+            # tool is broken.
+            self._retried = True
+            self.timer.start()
             return
         self.callback(message)
 
@@ -311,6 +335,11 @@ class FeaturePreviewController:
             return
         self._closed = True
         self.timer.stop()
+        cancel = getattr(self.panel.window_.geometry, "cancel_preview", None)
+        if cancel is not None:
+            for token in tuple(self._tokens):
+                cancel(token)
+            self._tokens.clear()
         try:
             self.panel.window_.geometry.previewed.disconnect(self._answered)
         except (RuntimeError, TypeError):

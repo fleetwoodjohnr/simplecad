@@ -35,6 +35,9 @@ class SketchFeature(Feature):
     def execute(self, ctx: BuildContext) -> dict:
         sketch = self.sketch()
         result = solve(sketch)
+        # Solving mutates point coordinates inside the sketch, outside the
+        # observable input containers. Accept that solved recipe explicitly.
+        self._touch()
         self.message = result.message
         if not result.ok:
             raise CadError(result.message, suggestion="Remove or relax a constraint.")

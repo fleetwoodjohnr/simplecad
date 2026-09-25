@@ -3,13 +3,14 @@ from __future__ import annotations
 import pytest
 
 from simplecad.core.document import BodyRef, Document
+from simplecad.core.history import History
 from simplecad.core.model_clipboard import (
     ModelFragment, copy_fragment, paste_fragment,
 )
 from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel.occ import bounding_box
 from simplecad.kernel.operations import MoveFeature
-from simplecad.kernel.primitives import BoxFeature
+from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 
 
 def _box_history() -> tuple[Document, Rebuilder]:
@@ -88,3 +89,43 @@ def test_paste_preserves_nested_group_structure():
     assert items == ["Assembly2"]
     assert document.expand(items) == ["A2", "B2"]
     assert document.group("Assembly2").members == ["Pair2"]
+
+
+def test_pasting_cylinder_keeps_later_history_and_body_appearance():
+    document = Document("Paste history")
+    document.add_feature(CylinderFeature(
+        inputs={"radius": 6, "height": 12}, outputs=["Cylinder"],
+    ))
+    document.add_feature(MoveFeature(
+        inputs={"body": BodyRef("Cylinder"), "dx": 15}, outputs=["Cylinder"],
+    ))
+    document.add_feature(BoxFeature(
+        inputs={"width": 9, "depth": 8, "height": 7}, outputs=["LaterBox"],
+    ))
+    document.add_feature(MoveFeature(
+        inputs={"body": BodyRef("LaterBox"), "dy": 25}, outputs=["LaterBox"],
+    ))
+    assert Rebuilder(document).rebuild(force=True).ok
+    document.body("LaterBox").color = "#dd8844"
+    fragment = copy_fragment(document, ["Cylinder"])
+    original_features = [feature.to_dict() for feature in document.features]
+    original_bounds = bounding_box(document.body("LaterBox").shape)
+    history = History(document)
+
+    history.record("Paste")
+    _clones, roots = paste_fragment(document, fragment, (40, 0, 0))
+    assert roots == ["Cylinder2"]
+    assert [feature.to_dict() for feature in document.features[:4]] == original_features
+    assert Rebuilder(document).rebuild(force=True).ok
+    assert bounding_box(document.body("LaterBox").shape) == original_bounds
+    assert document.body("LaterBox").color == "#dd8844"
+
+    assert history.undo() is not None
+    assert Rebuilder(document).rebuild(force=True).ok
+    assert [feature.to_dict() for feature in document.features] == original_features
+    assert "Cylinder2" not in document.bodies
+    assert document.body("LaterBox").color == "#dd8844"
+    assert history.redo() is not None
+    assert Rebuilder(document).rebuild(force=True).ok
+    assert "Cylinder2" in document.bodies
+    assert bounding_box(document.body("LaterBox").shape) == original_bounds

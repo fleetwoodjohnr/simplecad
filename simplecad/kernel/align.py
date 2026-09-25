@@ -194,6 +194,194 @@ def reference_frame(face) -> PlanarFrame:
     )
 
 
+def view_frame(face, view_direction, view_up) -> PlanarFrame:
+    """The face's own axes, signed so +U reads right and +V up on screen.
+
+    The camera chooses *which* of the four signed face axes is right and which
+    is up. It contributes no angle of its own, and that is the whole point.
+
+    Taking the axes straight from the projected camera vectors -- which is what
+    this did -- produced frames at arbitrary angles to the face: one model here
+    stores a basis 13.3 degrees off the face's own axes. Two things follow from
+    that, both bad. "Left", "right", "top" and "bottom" stop meaning the edges
+    of the face and start meaning the extremes of its outline measured along a
+    diagonal, so a gap typed against an edge is not measured to that edge. And
+    the basis saved for the rebuild becomes four arbitrary dot products against
+    a plane parameterisation OCCT is free to re-author, so the part drifts
+    whenever the target is rebuilt. Quantised, the saved basis is exactly
+    0 and +/-1, and it survives anything.
+    """
+    base = planar_frame(face)
+    normal = base.normal
+    up = _unit(view_up)
+    right = _unit(_cross(_unit(view_direction), up))
+    # Ranked against the camera vectors flattened into the face, not the raw
+    # ones: looking straight down at a horizontal face, screen-up points along
+    # the normal and says nothing at all about which way round the face is.
+    in_plane_up = _sub(up, _scale(normal, _dot(up, normal)))
+    in_plane_right = _sub(right, _scale(normal, _dot(right, normal)))
+    if _length(in_plane_up) < 1e-5:
+        in_plane_up = _cross(normal, in_plane_right)
+    if _length(in_plane_right) < 1e-5:
+        in_plane_right = _cross(in_plane_up, normal)
+    if _length(in_plane_up) < 1e-5 or _length(in_plane_right) < 1e-5:
+        return reference_frame(face)
+    in_plane_up = _unit(in_plane_up)
+    in_plane_right = _unit(in_plane_right)
+    candidates = (
+        base.x_axis, _scale(base.x_axis, -1.0),
+        base.y_axis, _scale(base.y_axis, -1.0),
+    )
+    v_axis = max(candidates, key=lambda axis: _dot(axis, in_plane_up))
+    u_axis = max(
+        (axis for axis in candidates if abs(_dot(axis, v_axis)) < 0.5),
+        key=lambda axis: _dot(axis, in_plane_right),
+    )
+    if _dot(_cross(u_axis, v_axis), normal) < 0.0:
+        # Keep U-right, V-up and the outward normal right-handed, as the
+        # anchor frame does; the screen reading of U gives way to that.
+        u_axis = _scale(u_axis, -1.0)
+    return PlanarFrame(
+        base.center, normal, u_axis, v_axis,
+        _projected_bounds(face, u_axis, base.center),
+        _projected_bounds(face, v_axis, base.center),
+    )
+
+
+def _snapped(value: float, tolerance: float = 1.0e-9) -> float:
+    """Round a basis entry onto 0 or +/-1 when it is already that, near enough."""
+    for exact in (0.0, 1.0, -1.0):
+        if abs(value - exact) <= tolerance:
+            return exact
+    return value
+
+
+def basis_is_axis_aligned(basis) -> bool:
+    """Whether a saved basis names the face's own axes rather than a tilt."""
+    return all(entry in (0.0, 1.0, -1.0) for entry in basis)
+
+
+def frame_basis(face, frame: PlanarFrame) -> list[float]:
+    """Persist a frame in coordinates intrinsic to the face."""
+    base = planar_frame(face)
+    return [
+        _snapped(_dot(frame.x_axis, base.x_axis)),
+        _snapped(_dot(frame.x_axis, base.y_axis)),
+        _snapped(_dot(frame.y_axis, base.x_axis)),
+        _snapped(_dot(frame.y_axis, base.y_axis)),
+    ]
+
+
+def frame_from_basis(face, basis, *, world_u=None, world_normal=None) -> PlanarFrame:
+    """Rebuild a saved frame on *face*.
+
+    ``world_u`` and ``world_normal`` are the axes the placement was authored
+    against, in world coordinates. When they are given and the face still faces
+    the same way, they settle which signed face axis U was -- because a rebuild
+    is free to re-author a plane's X direction, and then the stored basis names
+    a direction that has since rotated, taking the placed part with it.
+    Without them the basis alone decides, exactly as before.
+    """
+    base = planar_frame(face)
+    if not isinstance(basis, (list, tuple)) or len(basis) != 4:
+        raise CadError("The saved face orientation is invalid.")
+    entries = [float(entry) for entry in basis]
+    if basis_is_axis_aligned(entries):
+        axes = {
+            (1.0, 0.0): base.x_axis, (-1.0, 0.0): _scale(base.x_axis, -1.0),
+            (0.0, 1.0): base.y_axis, (0.0, -1.0): _scale(base.y_axis, -1.0),
+        }
+        u = axes.get((entries[0], entries[1]))
+        v = axes.get((entries[2], entries[3]))
+        if u is None or v is None:
+            raise CadError("The saved face orientation is invalid.")
+        if (
+            world_u is not None and world_normal is not None
+            and _dot(base.normal, _unit(world_normal)) > 0.999
+        ):
+            # The face has not turned, so a disagreement here is OCCT having
+            # re-authored the plane, not the part having moved. Trust the
+            # direction the user actually placed against.
+            handed = 1.0 if _dot(_cross(u, v), base.normal) >= 0.0 else -1.0
+            authored = _unit(world_u)
+            u = max(axes.values(), key=lambda axis: _dot(axis, authored))
+            v = _scale(_unit(_cross(base.normal, u)), handed)
+    else:
+        u = _unit(_add(_scale(base.x_axis, entries[0]), _scale(base.y_axis, entries[1])))
+        v = _unit(_add(_scale(base.x_axis, entries[2]), _scale(base.y_axis, entries[3])))
+    if abs(_dot(u, v)) > 1e-5:
+        raise CadError("The saved face orientation is not perpendicular.")
+    return PlanarFrame(
+        base.center, base.normal, u, v,
+        _projected_bounds(face, u, base.center),
+        _projected_bounds(face, v, base.center),
+    )
+
+
+def edge_gap_coordinates(
+    target_frame: PlanarFrame, moving_body, moving_face,
+    *, operation: str, flip: bool = False,
+    horizontal: str = "center", vertical: str = "center",
+    horizontal_gap: float = 0.0, vertical_gap: float = 0.0,
+    moving_bounds=None,
+) -> tuple[float, float]:
+    """Place the projected outline at exact distances from face extrema."""
+    if horizontal not in {"left", "center", "right"} or vertical not in {"bottom", "center", "top"}:
+        raise CadError("Choose a valid face side for placement.")
+    moving_u, moving_v = moving_bounds or moving_bounds_for_frame(
+        target_frame, moving_body, moving_face, operation=operation, flip=flip
+    )
+
+    def coordinate(target_bounds, object_bounds, side, gap):
+        if side in ("left", "bottom"):
+            return target_bounds[0] + gap - object_bounds[0]
+        if side in ("right", "top"):
+            return target_bounds[1] - gap - object_bounds[1]
+        return sum(target_bounds) / 2.0 - sum(object_bounds) / 2.0 + gap
+
+    return (
+        coordinate(target_frame.x_bounds, moving_u, horizontal, horizontal_gap),
+        coordinate(target_frame.y_bounds, moving_v, vertical, vertical_gap),
+    )
+
+
+def moving_bounds_for_frame(target_frame, moving_body, moving_face, *, operation: str, flip: bool = False):
+    """Projected moving-outline bounds relative to its mounting-face centre."""
+    from .occ import transformed
+
+    moving = analyse_plane(moving_face)
+    if moving is None:
+        raise CadError("Edge distances need a flat mounting face.")
+    rotate = (
+        rotation_between(
+            moving.normal,
+            target_frame.normal if flip else _scale(target_frame.normal, -1.0),
+            moving.center,
+        ) if operation == "stack" else translation((0.0, 0.0, 0.0))
+    )
+    outline = transformed(moving_body, rotate)
+    rotated_center = _transformed_point(rotate, moving.center)
+    moving_u = _projected_bounds(outline, target_frame.x_axis, rotated_center)
+    moving_v = _projected_bounds(outline, target_frame.y_axis, rotated_center)
+
+    return moving_u, moving_v
+
+
+def edge_gaps_from_shape(frame: PlanarFrame, placed_body, horizontal: str, vertical: str):
+    """Read the same edge distances back after a drag or camera orbit."""
+    bounds_u = _projected_bounds(placed_body, frame.x_axis, frame.center)
+    bounds_v = _projected_bounds(placed_body, frame.y_axis, frame.center)
+
+    def gap(face_bounds, object_bounds, side):
+        if side in ("left", "bottom"):
+            return object_bounds[0] - face_bounds[0]
+        if side in ("right", "top"):
+            return face_bounds[1] - object_bounds[1]
+        return sum(object_bounds) / 2.0 - sum(face_bounds) / 2.0
+
+    return gap(frame.x_bounds, bounds_u, horizontal), gap(frame.y_bounds, bounds_v, vertical)
+
+
 def anchor_coordinates(frame: PlanarFrame, preset: str) -> tuple[float, float]:
     """Coordinates of a clickable centre/edge/corner anchor preset."""
     if preset not in ANCHOR_PRESETS:
@@ -463,6 +651,16 @@ def solve(
     v: float | None = None,
     moving_frame: PlanarFrame | None = None,
     target_frame: PlanarFrame | None = None,
+    moving_body=None,
+    placement_mode: str = "anchor",
+    horizontal: str = "center",
+    vertical: str = "center",
+    horizontal_gap: float = 0.0,
+    vertical_gap: float = 0.0,
+    target_basis=None,
+    target_u=None,
+    target_normal=None,
+    moving_bounds=None,
 ) -> AlignResult:
     """Solve a placement for two selected faces, choosing the operation if not given."""
     operation = operation or suggest(moving_face, target_face)
@@ -487,6 +685,34 @@ def solve(
             "Stack needs a flat face on both parts.",
             suggestion="Select a planar face on each, or use Concentric for round features.",
         )
+    if placement_mode == "edge_gap":
+        if moving_body is None:
+            raise CadError("Edge placement needs the moving object.")
+        if target_frame is None:
+            if target_basis is None:
+                raise CadError(
+                    "This placement has lost the face orientation it was made with.",
+                    suggestion="Re-place the part with Align & Stack.",
+                )
+            target_frame = frame_from_basis(
+                target_face, target_basis,
+                world_u=target_u, world_normal=target_normal,
+            )
+        coordinate_u, coordinate_v = edge_gap_coordinates(
+            target_frame, moving_body, moving_face,
+            operation=operation, flip=flip,
+            horizontal=horizontal, vertical=vertical,
+            horizontal_gap=horizontal_gap, vertical_gap=vertical_gap,
+            moving_bounds=moving_bounds,
+        )
+        wanted = target.normal if flip else _scale(target.normal, -1.0)
+        rotate = (
+            rotation_between(moving.normal, wanted, moving.center)
+            if operation == "stack" else translation((0.0, 0.0, 0.0))
+        )
+        destination = target_frame.point(coordinate_u, coordinate_v, offset)
+        move = translation(_sub(destination, moving.center))
+        return AlignResult(move.Multiplied(rotate), operation, "Placed from face edges.")
     # New placement features use independent anchor presets and signed U/V.
     # Keep the legacy edge-distance path for documents saved before that UI was
     # introduced; their authored meaning must not change on rebuild.

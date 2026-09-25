@@ -288,12 +288,15 @@ class OcctViewport(QOpenGLWidget):
         self._nav = _Nav.NONE
         self._press_pos = QPoint()
         self._last_pos = QPoint()
+        self._last_hover_at = 0.0
         self._dragged = False
         #: Raw event counts, for the UI dump. "The logic rejected the click" and
         #: "the click never arrived" look identical from every other piece of
         #: state, and guessing between them has cost enough already.
         self._events = {"press": 0, "release": 0, "move": 0, "wheel": 0}
         self._selection_modes: tuple[SelectionMode, ...] = (SelectionMode.BODY,)
+        #: Combine tools collect bodies with ordinary clicks until they close.
+        self._additive_selection = False
         self._batch_depth = 0
         #: Set while a face is being dragged: (origin_px, screen_axis, mm_per_px).
         self._drag: tuple[QPoint, tuple[float, float], float] | None = None
@@ -493,6 +496,7 @@ class OcctViewport(QOpenGLWidget):
         to. ``view_changed`` is deliberately *not* synchronous -- see the timer
         set up in ``__init__``.
         """
+        self.cancel_plane_drag()
         if self._view is not None:
             self._view.Invalidate()
         self.handles.rescale(self)
@@ -743,6 +747,14 @@ class OcctViewport(QOpenGLWidget):
                 self._context.Activate(obj, int(mode))
             self._apply_sensitivity(obj)
         self.refresh()
+
+    @property
+    def selection_modes(self) -> tuple[SelectionMode, ...]:
+        return self._selection_modes
+
+    def set_additive_selection(self, enabled: bool) -> None:
+        """Let a picking tool collect bodies with unmodified clicks."""
+        self._additive_selection = bool(enabled)
 
     def set_picking_enabled(self, enabled: bool) -> None:
         """Turn clicking and hovering on the model on or off.
@@ -1530,11 +1542,15 @@ class OcctViewport(QOpenGLWidget):
 
     def _apply_boundary_aspect(self, presentation) -> None:
         """Give *presentation* a face boundary drawn in the theme's edge colour."""
-        from OCP.Aspect import Aspect_TOL_SOLID
+        from OCP.Aspect import Aspect_TOL_SOLID, Aspect_TOD_ABSOLUTE
+        from ...kernel.tessellate import DEFAULT_ANGLE, DEFAULT_DEFLECTION
         from OCP.Prs3d import Prs3d_LineAspect
         from OCP.Quantity import Quantity_Color, Quantity_TOC_sRGB
 
         drawer = presentation.Attributes()
+        drawer.SetTypeOfDeflection(Aspect_TOD_ABSOLUTE)
+        drawer.SetMaximalChordialDeviation(DEFAULT_DEFLECTION)
+        drawer.SetDeviationAngle(DEFAULT_ANGLE)
         drawer.SetFaceBoundaryDraw(True)
         drawer.SetFaceBoundaryAspect(
             Prs3d_LineAspect(
@@ -2158,6 +2174,11 @@ class OcctViewport(QOpenGLWidget):
         self._nav = _Nav.DRAG_PLANE
         return True
 
+    def cancel_plane_drag(self) -> None:
+        self._plane_drag = None
+        if self._nav is _Nav.DRAG_PLANE:
+            self._nav = _Nav.NONE
+
     def _plane_drag_value(self, pos: QPoint, modifiers, finished: bool):
         start, origin, u_axis, v_axis, initial_u, initial_v = self._plane_drag
         hit = self._ray_plane(self.cursor_ray(pos), origin, self._plane_normal)
@@ -2214,6 +2235,7 @@ class OcctViewport(QOpenGLWidget):
 
         camera_nav = navigation_mode(button, modifiers)
         if camera_nav is not _Nav.NONE:
+            self.cancel_plane_drag()
             # Fusion-style navigation: the wheel held down slides the sheet;
             # Shift changes the same gesture into an orbit.
             self._nav = camera_nav
@@ -2320,6 +2342,9 @@ class OcctViewport(QOpenGLWidget):
             self._last_pos = pos
             return
         if self._nav is _Nav.DRAG_PLANE and getattr(self, "_plane_drag", None) is not None:
+            if not event.buttons() & Qt.LeftButton:
+                self.cancel_plane_drag()
+                return
             value = self._plane_drag_value(pos, event.modifiers(), False)
             if value is not None:
                 self.plane_dragged.emit(value)
@@ -2349,10 +2374,15 @@ class OcctViewport(QOpenGLWidget):
         elif self._picking_points:
             self.request_snap(pos, event.modifiers())
         elif self._picking_enabled:
-            x, y = self._device_pos(pos)
-            self._context.MoveTo(x, y, self._view, True)
-            self.hover_changed.emit(self._describe_detected())
-            self.update()
+            # OCCT hit testing over a dense model can outnumber rendered frames
+            # by an order of magnitude. Clicks re-detect precisely on release.
+            now = time.monotonic()
+            if now - self._last_hover_at >= 1.0 / 60.0:
+                self._last_hover_at = now
+                x, y = self._device_pos(pos)
+                self._context.MoveTo(x, y, self._view, True)
+                self.hover_changed.emit(self._describe_detected())
+                self.update()
         self._last_pos = pos
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -2439,13 +2469,17 @@ class OcctViewport(QOpenGLWidget):
                 self.snap_picked.emit(snap)
             return
 
-        from OCP.AIS import AIS_SelectionScheme_Replace, AIS_SelectionScheme_XOR
-
-        scheme = (
-            AIS_SelectionScheme_XOR
-            if event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
-            else AIS_SelectionScheme_Replace
+        from OCP.AIS import (
+            AIS_SelectionScheme_Add, AIS_SelectionScheme_Replace,
+            AIS_SelectionScheme_XOR,
         )
+
+        if event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+            scheme = AIS_SelectionScheme_XOR
+        elif self._additive_selection:
+            scheme = AIS_SelectionScheme_Add
+        else:
+            scheme = AIS_SelectionScheme_Replace
         # Detected at the *press* position. Re-detecting where the button came
         # up means pressing on an edge and lifting a pixel to one side selects
         # the face behind it instead -- the user aimed once, and that is the

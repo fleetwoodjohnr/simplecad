@@ -1,18 +1,19 @@
 """Independent parametric fragments for model copy and paste.
 
-The clipboard stores feature state rather than B-Rep bytes.  Pasting therefore
-creates a new dependency subgraph with new feature/body identities: editing the
-copy cannot mutate the original, while dimensions and downstream operations
-remain parametric.
+The clipboard stores editable feature history, frozen parameter definitions,
+and a B-Rep checkpoint of the copy-time result. Paste remaps identities and
+references; the checkpoint avoids replaying unchanged construction history.
 """
 
 from __future__ import annotations
 
 import copy
+import base64
+import re
 import uuid
 from dataclasses import dataclass, field, replace
 
-from .document import BodyRef, Document, Feature, Group
+from .document import Body, BodyRef, Document, Feature, Group
 from .naming import SubShapeRef
 
 
@@ -23,20 +24,26 @@ class ModelFragment:
     features: list[dict]
     groups: list[dict] = field(default_factory=list)
     bounds: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
+    parameters: list[dict] = field(default_factory=list)
+    shapes: dict[str, str] = field(default_factory=dict)
+    appearance: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "items": list(self.items),
             "root_bodies": list(self.root_bodies),
             "features": copy.deepcopy(self.features),
             "groups": copy.deepcopy(self.groups),
             "bounds": self.bounds,
+            "parameters": copy.deepcopy(self.parameters),
+            "shapes": dict(self.shapes),
+            "appearance": copy.deepcopy(self.appearance),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "ModelFragment":
-        if int(data.get("version", 0)) != 1:
+        if int(data.get("version", 0)) not in (1, 2):
             raise ValueError("Unsupported SimpleCAD clipboard version")
         bounds = data.get("bounds")
         return cls(
@@ -45,10 +52,13 @@ class ModelFragment:
             features=copy.deepcopy(data.get("features", [])),
             groups=copy.deepcopy(data.get("groups", [])),
             bounds=(tuple(bounds[0]), tuple(bounds[1])) if bounds else None,
+            parameters=copy.deepcopy(data.get("parameters", [])),
+            shapes=dict(data.get("shapes", {})),
+            appearance=copy.deepcopy(data.get("appearance", {})),
         )
 
 
-def copy_fragment(document: Document, items: list[str], bounds=None) -> ModelFragment:
+def copy_fragment(document: Document, items: list[str], bounds=None, *, capture_geometry=True) -> ModelFragment:
     """Capture the history closure needed to reproduce *items*."""
     items = list(dict.fromkeys(items))
     roots = document.expand(items)
@@ -84,12 +94,31 @@ def copy_fragment(document: Document, items: list[str], bounds=None) -> ModelFra
     for item in items:
         take_group(item)
 
+    from .params import dependencies
+    from .geometry_service import serialise_shape
+
+    parameters = {p["name"]: p for p in document.parameters.to_list()}
+    needed_parameters = set().union(*(f.parameter_names() for f in chosen)) & parameters.keys()
+    pending = list(needed_parameters)
+    while pending:
+        name = pending.pop()
+        for dependency in dependencies(parameters[name]["expression"]) & parameters.keys():
+            if dependency not in needed_parameters:
+                needed_parameters.add(dependency)
+                pending.append(dependency)
+
     return ModelFragment(
         items=items,
         root_bodies=roots,
         features=[copy.deepcopy(feature.to_dict()) for feature in chosen],
         groups=[document.groups[name].to_dict() for name in group_names],
         bounds=bounds,
+        parameters=[copy.deepcopy(p) for name, p in parameters.items() if name in needed_parameters],
+        shapes={
+            name: base64.b64encode(serialise_shape(document.body(name).shape)).decode("ascii")
+            for name in roots if capture_geometry and document.body(name).shape is not None
+        },
+        appearance={name: copy.deepcopy(document.body(name).to_dict()) for name in roots},
     )
 
 
@@ -100,6 +129,15 @@ def paste_fragment(
 ) -> tuple[list[Feature], list[str]]:
     """Clone *fragment* into *document* and return features and root items."""
     source_features = [Feature.from_dict(entry) for entry in fragment.features]
+    from .geometry_service import deserialise_shape
+    from .params import Parameter, dependencies
+
+    # Validate all encoded geometry before adding any live features or parameters.
+    for name, blob in fragment.shapes.items():
+        if name not in fragment.root_bodies or deserialise_shape(base64.b64decode(blob, validate=True)) is None:
+            raise ValueError("The copied geometry is invalid.")
+    if fragment.shapes and set(fragment.shapes) != set(fragment.root_bodies):
+        raise ValueError("The copied geometry is incomplete.")
     nonce = uuid.uuid4().hex[:8]
     taken = (
         {feature.name for feature in document.features}
@@ -136,14 +174,44 @@ def paste_fragment(
     for name in body_names - roots:
         body_map[name] = f"__copy_{nonce}_{name}"
     feature_map = {
-        feature.id: f"f{uuid.uuid4().hex[:10]}" for feature in source_features
+        feature.id: f"f{uuid.uuid4().hex}" for feature in source_features
     }
+
+    object_map = {oid: uuid.uuid4().hex for f in source_features for oid in f.output_ids.values()}
+    from .graph import OutputRef
+
+    parameter_names = {p["name"] for p in document.parameters.to_list()}
+    parameter_map = {}
+    for entry in fragment.parameters:
+        name = entry["name"]
+        candidate, suffix = name + "_copy", 2
+        while candidate in parameter_names:
+            candidate = name + "_copy" + str(suffix)
+            suffix += 1
+        parameter_names.add(candidate)
+        parameter_map[name] = candidate
+
+    def expression(value):
+        if not isinstance(value, str) or isinstance(value, BodyRef):
+            return value
+        if not dependencies(value) & parameter_map.keys():
+            return value
+        return re.sub(r"\b[^\W\d]\w*\b", lambda m: parameter_map.get(m[0], m[0]), value)
+
+    new_parameters = [Parameter.from_dict({
+        **entry, "name": parameter_map[entry["name"]],
+        "expression": expression(entry["expression"]),
+    }) for entry in fragment.parameters]
 
     clones: list[Feature] = []
     for source in source_features:
-        clone = copy.deepcopy(source)
+        clone = Feature.from_dict(source.to_dict())
         clone.id = feature_map[source.id]
         clone.outputs = [body_map.get(name, name) for name in source.outputs]
+        clone.output_ids = {body_map.get(name, name): object_map[oid] for name, oid in source.output_ids.items()}
+        clone.bindings = {body_map.get(name, name): OutputRef(feature_map.get(ref.feature_id, ref.feature_id),
+                                                          object_map.get(ref.object_id, ref.object_id))
+                          for name, ref in source.bindings.items()}
         # Primitive features conventionally share their display name with
         # their body (Box -> Box). Preserve that convention in the clone. If
         # we instead spent another unique suffix on the feature, the first
@@ -155,9 +223,14 @@ def paste_fragment(
             clone.name = unique(source.name or source.label)
         clone.dropped = [body_map.get(name, name) for name in source.dropped]
         for key, value in list(clone.inputs.items()):
-            clone.inputs[key] = _rewrite_value(value, body_map, feature_map)
-        document.add_feature(clone)
+            clone.inputs[key] = expression(_rewrite_value(value, body_map, feature_map, object_map))
         clones.append(clone)
+
+    checkpoint = {
+        "features": [copy.deepcopy(f.to_dict()) for f in clones],
+        "parameters": [p.to_dict() for p in new_parameters],
+        "shapes": {body_map[name]: blob for name, blob in fragment.shapes.items()},
+    }
 
     # One shared translation preserves the assembly layout. Separate Move
     # features keep every root independently editable after the paste.
@@ -173,19 +246,19 @@ def paste_fragment(
             outputs=[new_name],
         )
         move.name = unique("Move")
-        document.add_feature(move)
         clones.append(move)
 
     group_map = {
         entry["name"]: unique(entry["name"]) for entry in fragment.groups
     }
+    new_groups = {}
     for entry in fragment.groups:
         name = group_map[entry["name"]]
         members = [
             group_map.get(member, body_map.get(member, member))
             for member in entry.get("members", [])
         ]
-        document.groups[name] = Group(
+        new_groups[name] = Group(
             name=name,
             members=members,
             visible=entry.get("visible", True),
@@ -193,20 +266,45 @@ def paste_fragment(
         )
 
     root_items = [group_map.get(item, body_map.get(item, item)) for item in fragment.items]
+    # Build and validate the entire fragment before touching the live model.
+    # A malformed clipboard entry must never leave half a pasted history.
+    for parameter in new_parameters:
+        document.parameters.set(parameter.name, parameter.expression, parameter.dimension, parameter.comment)
+    for clone in clones:
+        document.add_feature(clone)
+    document.groups.update(new_groups)
+    for old_name, appearance in fragment.appearance.items():
+        if old_name not in roots or old_name not in body_map:
+            continue
+        name = body_map[old_name]
+        document.bodies[name] = Body(
+            name=name, visible=appearance.get("visible", True),
+            color=appearance.get("color"), metadata=copy.deepcopy(appearance.get("metadata", {})),
+            id=object_map.get(appearance.get("id"), document.ref(name).object_id),
+        )
+    if checkpoint["shapes"]:
+        if not hasattr(document, "_geometry_fragments"):
+            document._geometry_fragments = []
+        document._geometry_fragments.append(checkpoint)
     return clones, root_items
 
 
-def _rewrite_value(value, body_map: dict[str, str], feature_map: dict[str, str]):
+def _rewrite_value(value, body_map: dict[str, str], feature_map: dict[str, str], object_map=None):
+    object_map = object_map or {}
     if isinstance(value, BodyRef):
-        return BodyRef(body_map.get(str(value), str(value)))
+        return BodyRef(body_map.get(str(value), str(value)), object_map.get(value.object_id, value.object_id),
+                       feature_map.get(value.feature_id, value.feature_id))
     if isinstance(value, SubShapeRef):
         return replace(
             value,
             body=body_map.get(value.body, value.body),
             feature_id=feature_map.get(value.feature_id, value.feature_id),
+            body_id=object_map.get(value.body_id, value.body_id),
         )
     if isinstance(value, list):
-        return [_rewrite_value(item, body_map, feature_map) for item in value]
+        return [_rewrite_value(item, body_map, feature_map, object_map) for item in value]
     if isinstance(value, tuple):
-        return tuple(_rewrite_value(item, body_map, feature_map) for item in value)
+        return tuple(_rewrite_value(item, body_map, feature_map, object_map) for item in value)
+    if isinstance(value, dict):
+        return {key: _rewrite_value(item, body_map, feature_map, object_map) for key, item in value.items()}
     return value

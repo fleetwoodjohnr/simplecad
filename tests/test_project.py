@@ -8,6 +8,8 @@ still be changed afterwards and the model rebuilds.
 from __future__ import annotations
 
 import zipfile
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +20,7 @@ from simplecad.core.project import EXTENSION, load, read_thumbnail, save
 from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel import operations, primitives  # noqa: F401 - registers types
 from simplecad.kernel.occ import bounding_box, volume
-from simplecad.kernel.operations import AlignFeature, FilletFeature
+from simplecad.kernel.operations import AlignFeature, FilletFeature, MoveFeature
 from simplecad.kernel.primitives import BoxFeature
 
 
@@ -81,7 +83,12 @@ def test_archive_holds_the_recipe_and_a_geometry_cache(stacked, tmp_path):
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
     assert "model.json" in names
-    assert "bodies/Base.brep" in names and "bodies/Lid.brep" in names
+    assert sum(n.startswith("geometry/") for n in names) >= 2
+    with zipfile.ZipFile(path) as archive:
+        recipe = json.loads(archive.read("model.json"))
+    assert recipe["format"] == 3
+    assert set(recipe["geometry"]) == {b.id for b in stacked.bodies.values()}
+    assert recipe["cache"]["entries"]
 
 
 def test_reopening_restores_geometry_without_rebuilding(stacked, tmp_path):
@@ -153,6 +160,79 @@ def test_the_model_rebuilds_when_the_cache_is_absent(stacked, tmp_path):
     assert cached is False
     assert Rebuilder(reopened).rebuild().ok
     assert volume(reopened.bodies["Base"].shape) == pytest.approx(60 * 40 * 12)
+
+
+def test_partial_cache_queues_rebuild_before_previews(stacked, tmp_path, monkeypatch):
+    from simplecad.core import settings
+    from simplecad.ui.main_window import MainWindow
+
+    original = save(stacked, str(tmp_path / "part.scad3"))
+    partial = str(tmp_path / "partial.scad3")
+    with zipfile.ZipFile(original) as source, zipfile.ZipFile(partial, "w") as target:
+        recipe = json.loads(source.read("model.json"))
+        missing = "geometry/" + recipe["geometry"][stacked.body("Lid").id]["sha256"] + ".brep"
+        for name in source.namelist():
+            if name != missing:
+                target.writestr(name, source.read(name))
+    reopened, cached = load(partial)
+    assert cached and reopened.body("Lid").shape is None
+
+    actions = []
+    window = SimpleNamespace()
+    window.set_document = lambda document, path: setattr(window, "document", document)
+    window.refresh_view = lambda: actions.append("show")
+    window.browser = SimpleNamespace(refresh=lambda: actions.append("browser"))
+    window.geometry = SimpleNamespace(sync_cached=lambda _doc: actions.append("sync"))
+    window.rebuild = lambda: actions.append("rebuild")
+    window.set_hint = lambda _text: None
+    window.stage = SimpleNamespace(viewport=SimpleNamespace(fit_all=lambda: None))
+    monkeypatch.setattr(settings, "remember_file", lambda _path: None)
+
+    MainWindow._open_path(window, partial)
+    assert actions == ["rebuild"]
+
+
+def test_opening_a_cached_project_seals_its_history(stacked, tmp_path, monkeypatch):
+    """The saved shapes stand in for the features that made them.
+
+    Without this the first edit after opening replays the whole history. On a
+    98-feature model here that measured 222 s against the geometry process's
+    120 s deadline, so the worker was killed, restarted, killed again, and the
+    rebuild finally ran on the GUI thread -- and the seven features that no
+    longer reproduced took the user's model with them.
+    """
+    from simplecad.core import settings
+    from simplecad.ui.main_window import MainWindow
+
+    path = save(stacked, str(tmp_path / "part.scad3"))
+    reopened, cached = load(path)
+    assert cached
+
+    window = SimpleNamespace()
+
+    def set_document(document, _path):
+        window.document = document
+        window.rebuilder = Rebuilder(document)
+
+    window.set_document = set_document
+    window.refresh_view = lambda: None
+    window.browser = SimpleNamespace(refresh=lambda: None)
+    window.geometry = SimpleNamespace(sync_cached=lambda _doc: True)
+    window.rebuild = lambda: pytest.fail("a cached open must not rebuild")
+    window.set_hint = lambda _text: None
+    window.stage = SimpleNamespace(viewport=SimpleNamespace(fit_all=lambda: None))
+    monkeypatch.setattr(settings, "remember_file", lambda _path: None)
+
+    MainWindow._open_path(window, path)
+
+    assert window.document._geometry_store.entries
+    assert window.rebuilder.rebuild().rebuilt == []
+    window.document.add_feature(MoveFeature(
+        inputs={"body": BodyRef("Base"), "dz": 3}, outputs=["Base"],
+    ))
+    report = window.rebuilder.rebuild()
+    assert report.ok
+    assert report.rebuilt == [window.document.features[-1].id]
 
 
 def test_thumbnail_round_trips(stacked, tmp_path):

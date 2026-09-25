@@ -208,22 +208,15 @@ def test_a_held_queued_arrow_still_waits_for_release_after_rebuild(model):
     assert bounding_box(window.document.body("A").shape)[0][0] == pytest.approx(.5, abs=1e-6)
 
 
-def test_in_process_rebuild_also_preserves_arrows_received_while_working(model, monkeypatch):
+def test_unavailable_worker_keeps_geometry_and_never_rebuilds_on_ui(model, monkeypatch):
     window, viewport = model.window, model.viewport
     window.geometry.available = False
     model.select("A", face=True)
-    original = window.rebuilder.rebuild
-
-    def rebuilding(*args, **kwargs):
-        QTest.keyClick(viewport, Qt.Key_Up)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(window.rebuilder, "rebuild", rebuilding)
+    before = bounding_box(window.document.body("A").shape)
+    monkeypatch.setattr(window.rebuilder, "rebuild", lambda *a, **k: pytest.fail("OCCT ran on the UI thread"))
     QTest.keyClick(viewport, Qt.Key_Up)
     window._commit_nudge()
-    monkeypatch.setattr(window.rebuilder, "rebuild", original)
-    window._commit_nudge()
-    assert bounding_box(window.document.body("A").shape)[1][2] == pytest.approx(10.5, abs=1e-6)
+    assert bounding_box(window.document.body("A").shape) == before
     assert window._nudge_state is None
 
 
@@ -416,3 +409,145 @@ def test_push_pull_opened_before_selection_reconfigures_for_round_face(model):
         f"Diameter {start + 2.0:.2f} mm"
     )
     assert window.stage.drag_readout.delta_label.text() == "+1.00 mm"
+
+
+def test_align_stack_keeps_custom_position_during_camera_change(model, monkeypatch):
+    from simplecad.kernel.align import edge_gaps_from_shape, frame_basis
+    from simplecad.kernel.detect import analyse_plane
+    from simplecad.kernel.occ import transformed
+    from simplecad.ui.selection import Picked
+    from simplecad.ui.viewport import camera
+
+    window, viewport = model.window, model.viewport
+    states = [[(0, 0, 100), (0, 0, 0), (0, 1, 0), 100]]
+    monkeypatch.setattr(camera, "read_state", lambda _view: states[0])
+    moving = window.document.body("B").shape
+    target = window.document.body("A").shape
+    bottom = next(face for face in sub_shapes(moving, "face")
+                  if (info := analyse_plane(face)) and info.normal[2] < -0.99)
+    top = next(face for face in sub_shapes(target, "face")
+               if (info := analyse_plane(face)) and info.normal[2] > 0.99)
+    window.selection.picks = [
+        Picked("B", "face", bottom, window._presentations["B"], analyse_plane(bottom)),
+        Picked("A", "face", top, window._presentations["A"], analyse_plane(top)),
+    ]
+    window.activate_tool("align_stack")
+    panel = next(w for w, _anchor in window.stage.overlays
+                 if getattr(w, "is_tool_panel", False))
+    panel.horizontal_side.setCurrentIndex(2)
+    panel.vertical_side.setCurrentIndex(2)
+    panel.fields["horizontal_gap"].set_value(2.37)
+    panel.fields["vertical_gap"].set_value(3.46)
+    panel._edge_changed()
+    pair = panel._pair()
+    frame = panel._reference_frames(*pair)[1]
+    before = bounding_box(transformed(moving, panel._solve(*pair).transform))
+    values = (panel.value("horizontal_gap"), panel.value("vertical_gap"))
+
+    states[0] = [(100, 80, 50), (0, 0, 0), (0, 0, 1), 100]
+    viewport.view_changed.emit()
+    assert (panel.value("horizontal_gap"), panel.value("vertical_gap")) == values
+    assert panel._reference_frames(*pair)[1] is frame
+    after_orbit = bounding_box(transformed(moving, panel._solve(*pair).transform))
+    assert tuple(v for corner in after_orbit for v in corner) == pytest.approx(
+        tuple(v for corner in before for v in corner)
+    )
+
+    # Every path that used to re-derive the frame from the live camera: the
+    # anchor grid and back, and a swap of the pair. A placement the user has
+    # already made must survive all of them, whatever the camera is doing.
+    panel._anchor_changed()
+    panel._edge_changed()
+    assert panel._reference_frames(*pair)[1] is frame
+    assert tuple(
+        v for corner in bounding_box(transformed(moving, panel._solve(*pair).transform))
+        for v in corner
+    ) == pytest.approx(tuple(v for corner in before for v in corner))
+    panel._swap_pair()
+    panel._swap_pair()
+    assert panel._reference_frames(*panel._pair())[1] is frame
+
+    panel.fields["horizontal_gap"].set_value(4.37)
+    panel._edge_changed()
+    assert panel._reference_frames(*pair)[1] is frame
+    placed = transformed(moving, panel._solve(*pair).transform)
+    assert edge_gaps_from_shape(frame, placed, "right", "top") == pytest.approx((4.37, 3.46))
+    expected = bounding_box(placed)
+    panel.commit()
+    assert model.finish().ok
+    saved = window.document.features[-1].inputs["target_basis"]
+    assert saved == pytest.approx(frame_basis(top, frame))
+    # The camera picks which face axis reads right and up, never an angle of
+    # its own, so what is written down is exact and survives a rebuild.
+    assert set(saved) <= {0.0, 1.0, -1.0}
+    assert tuple(v for corner in bounding_box(window.document.body("B").shape)
+                 for v in corner) == pytest.approx(
+        tuple(v for corner in expected for v in corner)
+    )
+
+
+def test_align_refreshes_faces_without_reorienting_to_new_camera(model, monkeypatch):
+    from simplecad.core.geometry_service import serialise_shape, deserialise_shape
+    from simplecad.kernel.detect import analyse_plane
+    from simplecad.kernel.occ import transformed
+    from simplecad.ui.selection import Picked
+    from simplecad.ui.viewport import camera
+
+    window = model.window
+    state = [[(0, 0, 100), (0, 0, 0), (0, 1, 0), 100]]
+    monkeypatch.setattr(camera, "read_state", lambda _: state[0])
+    picks = []
+    for name, sign in (("B", -1), ("A", 1)):
+        face = next(f for f in sub_shapes(window.document.body(name).shape, "face")
+                    if (info := analyse_plane(f)) and info.normal[2] * sign > .99)
+        picks.append(Picked(name, "face", face, window._presentations[name], analyse_plane(face)))
+    window.selection.picks = picks
+    window.activate_tool("align_stack")
+    panel = next(w for w, _ in window.stage.overlays if getattr(w, "is_tool_panel", False))
+    panel.fields["horizontal_gap"].set_value(2.37)
+    panel.fields["vertical_gap"].set_value(3.46)
+    panel._edge_changed()
+    pair = panel._pair()
+    before = bounding_box(transformed(window.document.body("B").shape, panel._solve(*pair).transform))
+    state[0] = [(100, 80, 50), (0, 0, 0), (0, 0, 1), 100]
+    for name in ("A", "B"):
+        body = window.document.body(name)
+        body.shape = deserialise_shape(serialise_shape(body.shape))
+    panel.preview()
+    pair = panel._pair()
+    assert pair is not None
+    after = bounding_box(transformed(window.document.body("B").shape, panel._solve(*pair).transform))
+    assert tuple(v for c in after for v in c) == pytest.approx(tuple(v for c in before for v in c))
+    window.document.bodies.pop("A")
+    panel.preview()
+    assert not panel.confirm.isEnabled()
+    assert "again" in panel.status.text()
+
+
+def test_copy_during_rebuild_captures_history_without_stale_shape(model):
+    import json
+    from simplecad.core.document import BodyRef
+    from simplecad.core.model_clipboard import ModelFragment
+    from simplecad.kernel.operations import MoveFeature
+    from simplecad.ui.main_window import MODEL_CLIPBOARD_MIME
+
+    window = model.window
+    model.select("A")
+    move = window.document.add_feature(MoveFeature(
+        inputs={"body": BodyRef("A"), "dx": 50}, outputs=["A"],
+    ))
+    window.geometry._busy = True
+    window.copy_selection()
+    try:
+        data = bytes(QApplication.clipboard().mimeData().data(MODEL_CLIPBOARD_MIME))
+        fragment = ModelFragment.from_dict(json.loads(data))
+        assert fragment.shapes == {}
+        assert fragment.features[-1]["id"] == move.id
+        assert fragment.features[-1]["inputs"]["dx"] == 50
+        window.paste_selection()
+        assert model.finish().ok
+        assert bounding_box(window.document.body("A").shape)[0][0] == pytest.approx(50, abs=1e-6)
+        assert bounding_box(window.document.body("B").shape)[0][0] == pytest.approx(20, abs=1e-6)
+        assert "A2" in window.document.bodies
+    finally:
+        QApplication.clipboard().clear()

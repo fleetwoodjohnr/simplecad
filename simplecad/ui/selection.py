@@ -26,6 +26,47 @@ from ..kernel.detect import CylinderInfo, PlaneInfo, analyse_cylinder, analyse_p
 WHOLE_OBJECT_KINDS = frozenset({"body", "solid", "shell", "compound"})
 
 
+class PresentationMap(dict):
+    """Body presentations with constant-time reverse lookup for picking."""
+
+    def __init__(self):
+        super().__init__()
+        self._reverse: dict[int, str] = {}
+
+    def __setitem__(self, name, presentation):
+        old = self.get(name)
+        if old is not None:
+            self._reverse.pop(id(old), None)
+        super().__setitem__(name, presentation)
+        if presentation is not None:
+            self._reverse[id(presentation)] = name
+
+    def __delitem__(self, name):
+        self._reverse.pop(id(self[name]), None)
+        super().__delitem__(name)
+
+    def pop(self, name, *default):
+        if name in self:
+            self._reverse.pop(id(self[name]), None)
+        return super().pop(name, *default)
+
+    def clear(self):
+        super().clear()
+        self._reverse.clear()
+
+    def update(self, *args, **kwargs):
+        for name, presentation in dict(*args, **kwargs).items():
+            self[name] = presentation
+
+    def setdefault(self, name, default=None):
+        if name not in self:
+            self[name] = default
+        return self[name]
+
+    def name_for(self, presentation):
+        return self._reverse.get(id(presentation))
+
+
 @dataclass
 class Picked:
     """One selected entity, with everything the UI needs to act on it."""
@@ -72,19 +113,25 @@ class SelectionModel:
 
     def refresh(self) -> None:
         self.picks = []
-        by_presentation = {id(v): k for k, v in self.presentations.items()}
+        by_presentation = None if hasattr(self.presentations, "name_for") else {
+            id(v): k for k, v in self.presentations.items()
+        }
         for entry in self.viewport.selected_entries():
             presentation = entry["presentation"]
-            name = by_presentation.get(id(presentation))
+            name = (self.presentations.name_for(presentation) if by_presentation is None
+                    else by_presentation.get(id(presentation)))
             if name is None:
                 continue
             shape = entry["shape"]
             info = None
             if entry["kind"] == "face":
                 info = analyse_plane(shape) or analyse_cylinder(shape)
+            from ..core.document import BodyRef
+            body = self.document.body(name)
+            identity = BodyRef(name, body.id, body.producer) if body else BodyRef(name)
             self.picks.append(
                 Picked(
-                    body=name, kind=entry["kind"], shape=shape,
+                    body=identity, kind=entry["kind"], shape=shape,
                     presentation=presentation, info=info,
                 )
             )
@@ -225,6 +272,18 @@ def _roundable(model: SelectionModel) -> bool:
     return bool(model.edges()) or any(p.kind == "vertex" for p in model.picks)
 
 
+def _has_edge_finish(model: SelectionModel) -> bool:
+    if len(model.picks) != 1 or model.picks[0].kind not in {"edge", "face"}:
+        return False
+    name = str(model.picks[0].body)
+    graph = model.document.prepare_graph()
+    head = graph.latest.get(name)
+    if head is None:
+        return False
+    return any(graph.features[fid].type_name in {"fillet", "chamfer", "edge_finish"}
+               for fid in graph.writers.get(head.object_id, ()))
+
+
 def _one_body(model: SelectionModel) -> bool:
     return model.only_bodies and len(model.bodies) == 1
 
@@ -271,7 +330,35 @@ def _arrangeable(model: SelectionModel) -> bool:
     )
 
 
+def texture_features(model: SelectionModel) -> list:
+    """Applied textures on the one selected body, in history order.
+
+    Relief is fused into the body, so a pick on a motif or an ordinary face
+    offers the same features. Multiple textures are chosen explicitly in the UI.
+    """
+    if len(model.bodies) != 1:
+        return []
+    name = model.bodies[0]
+    graph = model.document.prepare_graph()
+    head = graph.latest.get(name)
+    if head is None:
+        return []
+    ancestors, pending = set(), [head.feature_id]
+    while pending:
+        fid = pending.pop()
+        if fid not in ancestors:
+            ancestors.add(fid)
+            pending.extend(graph.forward.get(fid, ()))
+    return [feature for feature in model.document.features
+            if feature.id in ancestors and feature.type_name == "face_texture"
+            and not feature.suppressed and not feature.dropped]
+
+
+
 CONTEXT_ACTIONS = (
+    ("edit_edge_finish", "Edit edge finish", "fillet", _has_edge_finish),
+    ("edit_face_texture", "Edit texture", "texture", texture_features),
+    ("remove_face_texture", "Remove texture", "trash", texture_features),
     # -- relationships between two parts, which are the most specific reading
     ("clip_joint", "Create Clip Joint", "clip", _two_planar_faces),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
@@ -300,6 +387,10 @@ CONTEXT_ACTIONS = (
      lambda m: len(m.planar_faces()) == 1 and m.count == 1),
     ("text", "Add text", "text",
      lambda m: len(m.planar_faces()) == 1 and m.count == 1),
+    ("face_texture", "Face texture", "texture",
+     lambda m: m.count == 1 and (
+         len(m.planar_faces()) == 1 or len(m.round_faces()) == 1
+     )),
     ("shell", "Hollow", "shell", lambda m: len(m.planar_faces()) >= 1),
     # Below the face actions on purpose: threading a face to match something
     # else is a real thing to want, but not more likely than pulling it.

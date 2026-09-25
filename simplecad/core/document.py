@@ -16,8 +16,11 @@ never an owner of history.
 
 from __future__ import annotations
 
-import itertools
+import copy
+import hashlib
+from contextlib import contextmanager
 import uuid
+import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterator
@@ -26,6 +29,8 @@ from .errors import CadError, RebuildError
 from .naming import SubShapeRef
 from .params import ParameterSet
 from .units import Dimension
+from .observable import RecipeDict, RecipeList
+from .graph import ChangeSet, DependencyGraph, OutputRef, output_id
 
 #: type_name -> Feature subclass, populated by @register.
 REGISTRY: dict[str, type["Feature"]] = {}
@@ -51,11 +56,20 @@ class FeatureState(str, Enum):
 
 
 class BodyRef(str):
-    """An input that names another feature's output body.
+    """A display alias carrying an optional permanent output identity.
 
-    A distinct type so dependency extraction can tell "the body called Base"
-    from an ordinary string input.
+    String compatibility is restricted to UI/kernel aliases. The dependency
+    graph binds every operand to an OutputRef before any geometry is evaluated.
     """
+
+    def __new__(cls, name, object_id="", feature_id=""):
+        value = super().__new__(cls, name)
+        value.object_id = object_id or getattr(name, "object_id", "")
+        value.feature_id = feature_id or getattr(name, "feature_id", "")
+        return value
+
+    def __getnewargs__(self):
+        return str(self), self.object_id, self.feature_id
 
 
 @dataclass
@@ -68,14 +82,16 @@ class Body:
     color: str | None = None
     producer: str = ""
     metadata: dict = field(default_factory=dict)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def to_dict(self) -> dict:
         return {
+            "id": self.id,
             "name": self.name,
             "visible": self.visible,
             "color": self.color,
             "producer": self.producer,
-            "metadata": self.metadata,
+            "metadata": copy.deepcopy(self.metadata),
         }
 
 
@@ -97,10 +113,12 @@ class Group:
     members: list[str] = field(default_factory=list)
     visible: bool = True
     expanded: bool = True
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
+            "id": self.id,
             "members": list(self.members),
             "visible": self.visible,
             "expanded": self.expanded,
@@ -110,6 +128,7 @@ class Group:
     def from_dict(cls, data: dict) -> "Group":
         return cls(
             name=data["name"],
+            id=data.get("id") or output_id("group", data["name"]),
             members=list(data.get("members", [])),
             visible=data.get("visible", True),
             expanded=data.get("expanded", True),
@@ -123,6 +142,7 @@ class BuildContext:
         self.document = document
         self.bodies: dict[str, Any] = {}
         self.warnings: list[str] = []
+        self.feature_id = ""
 
     def value(self, feature: "Feature", key: str, default: float = 0.0) -> float:
         """Evaluate a numeric input, which may be an expression."""
@@ -194,6 +214,32 @@ class Feature:
     #: Which inputs are angles rather than lengths, for expression evaluation.
     dimensions: dict[str, Dimension] = {}
 
+    def __setattr__(self, key, value):
+        tracked = key in {"name", "inputs", "outputs", "suppressed", "dropped", "bindings", "output_ids"}
+        if key in {"inputs", "bindings", "output_ids"}:
+            value = RecipeDict(value, self._touch)
+        elif key in {"outputs", "dropped"}:
+            value = RecipeList(value, self._touch)
+        changed = tracked and getattr(self, key, None) != value
+        object.__setattr__(self, key, value)
+        if changed:
+            self._touch()
+
+    def _touch(self):
+        object.__setattr__(self, "_version", getattr(self, "_version", 0) + 1)
+        owner = getattr(self, "_owner", None)
+        document = owner() if owner else None
+        if document is not None:
+            document._feature_changed(self)
+
+    def dependency_key(self):
+        from .graph import input_names
+        return (tuple(self.outputs), tuple(input_names(self)),
+                tuple((r.body, r.feature_id) for r in self.shape_refs()),
+                tuple(self.bindings.items()), tuple(self.output_ids.items()),
+                tuple((str(v), v.object_id, v.feature_id) for v in self.reference_values()),
+                tuple(sorted(self.parameter_names())))
+
     def __init__(
         self,
         feature_id: str | None = None,
@@ -201,10 +247,12 @@ class Feature:
         inputs: dict | None = None,
         outputs: list[str] | None = None,
     ) -> None:
-        self.id = feature_id or f"f{uuid.uuid4().hex[:10]}"
+        self.id = feature_id or f"f{uuid.uuid4().hex}"
         self.name = name
         self.inputs: dict[str, Any] = dict(inputs or {})
         self.outputs: list[str] = list(outputs or [])
+        self.output_ids: dict[str, str] = {}
+        self.bindings: dict[str, OutputRef] = {}
         self.suppressed = False
         self.state = FeatureState.OK
         self.message = ""
@@ -212,30 +260,38 @@ class Feature:
         self.dropped: list[str] = []
 
     # -- graph ----------------------------------------------------------
+    def reference_values(self):
+        def walk(value):
+            if isinstance(value, BodyRef):
+                yield value
+            elif isinstance(value, dict):
+                for child in value.values():
+                    yield from walk(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    yield from walk(child)
+        yield from walk(self.inputs)
+
     def body_inputs(self) -> list[str]:
         """Names of bodies this feature reads."""
-        found = []
-        for value in self.inputs.values():
-            if isinstance(value, BodyRef):
-                found.append(str(value))
-            elif isinstance(value, (list, tuple)):
-                found.extend(str(v) for v in value if isinstance(v, BodyRef))
-        return found
+        return [str(value) for value in self.reference_values()]
 
     def shape_refs(self) -> list[SubShapeRef]:
-        """Sub-shape references this feature holds."""
-        found = []
-        for value in self.inputs.values():
+        """Sub-shape references this feature holds, including nested settings."""
+        def walk(value):
             if isinstance(value, SubShapeRef):
-                found.append(value)
+                yield value
+            elif isinstance(value, dict):
+                for child in value.values():
+                    yield from walk(child)
             elif isinstance(value, (list, tuple)):
-                found.extend(v for v in value if isinstance(v, SubShapeRef))
-        return found
+                for child in value:
+                    yield from walk(child)
+        return list(walk(self.inputs))
 
     def parameter_names(self) -> set[str]:
         """Parameters referenced by this feature's expressions."""
         from .params import dependencies
-
         names: set[str] = set()
         for value in self.inputs.values():
             if isinstance(value, str) and not isinstance(value, BodyRef):
@@ -283,6 +339,8 @@ class Feature:
             "name": self.name,
             "inputs": _encode_inputs(self.inputs),
             "outputs": list(self.outputs),
+            "output_ids": dict(self.output_ids),
+            "bindings": {name: ref.to_dict() for name, ref in self.bindings.items()},
             "suppressed": self.suppressed,
             "dropped": list(self.dropped),
         }
@@ -302,6 +360,8 @@ class Feature:
             inputs=_decode_inputs(data.get("inputs", {})),
             outputs=data.get("outputs", []),
         )
+        feature.output_ids = dict(data.get("output_ids", {}))
+        feature.bindings = {n: OutputRef.from_dict(r) for n, r in data.get("bindings", {}).items()}
         feature.suppressed = data.get("suppressed", False)
         feature.dropped = list(data.get("dropped", []))
         return feature
@@ -317,10 +377,14 @@ def _encode_inputs(inputs: dict) -> dict:
             out[key] = {"__ref__": value.to_dict()}
         elif isinstance(value, BodyRef):
             out[key] = {"__body__": str(value)}
+            if value.object_id:
+                out[key].update(object_id=value.object_id, feature_id=value.feature_id)
         elif isinstance(value, (list, tuple)):
             out[key] = [_encode_inputs({"v": v})["v"] for v in value]
+        elif isinstance(value, dict):
+            out[key] = _encode_inputs(value)
         else:
-            out[key] = value
+            out[key] = copy.deepcopy(value)
     return out
 
 
@@ -329,16 +393,51 @@ def _decode_inputs(data: dict) -> dict:
         if isinstance(value, dict) and "__ref__" in value:
             return SubShapeRef.from_dict(value["__ref__"])
         if isinstance(value, dict) and "__body__" in value:
-            return BodyRef(value["__body__"])
+            return BodyRef(value["__body__"], value.get("object_id", ""), value.get("feature_id", ""))
         if isinstance(value, list):
             return [decode(v) for v in value]
-        return value
+        if isinstance(value, dict):
+            return {k: decode(v) for k, v in value.items()}
+        return copy.deepcopy(value)
 
     return {key: decode(value) for key, value in data.items()}
 
 
 class Document:
     """Bodies, features and parameters, plus the dependency graph over them."""
+
+    @property
+    def features(self):
+        return self._features
+
+    @features.setter
+    def features(self, value):
+        self._features = RecipeList(value, self._features_changed)
+        if hasattr(self, "_pending_changes"):
+            self._features_changed()
+
+    def _features_changed(self):
+        old = self._graph_index
+        current = {f.id: f for f in self.features}
+        previous = old.features if old is not None else {}
+        changed = {fid for fid in current.keys() | previous.keys()
+                   if current.get(fid) is not previous.get(fid)}
+        self._signature_dirty.update(old.dependents(changed) if old else changed)
+        for feature in self.features:
+            feature._owner = weakref.ref(self)
+        self._graph_dirty = True
+        self.revision += 1
+
+    def _feature_changed(self, feature):
+        self._signature_dirty.add(feature.id)
+        self._pending_changes.add(feature.id)
+        key = feature.dependency_key()
+        if key != getattr(feature, "_dependency_key", None):
+            self._graph_dirty = True
+            if self._graph_index is not None:
+                self._signature_dirty.update(self._graph_index.dependents({feature.id}))
+        feature._dependency_key = key
+        self.revision += 1
 
     def __init__(self, title: str = "Untitled") -> None:
         self.title = title
@@ -347,25 +446,140 @@ class Document:
         self.bodies: dict[str, Body] = {}
         self.groups: dict[str, Group] = {}
         self.metadata: dict = {}
-        self._counters: dict[str, itertools.count] = {}
+        self._counters: dict[str, int] = {}
+        self._graph_index = None
+        self._graph_key = None
+        self._graph_dirty = True
+        self._signature_dirty = set()
+        self._signature_cache = {}
+        self.revision = 0
+        self._pending_changes = set()
+        self._retired_ids = set()
+        self._history_data = {}
+        self._geometry_store = None
+        self._rebuilder = None
+        # Imported source geometry is part of the recipe, not an evictable
+        # result cache. Keep retired blobs for redo until history is saved.
+        self.assets: dict[str, bytes] = {}
+        self._all_assets: dict[str, bytes] = {}
+
+    def add_asset(self, blob: bytes) -> str:
+        key = hashlib.sha256(blob).hexdigest()
+        self.assets[key] = blob
+        self._all_assets[key] = blob
+        self.revision += 1
+        return key
+
+    def active_asset_keys(self) -> set[str]:
+        """Embedded geometry still referenced by the current feature recipe."""
+        return {str(feature.inputs["asset"]) for feature in self.features
+                if feature.type_name == "embedded_import" and feature.inputs.get("asset")}
 
     # -- features -------------------------------------------------------
     def add_feature(self, feature: Feature, index: int | None = None) -> Feature:
+        if feature.id in self._retired_ids or any(f.id == feature.id for f in self.features):
+            raise CadError("A feature with this ID already exists.")
+        self.prepare_graph()
         if not feature.name:
             feature.name = self.unique_name(feature.label)
         if index is None:
             self.features.append(feature)
         else:
             self.features.insert(index, feature)
+        self.prepare_graph()
+        self._pending_changes.add(feature.id)
+        self.revision += 1
         return feature
 
-    def remove_feature(self, feature_id: str) -> None:
-        feature = self.feature(feature_id)
+    def remove_feature(self, feature_id: str, *, splice: bool = True) -> ChangeSet:
+        graph = self.prepare_graph()
+        feature = graph.features.get(feature_id)
         if feature is None:
-            return
-        for name in feature.outputs:
-            self.bodies.pop(name, None)
+            return ChangeSet()
+        affected = graph.dependents({feature_id})
+        # Removing a modifier is an explicit graph edit. Removing an object
+        # instead leaves dangling IDs, which can never bind to a later namesake.
+        if splice:
+            for child in self.features:
+                for alias, ref in list(child.bindings.items()):
+                    if ref.feature_id != feature_id:
+                        continue
+                    source = next((r for r in feature.bindings.values()
+                                   if r.object_id == ref.object_id), None)
+                    if source is not None:
+                        child.bindings[alias] = source
+                        for shape_ref in child.shape_refs():
+                            if shape_ref.feature_id == feature_id and shape_ref.body == alias:
+                                object.__setattr__(shape_ref, "feature_id", source.feature_id)
+        self._retired_ids.add(feature_id)
         self.features = [f for f in self.features if f.id != feature_id]
+        for name, oid in feature.output_ids.items():
+            if not any(oid in f.output_ids.values() for f in self.features):
+                body = self.bodies.get(name)
+                if body is not None and body.id == oid:
+                    self.bodies.pop(name, None)
+        self._pending_changes.update(affected)
+        self.revision += 1
+        self.prepare_graph()
+        return ChangeSet(removed={feature_id}, affected=affected, revision=self.revision)
+
+    def ref(self, name: str) -> BodyRef:
+        graph = self.prepare_graph()
+        ref = graph.latest.get(name)
+        if ref is None:
+            raise CadError(f"The body '{name}' is no longer available.")
+        return BodyRef(name, ref.object_id, ref.feature_id)
+
+    def rename_body(self, old, new):
+        if new in self.bodies and new != old:
+            raise CadError(f"There is already a body called '{new}'.")
+        self.prepare_graph()
+        from dataclasses import replace
+        def rename(value):
+            if isinstance(value, BodyRef) and str(value) == old:
+                return BodyRef(new, value.object_id, value.feature_id)
+            if isinstance(value, SubShapeRef) and value.body == old:
+                return replace(value, body=new)
+            if isinstance(value, list):
+                return [rename(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(rename(v) for v in value)
+            if isinstance(value, dict):
+                return {k: rename(v) for k, v in value.items()}
+            return value
+        for feature in self.features:
+            feature.outputs = [new if n == old else n for n in feature.outputs]
+            feature.dropped = [new if n == old else n for n in feature.dropped]
+            feature.inputs = rename(feature.inputs)
+            if old in feature.output_ids:
+                feature.output_ids[new] = feature.output_ids.pop(old)
+            if old in feature.bindings:
+                feature.bindings[new] = feature.bindings.pop(old)
+        body = self.bodies.pop(old, None)
+        if body:
+            body.name = new
+            self.bodies[new] = body
+        for group in self.groups.values():
+            group.members = [new if n == old else n for n in group.members]
+        self.prepare_graph()
+        self.revision += 1
+
+    @contextmanager
+    def transaction(self, label: str):
+        """One atomic, reversible edit; exceptions restore the original state."""
+        from .history import History
+        history = getattr(self, "_history", None) or History(self)
+        before = self.to_dict()
+        try:
+            yield self
+            self.prepare_graph()
+        except BaseException:
+            from .history import Snapshot
+            history._apply(Snapshot(label, before))
+            raise
+        if self.to_dict() != before:
+            history.record_data(label, before)
+            self.revision += 1
 
     def feature(self, feature_id: str) -> Feature | None:
         return next((f for f in self.features if f.id == feature_id), None)
@@ -379,16 +593,15 @@ class Document:
         )
 
     def unique_name(self, base: str) -> str:
-        """``Box``, ``Box2``, ``Box3`` -- matching how the timeline reads."""
+        """Allocate a display name without recycling a retired suffix."""
         taken = {f.name for f in self.features} | set(self.bodies) | set(self.groups)
-        if base not in taken:
-            return base
-        counter = self._counters.setdefault(base, itertools.count(2))
-        for suffix in counter:
-            candidate = f"{base}{suffix}"
+        suffix = self._counters.get(base, 1)
+        while True:
+            candidate = base if suffix == 1 else f"{base}{suffix}"
+            suffix += 1
             if candidate not in taken:
+                self._counters[base] = suffix
                 return candidate
-        raise AssertionError("unreachable")
 
     def rename_feature(self, feature_id: str, new_name: str) -> None:
         feature = self.feature(feature_id)
@@ -399,86 +612,47 @@ class Document:
         feature.name = new_name
 
     # -- graph ----------------------------------------------------------
+    def prepare_graph(self) -> DependencyGraph:
+        if self._graph_index is None or self._graph_dirty:
+            self._graph_index = DependencyGraph(self)
+            for feature in self.features:
+                feature._owner = weakref.ref(self)
+                feature._dependency_key = feature.dependency_key()
+            self._graph_dirty = False
+        return self._graph_index
+
     def producer_of(self, body_name: str) -> Feature | None:
-        """The last feature in the timeline that writes *body_name*."""
-        for feature in reversed(self.features):
-            if body_name in feature.outputs:
-                return feature
-        return None
+        graph = self.prepare_graph()
+        ref = graph.latest.get(body_name)
+        return graph.features.get(ref.feature_id) if ref else None
 
     def dependencies_of(self, feature: Feature) -> set[str]:
-        """Feature ids *feature* depends on, via bodies and sub-shape refs."""
-        found: set[str] = set()
-        position = self.index_of(feature.id)
-        for body_name in feature.body_inputs():
-            # Bind to the most recent writer *before* this feature.
-            for candidate in reversed(self.features[:position]):
-                if body_name in candidate.outputs:
-                    found.add(candidate.id)
-                    break
-        for ref in feature.shape_refs():
-            if ref.feature_id and ref.feature_id != feature.id:
-                found.add(ref.feature_id)
-        return found
+        return set(self.prepare_graph().forward.get(feature.id, ()))
 
     def dependents_of(self, feature_ids: set[str]) -> set[str]:
-        """Everything downstream of *feature_ids*, transitively."""
-        dirty = set(feature_ids)
-        changed = True
-        while changed:
-            changed = False
-            for feature in self.features:
-                if feature.id in dirty:
-                    continue
-                if self.dependencies_of(feature) & dirty:
-                    dirty.add(feature.id)
-                    changed = True
-        return dirty
+        return self.prepare_graph().dependents(feature_ids)
 
     def features_using_parameter(self, name: str) -> set[str]:
-        return {f.id for f in self.features if name in f.parameter_names()}
+        # Expressions may have changed without changing geometry bindings.
+        graph = self.prepare_graph()
+        graph.parameter_users.clear()
+        for feature in self.features:
+            for parameter in feature.parameter_names():
+                graph.parameter_users[parameter].add(feature.id)
+        return graph.parameter_dependents(name, self.parameters)
 
     def topological_order(self) -> list[Feature]:
-        """Timeline order, adjusted so dependencies always come first."""
-        order: list[Feature] = []
-        placed: set[str] = set()
-        remaining = list(self.features)
-        while remaining:
-            progressed = False
-            for feature in list(remaining):
-                if self.dependencies_of(feature) <= placed:
-                    order.append(feature)
-                    placed.add(feature.id)
-                    remaining.remove(feature)
-                    progressed = True
-            if not progressed:
-                # A cycle: emit the rest in timeline order and let the rebuild
-                # report the failure rather than looping here.
-                order.extend(remaining)
-                break
-        return order
+        return list(self.prepare_graph().order)
 
     def ordering_is_valid(self, features: list[Feature]) -> bool:
-        """Can this ordering be built -- is every input available in time?
-
-        Checked directly against the candidate list rather than via
-        :meth:`dependencies_of`, which binds each body input to the most recent
-        writer *before* the feature. That binding is position-sensitive: asking
-        it about a reordered list would just silently rebind the input to a
-        different producer instead of reporting the move as invalid.
-        """
-        written: set[str] = set()
-        seen: set[str] = set()
+        graph = self.prepare_graph()
+        seen = set()
         for feature in features:
-            for body_name in feature.body_inputs():
-                if body_name not in written:
-                    return False
-            for ref in feature.shape_refs():
-                if ref.feature_id and ref.feature_id != feature.id:
-                    if ref.feature_id not in seen:
-                        return False
+            if not graph.forward[feature.id] <= seen:
+                return False
+            if any(not ref.feature_id for ref in feature.bindings.values()):
+                return False
             seen.add(feature.id)
-            written.update(feature.outputs)
         return True
 
     def can_reorder(self, feature_id: str, new_index: int) -> bool:
@@ -571,7 +745,10 @@ class Document:
 
     # -- bodies ---------------------------------------------------------
     def body(self, name: str) -> Body | None:
-        return self.bodies.get(name)
+        body = self.bodies.get(name)
+        if body is not None and getattr(name, "object_id", body.id) not in ("", body.id):
+            return None
+        return body
 
     def visible_bodies(self) -> Iterator[Body]:
         return (b for b in self.bodies.values() if b.visible and b.shape is not None)
@@ -736,29 +913,41 @@ class Document:
 
     # -- serialisation --------------------------------------------------
     def to_dict(self) -> dict:
+        self.prepare_graph()
         return {
             "title": self.title,
+            "counters": dict(self._counters),
+            "retired_ids": sorted(self._retired_ids),
             "parameters": self.parameters.to_list(),
             "features": [f.to_dict() for f in self.features],
             "bodies": [b.to_dict() for b in self.bodies.values()],
-            "groups": [g.to_dict() for g in self.groups.values()],
-            "metadata": self.metadata,
+            "groups": [{**g.to_dict(), "member_ids": [
+                self.groups[n].id if n in self.groups else self.bodies[n].id
+                for n in g.members if n in self.groups or n in self.bodies
+            ]} for g in self.groups.values()],
+            "metadata": copy.deepcopy(self.metadata),
+            "assets": sorted(self.active_asset_keys()),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Document":
         document = cls(data.get("title", "Untitled"))
         document.parameters = ParameterSet.from_list(data.get("parameters", []))
-        document.metadata = data.get("metadata", {})
-        for entry in data.get("features", []):
-            document.features.append(Feature.from_dict(entry))
+        document.metadata = copy.deepcopy(data.get("metadata", {}))
+        document._asset_keys = set(data.get("assets", []))
+        document._counters = dict(data.get("counters", {}))
+        document._retired_ids = set(data.get("retired_ids", []))
+        # Loading is one structural change. Appending through the observable
+        # list repeatedly scans a growing prefix and makes large opens quadratic.
+        document.features = [Feature.from_dict(entry) for entry in data.get("features", [])]
         for entry in data.get("bodies", []):
             body = Body(
                 name=entry["name"],
+                id=entry.get("id") or output_id(entry.get("producer", "legacy"), entry["name"]),
                 visible=entry.get("visible", True),
                 color=entry.get("color"),
                 producer=entry.get("producer", ""),
-                metadata=entry.get("metadata", {}),
+                metadata=copy.deepcopy(entry.get("metadata", {})),
             )
             document.bodies[body.name] = body
         # Absent from files written before grouping existed, which load fine
@@ -766,4 +955,15 @@ class Document:
         for entry in data.get("groups", []):
             group = Group.from_dict(entry)
             document.groups[group.name] = group
+        names_by_id = {b.id: b.name for b in document.bodies.values()}
+        names_by_id.update({g.id: g.name for g in document.groups.values()})
+        for entry in data.get("groups", []):
+            if "member_ids" in entry:
+                document.groups[entry["name"]].members = [names_by_id[i] for i in entry["member_ids"] if i in names_by_id]
+        graph = document.prepare_graph()
+        for name, body in document.bodies.items():
+            ref = graph.latest.get(name)
+            if ref is not None:
+                body.id = ref.object_id
+                body.producer = ref.feature_id
         return document

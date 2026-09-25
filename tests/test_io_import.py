@@ -45,6 +45,33 @@ def cylinder():
 
 
 class TestRoundTrip:
+    def test_openscad_source_renders_through_3mf_into_an_editable_solid(
+        self, box, tmp_path, monkeypatch,
+    ):
+        import shutil
+        import subprocess
+
+        rendered = tmp_path / "rendered.3mf"
+        export_shapes([box], str(rendered))
+        source = tmp_path / "part.scad"
+        source.write_text("cube([50, 40, 20]);")
+        calls = []
+
+        def render(arguments, **_kwargs):
+            calls.append(arguments)
+            shutil.copyfile(rendered, arguments[2])
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/openscad")
+        monkeypatch.setattr(subprocess, "run", render)
+        imported = import_bodies(str(source))
+        assert calls[0][1] == "-o"
+        assert calls[0][2].endswith(".3mf")
+        assert calls[0][3] == str(source)
+        assert len(imported) == 1
+        assert is_valid(imported[0].shape)
+        assert volume(imported[0].shape) == pytest.approx(volume(box), rel=1e-5)
+
     @pytest.mark.parametrize("extension", [".step", ".stp", ".stl", ".obj", ".3mf"])
     def test_dimensions_survive(self, box, tmp_path, extension):
         path = str(tmp_path / f"part{extension}")

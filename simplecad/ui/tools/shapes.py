@@ -7,8 +7,11 @@ numbers that matter, press Create. Everything stays parametric afterwards.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QAbstractScrollArea, QBoxLayout, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QScrollArea, QVBoxLayout, QWidget,
+)
 
 from ...core.units import Dimension
 from ...kernel.decorative import (
@@ -126,12 +129,15 @@ class ShapePanel(FloatingCard):
         self._kind = "box"
         self.fields: dict[str, ValueField] = {}
         self.setFixedWidth(312)
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._fit_after_rebuild)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(
+        self.root = QVBoxLayout(self)
+        self.root.setContentsMargins(
             METRICS.space(4), METRICS.space(3.5), METRICS.space(4), METRICS.space(3.5)
         )
-        layout.setSpacing(METRICS.space(3))
+        self.root.setSpacing(METRICS.space(3))
 
         header = QHBoxLayout()
         title = QLabel("Add a shape")
@@ -141,24 +147,51 @@ class ShapePanel(FloatingCard):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(close)
-        layout.addLayout(header)
+        self.root.addLayout(header)
+
+        self.content = QWidget(self)
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(METRICS.space(3))
 
         self._tiles: dict[str, ToolTile] = {}
         grid = QGridLayout()
+        self.tile_grid = grid
         grid.setSpacing(METRICS.space(1))
         for index, (kind, icon_name, label) in enumerate(LABELS):
             tile = ToolTile(icon_name, label, palette)
             tile.clicked.connect(lambda _=False, k=kind: self.choose(k))
             grid.addWidget(tile, index // 4, index % 4)
             self._tiles[kind] = tile
-        layout.addLayout(grid)
+        self.content_layout.addLayout(grid)
+        # The first choice is built before the panel is shown, when a scroll
+        # area's viewport still reports a tiny placeholder width. Keep the
+        # grid's real minimum width through that first layout pass.
+        self.content.setMinimumWidth(grid.minimumSize().width())
 
-        layout.addWidget(SectionLabel("Size", palette))
+        self.content_layout.addWidget(SectionLabel("Size", palette))
         self.fields_host = QWidget()
         self.fields_layout = QVBoxLayout(self.fields_host)
         self.fields_layout.setContentsMargins(0, 0, 0, 0)
         self.fields_layout.setSpacing(METRICS.space(1.5))
-        layout.addWidget(self.fields_host)
+        self.content_layout.addWidget(self.fields_host)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("ShapeScroll")
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        self.scroll.setWidget(self.content)
+        self.scroll.setStyleSheet(
+            "QScrollArea#ShapeScroll, QScrollArea#ShapeScroll > QWidget, "
+            "QScrollArea#ShapeScroll > QWidget > QWidget "
+            "{ background: transparent; border: none; }"
+        )
+        self.content.setAutoFillBackground(False)
+        self.scroll.viewport().setAutoFillBackground(False)
+        self.root.addWidget(self.scroll)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
@@ -168,9 +201,16 @@ class ShapePanel(FloatingCard):
         create.clicked.connect(self.commit)
         buttons.addWidget(cancel)
         buttons.addWidget(create, 1)
-        layout.addLayout(buttons)
+        self.root.addLayout(buttons)
 
         self.choose("box")
+
+    def apply_palette(self, palette: Palette) -> None:
+        super().apply_palette(palette)
+        for child in self.findChildren(QWidget):
+            apply = getattr(child, "apply_palette", None)
+            if apply is not None:
+                apply(palette)
 
     def choose(self, kind: str) -> None:
         self._kind = kind
@@ -183,8 +223,11 @@ class ShapePanel(FloatingCard):
     def _rebuild_fields(self) -> None:
         while self.fields_layout.count():
             item = self.fields_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            row = item.widget()
+            if row is not None:
+                row.hide()
+                row.setParent(None)
+                row.deleteLater()
         self.fields = {}
         for key, label, default in FIELDS[self._kind]:
             dimension = (
@@ -202,8 +245,62 @@ class ShapePanel(FloatingCard):
             row = LabeledField(label, field, self._palette)
             self.fields_layout.addWidget(row)
             self.fields[key] = field
-        self.adjustSize()
+        self.fields_layout.invalidate()
+        self.fields_host.setMinimumHeight(0)
+        self.content.setMinimumHeight(0)
+        self.content_layout.invalidate()
+        self.fields_host.updateGeometry()
+        self.content.updateGeometry()
+        # Newly created ValueFields receive their final style and size hints
+        # on the next Qt layout pass. Measuring now leaves Vent's six rows at
+        # the old Box height, so coalesce rapid choices and fit afterwards.
+        self._fit_timer.start(0)
+
+    def _fit_after_rebuild(self) -> None:
+        self.fit_to_height(self.window_.stage.height() - METRICS.space(8))
         self.window_.stage._layout_overlays()
+
+    def fit_to_height(self, maximum: int) -> None:
+        """Keep the shape tiles at full size and scroll when space is short."""
+        maximum = max(180, int(maximum))
+        width = min(312, max(220, self.window_.stage.width() - METRICS.space(8)))
+        self.setFixedWidth(width)
+        columns = 4 if width >= 300 else 3
+        for index, tile in enumerate(self._tiles.values()):
+            self.tile_grid.addWidget(tile, index // columns, index % columns)
+        self.tile_grid.invalidate()
+        self.tile_grid.activate()
+        self.content.setMinimumWidth(self.tile_grid.minimumSize().width())
+        for index in range(self.fields_layout.count()):
+            row = self.fields_layout.itemAt(index).widget()
+            row.layout().setDirection(QBoxLayout.LeftToRight if columns == 4 else QBoxLayout.TopToBottom)
+            row.layout().invalidate()
+            row.updateGeometry()
+        self.fields_host.setMinimumHeight(0)
+        self.content.setMinimumHeight(0)
+        self.fields_layout.invalidate()
+        self.fields_layout.activate()
+        self.fields_host.setMinimumHeight(self.fields_layout.sizeHint().height())
+        self.content_layout.invalidate()
+        self.content_layout.activate()
+        content_height = self.content_layout.sizeHint().height()
+        self.content.setMinimumHeight(content_height)
+        margins = self.root.contentsMargins()
+        chrome = margins.top() + margins.bottom()
+        chrome += self.root.itemAt(0).sizeHint().height()
+        chrome += self.root.itemAt(2).sizeHint().height()
+        chrome += self.root.spacing() * 2
+        self.scroll.setFixedHeight(min(content_height, max(40, maximum - chrome)))
+        self.setMaximumHeight(maximum)
+        self.root.invalidate()
+        self.root.activate()
+        self.adjustSize()
+        self.content.resize(
+            max(self.content.minimumWidth(), self.scroll.viewport().width()),
+            content_height,
+        )
+        self.content_layout.invalidate()
+        self.content_layout.activate()
 
     def commit(self) -> None:
         feature_class = FEATURES[self._kind]

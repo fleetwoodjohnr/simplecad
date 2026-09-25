@@ -56,6 +56,7 @@ PATHS: dict[str, str] = {
     "union": '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/><path d="M12 7.1a6 6 0 0 0 0 9.8" opacity=".35"/>',
     "intersect": '<circle cx="9" cy="12" r="6" stroke-dasharray="2.5 2.5"/><circle cx="15" cy="12" r="6" stroke-dasharray="2.5 2.5"/><path d="M12 7.1a6 6 0 0 1 0 9.8 6 6 0 0 1 0-9.8"/>',
     "pattern": '<circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="18" r="2.2"/><circle cx="12" cy="12" r="2.2" opacity=".5"/>',
+    "texture": '<path d="M3 3h18v18H3z"/><path d="m3 10 7-7M3 18 18 3M9 21 21 9M17 21l4-4" opacity=".7"/>',
     "print": '<path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/>',
     # --- chrome ---
     "create": '<path d="M12 4v16M4 12h16"/><path d="m18.5 3 .6 1.4L20.5 5l-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/>',

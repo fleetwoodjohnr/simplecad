@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QCheckBox, QGridLayout, QWidget
 from ...core.document import BodyRef
 from ...kernel.operations import BooleanFeature
 from ..theme import METRICS
+from ..viewport.occt_view import SelectionMode
 from ..widgets.controls import GhostButton
 from .base import FeaturePreviewController, ToolPanel
 from .modeling import _need
@@ -54,6 +55,14 @@ class CombinePanel(ToolPanel):
     # -- construction ----------------------------------------------------
     def build(self) -> None:
         self._bodies = list(self.selection.bodies)
+        self._validated_feature = None
+        self._pending_feature = None
+        self._validated_revision = None
+        self._listening_for_edits = True
+        viewport = self.window_.stage.viewport
+        self._previous_selection_modes = viewport.selection_modes
+        viewport.set_selection_modes((SelectionMode.BODY,))
+        viewport.set_additive_selection(True)
         self._preview_controller = FeaturePreviewController(
             self, self._previewed, delay_ms=PREVIEW_DELAY_MS
         )
@@ -82,6 +91,12 @@ class CombinePanel(ToolPanel):
         self.keep.stateChanged.connect(lambda _v: self.preview())
         self.add_widget(self.keep)
 
+        self.retry = GhostButton("Retry preview")
+        self.retry.clicked.connect(self.preview)
+        self.retry.hide()
+        self.add_widget(self.retry)
+        self.window_.geometry.started.connect(self._model_changed)
+
         self._describe()
         self.preview()
 
@@ -93,6 +108,17 @@ class CombinePanel(ToolPanel):
     @property
     def tools(self) -> list[str]:
         return self._bodies[1:]
+
+    def on_selection_changed(self) -> None:
+        """Keep the target order while adding or removing live viewport picks."""
+        selected = self.selection.bodies
+        bodies = [name for name in self._bodies if name in selected]
+        bodies.extend(name for name in selected if name not in bodies)
+        if bodies == self._bodies:
+            return
+        self._bodies = bodies
+        self._describe()
+        self.preview()
 
     def _choose(self, key: str) -> None:
         self.operation = key
@@ -114,7 +140,10 @@ class CombinePanel(ToolPanel):
 
     def _describe(self) -> None:
         if len(self._bodies) < 2:
-            self.set_subtitle("Select two or more bodies to combine.")
+            self.set_subtitle(
+                f"Target: {self.target}. Click another body to add a tool."
+                if self._bodies else "Click a body to choose the target."
+            )
             self.swap.setEnabled(False)
             return
         self.swap.setEnabled(True)
@@ -128,8 +157,19 @@ class CombinePanel(ToolPanel):
 
     # -- preview ---------------------------------------------------------
     def preview(self) -> None:
-        feature = self._feature()
-        self._preview_controller.request(feature.to_dict() if feature else None)
+        self._validated_feature = None
+        self.retry.hide()
+        self._preview_warning = ""
+        self._pending_feature = self._feature()
+        self.confirm.setEnabled(False)
+        self.window_.stage.viewport.clear_ghost()
+        self.warn(
+            "Building the preview… this can take a few seconds on large parts."
+            if self._pending_feature else ""
+        )
+        self._preview_controller.request(
+            self._pending_feature.to_dict() if self._pending_feature else None
+        )
 
     def _previewed(self, message: dict) -> None:
         from ...core.geometry_service import deserialise_shape
@@ -139,15 +179,31 @@ class CombinePanel(ToolPanel):
         error = message.get("error")
         if not blob:
             viewport.clear_ghost()
+            self._validated_feature = None
+            self._preview_warning = ""
             if len(self._bodies) >= 2:
-                self.warn(error or "These bodies do not overlap in a usable way.")
+                self.warn(error or "The combine preview could not be built.")
+            else:
+                self.warn("")
             if hasattr(self, "confirm"):
                 self.confirm.setEnabled(False)
+            self.retry.setVisible(bool(self._pending_feature))
             return
-        self.warn("")
-        viewport.show_ghost(
-            deserialise_shape(blob), self.window_.palette_.accent, transparency=0.12
-        )
+        try:
+            shape = deserialise_shape(blob)
+            viewport.show_ghost(
+                shape, self.window_.palette_.accent, transparency=0.12
+            )
+        except Exception as exc:  # noqa: BLE001 - a corrupt preview is not a commit
+            self._validated_feature = None
+            self._preview_warning = ""
+            self.confirm.setEnabled(False)
+            self.warn(f"The preview could not be displayed: {exc}")
+            return
+        self._validated_feature = self._pending_feature
+        self._validated_revision = self.window_.geometry.latest_revision
+        self._preview_warning = " ".join(str(warning) for warning in message.get("warnings", []))
+        self.warn(self._preview_warning)
         if hasattr(self, "confirm"):
             self.confirm.setEnabled(True)
 
@@ -166,8 +222,17 @@ class CombinePanel(ToolPanel):
 
     # -- lifecycle -------------------------------------------------------
     def teardown(self) -> None:
+        if self._listening_for_edits:
+            self.window_.geometry.started.disconnect(self._model_changed)
+            self._listening_for_edits = False
         self._preview_controller.close()
-        self.window_.stage.viewport.clear_ghost()
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        viewport.set_additive_selection(False)
+        viewport.set_selection_modes(self._previous_selection_modes)
+
+    def _model_changed(self) -> None:
+        self.preview()
 
     def commit(self) -> None:
         if not _need(
@@ -175,22 +240,29 @@ class CombinePanel(ToolPanel):
             "Select two or more bodies to combine.",
         ):
             return
-        self.window_.add_feature(
-            BooleanFeature(
-                inputs={
-                    "body": BodyRef(self.target),
-                    "tools": [BodyRef(name) for name in self.tools],
-                    "operation": self.operation,
-                    "keep_tool": self.keep.isChecked(),
-                },
-                outputs=[self.target],
-            )
-        )
+        if self._validated_feature is None or self._validated_revision != self.window_.geometry.latest_revision:
+            self.warn("Wait for a successful preview before applying.")
+            return
+        warning = self._preview_warning
+        feature = self._validated_feature
+        # Stop listening before the commit announces its own rebuild.
+        self.window_.geometry.started.disconnect(self._model_changed)
+        self._listening_for_edits = False
+        self.window_.add_feature(feature)
         label = dict((key, name) for key, name, _h in OPERATIONS)[self.operation]
-        self.window_.set_hint(
+        # Said out loud: a Join that keeps its tools leaves both bodies in the
+        # browser, which looks exactly like a Join that did not happen.
+        kept = (
+            f" {', '.join(self.tools)} kept as separate "
+            f"{'bodies' if len(self.tools) > 1 else 'body'}."
+            if self.keep.isChecked() else ""
+        )
+        hint = (
             f"{label}: {', '.join(self.tools)} → {self.target}."
+            + kept + (f" {warning}" if warning else "")
         )
         self.window_.cancel_tool()
+        self.window_.set_hint(hint)
 
 
 # Registered as one factory per entry point rather than by stacking decorators

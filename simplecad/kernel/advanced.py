@@ -8,6 +8,8 @@ diameter moves all eight, rather than leaving the user to place them by hand.
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BodyRef, BuildContext, Feature, register
@@ -22,7 +24,7 @@ def _fuse_all(shapes, operation: str):
 
     result = shapes[0]
     for other in shapes[1:]:
-        result = built_shape(BRepAlgoAPI_Fuse(result, other), operation)
+        result = built_shape(boolean_builder(BRepAlgoAPI_Fuse, result, other), operation)
     return unify(result)
 
 

@@ -100,3 +100,28 @@ class ImportFeature(Feature):
         name = self.outputs[0] if self.outputs else imported.name
         self.outputs = [name]
         return {name: shape}
+
+
+@register("embedded_import")
+class EmbeddedImportFeature(Feature):
+    """A self-contained imported solid, independent of its former file path."""
+
+    label = "Imported solid"
+
+    def execute(self, ctx: BuildContext) -> dict:
+        from ..core.geometry_service import deserialise_shape
+
+        asset = str(self.inputs.get("asset") or "")
+        blob = ctx.document.assets.get(asset)
+        if blob is None:
+            raise CadError(
+                f"The embedded geometry for '{self.name}' is missing.",
+                suggestion="Restore the project from a complete .scad3 file.",
+            )
+        shape = deserialise_shape(blob)
+        if shape is None:
+            raise CadError(f"The embedded geometry for '{self.name}' is damaged.")
+        offset = tuple(ctx.value(self, axis, 0.0) for axis in ("dx", "dy", "dz"))
+        if any(abs(value) > 1e-12 for value in offset):
+            shape = transformed(shape, make_transform(translate=offset))
+        return {self.outputs[0]: shape}

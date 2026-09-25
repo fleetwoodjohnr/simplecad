@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 from ..core.document import BodyRef, BuildContext, Feature, register
 from ..core.errors import CadError
 from ..core.units import Dimension
@@ -103,9 +105,9 @@ def build_section_replacement(
         BRepPrimAPI_MakePrism(face, gp_Vec(*_scale(inward, depth))),
         "section replacement boundary",
     )
-    removed = built_shape(BRepAlgoAPI_Common(target, cutter), "section replacement preview")
-    remaining = built_shape(BRepAlgoAPI_Cut(target, cutter), "section replacement cut")
-    result = unify(built_shape(BRepAlgoAPI_Fuse(remaining, placed), "section replacement"))
+    removed = built_shape(boolean_builder(BRepAlgoAPI_Common, target, cutter), "section replacement preview")
+    remaining = built_shape(boolean_builder(BRepAlgoAPI_Cut, target, cutter), "section replacement cut")
+    result = unify(built_shape(boolean_builder(BRepAlgoAPI_Fuse, remaining, placed), "section replacement"))
 
     if not is_valid(result) or _solid_count(result) != 1:
         raise CadError(

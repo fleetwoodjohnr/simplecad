@@ -339,3 +339,96 @@ def test_align_feature_persists_face_local_anchor_inputs():
     placed_face = face_with_normal(document.bodies["Post"].shape, (0, 0, -1))
     expected = frame.point(frame.x_bounds[0] + 28, frame.y_bounds[0] + 25)
     assert analyse_plane(placed_face).center == pytest.approx(expected, abs=1e-5)
+
+
+# ----------------------------------------------------------------------
+# Edge-gap frames: the camera picks an axis, never an angle
+# ----------------------------------------------------------------------
+def test_the_view_frame_uses_the_faces_own_axes_whatever_the_camera():
+    """Otherwise "the left edge" is a diagonal, and the saved basis is a tilt.
+
+    A frame taken straight from the projected camera vectors sits at whatever
+    angle the user happened to be looking from -- one model here stores 13.3
+    degrees. Gaps typed against an edge are then not measured to that edge, and
+    the four dot products written into the file describe a direction OCCT is
+    free to re-author under them.
+    """
+    from simplecad.kernel.align import frame_basis, view_frame
+
+    target = box(80, 60, 12)
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    base = planar_frame(target_face)
+    axes = {
+        tuple(round(v, 9) for v in axis)
+        for axis in (
+            base.x_axis, tuple(-v for v in base.x_axis),
+            base.y_axis, tuple(-v for v in base.y_axis),
+        )
+    }
+
+    cameras = (
+        ((0, 0, -1), (0, 1, 0)),                  # straight down
+        ((0, 0, -1), (1, 0, 0)),                  # straight down, turned 90
+        ((-0.577, -0.577, -0.577), (0, 0, 1)),    # iso: up is along the normal
+        ((0, -1, -0.02), (0, 0, 1)),              # nearly edge on
+    )
+    for direction, up in cameras:
+        frame = view_frame(target_face, direction, up)
+        assert tuple(round(v, 9) for v in frame.x_axis) in axes
+        assert tuple(round(v, 9) for v in frame.y_axis) in axes
+        assert set(frame_basis(target_face, frame)) <= {0.0, 1.0, -1.0}
+        # U right, V up and the outward normal stay right-handed.
+        cross = (
+            frame.x_axis[1] * frame.y_axis[2] - frame.x_axis[2] * frame.y_axis[1],
+            frame.x_axis[2] * frame.y_axis[0] - frame.x_axis[0] * frame.y_axis[2],
+            frame.x_axis[0] * frame.y_axis[1] - frame.x_axis[1] * frame.y_axis[0],
+        )
+        assert sum(a * b for a, b in zip(cross, frame.normal)) == pytest.approx(1.0)
+
+
+def test_a_legacy_tilted_basis_still_rebuilds_where_it_was_authored():
+    """Saved placements must not move because the convention improved."""
+    from simplecad.kernel.align import basis_is_axis_aligned, frame_from_basis
+
+    target = box(80, 60, 12)
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    base = planar_frame(target_face)
+    tilted = [0.9730015907360747, 0.23079840646128483,
+              -0.2307984064612848, 0.9730015907360746]
+    assert not basis_is_axis_aligned(tilted)
+
+    frame = frame_from_basis(target_face, tilted)
+
+    def combine(a, b):
+        return tuple(
+            base.x_axis[i] * a + base.y_axis[i] * b for i in range(3)
+        )
+
+    assert frame.x_axis == pytest.approx(combine(tilted[0], tilted[1]), abs=1e-12)
+    assert frame.y_axis == pytest.approx(combine(tilted[2], tilted[3]), abs=1e-12)
+
+
+def test_a_re_authored_plane_does_not_take_the_placement_with_it():
+    """The stored basis names a face axis; a rebuild may renumber those.
+
+    ``planar_frame`` reads the plane's authored X direction, which is whatever
+    OCCT produced. When a rebuild re-authors it, the same four numbers point
+    somewhere else -- and the part that was placed against an edge quietly
+    moves. The world direction saved beside them settles it.
+    """
+    from simplecad.kernel.align import frame_from_basis
+
+    target = box(80, 60, 12)
+    target_face = face_with_normal(target, (0, 0, 1), at_height=12.0)
+    base = planar_frame(target_face)
+    swapped = [0.0, 1.0, -1.0, 0.0]       # as if X and Y had been renumbered
+
+    restored = frame_from_basis(
+        target_face, swapped,
+        world_u=base.x_axis, world_normal=base.normal,
+    )
+
+    assert restored.x_axis == pytest.approx(base.x_axis, abs=1e-12)
+    assert frame_from_basis(target_face, swapped).x_axis == pytest.approx(
+        base.y_axis, abs=1e-12
+    )

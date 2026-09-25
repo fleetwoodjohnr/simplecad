@@ -33,7 +33,7 @@ from .panels.dimension_labels import DimensionOverlay
 from .panels.sketch_bar import SketchBar
 from .panels.context_bar import ContextBar
 from .panels.model_browser import ModelBrowser
-from .selection import SelectionModel, available_actions
+from .selection import SelectionModel, available_actions, texture_features
 from .theme import DARK, METRICS, Mode, Palette, resolve, stylesheet
 from .viewport.occt_view import OcctViewport, SelectionMode, StandardView
 from .widgets.controls import FloatingCard, Hint, IconButton, ToolTile
@@ -685,10 +685,14 @@ class MainWindow(QMainWindow):
         self.geometry.started.connect(self._on_geometry_started)
         self.geometry.finished.connect(self._on_geometry_finished)
         self.geometry.failed.connect(self._on_geometry_failed)
+        self.geometry.progress.connect(self._on_geometry_progress)
+        self.geometry.saved.connect(self._on_project_saved)
+        self._edit_epoch = 0
         self.geometry.start()
         self._dirty = False
         self._session_id = f"{os.getpid()}"
-        self._presentations: dict[str, object] = {}
+        from .selection import PresentationMap
+        self._presentations: dict[str, object] = PresentationMap()
         #: The recovery offer, while it is on screen. Never modal -- see
         #: ``_offer_recovery``.
         self._recovery_bar = None
@@ -699,6 +703,8 @@ class MainWindow(QMainWindow):
         self._shown: dict[str, object] = {}
         #: Root items to select when the outstanding paste rebuild completes.
         self._select_after_rebuild: list[str] = []
+        self._select_after_rebuild_revision = 0
+        self._geometry_recovery_revision = 0
         #: Arrow presses inside one 250 ms burst share these latched camera axes
         #: and become one feature/history operation.
         self._nudge_state: dict | None = None
@@ -1084,18 +1090,21 @@ class MainWindow(QMainWindow):
         bindings hold the GIL for the whole of every kernel call -- which is why
         this is a process. See docs/architecture.md.
 
-        If the child is unavailable the rebuild happens here instead: slower and
-        blocking, but the application keeps working.
+        If the worker is unavailable, retry its asynchronous startup and preserve
+        the last valid displayed geometry.
         """
         if self.geometry.available and self.geometry.request(
             self.document, self._stale, force
         ):
             self._stale.clear()
             return
-        self._rebuild_in_process(force)
+        if self.geometry.start() and self.geometry.request(self.document, self._stale, force):
+            self._stale.clear()
+            return
+        self.set_hint("The geometry engine is unavailable. The last valid model is preserved; retry to restart it.")
 
     def _rebuild_in_process(self, force: bool = False) -> None:
-        """The fallback path, used when the geometry process is unavailable."""
+        """Explicit synchronous rebuild for controlled diagnostics and tests."""
         from PySide6.QtGui import QCursor
         from PySide6.QtWidgets import QApplication
 
@@ -1129,10 +1138,25 @@ class MainWindow(QMainWindow):
     def _on_geometry_started(self) -> None:
         self.set_hint("Working…")
 
+    def _on_geometry_progress(self, message: dict) -> None:
+        """Say which feature the geometry process is on.
+
+        A rebuild of a large history is minutes of honest work. Without this it
+        is minutes of an application that looks hung.
+        """
+        total = int(message.get("total") or 0)
+        name = message.get("feature") or "the model"
+        self.set_hint(
+            f"Building {name}…" if total <= 1 else
+            f"Building {name} ({int(message.get('index', 0)) + 1} of {total})…"
+        )
+
     def _on_geometry_finished(self, message) -> None:
+        self._geometry_recovery_revision = 0
         apply_result(self.document, message)
         self._refresh_rebuilt_model(message.get("report", {}).get("ok", True))
-        self._select_pasted_items()
+        if message.get("revision", 0) >= self._select_after_rebuild_revision:
+            self._select_pasted_items()
         report = message.get("report", {})
         warnings = report.get("warnings") or []
         self.set_hint(warnings[-1] if warnings else report.get("summary", ""))
@@ -1141,17 +1165,25 @@ class MainWindow(QMainWindow):
         self._cancel_nudge()
         self.set_hint(error)
         if self.geometry.available:
-            # The child died and came back. It came back *empty* -- a fresh
-            # child holds no document -- so send it one. Rebuilds would repair
-            # themselves on the next edit, but previews would quietly answer
-            # nothing until then, and a fillet handle that silently stopped
-            # showing anything is exactly the sort of half-dead this whole
-            # change is about.
+            if self.geometry.busy:
+                # A restarted worker is already receiving the latest document.
+                return
+            if (
+                self._geometry_recovery_revision
+                and self._geometry_recovery_revision == self.geometry.latest_revision
+            ):
+                # A failed recovery is a real error. Repeating the same force
+                # rebuild forever would leave every preview parked behind it.
+                return
+            # A cached-shape sync failed, or the worker had no state to replay.
+            # Rebuild once from the feature history before pending previews.
             self.rebuild(force=True)
+            self._geometry_recovery_revision = self.geometry.latest_revision
             return
         # No child at all any more. In-process is slower and cannot protect the
         # window from OCCT, but losing the session outright is worse.
-        self._rebuild_in_process()
+        # Kernel failures must never move their work onto the GUI thread.
+        # Retain the displayed model until the user explicitly retries.
 
     def wait_for_rebuild(self, timeout_ms: int = 300_000) -> bool:
         """Block until the model is up to date. For scripts and tests only."""
@@ -1492,8 +1524,15 @@ class MainWindow(QMainWindow):
                 self._restore_nudge_selection()
             else:
                 self._cancel_nudge()
+            self.selection.refresh()
+            self.refresh_context_bar()
         finally:
             self._nudge_refreshing = False
+        # Placement stores durable references and re-resolves them against a
+        # newly displayed body without reading the camera again.
+        for panel, _anchor in self.stage.overlays:
+            if hasattr(panel, "_placement_refs"):
+                panel.preview()
 
     def _restore_nudge_selection(self) -> None:
         state, self._nudge_restore = self._nudge_restore, None
@@ -1887,6 +1926,13 @@ class MainWindow(QMainWindow):
         self._refresh_dimensions()
         self.sketch_bar.show_state(self.canvas.last_result)
 
+    def _sketch_redo(self) -> None:
+        if self.canvas is None:
+            return
+        self.canvas.redo_last()
+        self._refresh_dimensions()
+        self.sketch_bar.show_state(self.canvas.last_result)
+
     def end_sketch(self, commit: bool = True, quiet: bool = False) -> None:
         """Leave the drawing session, optionally keeping what was drawn."""
         if self.canvas is None:
@@ -1933,7 +1979,15 @@ class MainWindow(QMainWindow):
 
     # -- undo / redo -----------------------------------------------------
     def undo(self) -> None:
+        focused = QApplication.focusWidget()
+        if self._is_typing() and callable(getattr(focused, "undo", None)):
+            focused.undo()
+            return
+        if self.sketching:
+            self._sketch_undo()
+            return
         self._cancel_nudge()
+        self._close_texture_editor()
         label = self.history.undo_label
         stale = self.history.undo()
         if stale is None:
@@ -1945,7 +1999,15 @@ class MainWindow(QMainWindow):
         self.set_hint(f"Undid {label}." if label else "Undone.")
 
     def redo(self) -> None:
+        focused = QApplication.focusWidget()
+        if self._is_typing() and callable(getattr(focused, "redo", None)):
+            focused.redo()
+            return
+        if self.sketching:
+            self._sketch_redo()
+            return
         self._cancel_nudge()
+        self._close_texture_editor()
         label = self.history.redo_label
         stale = self.history.redo()
         if stale is None:
@@ -1958,6 +2020,7 @@ class MainWindow(QMainWindow):
 
     # -- autosave --------------------------------------------------------
     def mark_dirty(self) -> None:
+        self._edit_epoch = getattr(self, "_edit_epoch", 0) + 1
         self._dirty = True
         self.top_bar.title.setText(f"{self.document.title} \u2022")
 
@@ -1980,8 +2043,9 @@ class MainWindow(QMainWindow):
 
         if not self._dirty or not self.document.features:
             return
-        if autosave.write(self.document, self._session_id):
-            self.set_hint("Autosaved.")
+        if not self.geometry.saving:
+            self.geometry.save(self.document, autosave.recovery_path(self._session_id),
+                               token={"epoch": self._edit_epoch, "autosave": True})
 
     def _offer_recovery(self) -> None:
         """If a previous session did not exit cleanly, offer its work back.
@@ -2033,7 +2097,11 @@ class MainWindow(QMainWindow):
         bar.show()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        """A clean exit clears the recovery file; a crash leaves it behind."""
+        """Finish an outstanding atomic save before stopping its worker."""
+        if self.geometry.saving:
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
         from ..core import autosave
 
         autosave.clear(self._session_id)
@@ -2119,24 +2187,7 @@ class MainWindow(QMainWindow):
             return
         self.history.record("Rename")
 
-        for feature in self.document.features:
-            feature.outputs = [new if o == old else o for o in feature.outputs]
-            for key, value in list(feature.inputs.items()):
-                if isinstance(value, BodyRef) and str(value) == old:
-                    feature.inputs[key] = BodyRef(new)
-                elif isinstance(value, list):
-                    feature.inputs[key] = [
-                        BodyRef(new) if isinstance(v, BodyRef) and str(v) == old
-                        else v for v in value
-                    ]
-            for ref in feature.shape_refs():
-                if ref.body == old:
-                    object.__setattr__(ref, "body", new)
-
-        body = self.document.bodies.pop(old, None)
-        if body is not None:
-            body.name = new
-            self.document.bodies[new] = body
+        self.document.rename_body(old, new)
         presentation = self._presentations.pop(old, None)
         if presentation is not None:
             self._presentations[new] = presentation
@@ -2157,7 +2208,8 @@ class MainWindow(QMainWindow):
         if body is None or body.shape is None:
             return
         fragment = copy_fragment(
-            self.document, [name], bounds=bounding_box(body.shape)
+            self.document, [name], bounds=bounding_box(body.shape),
+            capture_geometry=not self.is_rebuilding,
         )
         if not fragment.features:
             self.set_hint(f"'{name}' has no feature history to copy.")
@@ -2184,7 +2236,7 @@ class MainWindow(QMainWindow):
             # Nothing left for this feature to produce, so it goes -- and so
             # does anything it had consumed, or deleting both halves of a split
             # would hand the user back the undivided part they just cut up.
-            self.document.remove_feature(feature.id)
+            self.document.remove_feature(feature.id, splice=False)
             for source in feature.consumed_bodies():
                 if source != name:
                     self._retire_body(source)
@@ -2203,7 +2255,79 @@ class MainWindow(QMainWindow):
         self.rebuild()
         self.set_hint(f"Deleted {name}.")
 
+    def _close_texture_editor(self) -> None:
+        from .tools.face_texture import FaceTexturePanel
+
+        if any(isinstance(widget, FaceTexturePanel) for widget, _ in self.stage.overlays):
+            self.cancel_tool()
+
+    def _texture_action(self, action: str) -> None:
+        """Choose a texture from the selected part, then act on its feature ID."""
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+        from ..kernel.face_texture import PACKAGES
+
+        self.selection.refresh()
+        candidates = texture_features(self.selection)
+        if not candidates:
+            self.set_hint("Select a part with an applied texture.")
+            return
+        target = candidates[0].id
+        if len(candidates) > 1:
+            menu = QMenu(self)
+            menu.setObjectName("TextureChooser")
+            for feature in candidates:
+                pattern = str(feature.inputs.get("pattern", "horizontal_lines"))
+                definition = PACKAGES.get(
+                    str(feature.inputs.get("package", "builtin.v1")), {},
+                ).get(pattern)
+                label = definition.label if definition else pattern.replace("_", " ")
+                item = menu.addAction(f"{feature.name} — {label}")
+                item.setData(feature.id)
+            chosen = menu.exec(QCursor.pos())
+            if chosen is None:
+                menu.deleteLater()
+                return
+            target = chosen.data()
+            menu.deleteLater()
+        # The menu runs an event loop; the model may have changed meanwhile.
+        self.selection.refresh()
+        if target not in {feature.id for feature in texture_features(self.selection)}:
+            self.set_hint("That texture is no longer available.")
+            return
+        self._feature_action(target, action)
+
+    def _remove_face_texture(self, target: str) -> None:
+        feature = self.document.feature(target)
+        if feature is None or feature.type_name != "face_texture":
+            self.set_hint("That texture is no longer available.")
+            return
+        self._cancel_nudge()
+        self._close_texture_editor()
+        self.history.record(f"Remove Texture from {feature.inputs.get('body', feature.name)}")
+        dirty = self.document.dependents_of({target})
+        self.invalidate(dirty)
+        # Keep the body record (including the last valid solid and appearance)
+        # while its earlier features and downstream modifiers rebuild.
+        bodies = {name: self.document.body(name) for name in feature.outputs}
+        self.document.remove_feature(target)
+        self.document.bodies.update({name: body for name, body in bodies.items() if body is not None})
+        self.selection.refresh()
+        self.refresh_context_bar()
+        self.mark_dirty()
+        self.rebuild()
+        self.set_hint(f"Removed {feature.name}.")
+
     def _feature_action(self, target: str, action: str) -> None:
+        if action == "edit":
+            feature = self.document.feature(target)
+            if feature is not None and feature.type_name == "face_texture":
+                self._texture_edit_feature_id = target
+                self.run_action("face_texture")
+            elif feature is not None and feature.type_name in {"fillet", "chamfer", "edge_finish"}:
+                self._edge_edit_feature_id = target
+                self.run_action("edit_edge_finish")
+            return
         if action == "rename":
             feature_id, _, new = target.partition(":")
             try:
@@ -2220,6 +2344,9 @@ class MainWindow(QMainWindow):
 
         feature = self.document.feature(target)
         if feature is None:
+            return
+        if action == "delete" and feature.type_name == "face_texture":
+            self._remove_face_texture(target)
             return
         self.history.record(action.title())
         if action == "delete":
@@ -2374,7 +2501,8 @@ class MainWindow(QMainWindow):
         if not shapes:
             return
         fragment = copy_fragment(
-            self.document, items, bounds=_combined_bounds(shapes)
+            self.document, items, bounds=_combined_bounds(shapes),
+            capture_geometry=not self.is_rebuilding,
         )
         roots = self._paste_model_fragment(fragment, "Duplicate")
         if roots:
@@ -2398,7 +2526,8 @@ class MainWindow(QMainWindow):
             self.set_hint("There is no built model in the selection to copy.")
             return
         fragment = copy_fragment(
-            self.document, items, bounds=_combined_bounds(shapes)
+            self.document, items, bounds=_combined_bounds(shapes),
+            capture_geometry=not self.is_rebuilding,
         )
         mime = QMimeData()
         mime.setData(
@@ -2431,7 +2560,8 @@ class MainWindow(QMainWindow):
         if root_items:
             self.set_hint(f"Pasted {', '.join(root_items)} beside the model.")
 
-    def _paste_model_fragment(self, fragment, history_label: str) -> list[str]:
+    def _paste_model_fragment(self, fragment, history_label: str,
+                              assets: dict[str, bytes] | None = None) -> list[str]:
         """Insert one fragment; shared by Paste and Duplicate."""
         from ..core.model_clipboard import paste_fragment
 
@@ -2451,10 +2581,13 @@ class MainWindow(QMainWindow):
             )
 
         self.history.record(history_label)
+        for blob in (assets or {}).values():
+            self.document.add_asset(blob)
         _features, root_items = paste_fragment(self.document, fragment, offset)
         self._select_after_rebuild = root_items
         self.mark_dirty()
         self.rebuild()
+        self._select_after_rebuild_revision = self.geometry.latest_revision
         if not self.is_rebuilding:
             self.browser.refresh()
             self._select_pasted_items()
@@ -2490,7 +2623,8 @@ class MainWindow(QMainWindow):
         if not shapes:
             return
         fragment = copy_fragment(
-            self.document, [name], bounds=_combined_bounds(shapes)
+            self.document, [name], bounds=_combined_bounds(shapes),
+            capture_geometry=not self.is_rebuilding,
         )
         roots = self._paste_model_fragment(fragment, "Duplicate")
         if roots:
@@ -2726,6 +2860,8 @@ class MainWindow(QMainWindow):
     # -- commands -------------------------------------------------------
     def run_command(self, key: str) -> None:
         handlers = {
+            "edit_face_texture": lambda: self._texture_action("edit"),
+            "remove_face_texture": lambda: self._texture_action("delete"),
             "export": self.export_model,
             "import": self.import_model,
             "save": self.save_document,
@@ -2741,6 +2877,7 @@ class MainWindow(QMainWindow):
             "group": self.group_selection,
             "ungroup": self.ungroup_selection,
             "hide": self.hide_selection,
+            "rebuild_all": self.rebuild_everything,
             "theme": self.toggle_theme,
             "projection": self._toggle_projection,
             "view_grid": self._toggle_grid,
@@ -2753,6 +2890,18 @@ class MainWindow(QMainWindow):
             "view_right": lambda: self._standard_view(StandardView.RIGHT),
         }
         handlers.get(key, lambda: self.set_hint(f"{key} is not available yet."))()
+
+    def rebuild_everything(self) -> None:
+        """Replay the whole feature history, ignoring any adopted geometry.
+
+        Opening a saved project adopts the shapes stored with it, so an edit
+        builds only itself. This is how to ask for the honest replay instead --
+        and how to find out that a history no longer reproduces what was saved,
+        which is worth knowing before it is discovered by accident.
+        """
+        self.set_hint("Rebuilding every feature…")
+        self.rebuilder.drop_baseline()
+        self.rebuild(force=True)
 
     def hide_selection(self) -> None:
         """Hide whatever is selected -- a group as one thing."""
@@ -2835,17 +2984,43 @@ class MainWindow(QMainWindow):
         """
         from PySide6.QtWidgets import QFileDialog
 
-        from ..core.errors import translate
-        from ..kernel.importing import ImportFeature, forget, read_bodies
         from ..kernel.io_formats import import_filter
 
         path, _filter = QFileDialog.getOpenFileName(
             self, "Import a 3D model", "", import_filter()
         )
-        if path:
-            self.import_path(path)
+        if not path:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        from ..core.errors import translate
+        from ..core.project import inspect_bodies
+        from ..kernel.importing import forget, read_bodies
 
-    def import_path(self, path: str) -> list[str]:
+        try:
+            if path.lower().endswith(".scad3"):
+                candidates = inspect_bodies(path)
+            else:
+                forget(path)
+                candidates = [(index, body.name) for index, body in enumerate(read_bodies(path))]
+        except Exception as exc:  # noqa: BLE001 - report file and parser errors
+            self._report_import_failure(path, translate(exc, "import"))
+            return
+        if not candidates:
+            self.set_hint("This file contains no objects to import.")
+            return
+        key = candidates[0][0]
+        if len(candidates) > 1:
+            labels = [f"{name}  ({index + 1})" for index, (_id, name) in enumerate(candidates)]
+            choice, accepted = QInputDialog.getItem(
+                self, "Import one object", "Object to import:",
+                labels + ["All objects"], 0, False,
+            )
+            if not accepted:
+                return
+            key = None if choice == "All objects" else candidates[labels.index(choice)][0]
+        self.import_path(path, object_key=key, _inspected=True)
+
+    def import_path(self, path: str, object_key=None, *, _inspected=False) -> list[str]:
         """Import *path*, returning the names of the bodies it created.
 
         Split out from :meth:`import_model` so the import can be driven without
@@ -2856,11 +3031,15 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QApplication
 
         from ..core.errors import translate
-        from ..kernel.importing import ImportFeature, forget, read_bodies
+        from ..kernel.importing import EmbeddedImportFeature, forget, read_bodies
         from ..kernel.io_formats import import_filter  # noqa: F401
 
+        if path.lower().endswith(".scad3"):
+            return self._import_native_project(path, object_key)
+
         # The file may have changed since it was last read in this session.
-        forget(path)
+        if not _inspected:
+            forget(path)
         # Read here rather than in the geometry process because the placement
         # below needs the bounds before any feature exists. A large mesh takes
         # seconds, so it says so -- an unannounced pause on a file the user
@@ -2870,21 +3049,25 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         try:
             bodies = read_bodies(path)
+            chosen = list(enumerate(bodies)) if object_key is None else [(int(object_key), bodies[int(object_key)])]
+            if not chosen:
+                raise ValueError("The file contains no objects to import.")
         except Exception as exc:  # noqa: BLE001 - reported, never fatal
             self._report_import_failure(path, translate(exc, "import"))
             return []
         finally:
             QApplication.restoreOverrideCursor()
 
-        offset = self._placement_for([body.shape for body in bodies])
+        offset = self._placement_for([body.shape for _index, body in chosen])
         self.history.record("Import")
         created = []
-        for index, body in enumerate(bodies):
+        from ..core.geometry_service import serialise_shape
+        for _index, body in chosen:
             name = self.document.unique_name(body.name or "Imported")
-            feature = ImportFeature(
+            asset = self.document.add_asset(serialise_shape(body.shape))
+            feature = EmbeddedImportFeature(
                 inputs={
-                    "path": path,
-                    "index": index,
+                    "asset": asset,
                     "dx": round(offset[0], 4),
                     "dy": round(offset[1], 4),
                     "dz": round(offset[2], 4),
@@ -2910,6 +3093,55 @@ class MainWindow(QMainWindow):
             + ("…" if len(created) > 4 else "")
         )
         return created
+
+    def _import_native_project(self, path: str, object_key=None) -> list[str]:
+        """Clone one editable dependency closure from a native project."""
+        from ..core.errors import CadError, translate
+        from ..core.geometry_service import serialise_shape
+        from ..core.model_clipboard import copy_fragment
+        from ..core.project import load
+        from ..core.rebuild import Rebuilder
+
+        try:
+            source, _cached = load(path)
+            names = ([body.name for body in source.bodies.values()]
+                     if object_key is None else
+                     [next(body.name for body in source.bodies.values()
+                           if body.id == object_key or body.name == object_key)])
+            if any(source.body(name).shape is None for name in names):
+                report = Rebuilder(source).rebuild()
+                if not report.ok:
+                    raise CadError("The selected model could not be rebuilt from its source project.")
+            if any(source.body(name).shape is None for name in names):
+                raise CadError("The selected model has no usable geometry.")
+            from ..kernel.occ import bounding_box as bounds_of
+            bounds = [bounds_of(source.body(name).shape) for name in names]
+            low = tuple(min(pair[0][axis] for pair in bounds) for axis in range(3))
+            high = tuple(max(pair[1][axis] for pair in bounds) for axis in range(3))
+            fragment = copy_fragment(source, names, bounds=(low, high))
+            assets = {}
+            source_builder = source._rebuilder or Rebuilder(source)
+            source_builder._prepare()
+            for entry in fragment.features:
+                if entry["type"] == "embedded_import":
+                    sha = entry["inputs"]["asset"]
+                    assets[sha] = source._all_assets[sha]
+                elif entry["type"] == "import":
+                    feature = source.feature(entry["id"])
+                    outputs = source_builder._get(feature.id)
+                    shape = outputs[feature.outputs[0]]
+                    blob = serialise_shape(shape)
+                    import hashlib
+                    sha = hashlib.sha256(blob).hexdigest()
+                    assets[sha] = blob
+                    entry["type"] = "embedded_import"
+                    entry["inputs"] = {"asset": sha}
+            created = self._paste_model_fragment(fragment, "Import", assets)
+            self.set_hint(f"Imported {', '.join(created)} from {os.path.basename(path)}.")
+            return created
+        except Exception as exc:  # noqa: BLE001 - never leave a partial import
+            self._report_import_failure(path, translate(exc, "import"))
+            return []
 
     def _report_import_failure(self, path: str, error) -> None:
         """Say what went wrong loudly enough to be noticed.
@@ -2973,18 +3205,28 @@ class MainWindow(QMainWindow):
             )
             if not path:
                 return
-        try:
-            path = save(self.document, path, thumbnail=self._thumbnail())
-        except Exception as exc:  # noqa: BLE001 - surfaced, never fatal
-            from ..core.errors import translate
+        token = {"epoch": self._edit_epoch, "autosave": False}
+        if self.geometry.save(self.document, path, thumbnail=self._thumbnail(), token=token):
+            self.set_hint("Saving project…")
+        else:
+            self.set_hint("The geometry engine is unavailable; the project could not be saved. Retry to restart it.")
 
-            self.set_hint(str(translate(exc, "save")))
+    def _on_project_saved(self, message):
+        token = message.get("token") or {}
+        if message.get("error"):
+            self.set_hint(f"Could not save: {message['error']}")
+            return
+        if message.get("generation") != self.geometry._generation:
+            return
+        if token.get("autosave"):
+            self.set_hint("Autosaved.")
             return
         from ..core.settings import remember_file
-
+        path = message["path"]
         self._project_path = path
         self.document.title = os.path.splitext(os.path.basename(path))[0]
-        self.mark_clean()
+        if token.get("epoch") == self._edit_epoch:
+            self.mark_clean()
         remember_file(path)
         self.set_hint(f"Saved to {path}")
 
@@ -3032,16 +3274,23 @@ class MainWindow(QMainWindow):
             return
 
         self.set_document(document, path)
-        if cached:
-            # The saved geometry came from a consistent build, so show it as-is.
-            # Rebuilding here would re-execute every feature and throw the cache
-            # away -- a fresh Rebuilder starts with an empty cache, so this is
-            # the difference between opening instantly and waiting out every
-            # thread in the model. The first edit rebuilds what it touches.
+        if cached and getattr(document, "_cache_complete", False):
+            # The saved geometry came from a consistent build, so show it
+            # as-is, and let it stand in for the history that made it -- here
+            # and in the worker. Replaying that history instead is the
+            # difference between opening instantly and waiting out every thread
+            # in the model, and on a model whose features no longer reproduce
+            # exactly it is the difference between keeping the part and losing
+            # it. Editing anything already in the timeline drops the adopted
+            # geometry and replays the history honestly; Rebuild All asks for
+            # that outright.
             self.refresh_view()
             self.browser.refresh()
+            self.geometry.sync_cached(document)
+            if not document._geometry_store.entries:
+                self.rebuilder.adopt_baseline()
         else:
-            self.set_hint("Rebuilding from the feature history…")
+            self.set_hint("Restoring the missing geometry…")
             self.rebuild()
         from ..core.settings import remember_file
 
@@ -3052,12 +3301,18 @@ class MainWindow(QMainWindow):
     def set_document(self, document, path: str | None = None) -> None:
         """Replace the open document, clearing anything left on screen."""
         self._cancel_nudge()
+        self.close_tool_panels()
+        self.stage.viewport.clear_ghost()
+        self.stage.viewport.clear_selection()
         for presentation in self._presentations.values():
             self.stage.viewport.erase(presentation)
         self._presentations.clear()
         self._shown.clear()
 
         self.document = document
+        self.geometry.reset_document(document)
+        self._select_after_rebuild = []
+        self._stale.clear()
         self.rebuilder = Rebuilder(document)
         self.selection = SelectionModel(
             document, self.stage.viewport, self._presentations

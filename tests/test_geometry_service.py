@@ -12,7 +12,7 @@ import multiprocessing
 import pytest
 
 from simplecad.core import geometry_service as service
-from simplecad.core.document import Document
+from simplecad.core.document import Body, Document
 from simplecad.kernel.occ import is_valid, volume
 from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 
@@ -40,6 +40,101 @@ def test_a_shape_survives_a_round_trip_through_bytes():
     restored = service.deserialise_shape(blob)
     assert restored is not None
     assert volume(restored) == pytest.approx(volume(original), rel=1e-9)
+
+
+def test_kept_subtract_preview_can_seed_the_committed_result():
+    from simplecad.core.document import BodyRef
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.operations import BooleanFeature
+
+    document = Document()
+    document.add_feature(BoxFeature(
+        inputs={"width": 40, "depth": 40, "height": 10}, outputs=["Block"],
+    ))
+    document.add_feature(CylinderFeature(
+        inputs={"radius": 3, "height": 20, "x": 20, "y": 20, "z": -5},
+        outputs=["Pin"],
+    ))
+    rebuilder = Rebuilder(document)
+    assert rebuilder.rebuild().ok
+    feature = BooleanFeature(
+        inputs={"body": BodyRef("Block"), "tool": BodyRef("Pin"),
+                "operation": "cut", "keep_tool": True},
+        outputs=["Block"],
+    )
+    preview = service.build_preview_result(document, feature.to_dict())
+    assert preview["error"] is None
+    assert set(preview["_outputs"]) == {"Block", "Pin"}
+    document.add_feature(feature)
+    rebuilder.seed_result(feature, preview["_outputs"], preview["message"])
+    assert rebuilder.rebuild().ok
+    assert set(document.bodies) == {"Block", "Pin"}
+    assert volume(document.bodies["Block"].shape) < 40 * 40 * 10
+
+
+def test_save_snapshot_does_not_replace_live_worker_state(child, tmp_path):
+    from simplecad.core.history import History
+    from simplecad.core.project import load
+    from simplecad.ui.geometry_client import apply_result
+    document = box_document(10)
+    apply_result(document, ask(child, document))
+    history = History(document)
+    snapshot = document.to_dict()
+    history.record("Resize")
+    document.parameters.set("width", "20")
+    apply_result(document, ask(child, document))
+    child.send({"kind": service.SAVE, "document": snapshot,
+                "path": str(tmp_path / "snapshot.scad3"), "token": 27,
+                "history": {}, "generation": 0})
+    while True:
+        assert child.poll(60)
+        reply = child.recv()
+        if reply["kind"] != service.PROGRESS:
+            break
+    assert reply["kind"] == service.SAVED and not reply["error"]
+    loaded, cached = load(reply["path"])
+    assert cached
+    assert volume(loaded.body("Box").shape) == pytest.approx(10 * 30 * 10)
+    assert loaded.body("Box").id == document.body("Box").id
+    reply = ask(child, document)
+    assert reply["report"]["rebuilt"] == []
+    assert reply["bodies"] == {}
+
+
+def test_parent_and_worker_release_deleted_results_in_long_session(child):
+    from simplecad.ui.geometry_client import apply_result
+    document = Document()
+    for i in range(12):
+        feature = document.add_feature(BoxFeature(inputs={"width": i + 1}, outputs=["A"]))
+        apply_result(document, ask(child, document))
+        assert len(document._geometry_store.entries) == 1
+        document.remove_feature(feature.id, splice=False)
+        reply = ask(child, document)
+        apply_result(document, reply)
+        assert not document.bodies
+        assert not document._geometry_store.entries
+        assert not document._geometry_store.blobs
+
+
+def test_reopened_worker_reuses_unchanged_display_objects(child, tmp_path):
+    from simplecad.core.project import load, save
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.ui.geometry_client import apply_result
+    document = box_document(10)
+    document.add_feature(BoxFeature(outputs=["Other"], inputs={"x": 100}))
+    apply_result(document, ask(child, document))
+    document, cached = load(save(document, str(tmp_path / "worker.scad3")))
+    assert cached
+    child.send({"kind": service.SYNC, "document": document.to_dict(),
+        "cache": document._geometry_store.export(),
+        "bodies": {n: service.serialise_shape(b.shape) for n, b in document.bodies.items()},
+        "revision": 10})
+    assert child.poll(60)
+    assert child.recv()["kind"] == service.SYNCED
+    document.parameters.set("width", "12")
+    reply = ask(child, document)
+    assert reply["report"]["rebuilt"] == [document.features[0].id]
+    assert set(reply["bodies"]) == {"Box"}
 
 
 def test_a_threaded_shape_survives_the_round_trip():
@@ -80,15 +175,24 @@ def child():
         process.terminate()
 
 
-def ask(pipe, document, stale=(), force=False, timeout=120):
+def ask(pipe, document, stale=(), force=False, timeout=120, full=False,
+        progress=None):
     pipe.send({
         "kind": service.REBUILD,
         "document": document.to_dict(),
         "stale": list(stale),
         "force": force,
+        "full": full,
     })
-    assert pipe.poll(timeout), "no reply from the geometry process"
-    return pipe.recv()
+    while True:
+        assert pipe.poll(timeout), "no reply from the geometry process"
+        reply = pipe.recv()
+        if reply["kind"] != service.PROGRESS:
+            return reply
+        # Heartbeats, not answers: the child says which feature it is on so a
+        # long rebuild is not mistaken for a dead one.
+        if progress is not None:
+            progress.append(reply)
 
 
 def test_the_child_rebuilds_and_returns_geometry(child):
@@ -101,6 +205,30 @@ def test_the_child_rebuilds_and_returns_geometry(child):
     assert volume(shape) == pytest.approx(40 * 30 * 10)
 
 
+def test_child_rebuilds_an_embedded_import_without_the_source_file(child):
+    from simplecad.kernel.importing import EmbeddedImportFeature
+    from simplecad.core.rebuild import Rebuilder
+
+    source = box_document(17)
+    assert Rebuilder(source).rebuild().ok
+    document = Document()
+    sha = document.add_asset(service.serialise_shape(source.body("Box").shape))
+    document.add_feature(EmbeddedImportFeature(
+        inputs={"asset": sha}, outputs=["Standalone"],
+    ))
+    child.send({"kind": service.REBUILD, "document": document.to_dict(),
+                "assets": dict(document.assets), "stale": [], "force": False})
+    while True:
+        assert child.poll(60)
+        reply = child.recv()
+        if reply["kind"] != service.PROGRESS:
+            break
+    assert reply["kind"] == service.RESULT
+    assert reply["report"]["ok"], reply["report"]["summary"]
+    shape = service.deserialise_shape(reply["bodies"]["Standalone"])
+    assert volume(shape) == pytest.approx(17 * 30 * 10)
+
+
 def test_unchanged_bodies_are_not_resent(child):
     """Only geometry that actually changed crosses the pipe."""
     document = box_document(40)
@@ -110,6 +238,57 @@ def test_unchanged_bodies_are_not_resent(child):
     second = ask(child, document)          # identical request
     assert second["report"]["ok"]
     assert second["bodies"] == {}, "an unchanged body must not be resent"
+
+
+def test_full_reply_resends_geometry_and_removes_stale_parent_bodies(child):
+    document = box_document(40)
+    ask(child, document)
+    # Simulate a body still shown by the parent after an earlier reply was
+    # skipped. It has no producing feature in the current history.
+    document.bodies["Ghost"] = Body(name="Ghost")
+    reply = ask(child, document, full=True)
+    assert reply["kind"] == service.RESULT
+    assert "Box" in reply["bodies"]
+    assert reply["bodies"]["Ghost"] is None
+
+
+def test_cached_document_sync_allows_preview_without_rebuilding(child):
+    from simplecad.core.document import BodyRef
+    from simplecad.kernel.operations import BooleanFeature
+
+    document = box_document(40)
+    document.add_feature(BoxFeature(
+        inputs={"width": 12, "depth": 12, "height": 10, "x": 30},
+        outputs=["Tool"],
+    ))
+    from simplecad.core.rebuild import Rebuilder
+
+    assert Rebuilder(document).rebuild().ok
+    child.send({
+        "kind": service.SYNC,
+        "revision": 8,
+        "document": document.to_dict(),
+        "bodies": {
+            name: service.serialise_shape(body.shape)
+            for name, body in document.bodies.items()
+        },
+    })
+    assert child.poll(30)
+    assert child.recv() == {
+        "kind": service.SYNCED, "revision": 8, "sealed": len(document.features),
+    }
+
+    feature = BooleanFeature(inputs={
+        "body": BodyRef("Box"), "tools": [BodyRef("Tool")],
+        "operation": "join", "keep_tool": False,
+    }, outputs=["Box"])
+    child.send({"kind": service.PREVIEW, "feature": feature.to_dict(), "token": 9})
+    assert child.poll(30)
+    reply = child.recv()
+    assert reply["kind"] == service.PREVIEWED
+    assert reply["token"] == 9
+    assert reply["error"] is None
+    assert reply["shape"] is not None
 
 
 def test_an_edited_parameter_produces_new_geometry(child):
@@ -200,7 +379,8 @@ def test_feature_outputs_travel_back_to_the_parent(child):
     feature = document.add_feature(
         BoxFeature(inputs={"width": 20, "depth": 20, "height": 20})
     )
-    assert feature.outputs == [], "nothing has named it yet"
+    assert feature.outputs == [feature.name]
+    assert feature.output_ids, "output identity is allocated before execution"
 
     reply = ask(child, document)
     reported = reply["report"]["features"][feature.id]
@@ -396,3 +576,88 @@ def test_the_child_keeps_serving_after_a_preview(child):
     assert reply["report"]["ok"]
     shape = service.deserialise_shape(reply["bodies"]["Box"])
     assert volume(shape) == pytest.approx(50 * 30 * 10)
+
+
+def test_a_rebuild_says_which_feature_it_is_on(child):
+    """A long rebuild has to prove it is alive, or the parent kills it.
+
+    The parent's deadline used to run from the moment a request was sent, so a
+    model that honestly took four minutes was killed at two, resent, killed
+    again, and finally rebuilt on the GUI thread -- which looked, to the person
+    using it, exactly like the application hanging.
+    """
+    document = box_document(40)
+    for index in range(4):
+        document.add_feature(BoxFeature(
+            inputs={"width": 8, "depth": 8, "height": 8, "x": 20 * index + 60},
+            outputs=[f"Extra{index}"],
+        ))
+    seen = []
+    reply = ask(child, document, progress=seen)
+
+    assert reply["kind"] == service.RESULT
+    assert seen, "the child never reported progress"
+    first = seen[0]
+    assert first["total"] == len(document.features)
+    assert first["index"] == 0
+    assert first["feature"]
+    assert {entry["id"] for entry in seen} <= {f.id for f in document.features}
+
+
+def test_a_synced_prefix_leaves_only_the_appended_feature_to_build(child):
+    """Opening a saved project must not cost a replay of its whole history."""
+    from simplecad.core.document import BodyRef
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.operations import BooleanFeature
+
+    document = box_document(40)
+    document.add_feature(BoxFeature(
+        inputs={"width": 12, "depth": 12, "height": 10, "x": 30},
+        outputs=["Tool"],
+    ))
+    assert Rebuilder(document).rebuild().ok
+    child.send({
+        "kind": service.SYNC, "revision": 3, "document": document.to_dict(),
+        "bodies": {
+            name: service.serialise_shape(body.shape)
+            for name, body in document.bodies.items()
+        },
+    })
+    assert child.poll(30)
+    assert child.recv()["sealed"] == len(document.features)
+
+    document.add_feature(BooleanFeature(inputs={
+        "body": BodyRef("Box"), "tools": [BodyRef("Tool")],
+        "operation": "join", "keep_tool": False,
+    }, outputs=["Box"]))
+    reply = ask(child, document)
+
+    assert reply["kind"] == service.RESULT
+    report = reply["report"]
+    assert report["rebuilt"] == [document.features[-1].id]
+    assert len(report["sealed"]) == len(document.features) - 1
+
+
+def test_boolean_commit_reuses_the_exact_preview(child):
+    from simplecad.core.document import BodyRef
+    from simplecad.kernel.operations import BooleanFeature
+
+    document = box_document()
+    document.add_feature(BoxFeature(inputs={"width": 20, "depth": 30, "height": 10, "x": 30}, outputs=["Tool"]))
+    assert ask(child, document)["report"]["ok"]
+    feature = BooleanFeature(inputs={"body": BodyRef("Box"), "tools": [BodyRef("Tool")], "operation": "cut"}, outputs=["Box"])
+    answer = preview(child, feature)
+    assert answer["shape"] is not None
+    document.add_feature(feature)
+    result = ask(child, document)
+    assert result["preview_reused"]
+    assert feature.id not in result["report"]["rebuilt"]
+    assert volume(service.deserialise_shape(result["bodies"]["Box"])) == pytest.approx(volume(service.deserialise_shape(answer["shape"])))
+
+
+def test_parameter_change_without_explicit_stale_rebuilds_in_worker(child):
+    document = box_document(20)
+    assert ask(child, document)["report"]["ok"]
+    document.parameters.set("width", "35")
+    result = ask(child, document)
+    assert volume(service.deserialise_shape(result["bodies"]["Box"])) == pytest.approx(35 * 30 * 10)

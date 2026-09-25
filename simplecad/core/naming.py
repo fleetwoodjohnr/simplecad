@@ -330,6 +330,7 @@ class SubShapeRef:
     index_hint: int = -1
     role: str = ""
     body: str = ""
+    body_id: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -339,6 +340,7 @@ class SubShapeRef:
             "index_hint": self.index_hint,
             "role": self.role,
             "body": self.body,
+            "body_id": self.body_id,
         }
 
     @classmethod
@@ -350,6 +352,7 @@ class SubShapeRef:
             index_hint=int(data.get("index_hint", -1)),
             role=data.get("role", ""),
             body=data.get("body", ""),
+            body_id=data.get("body_id", ""),
         )
 
 
@@ -376,7 +379,8 @@ def make_ref(
         fingerprint=fingerprint(sub_shape, kind, with_neighbours=parent_shape),
         index_hint=index,
         role=role,
-        body=body,
+        body=str(body),
+        body_id=getattr(body, "object_id", ""),
     )
 
 
@@ -496,7 +500,11 @@ def resolve(
         score = similarity(
             ref.fingerprint, fingerprint(hinted, ref.kind, with_neighbours=shape)
         )
-        if score >= CERTAIN_SCORE:
+        if score >= CERTAIN_SCORE and not any(
+            not candidate.IsSame(hinted) and similarity(
+                ref.fingerprint, fingerprint(candidate, ref.kind, with_neighbours=shape)
+            ) >= CERTAIN_SCORE for candidate in candidates
+        ):
             return hinted
 
     # Tier 2: best geometric match anywhere in the shape.
@@ -512,7 +520,7 @@ def resolve(
         elif score > runner_up:
             runner_up = score
 
-    if best is not None and best_score >= threshold:
+    if best is not None and best_score >= threshold and best_score - runner_up > 1e-6:
         return best
 
     # Tier 3: refuse to guess.

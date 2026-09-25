@@ -1315,6 +1315,34 @@ def import_gltf(path: str) -> list[ImportedBody]:
     return bodies
 
 
+def import_scad(path: str) -> list[ImportedBody]:
+    """Render OpenSCAD source once, then use the existing 3MF solid reader."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    executable = shutil.which("openscad")
+    if executable is None:
+        raise CadError(
+            "OpenSCAD is required to import a .scad file.",
+            suggestion="Install OpenSCAD, then retry the import.",
+        )
+    with tempfile.TemporaryDirectory(prefix="simplecad-scad-") as directory:
+        rendered = os.path.join(directory, "rendered.3mf")
+        try:
+            completed = subprocess.run(
+                [executable, "-o", rendered, os.path.abspath(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                timeout=300, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CadError("OpenSCAD took too long to render this model.") from exc
+        if completed.returncode or not os.path.exists(rendered):
+            detail = (completed.stderr or completed.stdout).strip()[-1200:]
+            raise CadError("OpenSCAD could not render this model.", detail=detail)
+        return import_3mf(rendered)
+
+
 #: extension -> reader. Built at import time so a format this OCCT build cannot
 #: actually read is never offered in the file dialog and then found wanting.
 def _readers() -> dict:
@@ -1325,6 +1353,7 @@ def _readers() -> dict:
         ".stl": import_stl,
         ".obj": import_obj,
         ".3mf": import_3mf,
+        ".scad": import_scad,
     }
     try:
         from OCP.RWGltf import RWGltf_CafReader  # noqa: F401
@@ -1342,7 +1371,7 @@ READERS = _readers()
 IMPORT_FORMATS = {
     ".step": "STEP", ".stp": "STEP", ".stl": "STL", ".obj": "OBJ",
     ".3mf": "3MF", ".iges": "IGES", ".igs": "IGES", ".brep": "B-Rep",
-    ".gltf": "glTF", ".glb": "glTF",
+    ".gltf": "glTF", ".glb": "glTF", ".scad": "OpenSCAD",
 }
 
 

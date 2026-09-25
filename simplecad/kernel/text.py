@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BodyRef, BuildContext, Feature, register
@@ -74,7 +76,7 @@ def _overlapping_faces(shape) -> bool:
             ):
                 continue
             try:
-                common = built_shape(BRepAlgoAPI_Common(first, second), "font")
+                common = built_shape(boolean_builder(BRepAlgoAPI_Common, first, second), "font")
                 if area(common) > 1e-7:
                     return True
             except BaseException:  # noqa: BLE001 - this candidate is simply unsuitable
@@ -245,7 +247,7 @@ class TextFeature(Feature):
                         "text depth",
                     )
                     inside = built_shape(
-                        BRepAlgoAPI_Common(body, probe), "text depth"
+                        boolean_builder(BRepAlgoAPI_Common, body, probe), "text depth"
                     )
                     probe_volume = volume(probe)
                     if (

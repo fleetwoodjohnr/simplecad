@@ -27,6 +27,8 @@ Three ideas keep this usable rather than merely correct:
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 from dataclasses import dataclass
 from functools import lru_cache
@@ -465,7 +467,7 @@ def _build_thread_solid(
                     suggestion="Try a coarser pitch or a larger diameter.",
                 )
             shell.MakeSolid()
-            bolt = built_shape(BRepAlgoAPI_Fuse(core, shell.Shape()), "thread")
+            bolt = built_shape(boolean_builder(BRepAlgoAPI_Fuse, core, shell.Shape()), "thread")
             # A fuse that dropped the core reports done and hands back the
             # tooth on its own, so the answer has to be checked rather than
             # trusted. Sinking the tooth deeper gives the kernel more overlap
@@ -486,7 +488,7 @@ def _build_thread_solid(
                         start_limit, end_limit, length + 2.0 * NUDGE,
                     ).Shape()
                     bolt = built_shape(
-                        BRepAlgoAPI_Common(bolt, limiter), "tapered thread"
+                        boolean_builder(BRepAlgoAPI_Common, bolt, limiter), "tapered thread"
                     )
                     if _volume(bolt) <= 0.0:
                         continue
@@ -578,7 +580,7 @@ def _end_rings(envelope_radius: float, minor_radius: float, length: float) -> li
     ):
         block = BRepPrimAPI_MakeCylinder(at(z), envelope_radius, lead).Shape()
         keep = BRepPrimAPI_MakeCone(at(z), bottom, top, lead).Shape()
-        rings.append(built_shape(BRepAlgoAPI_Cut(block, keep), "thread"))
+        rings.append(built_shape(boolean_builder(BRepAlgoAPI_Cut, block, keep), "thread"))
     return rings
 
 
@@ -653,7 +655,7 @@ def _apply_tool(body, tool, cut: bool, axis=None):
         for first, second in orders:
             try:
                 result = built_shape(
-                    (BRepAlgoAPI_Cut if cut else BRepAlgoAPI_Fuse)(first, second),
+                    boolean_builder(BRepAlgoAPI_Cut if cut else BRepAlgoAPI_Fuse, first, second),
                     "thread",
                 )
             except BaseException:  # noqa: BLE001 - OCCT raises non-Exceptions
@@ -684,7 +686,7 @@ def _cut_away(shape, tools, placement=None):
         try:
             if placement is not None:
                 tool = transformed(tool, placement)
-            shape = built_shape(BRepAlgoAPI_Cut(shape, tool), "thread")
+            shape = built_shape(boolean_builder(BRepAlgoAPI_Cut, shape, tool), "thread")
         except BaseException:  # noqa: BLE001 - a lead-in is a courtesy, not a must
             continue
     return shape
@@ -763,7 +765,7 @@ def resize_for_thread(
             ),
         )
         return built_shape(
-            (BRepAlgoAPI_Cut if internal else BRepAlgoAPI_Fuse)(body, tool),
+            boolean_builder(BRepAlgoAPI_Cut if internal else BRepAlgoAPI_Fuse, body, tool),
             "thread",
         )
 
@@ -985,7 +987,7 @@ def apply_thread(
         for candidate in _tool_attempts(carving_bolt, (0.0, 0.0, 1.0)):
             try:
                 attempt = built_shape(
-                    BRepAlgoAPI_Cut(groove_envelope, candidate), "thread"
+                    boolean_builder(BRepAlgoAPI_Cut, groove_envelope, candidate), "thread"
                 )
             except BaseException:  # noqa: BLE001 - try the next harmless nudge
                 continue
@@ -1010,7 +1012,7 @@ def apply_thread(
             ).Shape()
             try:
                 tapered = built_shape(
-                    BRepAlgoAPI_Common(groove, cone), "tapered thread"
+                    boolean_builder(BRepAlgoAPI_Common, groove, cone), "tapered thread"
                 )
                 groove = tapered if _volume(tapered) > 0.0 else None
             except BaseException:  # noqa: BLE001 - handled by failure below

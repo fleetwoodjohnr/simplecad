@@ -19,17 +19,39 @@ class PlacementOverlay(QWidget):
         self.u = 0.0
         self.v = 0.0
         self.snap = ""
+        self.edges = None
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WA_TranslucentBackground)
         viewport.view_changed.connect(self.update)
 
-    def set_placement(self, frame, origin, u: float, v: float, snap: str = "") -> None:
+    def set_placement(self, frame, origin, u: float, v: float, snap: str = "", edges=None) -> None:
         self.frame = frame
         self.origin = origin
         self.u = u
         self.v = v
         self.snap = snap
+        self.edges = edges
         self.update()
+
+    def _draw_measure(self, painter, start, end, label: str) -> None:
+        first = self.viewport.project(start)
+        last = self.viewport.project(end)
+        if first is None or last is None:
+            return
+        a, b = QPointF(*first), QPointF(*last)
+        painter.setPen(QPen(QColor(self.palette.accent), 1.6, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(a, b)
+        painter.setBrush(QColor(self.palette.accent))
+        painter.drawEllipse(a, 3, 3)
+        painter.drawEllipse(b, 3, 3)
+        midpoint = (a + b) / 2
+        rect = painter.fontMetrics().boundingRect(label).adjusted(-7, -4, 7, 4)
+        rect.moveCenter((midpoint + QPointF(0, -14)).toPoint())
+        painter.setPen(QPen(QColor(self.palette.border), 1))
+        painter.setBrush(QColor(self.palette.surface_raised))
+        painter.drawRoundedRect(rect, 5, 5)
+        painter.setPen(QColor(self.palette.text))
+        painter.drawText(rect, Qt.AlignCenter, label)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         if self.frame is None or self.origin is None:
@@ -41,6 +63,23 @@ class PlacementOverlay(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setFont(QFont(painter.font().family(), 9, QFont.DemiBold))
         c = QPointF(*center)
+        if self.edges is not None:
+            (horizontal, vertical), (x_gap, y_gap), moving_u, moving_v = self.edges
+            face_u, face_v = self.frame.x_bounds, self.frame.y_bounds
+            x_face = face_u[0] if horizontal == "left" else face_u[1] if horizontal == "right" else sum(face_u) / 2
+            x_object = moving_u[0] if horizontal == "left" else moving_u[1] if horizontal == "right" else sum(moving_u) / 2
+            y_face = face_v[0] if vertical == "bottom" else face_v[1] if vertical == "top" else sum(face_v) / 2
+            y_object = moving_v[0] if vertical == "bottom" else moving_v[1] if vertical == "top" else sum(moving_v) / 2
+            y_mid = sum(moving_v) / 2
+            x_mid = sum(moving_u) / 2
+            self._draw_measure(
+                painter, self.frame.point(x_face, y_mid), self.frame.point(x_object, y_mid),
+                f"{horizontal.title()} {x_gap:.2f} mm",
+            )
+            self._draw_measure(
+                painter, self.frame.point(x_mid, y_face), self.frame.point(x_mid, y_object),
+                f"{vertical.title()} {y_gap:.2f} mm",
+            )
         radius = 48.0
         directions = (
             (self.frame.x_axis, "+U  RIGHT", self.palette.grid_axis_x),
@@ -76,7 +115,12 @@ class PlacementOverlay(QWidget):
         painter.setPen(QPen(QColor(self.palette.text), 2))
         painter.setBrush(QColor(self.palette.surface_raised))
         painter.drawEllipse(c, 5, 5)
-        detail = f"U {self.u:+.2f} mm   V {self.v:+.2f} mm"
+        detail = (
+            f"{self.edges[0][0].title()} {self.edges[1][0]:.2f} mm   "
+            f"{self.edges[0][1].title()} {self.edges[1][1]:.2f} mm"
+            if self.edges is not None else
+            f"U {self.u:+.2f} mm   V {self.v:+.2f} mm"
+        )
         if self.snap:
             detail += f"   • {self.snap}"
         metrics = painter.fontMetrics()
@@ -87,4 +131,3 @@ class PlacementOverlay(QWidget):
         painter.drawRoundedRect(rect, 8, 8)
         painter.setPen(QColor(self.palette.text))
         painter.drawText(rect, Qt.AlignCenter, detail)
-

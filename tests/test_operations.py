@@ -326,7 +326,7 @@ def test_keep_tool_leaves_the_cutter_in_the_document(doc):
     )
 
 
-def test_a_cut_takes_several_tools_at_once(doc):
+def test_a_cut_takes_several_tools_at_once(doc, monkeypatch):
     """Selecting three bodies and pressing Subtract has to mean all of them."""
     plate(doc)
     for index, x in enumerate((10, 20, 30), start=1):
@@ -338,6 +338,18 @@ def test_a_cut_takes_several_tools_at_once(doc):
         )
     build(doc)
     before = volume(doc.bodies["Plate"].shape)
+    from simplecad.kernel import operations
+
+    builds = []
+    original_build = operations.built_shape
+
+    def record_build(builder, operation):
+        if operation == "cut":
+            builds.append(builder)
+        return original_build(builder, operation)
+
+    monkeypatch.setattr(operations, "built_shape", record_build)
+    monkeypatch.setattr(operations, "unify", lambda _shape: pytest.fail("Combine ran unsafe face cleanup"))
     doc.add_feature(
         BooleanFeature(
             inputs={
@@ -353,8 +365,42 @@ def test_a_cut_takes_several_tools_at_once(doc):
     assert volume(doc.bodies["Plate"].shape) == pytest.approx(
         before - 3 * math.pi * 9 * 10, rel=1e-3
     )
+    assert len(builds) == 1
     for index in (1, 2, 3):
         assert f"Tool {index}" not in doc.bodies
+
+
+def test_small_cylinder_cut_survives_unrelated_bodies_and_can_be_modified(doc, monkeypatch):
+    plate(doc)
+    doc.add_feature(CylinderFeature(
+        inputs={"radius": 2, "height": 20, "x": 39, "y": 20, "z": -5},
+        outputs=["Pin"],
+    ))
+    for index in range(8):
+        doc.add_feature(BoxFeature(
+            inputs={"width": 5, "depth": 5, "height": 5, "x": 100 + 10 * index},
+            outputs=[f"Other {index}"],
+        ))
+    build(doc)
+    before = volume(doc.bodies["Plate"].shape)
+    from simplecad.kernel import operations
+    monkeypatch.setattr(operations, "unify", lambda _shape: pytest.fail("Combine ran unsafe face cleanup"))
+    doc.add_feature(BooleanFeature(
+        inputs={"body": BodyRef("Plate"), "tool": BodyRef("Pin"), "operation": "cut"},
+        outputs=["Plate"],
+    ))
+    build(doc)
+    cut = doc.bodies["Plate"].shape
+    assert is_valid(cut)
+    assert 0 < before - volume(cut) < math.pi * 2 ** 2 * 10
+    assert "Pin" not in doc.bodies
+    assert all(f"Other {index}" in doc.bodies for index in range(8))
+    doc.add_feature(MoveFeature(
+        inputs={"body": BodyRef("Plate"), "dx": 3}, outputs=["Plate"],
+    ))
+    build(doc)
+    assert is_valid(doc.bodies["Plate"].shape)
+    assert volume(doc.bodies["Plate"].shape) == pytest.approx(volume(cut))
 
 
 def test_a_combine_with_no_tool_says_so(doc):

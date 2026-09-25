@@ -65,10 +65,27 @@ def main() -> int:
         window._on_selection()
         QApplication.processEvents()
 
+    def wait_preview(panel):
+        from PySide6.QtTest import QTest
+
+        for _attempt in range(200):
+            if panel.confirm.isEnabled():
+                return
+            QApplication.processEvents()
+            QTest.qWait(50)
+        FAILURES.append(f"{panel.operation} preview was not ready: {panel.status.text()}")
+
     def main_run(window) -> None:
         from simplecad.kernel.occ import is_valid, volume
+        from simplecad.core.project import save
+        from tempfile import TemporaryDirectory
 
         two_bodies(window)
+        with TemporaryDirectory() as folder:
+            window._open_path(save(window.document, f"{folder}/cached.scad3"))
+        REPORT["cached_reopen"] = set(window.document.bodies) == {"Block", "Pin"}
+        if not REPORT["cached_reopen"]:
+            FAILURES.append("The cached project did not reopen with both bodies")
         select_both(window)
 
         REPORT["selected"] = window.selection.bodies
@@ -176,6 +193,7 @@ def main() -> int:
              if getattr(w, "is_tool_panel", False)), None
         )
         panel.keep.setChecked(True)
+        wait_preview(panel)
         panel.commit()
         window.wait_for_rebuild()
         QApplication.processEvents()
@@ -198,6 +216,16 @@ def main() -> int:
                                                     "intersect": "intersect"}[key]:
                 FAILURES.append(f"{key} did not open on its own operation")
                 continue
+            from PySide6.QtTest import QTest
+
+            for _attempt in range(40):
+                if getattr(window.stage.viewport, "_ghost", None) is not None:
+                    break
+                QApplication.processEvents()
+                QTest.qWait(50)
+            REPORT[f"{key}_preview"] = getattr(window.stage.viewport, "_ghost", None) is not None
+            if not REPORT[f"{key}_preview"]:
+                FAILURES.append(f"{key} had no preview: {panel.status.text()}")
             panel.commit()
             window.wait_for_rebuild()
             QApplication.processEvents()
@@ -218,6 +246,7 @@ def main() -> int:
             (w for w, _a in window.stage.overlays
              if getattr(w, "is_tool_panel", False)), None
         )
+        wait_preview(panel)
         panel.commit()
         window.wait_for_rebuild()
         window.stage.viewport.clear_selection()

@@ -154,12 +154,28 @@ This matches what FreeCAD does on Wayland and costs nothing perceptible.
 ## Feature graph
 
 Features have **N inputs and N outputs**, and the DAG spans features **globally**, not per
-body. A body is a named output slot of whichever feature last wrote it. This is required by
+body. A body has a persistent UUID; each feature output is addressed by its producing
+feature UUID and object UUID. Names are editable aliases at the UI/kernel boundary,
+never a fallback for a missing identity. Bindings and output IDs are allocated before
+execution and saved explicitly. This is required by
 two headline features and cannot be retrofitted onto a per-body linear history:
 
 - **Stack/Align** makes one body's placement depend on another body's *geometry*. The
   transform is re-solved from live face references on every rebuild, so moving or resizing the
   target moves the aligned body with it.
+  - Because it is re-solved, the frame those distances are measured in has to be
+    reproducible. Edge-gap placement reads the camera **once**, when the target
+    face is picked, and only to decide which of the face's four signed axes
+    reads right and up on screen — never to contribute an angle of its own
+    (`kernel/align.view_frame`). Anything else would place from a diagonal: one
+    project here stores a frame 13.3° off the face's own axes, where "the right
+    edge" is a corner. The panel latches that frame per picked face, so stepping
+    out to the anchor grid, swapping the pair, or refreshing a shape cannot
+    re-derive it from wherever the camera has since moved to. Committed, it is
+    four exact `0`/`±1` numbers plus the world direction they meant, so a
+    rebuild that re-authors the target plane's parameterisation does not rotate
+    the placement with it. Bases saved before this are restored exactly as they
+    were written, and are not migrated: snapping one would move the part.
 - **Create Threaded Connection** is one node with **two** outputs, writing geometry into two
   bodies and owning the shared clearance parameter — which is what makes "changing clearance
   updates both mating parts" fall out for free.
@@ -173,6 +189,22 @@ rebuild carries on — one bad fillet radius never empties the viewport or crash
 `ReferenceLost` is handled separately from a hard failure: the geometry is fine, we have only lost
 track of which face the user picked, so the feature is flagged "needs attention" rather than
 "failed".
+
+`core/graph.py` indexes dependencies, reverse dependencies, output heads and parameter
+users. Observable recipe containers invalidate transitive signatures; parameter
+fingerprints include indirect expressions. `core/result_store.py` caches results by
+recipe, upstream signatures and kernel/cache version. Evaluation requests final heads
+and hydrates only the uncached ancestors they need, using an iterative dependency walk.
+An unchanged rebuild visits zero features. Cache reclamation retains current results and
+the results referenced by the bounded undo/redo history; decoded results use an LRU budget.
+Serialized B-Rep blobs are content-addressed and deduplicated. A separate 64 MiB
+serialized-memory budget spills cold blobs into private temporary files; pruning
+removes those files, and project saving streams them into the compressed archive.
+
+Removing a modifier explicitly splices its consumers to its input version. Deleting an
+object leaves its dependents flagged with missing IDs and preserves their last valid
+geometry; a new object with the same name cannot repair that reference accidentally.
+Undo/redo stores immutable reversible entity patches, with atomic texture actions.
 
 ### Rebuilds run in a separate process
 
@@ -194,7 +226,8 @@ on every repaint. A separate process has no GIL to share.
 The child (`core/geometry_service.py`, Qt-free) is **persistent**: it holds its
 own `Document` and `Rebuilder`, so the rebuild cache survives between requests
 and an incremental edit still only re-runs what changed. Each request carries the
-document's serialised state; the child diffs it against what it already has,
+document's entity patch against the last sent revision (a complete snapshot on first
+contact or recovery); the child preserves unchanged feature instances,
 invalidates only what differs, and returns **only the bodies whose geometry
 actually changed**, as B-Rep bytes. An unchanged body costs nothing on the wire.
 
@@ -209,21 +242,40 @@ something clean rather than from a process holding Qt and an open GL context;
 `spawn` re-executes `__main__`, which breaks when the app is launched from stdin
 or an embedded interpreter.
 
-**If the child dies, it is restarted — falling back to the UI thread is the last
-resort, not the first.** The old reflex was to move the work into the parent
-straight away, which is precisely wrong when the thing that killed the child was
-OCCT: the next attempt at the same shape then runs on the GUI thread and takes
-the window with it. `GeometryClient._handle_death` brings a new child up (three
-times before giving up, reset by any successful rebuild) and the parent resends
-the document, because a fresh child starts empty. Only after that does
-`MainWindow._rebuild_in_process` take over — slower and blocking, but the
-session survives, and it reports progress between features so a multi-feature
-rebuild does not look frozen throughout.
+**Worker startup and recovery never block Qt.** The client polls the READY
+handshake, restores the last accepted geometry checkpoint, and then processes
+newer edits. Three consecutive worker failures exhaust automatic recovery;
+interactive tools show an error and allow explicit retry. They never switch
+heavy kernel work onto the UI thread. Cancelling an active preview terminates
+its worker without consuming the crash retry budget. Boolean previews have a
+120-second deadline; a timeout is terminal until the user requests Retry.
 
 A rebuild that is never answered is treated as a death too. Without that, a
 child that hangs leaves the client permanently "busy", every later rebuild is
 parked behind it, and the model silently stops changing for the rest of the
 session.
+
+**The deadline measures silence, not duration.** It used to run from the moment
+a request was sent, which is a statement about how long a model is allowed to
+take — and a 98-feature model measured here takes **222 s** against a 120 s
+deadline. It was killed at two minutes, resent, killed again, and after three
+rounds the rebuild fell back to the GUI thread, where it blocked. A slow model
+read, exactly, as a hung application. So the child now sends a `PROGRESS`
+message as it enters each feature (rate-limited to 5/s, and shown in the hint as
+"Building Fillet (37 of 98)…"), the parent's clock restarts on each one, and a
+child that is plainly still burning CPU is given the benefit of the doubt on top
+of that. A child that has genuinely stopped still dies at 120 s of silence.
+
+**No preview request is ever dropped in silence.** A tool panel writes "Building
+the preview…" when it asks and rewrites it when the answer comes back, and it
+listens for nothing else — so a request abandoned quietly leaves that tool
+wedged on that line, Apply disabled, for the rest of the session. Everything
+that lets go of a preview — a dead child, a broken pipe, a newly opened project
+superseding it — goes through `GeometryClient._release_previews`, and every
+released token is answered with an explicit failure. Retryable ones are
+queued behind asynchronous startup and checkpoint restoration. Request tokens,
+document generations, and revisions prevent obsolete replies from reaching a
+new preview. Parameter changes coalesce without restarting a healthy worker.
 
 ### When it hangs, ask it what it is doing
 
@@ -261,16 +313,30 @@ So a preview is a `PREVIEW` message to the child, which builds the feature with
 its own `execute` and returns the shape plus warnings, resolved inputs and a
 specific error when the kernel refuses it. Fillet, chamfer, Thread, and all
 matching-thread modes use this path; physical-thread tools keep Create disabled
-until an actual helical result comes back. It must not touch the child's document or rebuild cache: a
-preview is a question, not an edit. Previews are coalesced separately from
+until an actual helical result comes back. Preview contexts resolve explicit input versions
+from the common result store and clone any recipe that needs hydration. They cannot publish
+document geometry or mutate the committed recipe. Previews are coalesced separately from
 rebuilds, so a dragged handle settles without ever displacing a real edit.
 
-Model copy/paste similarly copies intent rather than tessellation or B-Rep. A
-clipboard fragment contains the selected bodies' feature-dependency closure and
-nested group topology. Paste remaps every feature id, body reference and durable
-sub-shape reference, adds one independent move per root body, and places the
-assembly to the right of the current model. Repeated pastes therefore remain
-parametric, independently editable and visibly separate.
+Clipboard version 2 captures editable feature history, nested groups, appearance,
+the transitive closure of named parameters, and copy-time B-Rep geometry. Paste
+remaps identities and parameter expressions, adopts a checkpoint for the cloned
+history, and appends a placement move. Editing copied construction steps
+invalidates their checkpoint. Version 1 clipboard data remains readable, and
+project version 1 remains readable. A copy made during a pending rebuild
+captures the requested history and parameters without adopting older geometry.
+
+Rebuild publication preserves the last valid geometry and body membership of
+failed dependency chains, blocks their downstream consumers, and still permits
+independent successful changes. It never substitutes an earlier primitive for
+a failed later modifier.
+
+Combine constructs empty boolean builders, applies non-destructive, parallel,
+and tolerance settings, then builds once per attempt. The worker retains one
+successful Boolean or texture preview and promotes its outputs into the rebuild cache only
+when both document state and operation inputs match. Display meshing uses the
+same absolute 0.05 mm deflection and 0.35 rad angle in the worker and viewport;
+serialized B-Rep includes triangulation. Unchanged shapes reuse serialized bytes.
 
 Also helping, independently of where the work runs: booleans use OCCT's own C++
 parallelism via `SetRunParallel(True)` in `occ.built_shape` (C++ threads are not
@@ -278,16 +344,38 @@ subject to the GIL — a thread-groove cut plus fuse, 1.17 s → 0.63 s),
 `thread_solid` is memoised, and opening a project restores geometry from the
 saved B-Rep instead of re-running features.
 
+Opened and newly created documents use the same evaluator and cache. Version 2
+restores intermediate feature results as well as final geometry. Legacy version 1
+files adopt each complete final feature result independently; editing a legacy
+branch may hydrate its ancestors once, without dropping unrelated results. Explicit
+**Rebuild All** remains available and bypasses cached execution results.
+
 ## Project format
 
-`.scad3` is a zip holding `model.json` (the feature recipe: features, parameters, sub-shape
-references, thread and alignment relationships), one `bodies/<name>.brep` per body, and an
-optional `thumbnail.png`.
+Version 2 `.scad3` is a compressed zip holding `model.json` (persistent identities,
+explicit bindings, feature order, parameters, sub-shape references, groups, appearance,
+both undo/redo stacks and a cache manifest), content-addressed `geometry/<sha256>.brep`
+blobs for intermediate/final results, and an optional `thumbnail.png`. Sketch and
+construction results are stored in the manifest. Blob checksums and recipe signatures
+are verified before cache reuse. Old version 1 files with `bodies/<name>.brep` still load;
+their missing identities are allocated deterministically and retained on the next save.
+Version 1 did not save undo stacks, so those cannot be recovered.
 
-The recipe is the file; the B-Rep is only ever a cache. Delete `bodies/` and the project still
+The recipe is the file; the B-Rep is only ever a cache. Delete cached geometry and the project still
 opens — it is simply rebuilt from its features, which is what
 `test_the_model_rebuilds_when_the_cache_is_absent` checks. Saves are written to a `.part` file and
 moved into place, so an interrupted save cannot destroy the previous version.
+
+UI saves queue immutable recipe/history snapshots in the worker. Pending geometry is
+evaluated for that snapshot before writing; an old displayed shape is never labeled as
+the result of a newer recipe. Completion marks the window clean only if its edit epoch
+still matches. Worker replies also carry document generations and request revisions,
+so late results cannot overwrite edits or a newly opened project.
+
+`scripts/benchmark_incremental.py` measures cold build, save/open, isolated edits and
+no-op rebuilds at 100/1000/3000 independent objects, asserting identity and work-count
+parity before and after reopening. Timings are informational; regression tests assert
+exact recomputation counts rather than machine-dependent time limits.
 
 Thumbnails are rendered with OCCT's `V3d_View::ToPixMap`, not Qt. `grabFramebuffer()` and
 `QWidget.grab()` both **segfault** when called after a display change without an intervening paint

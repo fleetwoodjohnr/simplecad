@@ -65,12 +65,15 @@ def main() -> int:
 
     def measure(label: str, use_process: bool) -> None:
         viewport = window.stage.viewport
-        window.geometry.available = use_process and window.geometry._pipe is not None
+        assert window.geometry.available and window.geometry._pipe is not None
 
         started = time.time()
         window.document.add_feature(threaded_hole((20.0, 25.0, 8.0)))
         window.mark_dirty()
-        window.rebuild()
+        if use_process:
+            window.rebuild()
+        else:
+            window._rebuild_in_process()  # explicit diagnostic baseline only
 
         turns = 0
         worst = 0.0
@@ -117,7 +120,7 @@ def main() -> int:
         window._stale = {f.id for f in window.document.features}
         window.rebuild()
         window.wait_for_rebuild()
-        measure("in process (fallback)", False)
+        measure("in process (diagnostic)", False)
 
         window.geometry.available = window.geometry._pipe is not None
         app.quit()
@@ -129,7 +132,7 @@ def main() -> int:
     print("--- responsiveness ---")
     print(f"  geometry process available: {REPORT.get('geometry_process')}")
     out = REPORT.get("out of process", {})
-    inp = REPORT.get("in process (fallback)", {})
+    inp = REPORT.get("in process (diagnostic)", {})
     ok = (
         REPORT.get("geometry_process")
         and REPORT.get("valid_after_process")

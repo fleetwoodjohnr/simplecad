@@ -35,7 +35,7 @@ def load() -> dict[str, Callable]:
     """
     from . import (  # noqa: F401 - registers the built-in tools
         clips, combining, matching, measuring, modeling, arranging, shapes, sketching,
-        splitting, text,
+        splitting, text, face_texture, edge_edit,
     )
     from ..printws import fit_panel, panel  # noqa: F401
 

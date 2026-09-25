@@ -12,6 +12,8 @@ one at a time turns seconds of work into minutes.
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BuildContext, Feature, register
@@ -175,7 +177,7 @@ class VentPlateFeature(Feature):
             holes = transformed(
                 holes, make_transform(translate=(0.0, 0.0, thickness / 2.0))
             )
-            result = built_shape(BRepAlgoAPI_Cut(plate, holes), "vent")
+            result = built_shape(boolean_builder(BRepAlgoAPI_Cut, plate, holes), "vent")
 
         name = self.outputs[0] if self.outputs else self.name
         self.outputs = [name]
@@ -246,7 +248,7 @@ class VentCutFeature(Feature):
         holes = transformed(holes, placement)
 
         with guard("vent"):
-            result = built_shape(BRepAlgoAPI_Cut(body, holes), "vent")
+            result = built_shape(boolean_builder(BRepAlgoAPI_Cut, body, holes), "vent")
 
         self.outputs = [str(name)]
         return {str(name): result}

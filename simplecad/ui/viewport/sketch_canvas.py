@@ -66,6 +66,14 @@ class SketchCanvas:
         self._presentations: list = []
         self._preview = None
         self.last_result = None
+        self._undo_states: list[dict] = []
+        self._redo_states: list[dict] = []
+
+    def _remember_edit(self, before: dict) -> None:
+        if self.sketch.to_dict() != before:
+            self._undo_states.append(before)
+            del self._undo_states[:-500]
+            self._redo_states.clear()
 
     # -- geometry helpers --------------------------------------------------
     def snap(self, u: float, v: float) -> tuple[float, float]:
@@ -215,6 +223,7 @@ class SketchCanvas:
         breaks the sketch is refused where it is typed, not left for the user to
         hunt down later.
         """
+        previous_state = self.sketch.to_dict()
         kind, _current = self.measurement(entity)
         before = self.sketch.to_vector()
 
@@ -229,6 +238,7 @@ class SketchCanvas:
                 self.refresh()
                 return None
             self.refresh()
+            self._remember_edit(previous_state)
             return existing
 
         if kind == "distance":
@@ -246,6 +256,7 @@ class SketchCanvas:
             self.refresh()
             return None
         self.refresh()
+        self._remember_edit(previous_state)
         return constraint
 
     def dimensions(self) -> list[tuple[str, object, float]]:
@@ -314,6 +325,7 @@ class SketchCanvas:
 
     # -- committing --------------------------------------------------------
     def _commit(self, tool: str, points) -> None:
+        before = self.sketch.to_dict()
         builders = {
             "line": self._commit_line_pair,
             "polyline": self._commit_line_pair,
@@ -331,6 +343,7 @@ class SketchCanvas:
         if builder is not None:
             builder(points)
         self.solve()
+        self._remember_edit(before)
 
     def _commit_line_pair(self, points) -> None:
         self._commit_line(points[0], points[1])
@@ -430,28 +443,21 @@ class SketchCanvas:
         return self.last_result
 
     def undo_last(self) -> None:
-        """Remove the most recently added entity, and any points it orphaned."""
-        if not self.sketch.entities:
+        """Restore the complete sketch state before the last drawing edit."""
+        if not self._undo_states:
             return
-        last = list(self.sketch.entities)[-1]
-        entity = self.sketch.entities.pop(last)
-        self.sketch.constraints = [
-            c for c in self.sketch.constraints if last not in c.refs
-        ]
-        used = set()
-        for other in self.sketch.entities.values():
-            if other.kind == "line":
-                used.update({other.start, other.end})
-            else:
-                used.add(other.center)
-        for point_id in list(self.sketch.points):
-            if point_id not in used:
-                del self.sketch.points[point_id]
-                self.sketch.fixed_targets.pop(point_id, None)
-        self.sketch.constraints = [
-            c for c in self.sketch.constraints
-            if all(r in self.sketch.points or r in self.sketch.entities for r in c.refs)
-        ]
+        self._redo_states.append(self.sketch.to_dict())
+        self.sketch = Sketch.from_dict(self._undo_states.pop())
+        self.state.points.clear()
+        self.solve()
+        self.refresh()
+
+    def redo_last(self) -> None:
+        if not self._redo_states:
+            return
+        self._undo_states.append(self.sketch.to_dict())
+        self.sketch = Sketch.from_dict(self._redo_states.pop())
+        self.state.points.clear()
         self.solve()
         self.refresh()
 

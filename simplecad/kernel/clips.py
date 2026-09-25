@@ -8,6 +8,8 @@ one node means changing the spacing or fit updates every participant together.
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 from dataclasses import dataclass
 
@@ -248,7 +250,7 @@ def make_connector(spec: ClipSpec):
     for sign in (-1, 1):
         for side in (-1, 1):
             shape = built_shape(
-                BRepAlgoAPI_Fuse(shape, _prong_profile(spec, sign, side)),
+                boolean_builder(BRepAlgoAPI_Fuse, shape, _prong_profile(spec, sign, side)),
                 "clip connector",
             )
     result = unify(shape)
@@ -283,7 +285,7 @@ def make_socket(spec: ClipSpec, sign: int, *, inset: float = -0.02):
         gp_Pnt(-wide_width / 2.0, -height / 2.0, catch_z),
         wide_width, height, total - narrow_length,
     ).Shape()
-    return built_shape(BRepAlgoAPI_Fuse(narrow, pocket), "clip socket")
+    return built_shape(boolean_builder(BRepAlgoAPI_Fuse, narrow, pocket), "clip socket")
 
 
 def _placement_transform(point, frame, rotation_degrees: float):
@@ -377,7 +379,7 @@ def _validate_placements(points, frame, face_a, face_b, spec, rotation):
 def _contained(body, cutter) -> bool:
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 
-    common = built_shape(BRepAlgoAPI_Common(body, cutter), "clip depth check")
+    common = built_shape(boolean_builder(BRepAlgoAPI_Common, body, cutter), "clip depth check")
     expected = volume(cutter)
     return expected > 1.0e-8 and volume(common) >= expected * 0.985
 
@@ -465,8 +467,8 @@ class ClipJointFeature(Feature):
                         f"Clip {index + 1} would break through the target part.",
                         suggestion="Use a smaller clip or a thicker part.",
                     )
-                result_a = built_shape(BRepAlgoAPI_Cut(result_a, tool_a), "clip socket")
-                result_b = built_shape(BRepAlgoAPI_Cut(result_b, tool_b), "clip socket")
+                result_a = built_shape(boolean_builder(BRepAlgoAPI_Cut, result_a, tool_a), "clip socket")
+                result_b = built_shape(boolean_builder(BRepAlgoAPI_Cut, result_b, tool_b), "clip socket")
                 connectors[name] = transformed(canonical_connector, transform)
 
         result_a, result_b = unify(result_a), unify(result_b)

@@ -12,6 +12,8 @@ The measured values are written to a printer profile in
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import json
 import os
 from dataclasses import dataclass
@@ -119,7 +121,7 @@ def build_model(
             pin = BRepPrimAPI_MakeCylinder(
                 gp_Ax2(centre, gp_Dir(0, 0, 1)), pin_diameter / 2.0, PIN_HEIGHT
             ).Shape()
-            pins = built_shape(BRepAlgoAPI_Fuse(pins, pin), "calibration")
+            pins = built_shape(boolean_builder(BRepAlgoAPI_Fuse, pins, pin), "calibration")
 
         # The plate: the same row of holes, each opened by its clearance.
         plate = BRepPrimAPI_MakeBox(
@@ -132,7 +134,7 @@ def build_model(
                 (pin_diameter + clearance) / 2.0,
                 PLATE_THICKNESS + 2.0,
             ).Shape()
-            plate = built_shape(BRepAlgoAPI_Cut(plate, hole), "calibration")
+            plate = built_shape(boolean_builder(BRepAlgoAPI_Cut, plate, hole), "calibration")
 
             engraving = _label(f"{clearance:.2f}", 4.0, 0.6)
             if engraving is not None:
@@ -142,7 +144,7 @@ def build_model(
                         translate=(PITCH * index + 2.0, 1.5, PLATE_THICKNESS)
                     ),
                 )
-                marked = BRepAlgoAPI_Fuse(plate, placed)
+                marked = boolean_builder(BRepAlgoAPI_Fuse, plate, placed)
                 marked.Build()
                 if marked.IsDone():
                     plate = marked.Shape()

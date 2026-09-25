@@ -37,8 +37,11 @@ def _normalise(vector):
 def edge_midpoint(edge):
     """The point halfway along *edge*, by parameter."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopoDS import TopoDS
 
-    curve = BRepAdaptor_Curve(edge)
+    # Located OCCT picks arrive as TopoDS_Shape even when their ShapeType is
+    # EDGE. The adaptor requires the derived binding type.
+    curve = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
     middle = (curve.FirstParameter() + curve.LastParameter()) / 2.0
     point = curve.Value(middle)
     return (point.X(), point.Y(), point.Z())
@@ -149,5 +152,8 @@ def max_radius(body) -> float:
 
 def edge_drag_frame(body, edge):
     """``(anchor, direction, max_radius)`` for a handle on *edge*."""
+    from OCP.TopoDS import TopoDS
+
+    edge = TopoDS.Edge_s(edge)
     anchor = edge_midpoint(edge)
     return (anchor, outward_direction(body, edge, anchor), max_radius(body))

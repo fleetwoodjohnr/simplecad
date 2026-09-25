@@ -109,6 +109,12 @@ def main() -> int:
             if handle is None:
                 return
 
+            viewport.setFocus()
+            QTest.keyClick(viewport, Qt.Key_Up)
+            REPORT["arrow_up_steps_radius"] = panel.value("radius") == 2.25
+            QTest.keyClick(viewport, Qt.Key_Down)
+            REPORT["arrow_down_steps_radius"] = panel.value("radius") == 2.0
+
             # Typing must move the handle: check before touching the mouse.
             was = handle.anchor
             panel.fields["radius"].set_value(5.0)
@@ -162,6 +168,13 @@ def main() -> int:
             # face. Nothing is clicked here on purpose: a drag that leaves the
             # model unchanged until you find a button is the bug this checks.
             QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+            # Release waits for the exact preview at the released radius before
+            # committing. An earlier preview on screen may be for a smaller
+            # radius from the middle of the drag.
+            wait_for(
+                lambda: any(f.type_name == "fillet" for f in window.document.features),
+                8000,
+            )
             window.wait_for_rebuild()
             REPORT["features"] = [f.type_name for f in window.document.features]
             REPORT["committed_on_release"] = (
@@ -208,6 +221,8 @@ def main() -> int:
         REPORT.get("edge_found")
         and REPORT.get("panel_opened")
         and REPORT.get("handle_created")
+        and REPORT.get("arrow_up_steps_radius")
+        and REPORT.get("arrow_down_steps_radius")
         and REPORT.get("handle_on_screen")
         and REPORT.get("handle_follows_typing")
         and REPORT.get("drag_started")

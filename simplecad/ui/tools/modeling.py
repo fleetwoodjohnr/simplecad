@@ -29,7 +29,7 @@ from ...kernel.thread_specs import (
     clearance_presets, effective_clearance_for, recommend,
 )
 from ..theme import METRICS
-from ..widgets.controls import AnchorGrid, GhostButton
+from ..widgets.controls import AnchorGrid, GhostButton, LabeledField, ValueField
 from .base import FeaturePreviewController, ToolPanel
 from ...kernel.vent import VentCutFeature
 from .registry import register_tool
@@ -705,6 +705,16 @@ class AlignPanel(_SelectionTool):
         self._placement_snap_candidates = []
         self._placement_snap_presentation = None
         self._cached_frames = None
+        self._cached_outline = None
+        #: (target shape, frame) per face picked as a target this session. The
+        #: camera is read once per entry and never again -- see
+        #: :meth:`_latched_target_frame`.
+        self._target_frames = []
+        self._reference_error = ""
+        self._placement_refs = {}
+        self._edge_mode = not getattr(self, "fixed_operation", False)
+        self._drag_zero = (0.0, 0.0)
+        self._drag_start_gaps = (0.0, 0.0)
         self._moving = None
         self._target = None
         self._moving_name = None
@@ -759,8 +769,38 @@ class AlignPanel(_SelectionTool):
                 grid.addWidget(button, 0, index)
             self.add_widget(chooser)
 
+        self.edge_controls = None
+        if not getattr(self, "fixed_operation", False):
+            self.add_section("Position from face edges")
+            self.edge_controls = QWidget()
+            edge_layout = QGridLayout(self.edge_controls)
+            edge_layout.setContentsMargins(0, 0, 0, 0)
+            edge_layout.setSpacing(METRICS.space(1))
+            self.horizontal_side = QComboBox()
+            for label, key in (("Left", "left"), ("Center", "center"), ("Right", "right")):
+                self.horizontal_side.addItem(label, key)
+            self.horizontal_side.setCurrentIndex(1)
+            self.vertical_side = QComboBox()
+            for label, key in (("Bottom", "bottom"), ("Center", "center"), ("Top", "top")):
+                self.vertical_side.addItem(label, key)
+            self.vertical_side.setCurrentIndex(1)
+            edge_layout.addWidget(self.horizontal_side, 0, 0)
+            edge_layout.addWidget(self.vertical_side, 1, 0)
+            for row, key in enumerate(("horizontal_gap", "vertical_gap")):
+                field = ValueField(self._palette, self.window_.document.parameters, Dimension.LENGTH, 0.0)
+                field.returnPressed.connect(self.preview)
+                field.committed.connect(lambda _v: self.preview())
+                self.fields[key] = field
+                edge_layout.addWidget(LabeledField("mm", field, self._palette), row, 1)
+            self.add_widget(self.edge_controls)
+            self.horizontal_side.currentIndexChanged.connect(lambda _i: self._edge_changed())
+            self.vertical_side.currentIndexChanged.connect(lambda _i: self._edge_changed())
+            for key in ("horizontal_gap", "vertical_gap"):
+                self.fields[key].edited_live.connect(lambda _v: self._edge_changed())
+
         self.add_section("Anchor to anchor")
         anchor_row = QWidget()
+        self.anchor_row = anchor_row
         anchor_layout = QHBoxLayout(anchor_row)
         anchor_layout.setContentsMargins(0, 0, 0, 0)
         anchor_layout.setSpacing(METRICS.space(3))
@@ -775,8 +815,8 @@ class AlignPanel(_SelectionTool):
         anchor_layout.addLayout(moving_column)
         anchor_layout.addLayout(target_column)
         self.add_widget(anchor_row)
-        self.moving_anchor.changed.connect(lambda _value: self.preview())
-        self.target_anchor.changed.connect(lambda _value: self.preview())
+        self.moving_anchor.changed.connect(lambda _value: self._anchor_changed())
+        self.target_anchor.changed.connect(lambda _value: self._anchor_changed())
 
         self.add_section("Signed face offsets")
         self.direction_hint = QLabel("←  −U / Left     Right / +U  →\n↓  −V / Down       Up / +V  ↑")
@@ -785,9 +825,10 @@ class AlignPanel(_SelectionTool):
             f"color:{self._palette.text_muted}; padding:5px;"
         )
         self.add_widget(self.direction_hint)
-        self.add_field("u", "U  (+ right)", 0.0)
-        self.add_field("v", "V  (+ up)", 0.0)
-        self.add_field("offset", "Normal gap", 0.0)
+        commit_on_return = bool(getattr(self, "fixed_operation", False))
+        self.add_field("u", "U  (+ right)", 0.0, commit_on_return=commit_on_return)
+        self.add_field("v", "V  (+ up)", 0.0, commit_on_return=commit_on_return)
+        self.add_field("offset", "Normal gap", 0.0, commit_on_return=commit_on_return)
         self.flip = GhostButton("Flip")
         self.flip.setCheckable(True)
         self.flip.clicked.connect(lambda: self.preview())
@@ -796,8 +837,9 @@ class AlignPanel(_SelectionTool):
         self.swap.setEnabled(pair is not None)
         self.swap.clicked.connect(self._swap_pair)
         self.add_widget(self.swap)
-        for key in ("u", "v", "offset"):
-            self.fields[key].edited_live.connect(lambda _value: self.preview())
+        for key in ("u", "v"):
+            self.fields[key].edited_live.connect(lambda _value: self._anchor_changed())
+        self.fields["offset"].edited_live.connect(lambda _value: self.preview())
         self._refresh_roles()
         self._update_position_controls()
         from ..widgets.placement import PlacementOverlay
@@ -808,6 +850,21 @@ class AlignPanel(_SelectionTool):
         self.window_.stage.add_overlay(self._frame_overlay, "full")
         self._frame_overlay.show()
         self.window_.stage.viewport.plane_dragged.connect(self._on_plane_drag)
+        if self._target is not None:
+            self._latched_target_frame(self._target)
+        self.preview()
+
+    def _edge_changed(self) -> None:
+        if not self._edge_mode:
+            # A switch from anchors starts a new edge frame. Editing an edge
+            # distance must keep the existing frame, even after a camera orbit.
+            self._cached_frames = None
+        self._edge_mode = True
+        self.preview()
+
+    def _anchor_changed(self) -> None:
+        self._edge_mode = False
+        self._cached_frames = None
         self.preview()
 
     def _selection_pair(self):
@@ -841,7 +898,35 @@ class AlignPanel(_SelectionTool):
         )
 
     def _pair(self):
-        return (self._moving, self._target) if self._moving and self._target else None
+        if not (self._moving and self._target):
+            return None
+        from ...core.naming import resolve
+        from ...kernel.detect import analyse_plane
+        from ..selection import Picked
+
+        try:
+            for role in ("_moving", "_target"):
+                pick = getattr(self, role)
+                body = self.window_.document.body(pick.body)
+                if body is None or body.shape is None:
+                    raise ValueError("The placement reference is no longer available.")
+                saved = self._placement_refs.get(role)
+                if saved is None or saved[0] is not pick:
+                    saved = (pick, body.shape, pick.reference(self.window_.document))
+                    self._placement_refs[role] = saved
+                if body.shape is not saved[1]:
+                    face = resolve(saved[2], body.shape)
+                    pick = Picked(pick.body, pick.kind, face,
+                                  self.window_._presentations.get(pick.body), analyse_plane(face))
+                    setattr(self, role, pick)
+                    self._placement_refs[role] = (pick, body.shape, saved[2])
+                    self._cached_frames = None
+                    self._cached_outline = None
+            self._reference_error = ""
+            return self._moving, self._target
+        except Exception as exc:
+            self._reference_error = f"{exc} Select the placement faces again."
+            return None
 
     def _start_pick(self, role: str) -> None:
         self._capture_role = role
@@ -868,6 +953,8 @@ class AlignPanel(_SelectionTool):
                 self.warn("Pick a target face on a different object.")
                 return
             self._target = pick
+            self._target_frames = []
+            self._latched_target_frame(pick)
             if self._moving is None:
                 body = self.window_.document.body(self._moving_name)
                 if body is not None and body.shape is not None:
@@ -908,6 +995,8 @@ class AlignPanel(_SelectionTool):
         enabled = self.operation in ("stack", "center")
         self.moving_anchor.setEnabled(enabled)
         self.target_anchor.setEnabled(enabled)
+        if self.edge_controls is not None:
+            self.edge_controls.setEnabled(enabled)
         for key in ("u", "v"):
             self.fields[key].setEnabled(enabled)
 
@@ -928,6 +1017,7 @@ class AlignPanel(_SelectionTool):
         if self.operation in ("stack", "center"):
             moving_frame, target_frame = self._reference_frames(moving, target)
 
+        body = self.window_.document.body(moving.body)
         return solve(
             moving.shape,
             target.shape,
@@ -940,7 +1030,41 @@ class AlignPanel(_SelectionTool):
             v=self.value("v", 0.0),
             moving_frame=moving_frame,
             target_frame=target_frame,
+            moving_body=body.shape if body is not None else None,
+            placement_mode="edge_gap" if self._edge_mode and self.operation in ("stack", "center") else "anchor",
+            horizontal=self.horizontal_side.currentData() if self.edge_controls is not None else "center",
+            vertical=self.vertical_side.currentData() if self.edge_controls is not None else "center",
+            horizontal_gap=self.value("horizontal_gap"),
+            vertical_gap=self.value("vertical_gap"),
+            moving_bounds=self._edge_bounds(moving, target) if self._edge_mode and self.operation in ("stack", "center") else None,
         )
+
+    def _edge_bounds(self, moving, target):
+        from ...kernel.align import moving_bounds_for_frame
+
+        frame = self._reference_frames(moving, target)[1]
+        body = self.window_.document.body(moving.body)
+        # Keyed on the frame and the operation, not on ``id()`` of the OCP
+        # wrappers: CPython recycles ids, and a recycled one would hand back
+        # another shape's outline.
+        key = (
+            frame.center, frame.x_axis, frame.y_axis,
+            self.operation, self.flip.isChecked(),
+        )
+        if (
+            self._cached_outline is None or self._cached_outline[0] != key
+            or not self._cached_outline[2][0].IsSame(moving.shape)
+            or not self._cached_outline[2][1].IsSame(body.shape)
+        ):
+            self._cached_outline = (
+                key,
+                moving_bounds_for_frame(
+                    frame, body.shape, moving.shape,
+                    operation=self.operation, flip=self.flip.isChecked(),
+                ),
+                (moving.shape, body.shape),
+            )
+        return self._cached_outline[1]
 
     def _reference_frames(self, moving, target):
         from ...kernel.align import reference_frame
@@ -951,9 +1075,52 @@ class AlignPanel(_SelectionTool):
         ):
             self._cached_frames = (
                 moving.shape, target.shape,
-                reference_frame(moving.shape), reference_frame(target.shape),
+                reference_frame(moving.shape),
+                self._latched_target_frame(target) if self._edge_mode
+                else reference_frame(target.shape),
             )
         return self._cached_frames[2], self._cached_frames[3]
+
+    def _latched_target_frame(self, target):
+        """The edge-gap frame for this target face, captured once per pick.
+
+        The camera is read here and nowhere else in the panel. It used to be
+        read wherever the frame cache happened to be cold, which meant that
+        swapping the pair, stepping out to the anchor grid and back, or a
+        refreshed shape re-derived the frame from wherever the camera was
+        standing *then* -- while keeping the gaps the user had typed against
+        the old one. Orbit, touch any of those, and the part jumped. Latched
+        per target face, the placement the user sees is the one they authored.
+        """
+        from ...kernel.align import frame_basis, frame_from_basis, reference_frame, view_frame
+        from ...core.naming import resolve
+        from ..viewport.camera import read_state, view_direction
+
+        for entry in self._target_frames:
+            if entry["face"].IsSame(target.shape):
+                return entry["frame"]
+            if entry["ref"].body == target.body:
+                body = self.window_.document.body(target.body)
+                try:
+                    face = resolve(entry["ref"], body.shape)
+                except Exception:
+                    continue
+                if face.IsSame(target.shape):
+                    old = entry["frame"]
+                    frame = frame_from_basis(face, entry["basis"], world_u=old.x_axis, world_normal=old.normal)
+                    entry.update(face=face, frame=frame)
+                    return frame
+        camera = read_state(self.window_.stage.viewport._view)
+        frame = (
+            view_frame(target.shape, view_direction(camera), camera[2])
+            if camera else reference_frame(target.shape)
+        )
+        self._target_frames.append({
+            "face": target.shape, "frame": frame,
+            "basis": frame_basis(target.shape, frame),
+            "ref": target.reference(self.window_.document),
+        })
+        return frame
 
     def begin_freeform_drag(self, pos) -> bool:
         """Claim a drag that starts on the selected reference face."""
@@ -965,16 +1132,61 @@ class AlignPanel(_SelectionTool):
         under_cursor = viewport.detected_shape(pos)
         if under_cursor is None or not under_cursor.IsSame(target.shape):
             return False
-        from ...kernel.align import ANCHOR_PRESETS, anchor_coordinates
+        from ...kernel.align import (
+            ANCHOR_PRESETS, _dot, _sub, _transformed_point,
+            anchor_coordinates, edge_gap_coordinates,
+        )
 
         frame = self._reference_frames(pair[0], target)[1]
         self._snap_lock = None
-        origin_u, origin_v = anchor_coordinates(frame, self.target_anchor.value())
+        if self._edge_mode:
+            origin_u = origin_v = 0.0
+            body = self.window_.document.body(pair[0].body)
+            self._drag_zero = edge_gap_coordinates(
+                frame, body.shape, pair[0].shape,
+                operation=self.operation, flip=self.flip.isChecked(),
+                horizontal=self.horizontal_side.currentData(),
+                vertical=self.vertical_side.currentData(),
+                moving_bounds=self._edge_bounds(*pair),
+            )
+            self._drag_start_gaps = (
+                self.value("horizontal_gap"), self.value("vertical_gap")
+            )
+            placed_center = _transformed_point(
+                self._solve(*pair).transform, self._reference_frames(*pair)[0].center
+            )
+            relative = _sub(placed_center, frame.center)
+            initial_u = _dot(relative, frame.x_axis)
+            initial_v = _dot(relative, frame.y_axis)
+        else:
+            origin_u, origin_v = anchor_coordinates(frame, self.target_anchor.value())
+            initial_u, initial_v = self.value("u"), self.value("v")
         self._placement_snap_candidates = [
             (key.replace("_", " ").title(), u - origin_u, v - origin_v, None)
             for key in ANCHOR_PRESETS
             for u, v in (anchor_coordinates(frame, key),)
         ]
+        # The face's actual topology supplies corners, edge midpoints and arc
+        # centres (including hole centres).  These are the same named snaps
+        # used by the measurement tool, collected only once when drag begins.
+        from ...kernel.snapping import snap_points, snap_tier
+
+        if snap_tier(target.shape) == "full":
+            seen = {
+                (round(u, 6), round(v, 6))
+                for _label, u, v, _body_name in self._placement_snap_candidates
+            }
+            for snap in snap_points(target.shape):
+                relative = _sub(snap.position, frame.center)
+                u = _dot(relative, frame.x_axis) - origin_u
+                v = _dot(relative, frame.y_axis) - origin_v
+                key = (round(u, 6), round(v, 6))
+                if key in seen:
+                    continue
+                seen.add(key)
+                self._placement_snap_candidates.append(
+                    (snap.label.title(), u, v, None)
+                )
         # Nearby-object bbox extrema cover centres, edge midpoints and corners
         # without enumerating imported topology on the UI thread.
         from ...kernel.occ import bounding_box
@@ -1002,7 +1214,7 @@ class AlignPanel(_SelectionTool):
                         )
         return viewport.begin_plane_drag(
             frame.center, frame.normal, frame.x_axis, frame.y_axis,
-            self.value("u"), self.value("v"),
+            initial_u, initial_v,
         )
 
     def _on_plane_drag(self, value: dict) -> None:
@@ -1016,12 +1228,14 @@ class AlignPanel(_SelectionTool):
         modifiers = value.get("modifiers", Qt.NoModifier)
         snapped = ""
         if not (modifiers & Qt.ShiftModifier):
-            origin_u, origin_v = anchor_coordinates(frame, self.target_anchor.value())
+            origin_u, origin_v = (
+                (0.0, 0.0) if self._edge_mode
+                else anchor_coordinates(frame, self.target_anchor.value())
+            )
             candidates = self._placement_snap_candidates
-            by_key = {item[0]: item for item in candidates}
             allowed = candidates
-            if self._snap_lock in by_key:
-                allowed = [by_key[self._snap_lock]]
+            if self._snap_lock in candidates:
+                allowed = [self._snap_lock]
             best = None
             cursor = value.get("pos")
             target_name = None
@@ -1034,8 +1248,9 @@ class AlignPanel(_SelectionTool):
                     best = (distance, key, u, v, body_name)
             limit = 16.0 if self._snap_lock else 10.0
             if best is not None and best[0] <= limit:
-                _distance, self._snap_lock, raw_u, raw_v, target_name = best
-                snapped = self._snap_lock
+                _distance, label, raw_u, raw_v, target_name = best
+                self._snap_lock = (label, raw_u, raw_v, target_name)
+                snapped = label
                 self._show_placement_snap(target_name)
             else:
                 self._snap_lock = None
@@ -1043,8 +1258,20 @@ class AlignPanel(_SelectionTool):
         else:
             self._snap_lock = None
             self._show_placement_snap(None)
-        self.fields["u"].set_value(raw_u)
-        self.fields["v"].set_value(raw_v)
+        if self._edge_mode:
+            horizontal = self.horizontal_side.currentData()
+            vertical = self.vertical_side.currentData()
+            self.fields["horizontal_gap"].set_value(
+                self._drag_start_gaps[0]
+                + (self._drag_zero[0] - raw_u if horizontal == "right" else raw_u - self._drag_zero[0])
+            )
+            self.fields["vertical_gap"].set_value(
+                self._drag_start_gaps[1]
+                + (self._drag_zero[1] - raw_v if vertical == "top" else raw_v - self._drag_zero[1])
+            )
+        else:
+            self.fields["u"].set_value(raw_u)
+            self.fields["v"].set_value(raw_v)
         self.preview()
         if snapped:
             self.warn(f"Snapped to {snapped}. Hold Shift for free placement.")
@@ -1064,10 +1291,15 @@ class AlignPanel(_SelectionTool):
     def preview(self) -> None:
         pair = self._pair()
         if pair is None:
+            if self._reference_error:
+                self.warn(self._reference_error)
+                self.confirm.setEnabled(False)
+                return
             self._clear_preview()
             self.warn("Select a moving body or face and a flat target face.")
             return
         moving, target = pair
+        self.confirm.setEnabled(True)
         body = self.window_.document.body(moving.body)
         if body is None or body.shape is None:
             return
@@ -1076,6 +1308,10 @@ class AlignPanel(_SelectionTool):
         except Exception as exc:  # noqa: BLE001 - invalid combinations stay editable
             from ...core.errors import translate
 
+            self._clear_preview()
+            if self._frame_overlay is not None:
+                self._frame_overlay.frame = None
+                self._frame_overlay.update()
             self.warn(str(translate(exc, "align")))
             return
         viewport = self.window_.stage.viewport
@@ -1083,11 +1319,13 @@ class AlignPanel(_SelectionTool):
         # entire body for every typed character was the main source of stutter.
         if (
             self._preview_body != moving.body
+            or getattr(self, "_placement_shape", None) is not body.shape
             or getattr(viewport, "_ghost", None) is not self._placement_ghost
         ):
             self._placement_ghost = viewport.show_ghost(
                 body.shape, self.window_.palette_.accent, transparency=0.14,
             )
+            self._placement_shape = body.shape
         viewport.transform_ghost(result.transform)
         self._preview_body = moving.body
         viewport.set_transparency(
@@ -1114,12 +1352,11 @@ class AlignPanel(_SelectionTool):
             self._moving_role_overlay.SetLocalTransformation(result.transform)
             if viewport.context is not None:
                 viewport.context.Redisplay(self._moving_role_overlay, False)
-        self._show_face_frame(target.shape)
-        self.warn("")
+        self.warn(self._show_face_frame(target.shape) or "")
 
-    def _show_face_frame(self, face) -> None:
+    def _show_face_frame(self, face) -> str:
         if self.operation not in ("stack", "center"):
-            return
+            return ""
         from ...kernel.align import anchor_point, reference_frame
 
         pair = self._pair()
@@ -1128,20 +1365,53 @@ class AlignPanel(_SelectionTool):
             if pair is not None and pair[1].shape.IsSame(face)
             else reference_frame(face)
         )
-        anchor = anchor_point(
-            frame, self.target_anchor.value(), normal=self.value("offset", 0.0)
-        )
+        if self._edge_mode and pair is not None:
+            from ...kernel.align import edge_gap_coordinates
+
+            body = self.window_.document.body(pair[0].body)
+            moving_u, moving_v = self._edge_bounds(*pair)
+            coordinate_u, coordinate_v = edge_gap_coordinates(
+                frame, body.shape, pair[0].shape,
+                operation=self.operation, flip=self.flip.isChecked(),
+                horizontal=self.horizontal_side.currentData(),
+                vertical=self.vertical_side.currentData(),
+                horizontal_gap=self.value("horizontal_gap"),
+                vertical_gap=self.value("vertical_gap"),
+                moving_bounds=(moving_u, moving_v),
+            )
+            bounds_u = (coordinate_u + moving_u[0], coordinate_u + moving_u[1])
+            bounds_v = (coordinate_v + moving_v[0], coordinate_v + moving_v[1])
+            u = sum(bounds_u) / 2.0
+            v = sum(bounds_v) / 2.0
+            origin = frame.point(u, v, self.value("offset", 0.0))
+            sides = (self.horizontal_side.currentData(), self.vertical_side.currentData())
+            labels = (
+                self.value("horizontal_gap"), self.value("vertical_gap")
+            )
+            self._frame_overlay.set_placement(
+                frame, origin, u, v,
+                self._snap_lock[0] if self._snap_lock else "",
+                edges=(sides, labels, bounds_u, bounds_v),
+            )
+            if (
+                bounds_u[0] < frame.x_bounds[0] - 1e-5
+                or bounds_u[1] > frame.x_bounds[1] + 1e-5
+                or bounds_v[0] < frame.y_bounds[0] - 1e-5
+                or bounds_v[1] > frame.y_bounds[1] + 1e-5
+            ):
+                return "Part of the object extends beyond the target face."
+            return ""
+        anchor = anchor_point(frame, self.target_anchor.value(), normal=self.value("offset", 0.0))
         origin = tuple(
-            anchor[i]
-            + frame.x_axis[i] * self.value("u", 0.0)
-            + frame.y_axis[i] * self.value("v", 0.0)
+            anchor[i] + frame.x_axis[i] * self.value("u", 0.0) + frame.y_axis[i] * self.value("v", 0.0)
             for i in range(3)
         )
         if self._frame_overlay is not None:
             self._frame_overlay.set_placement(
                 frame, origin, self.value("u"), self.value("v"),
-                self._snap_lock or "",
+                self._snap_lock[0] if self._snap_lock else "",
             )
+        return ""
 
     def _clear_preview(self) -> None:
         viewport = self.window_.stage.viewport
@@ -1164,6 +1434,8 @@ class AlignPanel(_SelectionTool):
 
     def teardown(self) -> None:
         self._clear_preview()
+        self._target_frames = []
+        self.window_.stage.viewport.cancel_plane_drag()
         try:
             self.window_.stage.viewport.plane_dragged.disconnect(self._on_plane_drag)
         except (RuntimeError, TypeError):
@@ -1174,6 +1446,8 @@ class AlignPanel(_SelectionTool):
             self._frame_overlay = None
 
     def commit(self) -> None:
+        from ...kernel.align import frame_basis
+
         pair = self._pair()
         if not _need(
             self.window_, pair is not None,
@@ -1187,6 +1461,7 @@ class AlignPanel(_SelectionTool):
         ):
             return
         document = self.window_.document
+        placed_frame = self._reference_frames(moving, target)[1]
         self.window_.add_feature(
             AlignFeature(
                 inputs={
@@ -1200,6 +1475,17 @@ class AlignPanel(_SelectionTool):
                     "v": self.expression("v", "0"),
                     "moving_anchor": self.moving_anchor.value(),
                     "target_anchor": self.target_anchor.value(),
+                    **({
+                        "placement_mode": "edge_gap",
+                        "horizontal": self.horizontal_side.currentData(),
+                        "vertical": self.vertical_side.currentData(),
+                        "horizontal_gap": self.expression("horizontal_gap", "0"),
+                        "vertical_gap": self.expression("vertical_gap", "0"),
+                        "target_basis": frame_basis(target.shape, placed_frame),
+                        "target_u": list(placed_frame.x_axis),
+                        "target_normal": list(placed_frame.normal),
+                    } if self._edge_mode and self.edge_controls is not None
+                    and self.operation in ("stack", "center") else {}),
                 },
                 outputs=[moving.body],
             )
@@ -2100,6 +2386,7 @@ class _EdgeTool(_SelectionTool):
     def build(self) -> None:
         from PySide6.QtCore import QTimer
 
+        self._source_picks = list(self.selection.picks)
         self.picks = self._edge_picks()
         self._body_shape = self._resolve_body()
         self._max_value = self._resolve_max()
@@ -2111,6 +2398,8 @@ class _EdgeTool(_SelectionTool):
         self._dimmed = None
         self._last_good = None
         self._preview_failed = False
+        self._validated_value = None
+        self._pending_drag_commit = None
         # Previews are answered by the geometry process, so a reply can arrive
         # after the value it was for has been overtaken. The token says which
         # question each answer belongs to.
@@ -2131,14 +2420,14 @@ class _EdgeTool(_SelectionTool):
         viewport.handle_pressed.connect(self._on_handle_pressed)
         viewport.handle_dragged.connect(self._on_handle_dragged)
         self._install_handle()
+        if self.picks:
+            QTimer.singleShot(0, self._refresh_preview)
 
     def _describe(self) -> str:
         if not self.picks:
             return "Select one or more edges, or a corner."
-        return (
-            f"{len(self.picks)} edge(s) selected — drag the handle on the model, "
-            "or type an exact value."
-        )
+        return (f"{len(self.picks)} edge(s) selected — drag the edge or handle, "
+                f"use ↑/↓ in 0.25 mm steps, or type a {self.field_label.lower()}.")
 
     def _edge_picks(self) -> list:
         """The edges to work on, expanding a picked corner into its edges.
@@ -2149,13 +2438,13 @@ class _EdgeTool(_SelectionTool):
         """
         from ..selection import Picked
 
-        edges = self.selection.edges()
-        if edges:
-            return edges
         from ...kernel.edge_frame import edges_at_vertex
         from OCP.TopoDS import TopoDS
 
-        expanded: list = []
+        expanded: list = [
+            Picked(p.body, "edge", TopoDS.Edge_s(p.shape), p.presentation)
+            for p in self.selection.edges()
+        ]
         for pick in self.selection.picks:
             if pick.kind != "vertex":
                 continue
@@ -2173,7 +2462,42 @@ class _EdgeTool(_SelectionTool):
                 )
                 for edge in found
             )
-        return expanded
+        unique = []
+        for pick in expanded:
+            if not any(
+                other.body == pick.body and other.shape.IsSame(pick.shape)
+                for other in unique
+            ):
+                unique.append(pick)
+        return unique
+
+    def on_selection_changed(self) -> None:
+        incoming = list(self.selection.picks)
+        if len(incoming) == len(self._source_picks) and all(
+            left.body == right.body and left.kind == right.kind
+            and left.shape.IsSame(right.shape)
+            for left, right in zip(incoming, self._source_picks)
+        ):
+            return
+        self._source_picks = incoming
+        self._pending_drag_commit = None
+        self._preview_timer.stop()
+        viewport = self.window_.stage.viewport
+        viewport.clear_ghost()
+        if self._dimmed is not None:
+            viewport.set_transparency(self.window_._presentations.get(self._dimmed), 0.0)
+            self._dimmed = None
+        viewport.handles.clear(viewport)
+        self.picks = self._edge_picks()
+        self._body_shape = self._resolve_body()
+        self._max_value = self._resolve_max()
+        self._handle = None
+        self._last_good = None
+        self._validated_value = None
+        self.set_subtitle(self._describe())
+        self._install_handle()
+        if self.picks:
+            self._refresh_preview()
 
     def _resolve_body(self):
         if not self.picks:
@@ -2245,9 +2569,41 @@ class _EdgeTool(_SelectionTool):
             viewport, self.window_.palette_.accent,
         )
         self.window_.set_hint(
-            "Drag the handle to size the "
-            f"{self.title.lower()}, or type a value — then Apply."
+            f"Drag the selected edge or handle to size the {self.title.lower()}; "
+            "↑/↓ changes it by 0.25 mm."
         )
+
+    def begin_freeform_drag(self, pos) -> bool:
+        """Use Push/Pull's axis drag when pressing a selected edge or corner."""
+        if self._anchor is None or not self.picks:
+            return False
+        viewport = self.window_.stage.viewport
+        detected = viewport.detected_shape(pos)
+        if detected is None or not any(
+            pick.body == self.picks[0].body and pick.kind in {"edge", "vertex"}
+            and pick.shape.IsSame(detected)
+            for pick in self._source_picks
+        ):
+            return False
+        if not viewport.begin_axis_drag(self._anchor, self._direction, self.field_key):
+            return False
+        self._on_handle_pressed(self.field_key)
+        return True
+
+    def handle_arrow_key(self, key: int) -> bool:
+        from ...kernel.edge_frame import MIN_RADIUS
+
+        if not self.picks or key not in (Qt.Key_Up, Qt.Key_Down):
+            return False
+        sign = 1.0 if key == Qt.Key_Up else -1.0
+        value = max(MIN_RADIUS, min(
+            self._max_value, self.value(self.field_key, self.default_value)
+            + sign * 0.25,
+        ))
+        self._pending_drag_commit = None
+        self.fields[self.field_key].set_value(round(value, 3))
+        self.preview()
+        return True
 
     def _offset_anchor(self, value: float):
         """Where the handle sits for a given value.
@@ -2278,6 +2634,7 @@ class _EdgeTool(_SelectionTool):
         if key != self.field_key:
             return
         self._dragging = True
+        self._pending_drag_commit = None
         self._drag_base = self.value(self.field_key, self.default_value)
 
     def _on_handle_dragged(self, key: str, distance: float, finished: bool) -> None:
@@ -2301,7 +2658,11 @@ class _EdgeTool(_SelectionTool):
             if abs(distance) < 0.05:
                 self._refresh_preview()
                 return
-            self.commit()
+            if self._validated_value is not None and abs(self._validated_value - value) < 0.0005:
+                self.commit()
+                return
+            self._pending_drag_commit = value
+            self._refresh_preview()
             return
         # Started only if it is not already running. Restarting it on every
         # drag event -- which is what a debounce does -- means a 70 ms timer
@@ -2313,14 +2674,19 @@ class _EdgeTool(_SelectionTool):
 
     def _show_readout(self, value: float) -> None:
         from PySide6.QtGui import QCursor
+        from PySide6.QtCore import QPoint
 
         palette = self.window_.palette_
         # Unbuildable means "tried and failed", not "not tried yet". Reading
         # this straight off ``_last_good`` made the readout red for the first
         # few frames of every drag, before the preview timer had run once.
         buildable = self._last_good is not None or not self._preview_failed
+        viewport = self.window_.stage.viewport
+        screen = viewport.project(self._offset_anchor(value)) if self._anchor is not None else None
+        where = (viewport.mapTo(self.window_.stage, QPoint(round(screen[0]), round(screen[1])))
+                 if screen is not None else self.window_.stage.mapFromGlobal(QCursor.pos()))
         self.window_.stage.drag_readout.show_text(
-            self.window_.stage.mapFromGlobal(QCursor.pos()),
+            where,
             f"{self.field_label[0]} {value:.2f} mm",
             "" if buildable else "too large here",
             palette.accent if buildable else palette.danger,
@@ -2330,6 +2696,7 @@ class _EdgeTool(_SelectionTool):
     def preview(self) -> None:
         """A typed value moves the handle and refreshes the preview."""
         value = self.value(self.field_key, self.default_value)
+        self._pending_drag_commit = None
         self._move_handle(value)
         self._refresh_preview()
 
@@ -2392,6 +2759,12 @@ class _EdgeTool(_SelectionTool):
 
         if message.get("token") != self._preview_token:
             return          # an answer from earlier in the drag; overtaken
+        if message.get("timeout"):
+            self._validated_value = None
+            self._pending_drag_commit = None
+            self.warn(message.get("error") or f"The {self.title.lower()} preview took too long.")
+            self._show_readout(self.value(self.field_key, self.default_value))
+            return
         blob = message.get("shape")
         shape = deserialise_shape(blob) if blob else None
         self._preview_answered(self._preview_value, shape)
@@ -2408,6 +2781,8 @@ class _EdgeTool(_SelectionTool):
             # to do: it hides the shape you were steering toward just as you
             # need to see how far you overshot.
             self._preview_failed = True
+            self._validated_value = None
+            self._pending_drag_commit = None
             self.warn(
                 f"{self.field_label} {value:.2f} mm is more than this shape can "
                 "take here."
@@ -2416,10 +2791,14 @@ class _EdgeTool(_SelectionTool):
             return
         self._last_good = shape
         self._preview_failed = False
+        self._validated_value = value
         self.warn("")
         viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.12)
         self._dim_body(0.88)
         self._show_readout(live)
+        if self._pending_drag_commit is not None and abs(self._pending_drag_commit - value) < 0.0005:
+            self._pending_drag_commit = None
+            self.commit()
 
     def _preview_unavailable(self, value: float) -> None:
         """No child to ask. Say so once and keep the tool usable."""
@@ -2430,6 +2809,12 @@ class _EdgeTool(_SelectionTool):
                 "preview. The value still applies."
             )
         self._show_readout(value)
+        if self._pending_drag_commit is not None and abs(self._pending_drag_commit - value) < 0.0005:
+            # Without a preview worker there will be no reply to finish the
+            # release gesture. Apply the released value through the same
+            # feature path as the button.
+            self._pending_drag_commit = None
+            self.commit()
 
     def _dim_body(self, amount: float) -> None:
         presentation = self.window_._presentations.get(self.picks[0].body)

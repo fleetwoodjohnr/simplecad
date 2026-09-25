@@ -8,6 +8,8 @@ engine keeps the last good geometry instead of producing something wrong.
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BodyRef, BuildContext, Feature, register
@@ -248,7 +250,7 @@ def _profile_cavity(body, opening, thickness: float):
             face_builder.Face(),
             gp_Vec(*(inward[i] * (depth - thickness + epsilon) for i in range(3))),
         ).Shape()
-        result = built_shape(BRepAlgoAPI_Cut(result, cutter), "shell")
+        result = built_shape(boolean_builder(BRepAlgoAPI_Cut, result, cutter), "shell")
     if not _usable_shell(body, result):
         raise CadError(
             "The hollow cavity could not be built cleanly.",
@@ -324,6 +326,123 @@ class ChamferFeature(_BodyOperation):
             for edge in edges:
                 builder.Add(distance, edge)
             return self._emit(built_shape(builder, "chamfer"))
+
+
+def edge_finish_specs(feature) -> list[dict]:
+    """Read old round-off recipes and new per-edge recipes uniformly."""
+    if feature.type_name == "edge_finish":
+        return list(feature.inputs.get("edge_specs", []))
+    kind = feature.type_name
+    if kind not in {"fillet", "chamfer"}:
+        return []
+    key = "radius" if kind == "fillet" else "distance"
+    return [{"edge": ref, "type": kind, key: feature.inputs.get(key, 2.0 if kind == "fillet" else 1.0)}
+            for ref in feature.inputs.get("edges", [])]
+
+
+def _faces_at_edge(shape, edge):
+    from OCP.TopoDS import TopoDS
+    from ..core.naming import sub_shapes
+
+    found = []
+    for face in sub_shapes(shape, "face"):
+        if any(candidate.IsSame(edge) for candidate in sub_shapes(face, "edge")):
+            found.append(TopoDS.Face_s(face))
+    return found
+
+
+@register("edge_finish")
+class EdgeFinishFeature(_BodyOperation):
+    """Fillet and chamfer settings owned separately by each source edge."""
+
+    label = "Edge finish"
+
+    def parameter_names(self) -> set[str]:
+        from ..core.params import dependencies
+
+        names = set()
+        for spec in self.inputs.get("edge_specs", []):
+            for key in ("radius", "distance", "distance2", "angle"):
+                value = spec.get(key)
+                if isinstance(value, str):
+                    names.update(dependencies(value))
+        return names
+
+    def build_with_generated(self, ctx: BuildContext):
+        """Build once per contiguous operation type and retain OCCT lineage."""
+        from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
+        from OCP.TopoDS import TopoDS
+        from ..core.naming import resolve
+
+        def number(value, default=0.0, dimension=Dimension.LENGTH):
+            if value is None:
+                return default
+            if isinstance(value, (int, float)):
+                return float(value)
+            return ctx.document.parameters.evaluate(str(value), dimension)
+
+        shape = ctx.shape(self, "body")
+        specs = edge_finish_specs(self)
+        if not specs:
+            raise CadError("This edge finish has no edges.")
+        generated = [[] for _ in specs]
+        position = 0
+        while position < len(specs):
+            kind = specs[position].get("type")
+            end = position + 1
+            while end < len(specs) and specs[end].get("type") == kind:
+                end += 1
+            if kind == "fillet":
+                maker = BRepFilletAPI_MakeFillet(shape)
+            elif kind == "chamfer":
+                maker = BRepFilletAPI_MakeChamfer(shape)
+            else:
+                raise CadError(f"Unknown edge finish type: {kind}.")
+            resolved = []
+            for index in range(position, end):
+                spec = specs[index]
+                edge = TopoDS.Edge_s(resolve(spec["edge"], shape))
+                resolved.append((index, edge))
+                if kind == "fillet":
+                    radius = number(spec.get("radius"), 2.0)
+                    if radius <= 0:
+                        raise CadError("A fillet needs a radius greater than zero.")
+                    maker.Add(radius, edge)
+                    continue
+                distance = number(spec.get("distance"), 1.0)
+                if distance <= 0:
+                    raise CadError("A chamfer needs a distance greater than zero.")
+                mode = spec.get("mode", "equal")
+                if mode == "equal":
+                    maker.Add(distance, edge)
+                    continue
+                side = spec.get("side")
+                face = (TopoDS.Face_s(resolve(side, shape)) if side is not None else
+                        next(iter(_faces_at_edge(shape, edge)), None))
+                if face is None:
+                    raise CadError("The chamfer's reference face is missing.")
+                if mode == "two_distances":
+                    second = number(spec.get("distance2"), distance)
+                    if second <= 0:
+                        raise CadError("Both chamfer distances must be positive.")
+                    maker.Add(distance, second, edge, face)
+                elif mode == "distance_angle":
+                    angle = number(spec.get("angle"), 45.0, Dimension.ANGLE)
+                    if not 0 < angle < 90:
+                        raise CadError("A chamfer angle must be between 0 and 90 degrees.")
+                    maker.AddDA(distance, math.radians(angle), edge, face)
+                else:
+                    raise CadError(f"Unknown chamfer setting: {mode}.")
+            with guard(kind):
+                shape = built_shape(maker, kind)
+            for index, edge in resolved:
+                generated[index] = list(maker.Generated(edge))
+            position = end
+        return shape, generated
+
+    def execute(self, ctx: BuildContext) -> dict:
+        shape, _generated = self.build_with_generated(ctx)
+        return self._emit(shape)
 
 
 @register("shell")
@@ -443,9 +562,9 @@ class PushPullFeature(_BodyOperation):
                 BRepPrimAPI_MakePrism(TopoDS.Face_s(face), direction), "pull"
             )
             if distance > 0:
-                result = built_shape(BRepAlgoAPI_Fuse(body, prism), "pull")
+                result = built_shape(boolean_builder(BRepAlgoAPI_Fuse, body, prism), "pull")
             else:
-                result = built_shape(BRepAlgoAPI_Cut(body, prism), "pull")
+                result = built_shape(boolean_builder(BRepAlgoAPI_Cut, body, prism), "pull")
             # A boolean can report success and still hand back a shape with no
             # solid in it. Emitting that leaves a body that looks present in the
             # tree and is not there in the model.
@@ -520,9 +639,7 @@ def radial_ring(info, new_radius: float, adding: bool):
     ring = BRepPrimAPI_MakeCylinder(outer, info.length).Shape()
     if inner > 1e-6:
         ring = built_shape(
-            BRepAlgoAPI_Cut(
-                ring, BRepPrimAPI_MakeCylinder(inner, info.length).Shape()
-            ),
+            boolean_builder(BRepAlgoAPI_Cut, ring, BRepPrimAPI_MakeCylinder(inner, info.length).Shape()),
             "resize",
         )
     return transformed(ring, axis_transform(info.origin, info.direction))
@@ -579,7 +696,7 @@ class RoundPushPullFeature(_BodyOperation):
         with guard("resize"):
             ring = radial_ring(info, new_radius, adding)
             result = built_shape(
-                (BRepAlgoAPI_Fuse if adding else BRepAlgoAPI_Cut)(body, ring),
+                boolean_builder(BRepAlgoAPI_Fuse if adding else BRepAlgoAPI_Cut, body, ring),
                 "resize",
             )
             if not _has_solid(result):
@@ -647,7 +764,7 @@ class MoveFeature(_BodyOperation):
                         rotate_axis=axis, rotate_degrees=angle, origin=pivot
                     )
                 )
-        return self._emit(transformed(body, transform))
+        return self._emit(transformed(body, transform, copy_geometry=False))
 
 
 @register("move_many")
@@ -667,7 +784,7 @@ class MoveManyFeature(Feature):
         ))
         self.outputs = names
         return self.keep({
-            name: transformed(ctx.named_shape(name), transform) for name in names
+            name: transformed(ctx.named_shape(name), transform, copy_geometry=False) for name in names
         })
 
 
@@ -741,6 +858,106 @@ def _diagonal(factors):
     )
 
 
+MAX_JOIN_GAP_MM = 0.2
+
+#: Fuzzy values to retry a Join with when the parts touch exactly but OCCT
+#: still hands back two solids. Both are far below any printable resolution and
+#: far above ``Precision::Confusion``, which the kernel ignores.
+TOUCHING_JOIN_FUZZY_MM = (1.0e-4, 1.0e-3)
+
+#: Below this a measured gap is contact, not a gap: nothing was bridged, so
+#: nothing is warned about.
+JOIN_CONTACT_MM = 1.0e-6
+
+
+def _join_solids(shape) -> list:
+    """Return the distinct solids in a boolean result, not its tree items."""
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    mapping = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, mapping)
+    return [mapping.FindKey(index) for index in range(1, mapping.Extent() + 1)]
+
+
+def _join_bridge_gap(solids: list) -> float | None:
+    """Smallest tolerance connecting every separate solid, if it is safe.
+
+    Returns ``0.0`` when the parts already touch: a fuse that hands back two
+    solids from faces sitting exactly on each other is an OCCT tolerance
+    problem, not a modelling one, and refusing it told the user their parts
+    "do not make solid contact" while they were flush against each other.
+    Touching pairs also have to take part in the connectivity test, or a chain
+    of one exact contact and one 0.05 mm gap reads as two separate clusters and
+    is refused even though bridging it would work.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from .occ import bounding_box
+
+    if not solids:
+        return None
+    if len(solids) == 1:
+        return 0.0
+
+    parent = list(range(len(solids)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    # The cheap boxes can overestimate a curved solid, but cannot exclude a
+    # genuinely close pair. Sweep along X before asking OCCT to measure two
+    # complete B-Reps; a large assembly otherwise makes O(n²) expensive
+    # distance calls merely to discover that most parts are far apart.
+    bounds = [bounding_box(solid, optimal=False) for solid in solids]
+    order = sorted(range(len(solids)), key=lambda index: bounds[index][0][0])
+    nearby = []
+    for position, first in enumerate(order):
+        first_low, first_high = bounds[first]
+        for next_position in range(position + 1, len(order)):
+            second = order[next_position]
+            second_low, second_high = bounds[second]
+            if second_low[0] - first_high[0] > MAX_JOIN_GAP_MM + 1.0e-9:
+                break
+            box_gap_sq = sum(
+                max(0.0, first_low[axis] - second_high[axis],
+                    second_low[axis] - first_high[axis]) ** 2
+                for axis in range(3)
+            )
+            if box_gap_sq > (MAX_JOIN_GAP_MM + 1.0e-9) ** 2:
+                continue
+            distance = BRepExtrema_DistShapeShape()
+            distance.LoadS1(solids[first])
+            distance.LoadS2(solids[second])
+            distance.Perform()
+            if not distance.IsDone():
+                continue
+            gap = float(distance.Value())
+            if gap <= MAX_JOIN_GAP_MM + 1.0e-9:
+                nearby.append((gap, first, second))
+
+    largest_needed = 0.0
+    # Smallest first, so contacts weld before gaps and ``largest_needed`` ends
+    # up being the widest gap the result actually depends on.
+    for gap, first, second in sorted(nearby):
+        a, b = root(first), root(second)
+        if a != b:
+            parent[a] = b
+            largest_needed = gap
+    connected = len({root(i) for i in range(len(solids))}) == 1
+    return largest_needed if connected else None
+
+
+def _join_fuzzy_values(gap: float) -> list[float]:
+    """Fuzzy values to retry a Join with for a measured *gap*, smallest first."""
+    if gap > JOIN_CONTACT_MM:
+        return [gap + 1.0e-6]
+    return [value for value in TOUCHING_JOIN_FUZZY_MM if value <= MAX_JOIN_GAP_MM]
+
+
 @register("boolean")
 class BooleanFeature(Feature):
     """Join, Cut or Intersect -- one target body against one or more tools."""
@@ -795,15 +1012,88 @@ class BooleanFeature(Feature):
         target = ctx.shape(self, "body")
         tools = {tool: ctx.named_shape(tool) for tool in tool_names}
         with guard(operation):
-            result = target
-            for tool in tool_names:
-                # One boolean per tool rather than one call with a list of
-                # arguments: OCCT copes with either, and doing them in turn
-                # means a failure names the tool that caused it.
-                result = built_shape(
-                    builders[operation](result, tools[tool]), operation
+            def combine(fuzzy: float = 0.0):
+                from OCP.TopTools import TopTools_ListOfShape
+
+                if operation in {"join", "cut"}:
+                    arguments = TopTools_ListOfShape()
+                    arguments.Append(target)
+                    cutters = TopTools_ListOfShape()
+                    for tool in tool_names:
+                        cutters.Append(tools[tool])
+                    builder = builders[operation]()
+                    builder.SetArguments(arguments)
+                    builder.SetTools(cutters)
+                    builder.SetNonDestructive(True)
+                    if fuzzy:
+                        builder.SetFuzzyValue(fuzzy)
+                    # One boolean avoids repeatedly rebuilding an increasingly
+                    # complex result. UnifySameDomain can segfault on a valid
+                    # result, so keep the checked OCCT shape as-is.
+                    return built_shape(builder, operation)
+
+                result = target
+                for tool in tool_names:
+                    # Keep the same ordered booleans for preview and commit.
+                    # The two-shape constructor executes immediately. Configure
+                    # an empty builder so we do not perform every boolean twice
+                    # (once without our parallelism/tolerance settings).
+                    arguments = TopTools_ListOfShape()
+                    arguments.Append(result)
+                    cutters = TopTools_ListOfShape()
+                    cutters.Append(tools[tool])
+                    builder = builders[operation]()
+                    builder.SetArguments(arguments)
+                    builder.SetTools(cutters)
+                    builder.SetNonDestructive(True)
+                    if fuzzy:
+                        builder.SetFuzzyValue(fuzzy)
+                    result = built_shape(builder, operation)
+                # OCCT's face/edge cleanup has crashed on otherwise valid
+                # boolean results. A native crash kills the geometry worker,
+                # so do not run that optional cleanup for any Combine mode.
+                return result
+
+            result = combine()
+            if operation == "join":
+                solids = _join_solids(result)
+                connected = len(solids) == 1
+                valid = False
+                bridged_gap = None
+                if len(solids) > 1:
+                    gap = _join_bridge_gap(solids)
+                    if gap is None:
+                        raise CadError(
+                            "Join cannot make one connected solid: the parts do not make solid contact within 0.2 mm.",
+                            suggestion="Move them closer with Align & Stack, then try Join again.",
+                        )
+                    # A measured gap, not a blanket tolerance on every Join.
+                    # Each candidate is checked before it is kept, so a fuzzy
+                    # retry can only ever improve on the plain fuse.
+                    for fuzzy in _join_fuzzy_values(gap):
+                        candidate = combine(fuzzy)
+                        if len(_join_solids(candidate)) == 1 and is_valid(candidate):
+                            result = candidate
+                            connected = valid = True
+                            bridged_gap = gap
+                            break
+                if not connected or (not valid and not is_valid(result)):
+                    raise CadError(
+                        "Join could not make one valid connected solid.",
+                        suggestion="Adjust the parts so their faces overlap, then try again.",
+                    )
+                if bridged_gap is not None and bridged_gap > JOIN_CONTACT_MM:
+                    warning = (
+                        f"Join bridged a {bridged_gap:.3f} mm gap; "
+                        "the parts did not originally touch."
+                    )
+                    self.message = warning
+                    ctx.warnings.append(warning)
+            elif not _has_solid(result) or not is_valid(result):
+                raise CadError(
+                    f"{operation.title()} could not make a valid solid.",
+                    suggestion="Check that the target and tools are valid solids, then adjust their overlap.",
                 )
-            result = unify(result)
 
         keep_tool = bool(self.inputs.get("keep_tool", False))
         self.outputs = [name]
@@ -931,7 +1221,7 @@ class HoleFeature(_BodyOperation):
                 cb_diameter = ctx.value(self, "counterbore_diameter", diameter * 1.8)
                 cb_depth = ctx.value(self, "counterbore_depth", diameter * 0.6)
                 cap = BRepPrimAPI_MakeCylinder(axis, cb_diameter / 2.0, cb_depth).Shape()
-                tool = built_shape(BRepAlgoAPI_Fuse(tool, cap), "hole")
+                tool = built_shape(boolean_builder(BRepAlgoAPI_Fuse, tool, cap), "hole")
             elif style == "countersink":
                 angle = ctx.value(self, "countersink_angle", 90.0)
                 cs_diameter = ctx.value(self, "countersink_diameter", diameter * 2.0)
@@ -941,9 +1231,9 @@ class HoleFeature(_BodyOperation):
                 cone = BRepPrimAPI_MakeCone(
                     axis, cs_diameter / 2.0, diameter / 2.0, max(cone_height, 1e-3)
                 ).Shape()
-                tool = built_shape(BRepAlgoAPI_Fuse(tool, cone), "hole")
+                tool = built_shape(boolean_builder(BRepAlgoAPI_Fuse, tool, cone), "hole")
 
-            result = built_shape(BRepAlgoAPI_Cut(body, tool), "hole")
+            result = built_shape(boolean_builder(BRepAlgoAPI_Cut, body, tool), "hole")
 
         if style == "threaded":
             result = self._thread_the_bore(
@@ -1139,6 +1429,15 @@ class AlignFeature(_BodyOperation):
             target_anchor=self.inputs.get("target_anchor"),
             u=(ctx.value(self, "u", 0.0) if "u" in self.inputs else None),
             v=(ctx.value(self, "v", 0.0) if "v" in self.inputs else None),
+            moving_body=body,
+            placement_mode=str(self.inputs.get("placement_mode", "anchor")),
+            horizontal=str(self.inputs.get("horizontal", "center")),
+            vertical=str(self.inputs.get("vertical", "center")),
+            horizontal_gap=ctx.value(self, "horizontal_gap", 0.0),
+            vertical_gap=ctx.value(self, "vertical_gap", 0.0),
+            target_basis=self.inputs.get("target_basis"),
+            target_u=self.inputs.get("target_u"),
+            target_normal=self.inputs.get("target_normal"),
         )
         self.message = result.description
         return self._emit(transformed(body, result.transform))

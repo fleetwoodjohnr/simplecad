@@ -7,6 +7,20 @@ import math
 from ..core.errors import check_done, guard
 
 
+def boolean_builder(kind, first, second):
+    """Configure before building, without modifying cached operand topology."""
+    from OCP.TopTools import TopTools_ListOfShape
+
+    arguments, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    arguments.Append(first)
+    tools.Append(second)
+    builder = kind()
+    builder.SetArguments(arguments)
+    builder.SetTools(tools)
+    builder.SetNonDestructive(True)
+    return builder
+
+
 def built_shape(builder, operation: str):
     """Build an OCCT builder and return its shape, checked.
 
@@ -75,12 +89,17 @@ def axis_transform(origin, direction):
     return transform
 
 
-def transformed(shape, transform):
-    """Apply a ``gp_Trsf``, copying so the original is untouched."""
+def transformed(shape, transform, *, copy_geometry: bool = True):
+    """Apply a ``gp_Trsf`` without changing the source shape.
+
+    Rigid moves can reuse geometry through a new OCCT location. This matters
+    for complex boolean results whose tolerances may change under a deep copy.
+    Other callers retain copied topology for their existing selection behavior.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 
     with guard("move"):
-        builder = BRepBuilderAPI_Transform(shape, transform, True)
+        builder = BRepBuilderAPI_Transform(shape, transform, copy_geometry)
         check_done(builder, "move")
         return builder.Shape()
 

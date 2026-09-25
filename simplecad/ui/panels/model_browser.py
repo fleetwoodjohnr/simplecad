@@ -16,7 +16,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QStackedWidget, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout, QWidget,
 )
 
 from ..icons import icon
@@ -252,9 +252,22 @@ class ModelBrowser(FloatingCard):
         self.adjustSize()
 
     def _fill_bodies(self) -> None:
+        stamp = (id(self.document), self._palette,
+                 tuple((b.id, b.name, b.visible) for b in self.document.bodies.values()),
+                 tuple((g.id, g.name, tuple(g.members), g.visible, g.expanded)
+                       for g in self.document.groups.values()))
+        if stamp == getattr(self, "_body_stamp", None):
+            return
+        self._body_stamp = stamp
+        selected = set(self._selected_names())
         self.bodies_tree.clear()
         for kind, name in self.document.root_items():
             self.bodies_tree.addTopLevelItem(self._row(kind, name))
+        iterator = QTreeWidgetItemIterator(self.bodies_tree)
+        while iterator.value():
+            row = iterator.value()
+            row.setSelected(row.data(0, NAME_ROLE) in selected)
+            iterator += 1
 
     def _row(self, kind: str, name: str) -> QTreeWidgetItem:
         """One tree row, with its children when it is a group."""
@@ -294,18 +307,37 @@ class ModelBrowser(FloatingCard):
         from ...core.document import FeatureState
 
         palette = self._palette
-        self.history_list.clear()
+        stamp = (id(self.document), self._palette,
+                 tuple((f.id, f.name, f.type_name, f.state, f.message)
+                       for f in self.document.features))
+        if stamp == getattr(self, "_history_stamp", None):
+            return
+        self._history_stamp = stamp
+        existing = {self.history_list.item(i).data(Qt.UserRole): self.history_list.item(i)
+                    for i in range(self.history_list.count())}
+        live = {f.id for f in self.document.features}
+        for fid in existing.keys() - live:
+            self.history_list.takeItem(self.history_list.row(existing.pop(fid)))
         icons = {
             "box": "box", "cylinder": "cylinder", "sphere": "sphere",
             "cone": "cone", "torus": "torus", "tube": "tube",
             "wedge": "wedge", "polygon_prism": "polygon",
             "star": "star", "heart": "heart", "cross": "cross",
             "crescent": "crescent", "lightning": "lightning", "text": "text",
+            "face_texture": "texture",
             "split": "split", "import": "import",
         }
-        for feature in self.document.features:
-            item = QListWidgetItem(feature.name)
+        for index, feature in enumerate(self.document.features):
+            item = existing.get(feature.id)
+            if item is None:
+                item = QListWidgetItem()
+                self.history_list.insertItem(index, item)
+            elif self.history_list.row(item) != index:
+                self.history_list.takeItem(self.history_list.row(item))
+                self.history_list.insertItem(index, item)
+            item.setText(feature.name)
             item.setData(Qt.UserRole, feature.id)
+            item.setToolTip("")
             colour = palette.text_muted
             if feature.state is FeatureState.FAILED:
                 colour = palette.danger
@@ -320,9 +352,7 @@ class ModelBrowser(FloatingCard):
                 name = "warning"
             item.setIcon(icon(name, colour, 18))
             item.setSizeHint(QSize(0, 32))
-            if feature.state is not FeatureState.OK:
-                item.setForeground(_color(colour))
-            self.history_list.addItem(item)
+            item.setForeground(_color(colour if feature.state is not FeatureState.OK else palette.text))
 
     def _rows_selected(self) -> None:
         """Relay the complete tree selection, preserving the order rows were added."""
@@ -419,6 +449,10 @@ class ModelBrowser(FloatingCard):
             return
 
         menu = QMenu(self)
+        if feature.type_name == "face_texture":
+            menu.addAction("Edit texture…", lambda: self.feature_action.emit(feature_id, "edit"))
+        elif feature.type_name in {"fillet", "chamfer", "edge_finish"}:
+            menu.addAction("Edit edges…", lambda: self.feature_action.emit(feature_id, "edit"))
         menu.addAction("Rename…", lambda: self._rename_feature(item))
         if feature.suppressed:
             menu.addAction(

@@ -64,6 +64,33 @@ def main() -> int:
             REPORT["new_feature_ids"] = len({f.id for f in window.document.features}) == len(
                 window.document.features
             )
+
+            # Queue another feature and a paste without waiting for either
+            # rebuild. The first worker reply must not replace the newer
+            # history when the second one arrives.
+            from simplecad.kernel.primitives import CylinderFeature
+
+            window.document.body("Box").color = "#dd8844"
+            window.add_feature(CylinderFeature(
+                inputs={"radius": 4, "height": 12, "x": 130}, outputs=["Pin"],
+            ))
+            window.paste_selection()
+            window.wait_for_rebuild()
+            REPORT["queued_edit_survives_paste"] = (
+                set(window.document.bodies) == {"Box", "Box2", "Box3", "Box4", "Pin"}
+                and any(f.type_name == "cylinder" for f in window.document.features)
+                and window.document.body("Box").color == "#dd8844"
+            )
+            window.undo()
+            window.wait_for_rebuild()
+            REPORT["undo_only_removes_paste"] = (
+                "Box4" not in window.document.bodies and "Pin" in window.document.bodies
+            )
+            window.redo()
+            window.wait_for_rebuild()
+            REPORT["redo_restores_paste"] = (
+                "Box4" in window.document.bodies and "Pin" in window.document.bodies
+            )
             window.stage.viewport.fit_all()
             window.set_hint("Ctrl+C / Ctrl+V: independent copies placed beside the model")
 
@@ -76,7 +103,7 @@ def main() -> int:
     print("--- copy/paste ---")
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
-    ok = all(value is True for value in REPORT.values()) and len(REPORT) == 6
+    ok = all(value is True for value in REPORT.values()) and len(REPORT) == 9
     print("VERDICT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

@@ -7,6 +7,8 @@ inputs, so a box created by dragging is still fully parametric afterwards.
 
 from __future__ import annotations
 
+from .occ import boolean_builder
+
 import math
 
 from ..core.document import BuildContext, Feature, register
@@ -160,7 +162,7 @@ class TubeFeature(_Primitive):
             # Overshoot the bore so the cut leaves clean end faces.
             bore = BRepPrimAPI_MakeCylinder(inner, height * 3).Shape()
             bore = transformed(bore, make_transform(translate=(0, 0, -height)))
-            cut = BRepAlgoAPI_Cut(solid, bore)
+            cut = boolean_builder(BRepAlgoAPI_Cut, solid, bore)
             return self._finish(ctx, built_shape(cut, "tube"))
 
 
