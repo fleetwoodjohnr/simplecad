@@ -185,12 +185,16 @@ def main() -> int:
             )
             QTimer.singleShot(450, after_body)
 
+        state_vector = [0.0, 0.0, 0.0]
+
         def after_body() -> None:
             window.wait_for_rebuild()
             QApplication.processEvents()
             feature = window.document.features[-1]
             vector = tuple(float(feature.inputs[key]) for key in ("dx", "dy", "dz"))
             REPORT["body_feature"] = feature.type_name == "move_many"
+            # Later bursts fold into this Move; each is judged by its change.
+            state_vector[:] = vector
             REPORT["body_four_steps_equal_one_mm"] = abs(
                 math.dist(vector, (0, 0, 0)) - 1.0
             ) < 1.0e-9
@@ -215,7 +219,9 @@ def main() -> int:
             window.wait_for_rebuild()
             QApplication.processEvents()
             feature = window.document.features[-1]
-            vector = tuple(float(feature.inputs[key]) for key in ("dx", "dy", "dz"))
+            total = tuple(float(feature.inputs[key]) for key in ("dx", "dy", "dz"))
+            vector = tuple(total[i] - state_vector[i] for i in range(3))
+            state_vector[:] = total
             REPORT["depth_feature"] = (
                 feature.type_name == "move_many"
                 and abs(math.dist(vector, (0, 0, 0)) - NUDGE_STEP_MM) < 1.0e-9
@@ -249,9 +255,10 @@ def main() -> int:
             window.wait_for_rebuild()
             QApplication.processEvents()
             feature = window.document.features[-1]
-            held_vector = tuple(
+            held_total = tuple(
                 float(feature.inputs[key]) for key in ("dx", "dy", "dz")
             )
+            held_vector = tuple(held_total[i] - state_vector[i] for i in range(3))
             REPORT["held_arrow_committed_on_release"] = (
                 window._nudge_state is None and feature.type_name == "move_many"
                 and abs(math.dist(

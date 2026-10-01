@@ -1382,6 +1382,9 @@ def import_filter() -> str:
         groups.setdefault(IMPORT_FORMATS.get(extension, "Other"), []).append(
             f"*{extension}"
         )
+    # SimpleCAD projects are read by the project loader, not a mesh reader,
+    # but importing objects out of one is exactly what Import is for.
+    groups.setdefault("SimpleCAD project", []).append("*.scad3")
     everything = " ".join(sorted(p for patterns in groups.values() for p in patterns))
     parts = [f"All supported 3D files ({everything})"]
     parts += [

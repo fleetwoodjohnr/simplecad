@@ -30,10 +30,18 @@ class Action:
     cache_keys: tuple[str, ...] = ()
 
 
+def _restore_recipe(feature, source) -> None:
+    """Give *feature* the recorded recipe of *source*, keeping its identity."""
+    for key in ("name", "inputs", "outputs", "output_ids", "bindings", "suppressed", "dropped"):
+        value = getattr(source, key)
+        if getattr(feature, key) != value:
+            setattr(feature, key, value)
+
+
 class History:
     """Undo/redo stacks over document snapshots."""
 
-    def __init__(self, document, limit: int = 500) -> None:
+    def __init__(self, document, limit: int = 1000) -> None:
         self.document = document
         self.limit = limit
         self._undo: list[Action] = []
@@ -86,9 +94,24 @@ class History:
         self._undo[:] = self._undo[-self.limit:]
 
     def cache_keys(self):
+        """Result-cache keys the retained history can still restore.
+
+        Asked on every rebuild request and reply; the union over up to
+        ``limit`` actions is recomputed only when a stack actually changed.
+        Actions are immutable, so the stacks' ends identify their contents.
+        """
+        stamp = (self._pending, len(self._undo), len(self._redo),
+                 self._undo[0] if self._undo else None,
+                 self._undo[-1] if self._undo else None,
+                 self._redo[-1] if self._redo else None)
+        cached = getattr(self, "_keys_cache", None)
+        if cached is not None and all(a is b or (type(a) is int and a == b)
+                                         for a, b in zip(cached[0], stamp)):
+            return set(cached[1])
         keys = set(self._pending.cache_keys) if self._pending else set()
         for action in self._undo + self._redo:
             keys.update(action.cache_keys)
+        self._keys_cache = (stamp, frozenset(keys))
         return keys
 
     def to_dict(self):
@@ -167,6 +190,13 @@ class History:
         }
         for key in patch.get("values", {}):
             inverse["values"][key] = json.loads(json.dumps(values.get(key)))
+        for key, change in patch.get("keyed", {}).items():
+            mapping = values.get(key) or {}
+            touched = set(change.get("set", {})) | set(change.get("remove", []))
+            inverse.setdefault("keyed", {})[key] = {
+                "set": {k: json.loads(json.dumps(mapping[k])) for k in touched if k in mapping},
+                "remove": [k for k in touched if k not in mapping],
+            }
         for key, change in patch.get("collections", {}).items():
             items, identity = collections[key]
             current = {getattr(item, identity): item for item in items}
@@ -190,20 +220,32 @@ class History:
         stale = set()
         if feature_change:
             current = {f.id: f for f in document.features}
+            structural = False
             for ident in feature_change.get("remove", []):
                 if ident in current:
                     stale.add(ident)
                     del current[ident]
+                    structural = True
             for ident, state in feature_change.get("set", {}).items():
                 previous = current.get(ident)
                 if previous is None or previous.to_dict() != state:
                     stale.add(ident)
-                    current[ident] = Feature.from_dict(state)
-            order = feature_change.get("order") or [f.id for f in document.features]
-            document.features = [current[ident] for ident in order if ident in current]
-            for ident, feature in current.items():
-                if ident not in order:
-                    document.features.append(feature)
+                    replacement = Feature.from_dict(state)
+                    if previous is not None and type(previous) is type(replacement):
+                        # Restore in place. The graph is then re-indexed only
+                        # if this feature's connections changed -- undoing a
+                        # dimension or a move re-derives nothing else.
+                        _restore_recipe(previous, replacement)
+                    else:
+                        current[ident] = replacement
+                        structural = True
+            existing_order = [f.id for f in document.features]
+            order = feature_change.get("order") or existing_order
+            if structural or order != existing_order:
+                document.features = [current[ident] for ident in order if ident in current]
+                for ident, feature in current.items():
+                    if ident not in order:
+                        document.features.append(feature)
         if parameter_change:
             current = {p.name: p.to_dict() for p in document.parameters}
             names = set(parameter_change.get("set", {})) | set(parameter_change.get("remove", []))
@@ -227,6 +269,11 @@ class History:
             elif key == "assets":
                 document.assets = {name: document._all_assets[name] for name in value or ()
                                    if name in document._all_assets}
+        counters = patch.get("keyed", {}).get("counters")
+        if counters:
+            for name in counters.get("remove", []):
+                document._counters.pop(name, None)
+            document._counters.update(counters.get("set", {}))
         for key, cls in (("bodies", Body), ("groups", Group)):
             change = patch.get("collections", {}).get(key)
             if not change:

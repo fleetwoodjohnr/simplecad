@@ -259,8 +259,13 @@ def make_connector(spec: ClipSpec):
     return result
 
 
-def make_socket(spec: ClipSpec, sign: int, *, inset: float = -0.02):
-    """Stepped socket cutter for one end of a connector."""
+def make_socket(spec: ClipSpec, sign: int, *, inset: float = -0.02, extra_depth: float = 0.0):
+    """Stepped socket cutter for one end of a connector.
+
+    *extra_depth* lengthens the catch pocket past the connector tip, so a
+    printed part that is a little long in Z (or a little elephant's foot on
+    the mating face) still lets the faces close.
+    """
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.gp import gp_Pnt
@@ -281,9 +286,11 @@ def make_socket(spec: ClipSpec, sign: int, *, inset: float = -0.02):
         gp_Pnt(-narrow_width / 2.0, -height / 2.0, narrow_z),
         narrow_width, height, narrow_length,
     ).Shape()
+    if sign < 0:
+        catch_z -= extra_depth
     pocket = BRepPrimAPI_MakeBox(
         gp_Pnt(-wide_width / 2.0, -height / 2.0, catch_z),
-        wide_width, height, total - narrow_length,
+        wide_width, height, total - narrow_length + extra_depth,
     ).Shape()
     return built_shape(boolean_builder(BRepAlgoAPI_Fuse, narrow, pocket), "clip socket")
 
@@ -392,6 +399,15 @@ class ClipJointFeature(Feature):
     dimensions = {"rotation": Dimension.ANGLE, "removal_angle": Dimension.ANGLE}
 
     def execute(self, ctx: BuildContext) -> dict[str, object]:
+        if self.inputs.get("clip_version"):
+            return execute_joint(self, ctx)
+        return self._execute_legacy(ctx)
+
+    def _execute_legacy(self, ctx: BuildContext) -> dict[str, object]:
+        """Version-1 clip joints: seat A onto B, then clip at clicked points.
+
+        Kept exactly as it was so projects made with it rebuild unchanged.
+        """
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
         first_name = str(self.inputs.get("body_a", ""))
@@ -477,3 +493,671 @@ class ClipJointFeature(Feature):
         self.outputs = [first_name, second_name] + [name for _point, name in active]
         self.message = f"Aligned both parts and created {len(active)} removable clip(s)."
         return self.keep({first_name: result_a, second_name: result_b, **connectors})
+
+
+# ----------------------------------------------------------------------
+# Version 2: Join Parts -- two mated faces in, aligned printable joints out
+# ----------------------------------------------------------------------
+#
+# The faces are expected to be touching already -- the normal case is a part
+# that has just been split for printing. Nothing moves: bringing two parts
+# together is an Align feature of its own, added by the panel when needed,
+# so the joint never silently relocates a part the user has positioned.
+#
+# Every style is built in one canonical frame and then placed:
+#   origin  on the mating plane
+#   +Z      out of the part that carries the male half, into its mate
+#   X       along the seam (the direction clips are strung out in)
+#   Y       across the seam (usually the wall thickness)
+
+STYLES = {
+    "snap_tab": "Snap tab",
+    "connector": "Printed connector",
+    "tab_slot": "Tab & slot",
+}
+
+#: Keyed tab-and-slot: a straight key with a detent bump either side.
+KEY_PRESETS = {
+    "small": {"width": 6.0, "thickness": 2.4, "length": 6.0, "bump": 0.3},
+    "medium": {"width": 8.0, "thickness": 3.0, "length": 8.0, "bump": 0.4},
+    "large": {"width": 12.0, "thickness": 4.0, "length": 11.0, "bump": 0.5},
+}
+KEY_RETENTION = {"easy": 0.7, "standard": 1.0, "firm": 1.3}
+
+#: Largest bending strain a cantilever may see while it snaps in, for a joint
+#: meant to be opened again. PLA is brittle; PETG takes about twice as much.
+ALLOWED_STRAIN = {"pla": 0.02, "petg": 0.04}
+
+DEFAULTS = {
+    "edge_offset": 1.0,      # from the edge of the shared face to the wall
+    "min_wall": 0.8,         # two perimeters of a 0.4 mm nozzle
+    "depth_clearance": 0.3,  # extra pocket depth past the tip, for Z error
+    "lead_in": 0.4,          # 45° chamfer at the pocket mouth
+    "spacing": 80.0,         # Auto: about one joint per this much seam
+}
+
+
+@dataclass(frozen=True)
+class JointSpec:
+    """Everything the geometry of one joint depends on, in millimetres."""
+
+    style: str
+    clip: ClipSpec | None       # prong geometry (snap_tab, connector)
+    key: dict | None            # key geometry (tab_slot)
+    clearance: float
+    depth_clearance: float
+    lead_in: float
+    min_wall: float
+    material: str
+
+    @property
+    def footprint(self) -> tuple[float, float]:
+        """Width along and across the seam that the female pocket occupies."""
+        if self.style == "tab_slot":
+            return (self.key["width"] + self.clearance,
+                    self.key["thickness"] + 2.0 * self.key["bump"] + self.clearance)
+        return (self.clip.maximum_width + self.clearance, self.clip.thickness + self.clearance)
+
+    @property
+    def mouth(self) -> tuple[float, float]:
+        """The pocket's opening on the mating face, before its lead-in."""
+        if self.style == "tab_slot":
+            return (self.key["width"] + self.clearance, self.key["thickness"] + self.clearance)
+        return (self.clip.shank_width + self.clearance, self.clip.thickness + self.clearance)
+
+    @property
+    def depth(self) -> float:
+        if self.style == "tab_slot":
+            return self.key["length"] + self.depth_clearance
+        return self.clip.reach + self.depth_clearance
+
+    @property
+    def keep_out(self) -> tuple[float, float]:
+        """The face area a joint claims: pocket plus its surrounding wall.
+
+        The minimum wall stands around the full pocket. The lead-in chamfer
+        only opens the top fraction of a millimetre of the mouth, so it needs
+        one printed line of wall beside it, not the full minimum.
+        """
+        width, across = self.footprint
+        lead = 2.0 * self.lead_in + 0.8
+        return (max(width + 2.0 * self.min_wall, self.mouth[0] + lead),
+                max(across + 2.0 * self.min_wall, self.mouth[1] + lead))
+
+
+def resolve_joint_spec(feature: Feature, ctx: BuildContext) -> JointSpec:
+    style = str(feature.inputs.get("style", "snap_tab"))
+    if style not in STYLES:
+        raise CadError(f"Unknown joint style: {style}")
+    material = str(feature.inputs.get("material", "petg")).lower()
+    if material not in ALLOWED_STRAIN:
+        raise CadError("Clip material must be PLA or PETG.")
+    clearance = _fit_clearance(feature.inputs.get("clearance", "snug"), ctx, feature)
+    extras = {key: ctx.value(feature, key, DEFAULTS[key])
+              for key in ("depth_clearance", "lead_in", "min_wall")}
+    if extras["min_wall"] < 0.4:
+        raise CadError("The minimum wall must be at least 0.4 mm -- one printed line.")
+    if extras["depth_clearance"] < 0.0 or extras["lead_in"] < 0.0:
+        raise CadError("Depth clearance and lead-in cannot be negative.")
+    if clearance < -0.2:
+        raise CadError("That clearance is tighter than any printer can press together.")
+    clip = key = None
+    if style == "tab_slot":
+        size = str(feature.inputs.get("size", "medium")).lower()
+        retention = str(feature.inputs.get("retention", "standard")).lower()
+        if size not in KEY_PRESETS or retention not in KEY_RETENTION:
+            raise CadError("Unknown key size or retention.")
+        key = dict(KEY_PRESETS[size])
+        key["bump"] *= KEY_RETENTION[retention] * (0.7 if material == "pla" else 1.0)
+        for name, source in (("width", "key_width"), ("thickness", "key_thickness"),
+                             ("length", "key_length"), ("bump", "bump")):
+            if source in feature.inputs:
+                key[name] = ctx.value(feature, source, key[name])
+        if min(key["width"], key["thickness"], key["length"]) <= 0.0 or key["bump"] < 0.0:
+            raise CadError("Key dimensions must be greater than zero.")
+        if key["bump"] > key["thickness"] * 0.3:
+            raise CadError("The detent bump is too large for the key.",
+                           suggestion="Use a thicker key or an easier retention.")
+    else:
+        clip = resolve_spec(feature, ctx)
+        clip = ClipSpec(**{**clip.__dict__, "clearance": clearance})
+        strain = 1.5 * clip.arm_width * clip.barb / (clip.engagement ** 2)
+        if strain > ALLOWED_STRAIN[material]:
+            raise CadError(
+                f"These arms would bend {strain * 100:.1f}% to snap in; "
+                f"{material.upper()} tolerates about {ALLOWED_STRAIN[material] * 100:.0f}%.",
+                suggestion="Choose an easier retention, a longer engagement or thinner arms.",
+            )
+    return JointSpec(style=style, clip=clip, key=key, clearance=clearance,
+                     material=material, **extras)
+
+
+# -- canonical geometry -------------------------------------------------
+def _box(x0, y0, z0, dx, dy, dz):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), dx, dy, dz).Shape()
+
+
+def _fuse(*shapes):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    result = shapes[0]
+    for shape in shapes[1:]:
+        result = built_shape(boolean_builder(BRepAlgoAPI_Fuse, result, shape), "joint")
+    return result
+
+
+def _lead_in(width, across, lead):
+    """A 45° frustum widening the pocket mouth by *lead* on every side."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.gp import gp_Pnt
+
+    def ring(half_x, half_y, z):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for x, y in ((-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)):
+            polygon.Add(gp_Pnt(x, y, z))
+        polygon.Close()
+        return polygon.Wire()
+
+    loft = BRepOffsetAPI_ThruSections(True, True)
+    loft.AddWire(ring(width / 2.0 + lead + 0.02, across / 2.0 + lead + 0.02, -0.02))
+    loft.AddWire(ring(width / 2.0, across / 2.0, lead))
+    loft.Build()
+    return loft.Shape()
+
+
+def _key_bumps(key, radius_growth=0.0, length_growth=0.0):
+    """Two half-round detents across the key's broad faces, near its tip."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    bump = key["bump"]
+    if bump <= 0.0:
+        return []
+    radius = max(bump * 2.0, 0.6) + radius_growth
+    z = key["length"] * 0.62
+    span = key["width"] * 0.8 + length_growth
+    shapes = []
+    for side in (-1.0, 1.0):
+        # The cylinder's axis sits inside the key so only *bump* stands proud.
+        y = side * (key["thickness"] / 2.0 - (radius - radius_growth) + bump)
+        axis = gp_Ax2(gp_Pnt(-span / 2.0, y, z), gp_Dir(1, 0, 0))
+        shapes.append(BRepPrimAPI_MakeCylinder(axis, radius, span).Shape())
+    return shapes
+
+
+def male_half(spec: JointSpec, root: float = 0.3):
+    """The part that stands proud of the male face (snap_tab, tab_slot)."""
+    if spec.style == "tab_slot":
+        key = spec.key
+        body = _box(-key["width"] / 2.0, -key["thickness"] / 2.0, -root,
+                    key["width"], key["thickness"], key["length"] + root)
+        # A small chamfer-like step at the tip keeps the key from catching.
+        return unify(_fuse(body, *_key_bumps(key)))
+    clip = spec.clip
+    base = _box(-clip.shank_width / 2.0, -clip.thickness / 2.0, -root,
+                clip.shank_width, clip.thickness, clip.bridge / 2.0 + root)
+    arms = [_prong_profile(clip, 1, side) for side in (-1, 1)]
+    return unify(_fuse(base, *arms))
+
+
+def female_cutter(spec: JointSpec, *, inset: float = -0.02):
+    """The pocket cut into the mating part, lead-in and depth slack included."""
+    if spec.style == "tab_slot":
+        key = spec.key
+        width, across = spec.mouth
+        pocket = _box(-width / 2.0, -across / 2.0, inset, width, across, spec.depth - inset)
+        grooves = _key_bumps(key, radius_growth=spec.clearance / 2.0,
+                             length_growth=spec.clearance)
+        shapes = [pocket, *grooves]
+    else:
+        shapes = [make_socket(spec.clip, 1, inset=inset, extra_depth=spec.depth_clearance)]
+    if spec.lead_in > 0.0 and inset < 0.0:
+        shapes.append(_lead_in(*spec.mouth, spec.lead_in))
+    return _fuse(*shapes) if len(shapes) > 1 else shapes[0]
+
+
+def wall_check_cutter(spec: JointSpec):
+    """The pocket grown by the minimum wall on every side but the mouth."""
+    width, across = spec.keep_out
+    depth = spec.depth + spec.min_wall
+    return _box(-width / 2.0, -across / 2.0, 0.05, width, across, depth - 0.05)
+
+
+# -- mating and placement ------------------------------------------------
+@dataclass(frozen=True)
+class Seam:
+    """Two touching planar faces and the region they share."""
+
+    region: object                 # shapely geometry in the seam's 2-D frame
+    origin: tuple
+    x_axis: tuple
+    y_axis: tuple
+    normal_a: tuple                # out of body A, into body B
+    frame_b: object                # planar_frame(face_b), for manual anchors
+
+    def world(self, u, v):
+        return tuple(self.origin[i] + u * self.x_axis[i] + v * self.y_axis[i] for i in range(3))
+
+    def direction(self, du, dv):
+        return tuple(du * self.x_axis[i] + dv * self.y_axis[i] for i in range(3))
+
+    def local(self, point):
+        delta = tuple(point[i] - self.origin[i] for i in range(3))
+        return (sum(delta[i] * self.x_axis[i] for i in range(3)),
+                sum(delta[i] * self.y_axis[i] for i in range(3)))
+
+
+def _dot(a, b):
+    return sum(a[i] * b[i] for i in range(3))
+
+
+def mate(face_a, face_b, *, gap_tolerance: float = 0.05) -> Seam:
+    """Check two faces touch, and describe the area they share.
+
+    Raises a :class:`CadError` that says what is wrong -- curved, tilted,
+    apart, or not overlapping -- rather than producing a joint in mid-air.
+    """
+    from .detect import analyse_plane
+
+    info_a, info_b = analyse_plane(face_a), analyse_plane(face_b)
+    if info_a is None or info_b is None:
+        raise CadError(
+            "Clips join flat faces; one of the selected faces is curved.",
+            suggestion="Pick the flat faces where the two parts meet.",
+        )
+    alignment = _dot(info_a.normal, info_b.normal)
+    if alignment > -0.9994:   # about 2°
+        angle = math.degrees(math.acos(max(-1.0, min(1.0, -alignment))))
+        raise CadError(
+            f"The two faces are not facing each other ({angle:.1f}° apart).",
+            suggestion="Pick the faces where the parts meet, or use Bring together first.",
+        )
+    gap = _dot(tuple(info_a.center[i] - info_b.center[i] for i in range(3)), info_b.normal)
+    if abs(gap) > gap_tolerance:
+        raise CadError(
+            f"The two faces are {abs(gap):.2f} mm apart.",
+            suggestion="Use Bring together to seat one part on the other first.",
+        )
+    profile_b, (origin, x_axis, y_axis) = _face_polygon(face_b)
+    profile_a, local_a = _face_polygon(face_a)
+    seam = Seam(region=None, origin=origin, x_axis=x_axis, y_axis=y_axis,
+                normal_a=tuple(info_a.normal), frame_b=planar_frame(face_b))
+    projected_a = _reproject(profile_a, local_a, seam)
+    region = profile_b.buffer(0).intersection(projected_a.buffer(0))
+    if region.is_empty or region.area < 1.0e-6:
+        raise CadError(
+            "The two faces do not overlap.",
+            suggestion="Pick faces that lie against each other.",
+        )
+    return Seam(region=region, origin=origin, x_axis=x_axis, y_axis=y_axis,
+                normal_a=tuple(info_a.normal), frame_b=seam.frame_b)
+
+
+def _reproject(polygon, local, seam):
+    from shapely.geometry import MultiPolygon, Polygon
+
+    origin, x_axis, y_axis = local
+
+    def convert(coords):
+        out = []
+        for u, v in coords:
+            world = tuple(origin[i] + u * x_axis[i] + v * y_axis[i] for i in range(3))
+            out.append(seam.local(world))
+        return out
+
+    def one(poly):
+        return Polygon(convert(poly.exterior.coords), [convert(r.coords) for r in poly.interiors])
+
+    if isinstance(polygon, MultiPolygon):
+        return MultiPolygon([one(p) for p in polygon.geoms])
+    return one(polygon)
+
+
+@dataclass(frozen=True)
+class Placement:
+    u: float
+    v: float
+    angle: float   # direction of the joint's X axis in the seam frame, radians
+    ok: bool = True
+    reason: str = ""
+
+
+def _rectangle(u, v, angle, width, across):
+    from shapely.geometry import Polygon
+
+    c, s = math.cos(angle), math.sin(angle)
+    corners = []
+    for x, y in ((-width / 2, -across / 2), (width / 2, -across / 2),
+                 (width / 2, across / 2), (-width / 2, across / 2)):
+        corners.append((u + x * c - y * s, v + x * s + y * c))
+    return Polygon(corners)
+
+
+def _polygons(geometry):
+    if geometry.is_empty:
+        return []
+    if geometry.geom_type == "Polygon":
+        return [geometry]
+    return [g for g in getattr(geometry, "geoms", []) if g.geom_type == "Polygon" and not g.is_empty]
+
+
+def narrowest_width(region) -> float:
+    """How wide the shared face is, in mm, for explaining a failure.
+
+    A rim (a face with a hole in it) is as wide as its wall: twice its area
+    over its perimeter. A solid face is as wide as the largest circle in it.
+    """
+    try:
+        polygons = _polygons(region)
+        if any(p.interiors for p in polygons):
+            return min(2.0 * p.area / p.length for p in polygons)
+        from shapely import maximum_inscribed_circle
+
+        return min(2.0 * maximum_inscribed_circle(p).length for p in polygons)
+    except Exception:  # noqa: BLE001 - only used to explain a failure
+        return 0.0
+
+
+def plan_clips(seam: Seam, spec: JointSpec, *, count: int = 0, spacing: float = 80.0,
+               edge_offset: float = 1.0, shift: float = 0.0, anchors=(),
+               rotation: float = 0.0) -> tuple[list[Placement], list[str]]:
+    """Where the joints go on a seam, and anything the user should know.
+
+    Automatic placement strings joints along the seam: the shared face is
+    shrunk by the edge offset and half the joint's keep-out width, and joints
+    are spaced evenly along what is left -- the centre line of a thin rim, or
+    a path just inside the edge of a broad face. Each joint's long axis
+    follows that path, so a clip on a 3 mm wall lies along the wall rather
+    than across it. Holes, text and anything else interrupting the face are
+    already holes in the region, so joints keep clear of them too.
+
+    *anchors* switches to manual placement: joints at those points (in the
+    target face's frame), each turned to the nearest seam direction.
+    """
+    width, across = spec.keep_out
+    allowed = seam.region.buffer(-edge_offset, join_style=2) if edge_offset > 0 else seam.region
+    # A hair inside the limit, so a joint centred on the path is not rejected
+    # by rounding for touching the edge it was placed against.
+    core = seam.region.buffer(-(edge_offset + across / 2.0 + 0.02), join_style=2)
+    rings = [p.exterior for p in _polygons(core) if p.exterior.length > 1.0e-6]
+    notes: list[str] = []
+    if not rings and not anchors:
+        narrow = narrowest_width(seam.region)
+        need = across + 2.0 * edge_offset
+        raise CadError(
+            (f"The shared face is only {narrow:.1f} mm wide; this joint needs {need:.1f} mm "
+             "including walls and edge offset.") if narrow else
+            f"This joint needs {need:.1f} mm of shared face including walls and edge offset.",
+            suggestion="Choose a smaller size, the Tab & slot style, a thinner minimum wall "
+                       "or a smaller edge offset.",
+        )
+    placed: list = []
+
+    def fits(u, v, angle):
+        rect = _rectangle(u, v, angle, width, across)
+        if not allowed.covers(rect):
+            return False
+        return all(not rect.intersects(other) for other in placed)
+
+    def tangent_at(ring, distance):
+        total = ring.length
+        a = ring.interpolate((distance - 0.5) % total)
+        b = ring.interpolate((distance + 0.5) % total)
+        return math.atan2(b.y - a.y, b.x - a.x)
+
+    placements: list[Placement] = []
+    if anchors:
+        from shapely.geometry import Point
+
+        for index, anchor in enumerate(anchors):
+            world = seam.frame_b.point(float(anchor[0]), float(anchor[1]))
+            u, v = seam.local(world)
+            angle = math.radians(rotation)
+            if rings:
+                ring = min(rings, key=lambda r: r.distance(Point(u, v)))
+                angle += tangent_at(ring, ring.project(Point(u, v)))
+            ok = fits(u, v, angle)
+            placements.append(Placement(u, v, angle, ok, "" if ok else
+                f"Clip {index + 1} does not fit there: it needs {across:.1f} mm of face "
+                "clear of edges, holes and other clips."))
+            if ok:
+                placed.append(_rectangle(u, v, angle, width, across))
+        return placements, notes
+
+    total = sum(r.length for r in rings)
+    step_min = width + 0.5
+    if count <= 0:
+        count = max(len(rings), int(round(total / max(spacing, step_min))))
+        if count == 1 and total > 6.0 * width:
+            count = 2   # two joints stop the parts turning about one
+    count = max(1, min(count, MAX_CONNECTORS))
+    # Share the joints between separate islands in proportion to their length.
+    shares = [max(1, int(round(count * r.length / total))) for r in rings]
+    while sum(shares) > count and max(shares) > 1:
+        shares[shares.index(max(shares))] -= 1
+    requested = sum(shares)
+    for ring, share in zip(rings, shares):
+        pitch = ring.length / share
+        for index in range(share):
+            target = (shift + (index + 0.5) * pitch) % ring.length
+            # Slide off corners and obstacles, nearest first, up to half a pitch.
+            found = None
+            reach = min(pitch / 2.0, ring.length / 2.0)
+            steps = int(reach / 0.5) + 1
+            for k in range(steps):
+                for sign in ((1,) if k == 0 else (1, -1)):
+                    distance = (target + sign * k * 0.5) % ring.length
+                    point = ring.interpolate(distance)
+                    angle = tangent_at(ring, distance) + math.radians(rotation)
+                    if fits(point.x, point.y, angle):
+                        found = Placement(point.x, point.y, angle)
+                        break
+                if found:
+                    break
+            if found is not None:
+                placements.append(found)
+                placed.append(_rectangle(found.u, found.v, found.angle, width, across))
+    if not placements:
+        raise CadError(
+            "No joint fits on this seam once edges, holes and walls are kept clear.",
+            suggestion="Choose a smaller size or reduce the edge offset.",
+        )
+    if len(placements) < requested:
+        notes.append(f"Placed {len(placements)} of {requested} joints; "
+                     "the rest had no room clear of corners, holes and each other.")
+    return placements, notes
+
+
+def joint_transform(seam: Seam, placement: Placement, male_normal):
+    """Canonical joint frame -> world, for one placement."""
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf
+
+    x_dir = seam.direction(math.cos(placement.angle), math.sin(placement.angle))
+    z_dir = tuple(male_normal)
+    # Re-orthogonalise X against Z; the seam frame is exact, but be safe.
+    dot = _dot(x_dir, z_dir)
+    x_dir = tuple(x_dir[i] - dot * z_dir[i] for i in range(3))
+    source = gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0))
+    target = gp_Ax3(gp_Pnt(*seam.world(placement.u, placement.v)), gp_Dir(*z_dir), gp_Dir(*x_dir))
+    result = gp_Trsf()
+    result.SetDisplacement(source, target)
+    return result
+
+
+def execute_joint(feature: Feature, ctx: BuildContext) -> dict[str, object]:
+    """Build a version-2 joint: one logical feature writing into both parts."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+
+    first_name = str(feature.inputs.get("body_a", ""))
+    second_name = str(feature.inputs.get("body_b", ""))
+    if not first_name or not second_name or first_name == second_name:
+        raise CadError("Joining needs faces on two different parts.")
+    body_a = ctx.shape(feature, "body_a")
+    body_b = ctx.shape(feature, "body_b")
+    face_a = ctx.resolve(feature, "face_a")
+    face_b = ctx.resolve(feature, "face_b")
+    spec = resolve_joint_spec(feature, ctx)
+    if feature.inputs.get("seat"):
+        # "Bring together": set A down on B first, keeping the side-to-side
+        # offset it had when the joint was made, so only the gap closes.
+        placement = solve(face_a, face_b, operation="stack",
+                          x=ctx.value(feature, "seat_x", 0.0),
+                          y=ctx.value(feature, "seat_y", 0.0))
+        body_a = transformed(body_a, placement.transform)
+        face_a = transformed(face_a, placement.transform)
+    seam = mate(face_a, face_b)
+    placements, notes = plan_clips(
+        seam, spec,
+        count=int(feature.inputs.get("count", 0) or 0),
+        spacing=ctx.value(feature, "spacing", DEFAULTS["spacing"]),
+        edge_offset=ctx.value(feature, "edge_offset", DEFAULTS["edge_offset"]),
+        shift=ctx.value(feature, "shift", 0.0),
+        anchors=feature.inputs.get("anchors") or () if feature.inputs.get("placement") == "manual" else (),
+        rotation=ctx.value(feature, "rotation", 0.0),
+    )
+    male_on_a = str(feature.inputs.get("male", "a")) != "b"
+    normal_a = seam.normal_a
+    male_normal = normal_a if male_on_a else tuple(-c for c in normal_a)
+    feature.annotations = {
+        "style": spec.style,
+        "footprint": list(spec.footprint),
+        "keep_out": list(spec.keep_out),
+        "male": "a" if male_on_a else "b",
+        "normal": list(male_normal),
+        "clips": [{"at": list(seam.world(p.u, p.v)),
+                   "x": list(seam.direction(math.cos(p.angle), math.sin(p.angle))),
+                   "ok": p.ok, "reason": p.reason} for p in placements],
+    }
+    for warning in notes:
+        ctx.warn(warning)
+    failures = [p for p in placements if not p.ok]
+    if failures:
+        raise CadError(failures[0].reason, suggestion="Move it, or choose a smaller size.")
+
+    male, female = (body_a, body_b) if male_on_a else (body_b, body_a)
+    connector_names = [str(n) for n in feature.inputs.get("connector_names", [])]
+    if spec.style == "connector" and len(connector_names) < len(placements):
+        raise CadError("The joint is missing names for its printed connectors.",
+                       suggestion="Open the joint and apply it again.")
+    cutter = female_cutter(spec)
+    check = wall_check_cutter(spec)
+    part = male_half(spec) if spec.style != "connector" else None
+    connector = make_connector(spec.clip) if spec.style == "connector" else None
+    if connector is not None:
+        # The male side is a socket as well; mirror the pocket through the seam.
+        from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir, gp_Trsf
+        mirror = gp_Trsf()
+        mirror.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)))
+        male_cutter = transformed(cutter, mirror)
+        male_check = transformed(check, mirror)
+    connectors = {}
+    with guard("join parts"):
+        for index, placement in enumerate(placements):
+            transform = joint_transform(seam, placement, male_normal)
+            label = f"Clip {index + 1}"
+            if not _contained(female, transformed(check, transform)):
+                raise CadError(
+                    f"{label} would break through the "
+                    f"{'second' if male_on_a else 'first'} part or leave a wall under "
+                    f"{spec.min_wall:.1f} mm.",
+                    suggestion="Choose a smaller size, reduce the minimum wall, or move the joint.",
+                )
+            female = built_shape(boolean_builder(BRepAlgoAPI_Cut, female, transformed(cutter, transform)), "joint pocket")
+            if connector is not None:
+                if not _contained(male, transformed(male_check, transform)):
+                    raise CadError(
+                        f"{label} would break through the "
+                        f"{'first' if male_on_a else 'second'} part or leave a wall under "
+                        f"{spec.min_wall:.1f} mm.",
+                        suggestion="Choose a smaller size, reduce the minimum wall, or move the joint.",
+                    )
+                male = built_shape(boolean_builder(BRepAlgoAPI_Cut, male, transformed(male_cutter, transform)), "joint pocket")
+                name = connector_names[index]
+                if name not in feature.dropped:
+                    connectors[name] = transformed(connector, transform)
+            else:
+                male = built_shape(boolean_builder(BRepAlgoAPI_Fuse, male, transformed(part, transform)), "joint tab")
+    male, female = unify(male), unify(female)
+    if not is_valid(male) or not is_valid(female):
+        raise CadError("The joint did not leave valid printable parts.",
+                       suggestion="Try a different size or move the joints away from other features.")
+    result_a, result_b = (male, female) if male_on_a else (female, male)
+    feature.outputs = [first_name, second_name] + list(connectors)
+    kind = STYLES[spec.style].lower()
+    feature.message = f"Joined with {len(placements)} {kind}{'s' if len(placements) != 1 else ''}."
+    return feature.keep({first_name: result_a, second_name: result_b, **connectors})
+
+
+def seat_offsets(face_a, face_b) -> tuple[float, float]:
+    """The in-plane offset of A's face from B's, as Stack measures it.
+
+    Stored on a joint that brings two parts together, so seating them closes
+    the gap without also sliding one part across the other.
+    """
+    from .detect import analyse_plane
+
+    info_a = analyse_plane(face_a)
+    frame = planar_frame(face_b)
+    delta = tuple(info_a.center[i] - frame.center[i] for i in range(3))
+    return _dot(delta, frame.x_axis), _dot(delta, frame.y_axis)
+
+
+def facing(face_a, face_b) -> tuple[bool, float]:
+    """(faces point at each other, gap between them in mm) -- for the panel."""
+    from .detect import analyse_plane
+
+    info_a, info_b = analyse_plane(face_a), analyse_plane(face_b)
+    if info_a is None or info_b is None:
+        return False, 0.0
+    opposed = _dot(info_a.normal, info_b.normal) <= -0.9994
+    gap = _dot(tuple(info_a.center[i] - info_b.center[i] for i in range(3)), info_b.normal)
+    return opposed, gap
+
+
+def find_seam(shape_a, shape_b, *, gap_tolerance: float = 0.05, face_limit: int = 5000):
+    """The pair of planar faces where two parts touch, largest contact first.
+
+    Two halves of a split print meet on faces that are hidden inside the
+    assembly, so asking the user to click them is asking the impossible.
+    Instead a click anywhere on each part is enough: faces are bucketed by
+    their plane, so only faces lying in the same plane with opposite normals
+    are ever compared. Returns ``(face_a, face_b)`` or None.
+    """
+    from .detect import analyse_plane
+    from ..core.naming import sub_shapes
+
+    faces_a, faces_b = sub_shapes(shape_a, "face"), sub_shapes(shape_b, "face")
+    if len(faces_a) + len(faces_b) > face_limit:
+        return None
+
+    def planes(faces):
+        found = []
+        for face in faces:
+            info = analyse_plane(face)
+            if info is not None:
+                offset = _dot(info.normal, info.center)
+                found.append((face, info, offset))
+        return found
+
+    buckets: dict = {}
+    for face, info, offset in planes(faces_b):
+        key = tuple(round(c, 2) for c in info.normal)
+        buckets.setdefault(key, []).append((face, info, offset))
+    best = None
+    for face, info, offset in planes(faces_a):
+        key = tuple(round(-c, 2) for c in info.normal)
+        for other, other_info, other_offset in buckets.get(key, ()):
+            if abs(offset + other_offset) > gap_tolerance:
+                continue
+            try:
+                seam = mate(face, other, gap_tolerance=gap_tolerance)
+            except CadError:
+                continue
+            area = seam.region.area
+            if best is None or area > best[0]:
+                best = (area, face, other)
+    return None if best is None else (best[1], best[2])

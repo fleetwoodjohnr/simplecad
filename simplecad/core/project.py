@@ -196,11 +196,17 @@ def load(path: str) -> tuple[Document, bool]:
             for body in document.bodies.values():
                 entry = payload.get("geometry", {}).get(body.id, {})
                 try:
-                    shape = deserialise_shape(blobs[entry["sha256"]])
+                    valid = entry.get("current") and entry.get("signature") == current.get(entry.get("feature_id"))
+                    # Prefer the producer's cached result: it shares geometry
+                    # with the rest of the cache (a moved body and the blend
+                    # behind it stay one TShape), and a moved result is a
+                    # placement rather than a second full decode.
+                    shape = _cached_output(document, entry, body) if valid else None
+                    if shape is None:
+                        shape = deserialise_shape(blobs[entry["sha256"]])
                     if shape is None:
                         continue
                     body.shape = shape
-                    valid = entry.get("current") and entry.get("signature") == current.get(entry.get("feature_id"))
                     if valid:
                         accepted[entry["feature_id"]] = entry["signature"]
                         cached = True
@@ -242,6 +248,22 @@ def load(path: str) -> tuple[Document, bool]:
     return document, cached
 
 
+def _cached_output(document, entry, body):
+    feature = document.feature(entry.get("feature_id", ""))
+    if feature is None:
+        return None
+    try:
+        outputs = document._geometry_store.get(feature, entry["signature"])
+    except Exception:  # noqa: BLE001 - fall back to the body's own blob
+        return None
+    if not outputs:
+        return None
+    for name, oid in feature.output_ids.items():
+        if oid == body.id and name in outputs:
+            return outputs[name]
+    return None
+
+
 def inspect_bodies(path: str) -> list[tuple[str, str]]:
     """List native project objects without decoding any geometry."""
     try:
@@ -253,6 +275,48 @@ def inspect_bodies(path: str) -> list[tuple[str, str]]:
         raise CadError("This project was saved by a newer SimpleCAD.")
     return [(body.get("id") or body["name"], body["name"])
             for body in payload.get("bodies", [])]
+
+
+def inspect_tree(path: str) -> list[dict]:
+    """A native project's objects as a tree, without decoding any geometry.
+
+    Each node is ``{"kind": "body"|"group", "name", "key", "children"}``, in
+    the order the model tree shows them: top-level groups and loose bodies,
+    with each group's members nested beneath it. ``key`` is what to import --
+    a body's persistent id, or a group's name.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            payload = json.loads(archive.read(MODEL_ENTRY))
+    except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
+        raise CadError(f"'{os.path.basename(path)}' could not be read as a SimpleCAD project.") from exc
+    if int(payload.get("format", 1)) > FORMAT_VERSION:
+        raise CadError("This project was saved by a newer SimpleCAD.")
+    bodies = {b["name"]: b for b in payload.get("bodies", [])}
+    by_id = {b.get("id"): b["name"] for b in bodies.values() if b.get("id")}
+    groups = {g["name"]: g for g in payload.get("groups", [])}
+    by_id.update({g.get("id"): g["name"] for g in groups.values() if g.get("id")})
+
+    def members(group):
+        if "member_ids" in group:
+            return [by_id[i] for i in group["member_ids"] if i in by_id]
+        return [m for m in group.get("members", []) if m in bodies or m in groups]
+
+    nested = {m for g in groups.values() for m in members(g)}
+    seen = set()
+
+    def node(name):
+        if name in seen:
+            return None
+        seen.add(name)
+        if name in groups:
+            children = [child for child in (node(m) for m in members(groups[name])) if child]
+            return {"kind": "group", "name": name, "key": name, "children": children}
+        body = bodies[name]
+        return {"kind": "body", "name": name, "key": body.get("id") or name, "children": []}
+
+    roots = [name for name in list(groups) + list(bodies) if name not in nested]
+    return [n for n in (node(name) for name in roots) if n is not None]
 
 
 def read_thumbnail(path: str) -> bytes | None:

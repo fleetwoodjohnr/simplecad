@@ -403,6 +403,28 @@ def _decode_inputs(data: dict) -> dict:
     return {key: decode(value) for key, value in data.items()}
 
 
+def _literal_mm(value, dependencies, evaluate):
+    """A plain length in mm, or None when *value* is an expression of names."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    if dependencies(text):
+        return None
+    try:
+        return float(evaluate(text))
+    except Exception:  # noqa: BLE001 - anything unreadable is not folded
+        return None
+
+
+def _format_mm(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return f"{'0' if text in ('-0', '') else text} mm"
+
+
 class Document:
     """Bodies, features and parameters, plus the dependency graph over them."""
 
@@ -488,6 +510,56 @@ class Document:
             self.features.insert(index, feature)
         self.prepare_graph()
         self._pending_changes.add(feature.id)
+        self.revision += 1
+        return feature
+
+    def fold_translation(self, names, delta) -> Feature | None:
+        """Add *delta* to the bodies' latest Move instead of recording another.
+
+        Every committed move used to append a feature, so a long session's
+        history was mostly moves and every per-feature cost grew with them.
+        A move is folded only when doing so cannot change anything else: the
+        bodies' newest producer is one translation-only ``move``/``move_many``
+        over exactly these bodies, its offsets are plain numbers, and nothing
+        reads its result. Returns the updated feature, or None when a new one
+        must be added. Each call is still one undo step for the caller.
+        """
+        from .params import dependencies, evaluate
+
+        names = [str(n) for n in names]
+        if not names or len(delta) != 3:
+            return None
+        graph = self.prepare_graph()
+        heads = {graph.latest[n].feature_id for n in names if n in graph.latest}
+        if len(heads) != 1 or len(names) != len({n for n in names if n in graph.latest}):
+            return None
+        feature = graph.features.get(next(iter(heads)))
+        if (feature is None or feature.suppressed or feature.state is not FeatureState.OK
+                or graph.reverse.get(feature.id) or feature.dropped):
+            return None
+        if feature.type_name == "move":
+            if [str(feature.inputs.get("body", ""))] != names or feature.inputs.get("pivot"):
+                return None
+            for key in ("rx", "ry", "rz"):
+                if key in feature.inputs and _literal_mm(feature.inputs[key], dependencies, evaluate) != 0.0:
+                    return None
+        elif feature.type_name == "move_many":
+            if sorted(str(b) for b in feature.inputs.get("bodies", [])) != sorted(names):
+                return None
+        else:
+            return None
+        current = [_literal_mm(feature.inputs.get(k, 0.0), dependencies, evaluate)
+                   for k in ("dx", "dy", "dz")]
+        if any(value is None for value in current):
+            return None
+        for key, old, step in zip(("dx", "dy", "dz"), current, delta):
+            total = round(old + float(step), 9)
+            if abs(total - old) > 1e-12:
+                # Keep the form the move already used: nudges store numbers,
+                # the Move panel stores expressions with units.
+                raw = feature.inputs.get(key, 0.0)
+                numeric = isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                feature.inputs[key] = total if numeric else _format_mm(total)
         self.revision += 1
         return feature
 
@@ -683,65 +755,75 @@ class Document:
         """
         found: list[dict] = []
         for feature in reversed(self.features):
-            if feature.state is not FeatureState.OK or feature.suppressed:
-                continue
-            if feature.type_name not in (
-                "thread", "threaded_connection", "hole", "matching_thread",
-                "matching_bolt", "matching_nut",
-            ):
-                continue
-            designation = feature.inputs.get("designation")
-            if not designation:
-                continue
-            if body_name not in feature.outputs:
-                continue
-            suffix = None
-            if feature.type_name == "threaded_connection":
-                if str(feature.inputs.get("body_a", "")) == body_name:
-                    suffix = "a"
-                elif str(feature.inputs.get("body_b", "")) == body_name:
-                    suffix = "b"
-            modelled_key = (
-                f"thread_modelled_{suffix}" if suffix else "thread_modelled"
-            )
-            # Old files predate the flag and contained modelled geometry, so an
-            # absent value remains compatible. A new failed/cosmetic feature is
-            # explicitly False and must never be offered as a matching source.
-            modelled = feature.inputs.get(modelled_key, True)
-            if modelled is False:
-                continue
-            if suffix:
-                internal = feature.inputs.get(f"thread_internal_{suffix}")
-            elif feature.type_name in ("hole", "matching_nut"):
-                internal = True
-            elif feature.type_name == "matching_bolt":
-                internal = False
-            else:
-                internal = feature.inputs.get("thread_internal")
-            found.append({
-                "body": body_name,
-                "feature_id": feature.id,
-                "designation": str(designation),
-                "feature": feature.name,
-                "clearance": feature.inputs.get("clearance", "normal"),
-                "type": feature.type_name,
-                "internal": internal,
-                "form": feature.inputs.get("form", "printed"),
-                "left_hand": bool(feature.inputs.get("left_hand", False)),
-                "modelled": bool(modelled),
-            })
+            record = self._thread_record(feature, body_name)
+            if record is not None:
+                found.append(record)
         return found
 
+    _THREAD_TYPES = frozenset((
+        "thread", "threaded_connection", "hole", "matching_thread",
+        "matching_bolt", "matching_nut",
+    ))
+
+    def _thread_record(self, feature, body_name: str) -> dict | None:
+        if feature.type_name not in self._THREAD_TYPES:
+            return None
+        if feature.state is not FeatureState.OK or feature.suppressed:
+            return None
+        designation = feature.inputs.get("designation")
+        if not designation or body_name not in feature.outputs:
+            return None
+        suffix = None
+        if feature.type_name == "threaded_connection":
+            if str(feature.inputs.get("body_a", "")) == body_name:
+                suffix = "a"
+            elif str(feature.inputs.get("body_b", "")) == body_name:
+                suffix = "b"
+        modelled_key = (
+            f"thread_modelled_{suffix}" if suffix else "thread_modelled"
+        )
+        # Old files predate the flag and contained modelled geometry, so an
+        # absent value remains compatible. A new failed/cosmetic feature is
+        # explicitly False and must never be offered as a matching source.
+        modelled = feature.inputs.get(modelled_key, True)
+        if modelled is False:
+            return None
+        if suffix:
+            internal = feature.inputs.get(f"thread_internal_{suffix}")
+        elif feature.type_name in ("hole", "matching_nut"):
+            internal = True
+        elif feature.type_name == "matching_bolt":
+            internal = False
+        else:
+            internal = feature.inputs.get("thread_internal")
+        return {
+            "body": body_name,
+            "feature_id": feature.id,
+            "designation": str(designation),
+            "feature": feature.name,
+            "clearance": feature.inputs.get("clearance", "normal"),
+            "type": feature.type_name,
+            "internal": internal,
+            "form": feature.inputs.get("form", "printed"),
+            "left_hand": bool(feature.inputs.get("left_hand", False)),
+            "modelled": bool(modelled),
+        }
+
     def any_thread(self) -> dict | None:
-        """The most recent thread anywhere in the document."""
-        newest = None
-        newest_index = -1
-        for body in self.bodies:
-            for candidate in self.threads_on(body):
-                index = self.index_of(candidate["feature_id"])
-                if index > newest_index:
-                    newest, newest_index = candidate, index
-        return newest
+        """The most recent thread anywhere in the document.
+
+        One newest-first pass over the history. Asking every body for its
+        threads and then locating each in the feature list was run on every
+        face selection, at bodies x features.
+        """
+        for feature in reversed(self.features):
+            if feature.type_name not in self._THREAD_TYPES:
+                continue
+            for body in self.bodies:
+                record = self._thread_record(feature, body)
+                if record is not None:
+                    return record
+        return None
 
     # -- bodies ---------------------------------------------------------
     def body(self, name: str) -> Body | None:

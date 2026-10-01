@@ -277,6 +277,68 @@ queued behind asynchronous startup and checkpoint restoration. Request tokens,
 document generations, and revisions prevent obsolete replies from reaching a
 new preview. Parameter changes coalesce without restarting a healthy worker.
 
+### Per-edit cost scales with the edit, not the project
+
+Measured on a real 394-feature project (UPS Atlas, a 12.9 MB imported
+mesh among its bodies), a move used to take 4.3 s with the window frozen for
+3.4 s of it, and each undo or redo 3–5 s. None of that was kernel work. It was
+bookkeeping that grew with the project, found by profiling rather than
+guessing (`scripts/benchmark_session.py` drives the real client → worker →
+apply path and reports wall time, GUI-thread time and bytes on the pipe):
+
+- **Checkpoint cache.** Every accepted reply rebuilt a second copy of the
+  whole result cache for crash recovery -- a new store, every blob re-hashed,
+  then exported: 1.3 s per reply on the GUI thread. The checkpoint now keeps
+  only the set of cache keys it needs and materialises blobs from the
+  document's own store on the rare worker restart
+  (`GeometryClient._checkpoint_payload`). `ResultStore.merge` no longer
+  re-hashes a content-addressed blob it already holds.
+- **Worker state.** The worker applied each patch to `document.to_dict()`,
+  rebuilt a whole `Document` from it and diffed every feature. It now keeps
+  the last applied wire state, applies the patch with shared structure
+  (`changes.apply_patch_shared`), and reconstructs only the features the patch
+  names (`_apply_state_patch`). Its reply describes only features whose
+  recipe version, state or message changed.
+- **Moves are placements.** A rigid move keeps the input's TShape under a new
+  `TopLoc_Location`. The worker sends such a body as 12 numbers
+  (`located`), not a re-serialised B-Rep, and the result cache records it as
+  "that blob, at this placement" (`kind: "located"`). Moving the 12.9 MB body
+  went from ~2 s of serialise/deserialise/mesh to effectively nothing.
+- **Folded moves.** Consecutive literal translations of bodies whose newest
+  producer is a translation-only move that nothing reads update that move
+  (`Document.fold_translation`) instead of appending another feature. Each
+  commit is still exactly one undo step; history no longer fills up with
+  hundreds of moves. Existing files are never compacted.
+- **Graph and undo.** Expression dependencies are memoised on their text,
+  and undo restores a feature's recipe in place, so the dependency graph is
+  re-indexed only when a connection actually changed. Undo patches record
+  counters key by key rather than copying the whole map.
+- **Rapid edits.** A reply the window discards (because a newer edit was
+  queued) used to make the next reply resend every body and the whole cache.
+  The window now asks the worker to roll back its record of what the window
+  holds (`rollback`), so only what was missed is resent.
+- **UI.** The History list moves only rows that are out of place (it was
+  quadratic), body tints are indexed, thread lookups on selection are one pass,
+  hover no longer renders every frame twice, and the arrow-nudge preview is
+  built once and re-placed with a presentation transform.
+
+Two correctness bugs in the same path were found while measuring, and both
+could make undo look like it "randomly failed":
+
+- After undoing a join, boolean or fillet the window kept showing the
+  modified shape: its skip check trusted the restored producer's unchanged
+  signature. Each body now records which (producer, signature) its displayed
+  shape came from (`_shape_key`), and only an exact match is skipped.
+- Undoing a step recorded while an earlier rebuild was in flight could remove
+  a body whose producer survived; the worker, believing the window still had
+  it, never resent it. Requests now carry the bodies the window holds
+  (`held`) and anything missing is sent again.
+
+Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y were also swallowed by any focused text field
+through `ShortcutOverride`, even with nothing of its own to undo;
+`MainWindow._history_key_for_project` lets a field keep the keys only while it
+has an edit to undo.
+
 ### When it hangs, ask it what it is doing
 
 `core/diagnostics.py` arms `faulthandler` in both processes before Qt starts, so
@@ -349,6 +411,40 @@ restores intermediate feature results as well as final geometry. Legacy version 
 files adopt each complete final feature result independently; editing a legacy
 branch may hydrate its ancestors once, without dropping unrelated results. Explicit
 **Rebuild All** remains available and bypasses cached execution results.
+
+## Join Parts (clip joints)
+
+`clip_joint` is one feature with outputs `[A, B, *connectors]`, like the
+threaded connection: the whole mating connection is one node, one undo step,
+and deleting it splices both parts back to their inputs. Version-2 joints
+(`clip_version: 2`, `kernel/clips.execute_joint`) differ from the original in
+four ways that matter to a user:
+
+- **Nothing moves.** The faces are expected to be touching already (the
+  normal case: a part just split for printing). `mate` checks that the two
+  planar faces are opposed and within 0.05 mm, and says how far apart or how
+  tilted they are otherwise. "Bring the parts together" is an explicit,
+  editable option (`seat`) that closes the gap while keeping the side-to-side
+  offset the parts had.
+- **Placement is automatic.** `plan_clips` intersects the two face outlines
+  (holes and text are already holes in them), shrinks the result by the edge
+  offset and half the joint's keep-out, and spaces joints evenly along what is
+  left, each turned to follow it -- so on an enclosure rim they run along the
+  wall. Auto count is about one per 80 mm of seam, at least two on anything
+  large enough, with a manual count, spacing, slide and click-to-place.
+- **Printable tolerances are explicit.** Radial clearance (resolved from the
+  printer's calibrated fit to a number when the joint is made, so a project
+  rebuilds identically elsewhere), depth clearance past the tip, a 45°
+  lead-in at the pocket mouth, and a minimum wall checked around every pocket.
+  Snap arms are checked against the bending strain PLA/PETG tolerate.
+- **Three styles:** a snap tab fused to one part catching in a pocket in the
+  other; the separate double-ended printed connector; and a key with detent
+  bumps for thin walls. Tabs-on-A/B flips which part is male.
+
+The panel accepts any click on each part: the faces where split parts meet
+are hidden inside the assembly, so `find_seam` finds the touching pair by
+bucketing planar faces by plane. Version-1 joints still build exactly as
+before through `_execute_legacy`.
 
 ## Project format
 

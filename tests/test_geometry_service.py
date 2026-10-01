@@ -176,13 +176,14 @@ def child():
 
 
 def ask(pipe, document, stale=(), force=False, timeout=120, full=False,
-        progress=None):
+        progress=None, **extra):
     pipe.send({
         "kind": service.REBUILD,
         "document": document.to_dict(),
         "stale": list(stale),
         "force": force,
         "full": full,
+        **extra,
     })
     while True:
         assert pipe.poll(timeout), "no reply from the geometry process"
@@ -250,6 +251,22 @@ def test_full_reply_resends_geometry_and_removes_stale_parent_bodies(child):
     assert reply["kind"] == service.RESULT
     assert "Box" in reply["bodies"]
     assert reply["bodies"]["Ghost"] is None
+
+
+def test_a_discarded_reply_is_rolled_back_not_answered_in_full(child):
+    """A reply the parent never applied is resent -- and only that reply."""
+    document = box_document(40)
+    document.add_feature(CylinderFeature(
+        inputs={"radius": 3, "height": 20, "x": 80}, outputs=["Pin"],
+    ))
+    ask(child, document, revision=1)
+    document.parameters.set("width", "50")
+    discarded = ask(child, document, revision=2)
+    assert set(discarded["bodies"]) == {"Box"}
+    replay = ask(child, document, revision=3, rollback=2)
+    assert set(replay["bodies"]) == {"Box"}, "only what the parent missed is resent"
+    assert replay["cache"]["blobs"], "the discarded cache entries are resent too"
+    assert ask(child, document, revision=4)["bodies"] == {}
 
 
 def test_cached_document_sync_allows_preview_without_rebuilding(child):

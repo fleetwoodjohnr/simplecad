@@ -67,7 +67,10 @@ def test_newer_rebuild_wins_and_runs_before_queued_preview():
 
     assert completed == []
     assert pipe.sent[-1]["revision"] == 2
-    assert pipe.sent[-1]["full"] is True
+    # The discarded reply is rolled back in the child rather than answered
+    # by resending every body and the whole cache.
+    assert pipe.sent[-1]["rollback"] == 1
+    assert "full" not in pipe.sent[-1]
     assert pipe.sent[-1]["kind"] == REBUILD
 
     pipe.incoming.append({"kind": RESULT, "revision": 2, "bodies": {}})

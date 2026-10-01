@@ -619,6 +619,20 @@ class _TransformPanel(_SelectionTool):
             for i in range(3)
         )
 
+    def _literal_translation(self, keys):
+        """The typed offset as plain numbers, or None if it names a parameter.
+
+        A parametric offset has to stay its own feature; only literal moves
+        fold into an existing one.
+        """
+        from ...core.params import dependencies
+
+        if tuple(keys) != ("dx", "dy", "dz"):
+            return None
+        if any(dependencies(self.expression(k, "0")) for k in keys):
+            return None
+        return tuple(self.value(k, 0.0) for k in keys)
+
     def commit(self) -> None:
         bodies = self.selection.bodies
         verb = "move" if self.mode == "move" else "rotate"
@@ -637,7 +651,10 @@ class _TransformPanel(_SelectionTool):
         # started, every part facing a new way -- which is not what turning an
         # assembly means.
         pivot = self._shared_pivot(bodies) if self.mode == "rotate" else None
+        delta = self._literal_translation(keys) if self.mode == "move" else None
         for name in bodies:
+            if delta is not None and self.window_.document.fold_translation([name], delta):
+                continue
             inputs = {
                 "body": BodyRef(name),
                 **{k: self.expression(k, "0")
@@ -2741,6 +2758,10 @@ class _EdgeTool(_SelectionTool):
         """
         if not self.picks or value <= 0:
             return None
+        return self._make_feature(float(value)).to_dict()
+
+    def _make_feature(self, value):
+        """The feature for *value* (a number while dragging, else the text)."""
         body = self.picks[0].body
         document = self.window_.document
         return self.feature_class(
@@ -2749,10 +2770,10 @@ class _EdgeTool(_SelectionTool):
                 "edges": [
                     p.reference(document) for p in self.picks if p.body == body
                 ],
-                self.field_key: float(value),
+                self.field_key: value,
             },
             outputs=[body],
-        ).to_dict()
+        )
 
     def _on_previewed(self, message) -> None:
         from ...core.geometry_service import deserialise_shape
@@ -2851,22 +2872,9 @@ class _EdgeTool(_SelectionTool):
     def commit(self) -> None:
         if not _need(self.window_, bool(self.picks), "Select one or more edges."):
             return
-        body = self.picks[0].body
-        document = self.window_.document
-        self.window_.add_feature(
-            self.feature_class(
-                inputs={
-                    "body": BodyRef(body),
-                    "edges": [
-                        p.reference(document) for p in self.picks if p.body == body
-                    ],
-                    self.field_key: self.expression(
-                        self.field_key, str(self.default_value)
-                    ),
-                },
-                outputs=[body],
-            )
-        )
+        self.window_.add_feature(self._make_feature(
+            self.expression(self.field_key, str(self.default_value))
+        ))
         self.window_.cancel_tool()
 
 
@@ -2881,11 +2889,68 @@ class FilletPanel(_EdgeTool):
 
 @register_tool("chamfer")
 class ChamferPanel(_EdgeTool):
+    """Chamfer, equal or asymmetric -- two distances, or a distance and angle.
+
+    The asymmetric forms are one edge-finish feature with a setting per edge,
+    the same feature the editor produces, so they reopen for editing as-is.
+    """
+
     title = "Chamfer"
     confirm_label = "Apply"
     feature_class = ChamferFeature
     field_key = "distance"
     field_label = "Distance"
+
+    def build(self) -> None:
+        super().build()
+        self.mode = QComboBox()
+        self.mode.addItem("Equal distance", "equal")
+        self.mode.addItem("Two distances", "two_distances")
+        self.mode.addItem("Distance and angle", "distance_angle")
+        self.add_widget(self.mode)
+        self.add_field("distance2", "Second distance", 2.0)
+        self.add_field("angle", "Angle", 45.0, Dimension.ANGLE)
+        self.swap_sides = GhostButton("Swap sides")
+        self.swap_sides.setCheckable(True)
+        self.add_widget(self.swap_sides)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self.swap_sides.toggled.connect(lambda _on: self._refresh_preview())
+        for key in ("distance2", "angle"):
+            self.fields[key].edited_live.connect(lambda _v: self._refresh_preview())
+        self._mode_changed()
+
+    def _mode_changed(self, _index=0) -> None:
+        mode = self.mode.currentData()
+        self.fields["distance2"].parentWidget().setVisible(mode == "two_distances")
+        self.fields["angle"].parentWidget().setVisible(mode == "distance_angle")
+        self.swap_sides.setVisible(mode != "equal")
+        self.relayout()
+        if self.picks:
+            self._refresh_preview()
+
+    def _make_feature(self, value):
+        mode = self.mode.currentData() if hasattr(self, "mode") else "equal"
+        if mode == "equal":
+            return super()._make_feature(value)
+        from ...kernel.operations import EdgeFinishFeature
+
+        body = self.picks[0].body
+        document = self.window_.document
+        specs = []
+        for pick in self.picks:
+            if pick.body != body:
+                continue
+            spec = {"edge": pick.reference(document), "type": "chamfer",
+                    "mode": mode, "distance": value}
+            if mode == "two_distances":
+                spec["distance2"] = self.expression("distance2", "2")
+            else:
+                spec["angle"] = self.expression("angle", "45")
+            if self.swap_sides.isChecked():
+                spec["flip"] = True
+            specs.append(spec)
+        return EdgeFinishFeature(inputs={"body": BodyRef(body), "edge_specs": specs},
+                                 outputs=[body])
 
 
 @register_tool("scale")

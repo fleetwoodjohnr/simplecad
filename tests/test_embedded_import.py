@@ -92,10 +92,10 @@ def test_single_native_object_clones_only_its_editable_history(tmp_path):
     destination = Document()
     errors = []
 
-    def paste(fragment, _label, assets=None):
+    def paste(fragment, _label, assets=None, **options):
         for blob in (assets or {}).values():
             destination.add_asset(blob)
-        _features, names = paste_fragment(destination, fragment)
+        _features, names = paste_fragment(destination, fragment, **options)
         assert Rebuilder(destination).rebuild().ok
         return names
 
@@ -141,10 +141,10 @@ def test_native_import_materializes_external_leaf(tmp_path):
         path = save(source, str(tmp_path / "source.scad3"))
         target = Document()
 
-        def paste(fragment, _label, assets=None):
+        def paste(fragment, _label, assets=None, **options):
             for value in (assets or {}).values():
                 target.add_asset(value)
-            _features, names = paste_fragment(target, fragment)
+            _features, names = paste_fragment(target, fragment, **options)
             assert Rebuilder(target).rebuild().ok
             return names
 

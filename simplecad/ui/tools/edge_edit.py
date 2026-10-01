@@ -13,7 +13,7 @@ from .registry import register_tool
 
 @register_tool("edit_edge_finish")
 class EdgeEditPanel(ToolPanel):
-    title = "Edit edge finish"
+    title = "Edit fillet / chamfer"
     confirm_label = "Save edge"
 
     def build(self) -> None:
@@ -49,6 +49,11 @@ class EdgeEditPanel(ToolPanel):
         self.add_field("angle", "Angle", 45.0, Dimension.ANGLE, commit_on_return=False)
         for field in self.fields.values():
             field.edited_live.connect(lambda _value: self.preview())
+        self.flip = GhostButton("Swap sides")
+        self.flip.setCheckable(True)
+        self.flip.setToolTip("Measure the first distance on the other face of the edge.")
+        self.flip.toggled.connect(lambda _on: None if self._loading else self.preview())
+        self.add_widget(self.flip)
         remove = GhostButton("Remove from this edge")
         remove.clicked.connect(self.remove_edge)
         self.add_widget(remove)
@@ -95,6 +100,7 @@ class EdgeEditPanel(ToolPanel):
                              ("distance2", 1.0), ("angle", 45.0)):
             value = spec.get(key, default)
             self.fields[key].setText(str(value))
+        self.flip.setChecked(bool(spec.get("flip")))
         self._loading = False
         self._mode_changed()
 
@@ -113,6 +119,7 @@ class EdgeEditPanel(ToolPanel):
         self.fields["distance"].parentWidget().setVisible(kind == "chamfer")
         self.fields["distance2"].parentWidget().setVisible(kind == "chamfer" and mode == "two_distances")
         self.fields["angle"].parentWidget().setVisible(kind == "chamfer" and mode == "distance_angle")
+        self.flip.setVisible(kind == "chamfer" and mode != "equal")
         if not self._loading:
             self.preview()
 
@@ -138,6 +145,8 @@ class EdgeEditPanel(ToolPanel):
                     spec["angle"] = self.expression("angle", "45")
                 if mode != "equal" and old.get("side") is not None:
                     spec["side"] = old["side"]
+                if mode != "equal" and self.flip.isChecked():
+                    spec["flip"] = True
             specs[self._index] = spec
         feature = EdgeFinishFeature(
             feature_id=source.id, name=source.name,

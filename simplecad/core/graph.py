@@ -101,9 +101,12 @@ class DependencyGraph:
             needed = input_names(feature)
             # Remove obsolete aliases, but never reinterpret an existing one.
             feature.bindings = {n: ref for n, ref in feature.bindings.items() if n in needed}
+            explicit_refs = {}
+            for value in feature.reference_values():
+                if getattr(value, "object_id", ""):
+                    explicit_refs.setdefault(str(value), value)
             for name in needed:
-                explicit = next((v for v in feature.reference_values()
-                                 if str(v) == name and getattr(v, "object_id", "")), None)
+                explicit = explicit_refs.get(name)
                 if explicit is not None and (name not in feature.bindings
                         or feature.bindings[name].object_id != explicit.object_id):
                     feature.bindings[name] = OutputRef(explicit.feature_id, explicit.object_id)

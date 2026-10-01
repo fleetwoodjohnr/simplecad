@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import MutableMapping
 from dataclasses import asdict, is_dataclass
 import hashlib
@@ -146,6 +146,9 @@ class ResultStore:
         self.decoded_bytes = 0
         self.hits = 0
         self.serialized = 0
+        #: Recently stored or decoded shapes and the blob holding each, so a
+        #: rigidly moved copy can be recorded as that blob plus a placement.
+        self._recent = deque(maxlen=64)
 
     def _remember(self, key, outputs, size):
         old = self.decoded.pop(key, None)
@@ -176,6 +179,16 @@ class ResultStore:
         encoded, size = {}, 0
         for name, value in outputs.items():
             oid = feature.output_ids[name]
+            base = self._located_base(value) if hasattr(value, "IsNull") else None
+            if base is not None:
+                # A move shares its input's geometry under a new location.
+                # Serialising it again cost ~0.8 s and 13 MB for a large
+                # imported mesh, on every move and every undo of one.
+                from .geometry_service import location_to_wire
+                encoded[oid] = {"kind": "located", "sha256": base,
+                                "location": location_to_wire(value.Location())}
+                size += len(self.blobs.get(base, b""))
+                continue
             if hasattr(value, "IsNull"):
                 blob = serialise_shape(value)
                 sha = hashlib.sha256(blob).hexdigest()
@@ -184,6 +197,7 @@ class ResultStore:
                     self.serialized += 1
                 encoded[oid] = {"kind": "brep", "sha256": sha}
                 size += len(blob)
+                self._recent.append((value, sha))
             elif hasattr(value, "to_dict"):
                 encoded[oid] = {"kind": "sketch", "data": value.to_dict()}
             elif is_dataclass(value):
@@ -212,13 +226,16 @@ class ResultStore:
             try:
                 for oid, value in entry["outputs"].items():
                     kind = value["kind"]
-                    if kind == "brep":
+                    if kind in ("brep", "located"):
                         blob = self.blobs[value["sha256"]]
                         if hashlib.sha256(blob).hexdigest() != value["sha256"]:
                             return None
-                        shape = deserialise_shape(blob)
+                        shape = self._decoded_blob(value["sha256"], blob)
                         if shape is None:
                             return None
+                        if kind == "located":
+                            from .geometry_service import location_from_wire
+                            shape = shape.Located(location_from_wire(value["location"]))
                         decoded[oid] = shape
                         size += len(blob)
                     elif kind == "sketch":
@@ -238,6 +255,30 @@ class ResultStore:
         feature.message = entry.get("message", "")
         return {name: decoded[oid] for name, oid in feature.output_ids.items() if oid in decoded}
 
+    def _located_base(self, shape):
+        """The blob of a stored shape that *shape* is a moved copy of."""
+        try:
+            if shape.IsNull():
+                return None
+            for candidate, sha in reversed(self._recent):
+                if (sha in self.blobs and candidate.IsPartner(shape)
+                        and candidate.Orientation() == shape.Orientation()):
+                    return sha
+        except Exception:  # noqa: BLE001 - fall back to serialising
+            return None
+        return None
+
+    def _decoded_blob(self, sha, blob):
+        """Decode *blob*, sharing the result between entries that use it."""
+        for candidate, known in reversed(self._recent):
+            if known == sha:
+                return candidate
+        from .geometry_service import deserialise_shape
+        shape = deserialise_shape(blob)
+        if shape is not None:
+            self._recent.append((shape, sha))
+        return shape
+
     def export(self, known=(), known_entries=(), *, include_blobs=True):
         return {"version": CACHE_VERSION,
                 "entries": {key: value for key, value in self.entries.items() if key not in known_entries},
@@ -248,6 +289,9 @@ class ResultStore:
             return
         self.entries.update(payload.get("entries", {}))
         for sha, blob in payload.get("blobs", {}).items():
+            if sha in self.blobs:
+                # Content-addressed: an existing key already holds these bytes.
+                continue
             if isinstance(blob, str):
                 blob = base64.b64decode(blob)
             if hashlib.sha256(blob).hexdigest() == sha:

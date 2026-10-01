@@ -272,7 +272,8 @@ def _roundable(model: SelectionModel) -> bool:
     return bool(model.edges()) or any(p.kind == "vertex" for p in model.picks)
 
 
-def _has_edge_finish(model: SelectionModel) -> bool:
+def edge_finish_candidate(model: SelectionModel) -> bool:
+    """One edge or face on a body that has a fillet or chamfer somewhere."""
     if len(model.picks) != 1 or model.picks[0].kind not in {"edge", "face"}:
         return False
     name = str(model.picks[0].body)
@@ -282,6 +283,48 @@ def _has_edge_finish(model: SelectionModel) -> bool:
         return False
     return any(graph.features[fid].type_name in {"fillet", "chamfer", "edge_finish"}
                for fid in graph.writers.get(head.object_id, ()))
+
+
+def edge_probe_key(model: SelectionModel):
+    pick = model.picks[0]
+    try:
+        reference = pick.reference(model.document).to_dict()
+    except Exception:  # noqa: BLE001 - an unreferencable pick is not a blend
+        return None
+    import json
+
+    return (str(pick.body), model.document.revision, json.dumps(reference, sort_keys=True))
+
+
+def _has_edge_finish(model: SelectionModel) -> bool:
+    """Offered only once the pick is confirmed to belong to a fillet/chamfer.
+
+    Every edge of a filleted body used to offer "Edit", and most of them then
+    failed. The window asks the geometry process which blend (if any) made
+    the picked edge, and records the answer here.
+    """
+    if not edge_finish_candidate(model):
+        return False
+    return bool(getattr(model, "edge_finish_known", {}).get(edge_probe_key(model)))
+
+
+def joint_for(model: SelectionModel):
+    """The newest editable joint written into the picked part, if any."""
+    if len(model.picks) != 1:
+        return None
+    graph = model.document.prepare_graph()
+    head = graph.latest.get(str(model.picks[0].body))
+    if head is None:
+        return None
+    for fid in reversed(graph.writers.get(head.object_id, ())):
+        feature = graph.features[fid]
+        if feature.type_name == "clip_joint" and feature.inputs.get("clip_version"):
+            return feature
+    return None
+
+
+def _has_joint(model: SelectionModel) -> bool:
+    return joint_for(model) is not None
 
 
 def _one_body(model: SelectionModel) -> bool:
@@ -356,11 +399,12 @@ def texture_features(model: SelectionModel) -> list:
 
 
 CONTEXT_ACTIONS = (
-    ("edit_edge_finish", "Edit edge finish", "fillet", _has_edge_finish),
+    ("edit_edge_finish", "Edit fillet / chamfer", "fillet", _has_edge_finish),
     ("edit_face_texture", "Edit texture", "texture", texture_features),
     ("remove_face_texture", "Remove texture", "trash", texture_features),
     # -- relationships between two parts, which are the most specific reading
-    ("clip_joint", "Create Clip Joint", "clip", _two_planar_faces),
+    ("edit_joint", "Edit joint", "clip", _has_joint),
+    ("clip_joint", "Clip / Join Parts", "clip", _two_planar_faces),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
     ("threaded_connection", "Create Threaded Connection", "thread", _threadable_pair),
     ("matching_part", "Create Matching Part", "thread", _has_a_thread),

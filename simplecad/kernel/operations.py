@@ -417,10 +417,16 @@ class EdgeFinishFeature(_BodyOperation):
                     maker.Add(distance, edge)
                     continue
                 side = spec.get("side")
+                faces = list(_faces_at_edge(shape, edge))
                 face = (TopoDS.Face_s(resolve(side, shape)) if side is not None else
-                        next(iter(_faces_at_edge(shape, edge)), None))
+                        next(iter(faces), None))
                 if face is None:
                     raise CadError("The chamfer's reference face is missing.")
+                if spec.get("flip"):
+                    # Measure the first distance on the other face instead.
+                    other = [f for f in faces if not f.IsSame(face)]
+                    if other:
+                        face = TopoDS.Face_s(other[0])
                 if mode == "two_distances":
                     second = number(spec.get("distance2"), distance)
                     if second <= 0:

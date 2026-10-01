@@ -20,7 +20,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..core.geometry_service import (
     FAILED, PREVIEW, PREVIEWED, PROGRESS, READY, REBUILD, RESULT, SHUTDOWN,
-    SYNC, SYNCED, child_main, deserialise_shape, serialise_shape,
+    SYNC, SYNCED, body_from_wire, child_main, location_from_wire, serialise_shape,
 )
 
 log = logging.getLogger("simplecad.geometry")
@@ -169,7 +169,7 @@ class GeometryClient(QObject):
         self._worker_entries.clear()
         self._worker_assets.clear()
         if self._restore is None and self._checkpoint is not None:
-            self._restore = copy.deepcopy(self._checkpoint)
+            self._restore = self._checkpoint_payload()
         self._abandoned_previews.clear()
         self._cpu_sampled_at = None
         self._cpu_seconds = None
@@ -277,7 +277,7 @@ class GeometryClient(QObject):
         }
         self._latest_revision = self._revision
         self._latest_document = payload
-        self._checkpoint = copy.deepcopy(payload)
+        self._checkpoint = self._lightweight_checkpoint(payload)
         self._published_bodies = dict(bodies)
         self._fail_pending_previews(
             "The project was reloaded before this preview finished.",
@@ -305,6 +305,12 @@ class GeometryClient(QObject):
             "assets": {sha: document._all_assets[sha] for sha in document.active_asset_keys()
                        if sha in document._all_assets},
             "stale": sorted(stale or ()),
+            # What the window actually has on screen. History can remove a
+            # body whose producer survives -- undoing a step recorded while an
+            # earlier rebuild was still in flight -- and the child must then
+            # send it again rather than assume the window still holds it.
+            "held": sorted(name for name, body in document.bodies.items()
+                           if body.shape is not None),
             "retained_cache_keys": sorted(document._history.cache_keys()) if getattr(document, "_history", None) else [],
             "force": force,
             "revision": self._revision + 1,
@@ -521,14 +527,19 @@ class GeometryClient(QObject):
                     and message.get("generation", self._generation) == self._generation):
                 self._remember_result(message)
                 if self._checkpoint and message.get("report", {}).get("ok", True):
-                    checkpoint_cache = self._checkpoint.get("cache") or {}
-                    self._worker_entries.intersection_update(checkpoint_cache.get("entries", {}))
-                    self._worker_blobs.intersection_update(checkpoint_cache.get("blobs", {}))
+                    # The worker prunes to the same retained set, so anything
+                    # outside it must be sent again if it is ever needed.
+                    entries, blobs = self._checkpoint_cache_keys()
+                    self._worker_entries.intersection_update(entries)
+                    self._worker_blobs.intersection_update(blobs)
                 self.finished.emit(message)
             elif self._pending is not None and self._pending["kind"] == REBUILD:
-                # The parent never applied this result. Resend all geometry in
-                # the next reply, including bodies unchanged in the child.
-                self._pending["full"] = True
+                # The parent never applied this result. The child rolls back
+                # its record of what the parent holds to before this reply, so
+                # the next reply carries exactly what is missing. Resending
+                # every body and the whole cache here made rapid undo on a
+                # large project slower the faster it was pressed.
+                self._pending["rollback"] = message.get("revision", 0)
         elif kind == FAILED:
             log.error("geometry process error: %s", message.get("traceback"))
             if message.get("revision", 0) == self._latest_revision:
@@ -578,41 +589,93 @@ class GeometryClient(QObject):
                 bodies.pop(name, None)
             else:
                 bodies[name] = blob
+        for name, matrix in (message.get("located") or {}).items():
+            base = bodies.get(name)
+            if isinstance(base, (tuple, list)):
+                base = base[1]
+            if base is not None:
+                bodies[name] = ("located", base, list(matrix))
         self._published_bodies = bodies
-        state = copy.deepcopy(active["document"])
+        # The request snapshot is never mutated after it is sent, so the
+        # checkpoint shares it and copies only the features the worker changed.
+        # A whole-document deepcopy here was paid on every accepted reply.
+        state = dict(active["document"])
         outcomes = message.get("report", {}).get("features", {})
+        features = []
         for feature in state["features"]:
-            outcome = outcomes.get(feature["id"], {})
-            for key in ("outputs", "output_ids", "bindings"):
-                if key in outcome:
-                    feature[key] = outcome[key]
-            for key, value in outcome.get("inputs", {}).items():
-                feature["inputs"].setdefault(key, value)
-            if outcome.get("solved_sketch") is not None:
-                feature["inputs"]["sketch"] = outcome["solved_sketch"]
+            outcome = outcomes.get(feature["id"])
+            if outcome:
+                feature = dict(feature)
+                for key in ("outputs", "output_ids", "bindings"):
+                    if key in outcome:
+                        feature[key] = copy.deepcopy(outcome[key])
+                if outcome.get("inputs") or outcome.get("solved_sketch") is not None:
+                    feature["inputs"] = dict(feature["inputs"])
+                    for key, value in outcome.get("inputs", {}).items():
+                        feature["inputs"].setdefault(key, copy.deepcopy(value))
+                    if outcome.get("solved_sketch") is not None:
+                        feature["inputs"]["sketch"] = copy.deepcopy(outcome["solved_sketch"])
+            features.append(feature)
+        state["features"] = features
         table = {b["name"]: b for b in state["bodies"]}
         table.update(message.get("report", {}).get("body_metadata", {}))
         state["bodies"] = [table.get(name, {"name": name}) for name in bodies]
         # Failed histories must not become a trusted successful baseline.
         if message.get("report", {}).get("ok", True):
+            retained = (set(message.get("report", {}).get("signatures", {}).values())
+                        | set(active.get("retained_cache_keys", [])))
             self._checkpoint = {
                 "kind": SYNC, "revision": message["revision"], "generation": self._generation,
                 "document": state, "bodies": bodies, "fragments": active.get("fragments", []),
                 "assets": active.get("assets", {}),
-                "cache": self._merged_checkpoint_cache(message.get("cache"),
-                    set(message.get("report", {}).get("signatures", {}).values())
-                    | set(active.get("retained_cache_keys", []))),
+                "cache": None, "cache_keys": retained,
             }
 
-    def _merged_checkpoint_cache(self, cache, retained=None):
-        from ..core.result_store import ResultStore
-        store = ResultStore()
-        if self._checkpoint:
-            store.merge(self._checkpoint.get("cache"))
-        store.merge(cache)
-        if retained is not None:
-            store.prune(retained)
-        return store.export()
+    def _lightweight_checkpoint(self, payload):
+        checkpoint = dict(payload)
+        cache = checkpoint.pop("cache", None) or {}
+        checkpoint["cache"] = None
+        checkpoint["cache_keys"] = set(cache.get("entries", {}))
+        return copy.deepcopy(checkpoint)
+
+    def _checkpoint_cache_keys(self):
+        """Entry keys and blob digests the current checkpoint depends on."""
+        keys = set(self._checkpoint.get("cache_keys") or ()) if self._checkpoint else set()
+        store = getattr(self._document_identity, "_geometry_store", None)
+        blobs = set()
+        if store is not None:
+            for key in keys:
+                entry = store.entries.get(key)
+                if entry:
+                    blobs.update(v["sha256"] for v in entry["outputs"].values() if "sha256" in v)
+        return keys, blobs
+
+    def _checkpoint_payload(self):
+        """A restorable copy of the checkpoint, with its cache materialized.
+
+        The cache is resolved only here -- on worker recovery, which is rare --
+        from the document's own result store. Keeping a second exported copy of
+        every blob, re-merged and re-hashed on every reply, cost more than a
+        second per edit on a large project.
+        """
+        if self._checkpoint is None:
+            return None
+        checkpoint = dict(self._checkpoint)
+        keys = checkpoint.pop("cache_keys", None) or set()
+        restore = copy.deepcopy(checkpoint)
+        store = getattr(self._document_identity, "_geometry_store", None)
+        if store is not None and keys:
+            entries = {k: store.entries[k] for k in keys if k in store.entries}
+            shas = {v["sha256"] for e in entries.values() for v in e["outputs"].values() if "sha256" in v}
+            blobs = {}
+            for sha in shas:
+                try:
+                    blobs[sha] = store.blobs[sha]
+                except KeyError:
+                    pass
+            from ..core.result_store import CACHE_VERSION
+            restore["cache"] = {"version": CACHE_VERSION, "entries": copy.deepcopy(entries), "blobs": blobs}
+        return restore
 
     def cancel_preview(self, token) -> None:
         if token is None:
@@ -761,7 +824,7 @@ class GeometryClient(QObject):
             self._active_save = None
         latest = self._latest_document
         self._pending = dict(latest) if latest is not None else None
-        self._restore = copy.deepcopy(self._checkpoint)
+        self._restore = self._checkpoint_payload()
         if self._restore is not None and latest is not None:
             if latest["revision"] == self._restore["revision"]:
                 self._pending = None
@@ -860,12 +923,20 @@ def apply_result(document, message: dict) -> list[str]:
         metadata = message.get("report", {}).get("body_metadata", {}).get(name, {})
         body = document.bodies.get(name)
         producer = metadata.get("producer")
+        # Skipped only when the shape on screen is known to be this producer's
+        # result at this signature. Undoing a join, boolean or fillet hands
+        # the body back to an earlier producer whose signature never changed
+        # -- and undo restores the body's producer field before this reply
+        # lands -- so neither of those alone says the geometry is current.
+        current = (producer, document._geometry_signatures.get(producer))
+        shown = getattr(body, "_shape_key", None) if body is not None else None
         if (body is not None and body.shape is not None and producer
-                and body.id == metadata.get("id")
-                and previous_signatures.get(producer)
-                and previous_signatures[producer] == document._geometry_signatures.get(producer)):
+                and body.id == metadata.get("id") and current[1]
+                and (shown == current if shown is not None else (
+                    body.producer == producer
+                    and previous_signatures.get(producer) == current[1]))):
             continue
-        shape = deserialise_shape(blob)
+        shape = body_from_wire(blob)
         if shape is None:
             continue
         body = document.bodies.get(name)
@@ -876,6 +947,20 @@ def apply_result(document, message: dict) -> list[str]:
         metadata = message.get("report", {}).get("body_metadata", {}).get(name, {})
         body.id = metadata.get("id", body.id)
         body.producer = metadata.get("producer", body.producer)
+        body._shape_key = (body.producer, document._geometry_signatures.get(body.producer))
+        changed.append(name)
+
+    for name, matrix in (message.get("located") or {}).items():
+        # The worker moved geometry this window already holds; only its
+        # placement crosses the pipe.
+        body = document.bodies.get(name)
+        if body is None or body.shape is None:
+            continue
+        body.shape = body.shape.Located(location_from_wire(matrix))
+        metadata = message.get("report", {}).get("body_metadata", {}).get(name, {})
+        body.id = metadata.get("id", body.id)
+        body.producer = metadata.get("producer", body.producer)
+        body._shape_key = (body.producer, document._geometry_signatures.get(body.producer))
         changed.append(name)
 
     for feature in document.features:

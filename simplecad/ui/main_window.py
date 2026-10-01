@@ -70,7 +70,7 @@ TOOL_GROUPS = (
     ToolGroup("create", "Create", "create", (
         ToolSpec("text", "Text", "text"),
         ToolSpec("thread", "Threaded pair", "threaded_connection"),
-        ToolSpec("clip", "Clip joint", "clip_joint"),
+        ToolSpec("clip", "Clip / Join Parts", "clip_joint"),
         ToolSpec("thread", "Matching part", "matching_part"),
     )),
     ToolGroup("modify", "Modify", "modify", (
@@ -128,6 +128,15 @@ def resolved_export_path(path: str, selected_filter: str) -> str:
         return path
     suffix = dict(EXPORT_FILTERS).get(selected_filter, ".3mf")
     return f"{path}{suffix}"
+
+
+def _moved_copy(base, shape) -> bool:
+    """True when *shape* is *base*'s geometry under another placement."""
+    try:
+        return (base is not None and shape is not None and base.IsPartner(shape)
+                and base.Orientation() == shape.Orientation())
+    except Exception:  # noqa: BLE001 - a failed check just redisplays
+        return False
 
 
 def _combined_bounds(shapes):
@@ -701,6 +710,9 @@ class MainWindow(QMainWindow):
         #: body name -> the shape currently on screen, so unchanged bodies are
         #: not needlessly re-tessellated on every rebuild.
         self._shown: dict[str, object] = {}
+        #: The shape each presentation was built from, when it has since been
+        #: re-placed rather than rebuilt (see ``refresh_view``).
+        self._display_base: dict[str, object] = {}
         #: Root items to select when the outstanding paste rebuild completes.
         self._select_after_rebuild: list[str] = []
         self._select_after_rebuild_revision = 0
@@ -847,6 +859,7 @@ class MainWindow(QMainWindow):
         # cache first, because refresh_view skips any body whose shape object is
         # unchanged, which after a mere theme switch is every one of them.
         self._shown.clear()
+        self._display_base.clear()
         self.refresh_view()
 
     def toggle_theme(self) -> None:
@@ -880,6 +893,51 @@ class MainWindow(QMainWindow):
         return isinstance(
             widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)
         )
+
+    def _history_key(self, event) -> str | None:
+        """'undo' or 'redo' when *event* is one of the history shortcuts."""
+        from ..core.settings import shortcuts
+
+        if not hasattr(self, "_history_sequences"):
+            bindings = shortcuts()
+            self._history_sequences = [
+                (QKeySequence(bindings[name]), "undo" if name == "undo" else "redo")
+                for name in ("undo", "redo", "redo_alt") if bindings.get(name)
+            ]
+        sequence = QKeySequence(event.keyCombination())
+        for binding, kind in self._history_sequences:
+            if sequence.matches(binding) == QKeySequence.ExactMatch:
+                return kind
+        return None
+
+    def _history_key_for_project(self, watched, event) -> bool:
+        """Should this Undo/Redo keystroke go to the project, not a text field?
+
+        A focused ``QLineEdit`` claims the standard Undo/Redo keys through
+        ``ShortcutOverride`` before the window's shortcut sees them. With
+        nothing of its own to undo that silently swallowed Ctrl+Z whenever a
+        dimension field or search box had focus -- which is most of the time a
+        tool panel is open. The field keeps the key only while it has its own
+        edit to undo or redo.
+        """
+        if not (isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched))):
+            return False
+        kind = self._history_key(event)
+        if kind is None:
+            return False
+        return not self._field_can(kind, watched)
+
+    @staticmethod
+    def _field_can(kind: str, widget=None) -> bool:
+        from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QTextEdit
+
+        widget = widget or QApplication.focusWidget()
+        if isinstance(widget, QLineEdit):
+            return widget.isUndoAvailable() if kind == "undo" else widget.isRedoAvailable()
+        if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+            document = widget.document()
+            return document.isUndoAvailable() if kind == "undo" else document.isRedoAvailable()
+        return False
 
     def _install_shortcuts(self) -> None:
         from ..core.settings import (
@@ -1047,6 +1105,7 @@ class MainWindow(QMainWindow):
         self.detach_gizmo()
         self._presentations.clear()
         self._shown.clear()
+        self._display_base.clear()
         self.selection.refresh()
         self.refresh_view()
 
@@ -1216,6 +1275,10 @@ class MainWindow(QMainWindow):
     # -- direct manipulation ---------------------------------------------
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         """Route model nudges without stealing arrows from unrelated controls."""
+        if event.type() == QEvent.ShortcutOverride and self._history_key_for_project(watched, event):
+            # Declining the override lets the window's Undo/Redo shortcut fire.
+            event.ignore()
+            return True
         flyout = getattr(self, "_tool_flyout", None)
         inside_flyout = flyout is not None and (
             watched is flyout or (
@@ -1424,10 +1487,14 @@ class MainWindow(QMainWindow):
 
         offset = tuple(state["offset"])
         transform = make_transform(translate=offset)
-        preview = compound(
-            transformed(shape, transform) for shape in state["shapes"]
-        )
-        viewport.show_ghost(preview, self.palette_.accent, transparency=0.14)
+        # Built once per nudge and then only re-placed. Copying every selected
+        # body and rebuilding its presentation on each arrow press (including
+        # key repeat) made nudging a large part stutter.
+        if state.get("ghost") is not viewport.ghost_presentation():
+            state["ghost"] = viewport.show_ghost(
+                compound(state["shapes"]), self.palette_.accent, transparency=0.14,
+            )
+        viewport.transform_ghost(transform)
         for name in state["bodies"]:
             viewport.set_transparency(self._presentations.get(name), 0.78)
         self.set_hint(
@@ -1509,7 +1576,8 @@ class MainWindow(QMainWindow):
             label = "Nudge objects"
 
         self.history.record(label)
-        self.document.add_feature(feature)
+        if state["kind"] == "face" or not self.document.fold_translation(state["bodies"], offset):
+            self.document.add_feature(feature)
         self.mark_dirty()
         self.rebuild()
 
@@ -1978,16 +2046,29 @@ class MainWindow(QMainWindow):
         )
 
     # -- undo / redo -----------------------------------------------------
+    def _before_history_step(self) -> None:
+        """Put away anything holding on to the model that is about to change.
+
+        An open tool keeps presentations, a gizmo and face references from the
+        current model. Left open across an undo it could commit against a
+        history it never saw, or drag a gizmo whose body had been replaced.
+        """
+        self._cancel_nudge()
+        self._close_texture_editor()
+        self._end_face_drag()
+        self.stage.viewport.handles.clear(self.stage.viewport)
+        self.detach_gizmo()
+        self.close_tool_panels()
+
     def undo(self) -> None:
         focused = QApplication.focusWidget()
-        if self._is_typing() and callable(getattr(focused, "undo", None)):
+        if self._is_typing() and self._field_can("undo", focused):
             focused.undo()
             return
         if self.sketching:
             self._sketch_undo()
             return
-        self._cancel_nudge()
-        self._close_texture_editor()
+        self._before_history_step()
         label = self.history.undo_label
         stale = self.history.undo()
         if stale is None:
@@ -2000,14 +2081,13 @@ class MainWindow(QMainWindow):
 
     def redo(self) -> None:
         focused = QApplication.focusWidget()
-        if self._is_typing() and callable(getattr(focused, "redo", None)):
+        if self._is_typing() and self._field_can("redo", focused):
             focused.redo()
             return
         if self.sketching:
             self._sketch_redo()
             return
-        self._cancel_nudge()
-        self._close_texture_editor()
+        self._before_history_step()
         label = self.history.redo_label
         stale = self.history.redo()
         if stale is None:
@@ -2120,8 +2200,12 @@ class MainWindow(QMainWindow):
         # shared tint sounds tidy and makes two touching members of it read as a
         # single silhouette, which is the exact problem per-body tints exist to
         # solve. The model tree is where group membership is shown.
-        order = list(self.document.bodies)
-        index = order.index(name) if name in order else 0
+        document = self.document
+        key = (id(document), document.revision, len(document.bodies))
+        if getattr(self, "_tint_key", None) != key:
+            self._tint_key = key
+            self._tint_index = {body: i for i, body in enumerate(document.bodies)}
+        index = self._tint_index.get(name, 0)
         return tints[index % len(tints)]
 
     def refresh_view(self) -> None:
@@ -2138,6 +2222,7 @@ class MainWindow(QMainWindow):
                     viewport.erase(presentation)
                     self._presentations.pop(name, None)
                     self._shown.pop(name, None)
+                    self._display_base.pop(name, None)
 
             for body in self.document.bodies.values():
                 if not body.visible or body.shape is None:
@@ -2147,12 +2232,23 @@ class MainWindow(QMainWindow):
                 if self._shown.get(body.name) is body.shape:
                     continue
                 existing = self._presentations.get(body.name)
+                base = self._display_base.get(body.name)
+                if existing is not None and base is not None and _moved_copy(base, body.shape):
+                    # The same geometry somewhere else: re-place the existing
+                    # presentation. Rebuilding it re-tessellated the display
+                    # and every face/edge/vertex pick zone -- seconds for a
+                    # large imported mesh, on every move and every undo.
+                    viewport.place(existing, body.shape.Location().Multiplied(
+                        base.Location().Inverted()))
+                    self._shown[body.name] = body.shape
+                    continue
                 if existing is not None:
                     viewport.erase(existing)
                 self._presentations[body.name] = viewport.display(
                     body.shape, body.color or self._tint_for(body.name)
                 )
                 self._shown[body.name] = body.shape
+                self._display_base[body.name] = body.shape
 
         if first_body and self._presentations:
             viewport.fit_all()
@@ -2192,6 +2288,7 @@ class MainWindow(QMainWindow):
         if presentation is not None:
             self._presentations[new] = presentation
         self._shown[new] = self._shown.pop(old, None)
+        self._display_base[new] = self._display_base.pop(old, None)
         for group in self.document.groups.values():
             group.members = [new if m == old else m for m in group.members]
 
@@ -2249,6 +2346,7 @@ class MainWindow(QMainWindow):
         if presentation is not None:
             self.stage.viewport.erase(presentation)
         self._shown.pop(name, None)
+        self._display_base.pop(name, None)
         self.document.bodies.pop(name, None)
         self.document.forget_member(name)
         self.mark_dirty()
@@ -2318,6 +2416,16 @@ class MainWindow(QMainWindow):
         self.rebuild()
         self.set_hint(f"Removed {feature.name}.")
 
+    def _edit_joint_from_selection(self) -> None:
+        from .selection import joint_for
+
+        self.selection.refresh()
+        feature = joint_for(self.selection)
+        if feature is None:
+            self.set_hint("Select a face of a joined part to edit its joint.")
+            return
+        self._feature_action(feature.id, "edit")
+
     def _feature_action(self, target: str, action: str) -> None:
         if action == "edit":
             feature = self.document.feature(target)
@@ -2327,6 +2435,9 @@ class MainWindow(QMainWindow):
             elif feature is not None and feature.type_name in {"fillet", "chamfer", "edge_finish"}:
                 self._edge_edit_feature_id = target
                 self.run_action("edit_edge_finish")
+            elif feature is not None and feature.type_name == "clip_joint":
+                self._clip_edit_feature_id = target
+                self.activate_tool("clip_joint")
             return
         if action == "rename":
             feature_id, _, new = target.partition(":")
@@ -2474,6 +2585,7 @@ class MainWindow(QMainWindow):
             if presentation is not None:
                 self.stage.viewport.erase(presentation)
             self._shown.pop(body_name, None)
+            self._display_base.pop(body_name, None)
             self.document.bodies.pop(body_name, None)
             self.document.forget_member(body_name)
         self.document.groups.pop(name, None)
@@ -2561,7 +2673,8 @@ class MainWindow(QMainWindow):
             self.set_hint(f"Pasted {', '.join(root_items)} beside the model.")
 
     def _paste_model_fragment(self, fragment, history_label: str,
-                              assets: dict[str, bytes] | None = None) -> list[str]:
+                              assets: dict[str, bytes] | None = None,
+                              keep_parameter_names: bool = False) -> list[str]:
         """Insert one fragment; shared by Paste and Duplicate."""
         from ..core.model_clipboard import paste_fragment
 
@@ -2583,7 +2696,8 @@ class MainWindow(QMainWindow):
         self.history.record(history_label)
         for blob in (assets or {}).values():
             self.document.add_asset(blob)
-        _features, root_items = paste_fragment(self.document, fragment, offset)
+        _features, root_items = paste_fragment(self.document, fragment, offset,
+                                               keep_parameter_names=keep_parameter_names)
         self._select_after_rebuild = root_items
         self.mark_dirty()
         self.rebuild()
@@ -2861,6 +2975,7 @@ class MainWindow(QMainWindow):
     def run_command(self, key: str) -> None:
         handlers = {
             "edit_face_texture": lambda: self._texture_action("edit"),
+            "edit_joint": self._edit_joint_from_selection,
             "remove_face_texture": lambda: self._texture_action("delete"),
             "export": self.export_model,
             "import": self.import_model,
@@ -2991,36 +3106,54 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        from PySide6.QtWidgets import QInputDialog
-        from ..core.errors import translate
-        from ..core.project import inspect_bodies
-        from ..kernel.importing import forget, read_bodies
+        self.choose_import(path)
 
+    def choose_import(self, path: str):
+        """Show what *path* contains and import the objects the user ticks.
+
+        A file with one object imports straight away. Anything with more
+        opens a picker listing its objects -- for a SimpleCAD project, its
+        groups and bodies as the model tree shows them -- so one part can be
+        taken from a large project without merging the whole of it. Returns
+        the picker, if one was opened.
+        """
+        from ..core.errors import translate
+        from ..core.project import inspect_tree, read_thumbnail
+        from ..kernel.importing import forget, read_bodies
+        from .dialogs.import_picker import ImportPicker
+
+        native = path.lower().endswith(".scad3")
         try:
-            if path.lower().endswith(".scad3"):
-                candidates = inspect_bodies(path)
+            if native:
+                nodes = inspect_tree(path)
+                thumbnail = read_thumbnail(path)
             else:
                 forget(path)
-                candidates = [(index, body.name) for index, body in enumerate(read_bodies(path))]
+                nodes = [{"kind": "body", "name": body.name or f"Object {index + 1}",
+                          "key": index, "children": [],
+                          "detail": getattr(body, "note", "") or ""}
+                         for index, body in enumerate(read_bodies(path))]
+                thumbnail = None
         except Exception as exc:  # noqa: BLE001 - report file and parser errors
             self._report_import_failure(path, translate(exc, "import"))
-            return
-        if not candidates:
+            return None
+        if not nodes:
             self.set_hint("This file contains no objects to import.")
-            return
-        key = candidates[0][0]
-        if len(candidates) > 1:
-            labels = [f"{name}  ({index + 1})" for index, (_id, name) in enumerate(candidates)]
-            choice, accepted = QInputDialog.getItem(
-                self, "Import one object", "Object to import:",
-                labels + ["All objects"], 0, False,
-            )
-            if not accepted:
-                return
-            key = None if choice == "All objects" else candidates[labels.index(choice)][0]
-        self.import_path(path, object_key=key, _inspected=True)
+            return None
+        if len(nodes) == 1 and not nodes[0]["children"]:
+            self.import_path(path, items=[nodes[0]["key"]], _inspected=True)
+            return None
+        picker = ImportPicker(self, f"Import from {os.path.basename(path)}", nodes,
+                              thumbnail=thumbnail)
+        picker.chosen.connect(lambda keys: self.import_path(path, items=keys, _inspected=True))
+        picker.setAttribute(Qt.WA_DeleteOnClose, True)
+        # open(), not exec(): no nested event loop to stall the geometry
+        # process, autosave or a rebuild in flight.
+        picker.open()
+        self._import_picker = picker
+        return picker
 
-    def import_path(self, path: str, object_key=None, *, _inspected=False) -> list[str]:
+    def import_path(self, path: str, object_key=None, *, items=None, _inspected=False) -> list[str]:
         """Import *path*, returning the names of the bodies it created.
 
         Split out from :meth:`import_model` so the import can be driven without
@@ -3035,7 +3168,9 @@ class MainWindow(QMainWindow):
         from ..kernel.io_formats import import_filter  # noqa: F401
 
         if path.lower().endswith(".scad3"):
-            return self._import_native_project(path, object_key)
+            return self._import_native_project(path, object_key, items=items)
+        if items is None and object_key is not None:
+            items = [object_key]
 
         # The file may have changed since it was last read in this session.
         if not _inspected:
@@ -3049,7 +3184,8 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         try:
             bodies = read_bodies(path)
-            chosen = list(enumerate(bodies)) if object_key is None else [(int(object_key), bodies[int(object_key)])]
+            chosen = (list(enumerate(bodies)) if items is None
+                      else [(int(key), bodies[int(key)]) for key in items])
             if not chosen:
                 raise ValueError("The file contains no objects to import.")
         except Exception as exc:  # noqa: BLE001 - reported, never fatal
@@ -3094,8 +3230,14 @@ class MainWindow(QMainWindow):
         )
         return created
 
-    def _import_native_project(self, path: str, object_key=None) -> list[str]:
-        """Clone one editable dependency closure from a native project."""
+    def _import_native_project(self, path: str, object_key=None, items=None) -> list[str]:
+        """Clone the editable history of chosen objects from a native project.
+
+        *items* are body ids or names and group names, as the import picker
+        returns them; a group brings its members and stays a group. Each
+        object arrives as ordinary editable history -- features, parameters,
+        textures, appearance -- with no link back to the source file.
+        """
         from ..core.errors import CadError, translate
         from ..core.geometry_service import serialise_shape
         from ..core.model_clipboard import copy_fragment
@@ -3104,10 +3246,24 @@ class MainWindow(QMainWindow):
 
         try:
             source, _cached = load(path)
-            names = ([body.name for body in source.bodies.values()]
-                     if object_key is None else
-                     [next(body.name for body in source.bodies.values()
-                           if body.id == object_key or body.name == object_key)])
+            if items is None and object_key is not None:
+                items = [object_key]
+            if items is None:
+                # Everything: every top-level group and loose body, so the
+                # source's grouping comes across too.
+                chosen = [name for _kind, name in source.root_items()]
+            else:
+                by_id = {body.id: body.name for body in source.bodies.values()}
+                chosen = []
+                for key in items:
+                    name = by_id.get(key, key)
+                    if name not in source.bodies and name not in source.groups:
+                        raise CadError(f"'{key}' is not in {os.path.basename(path)}.")
+                    chosen.append(name)
+            # A group already brings its members; do not list them twice.
+            inside = set(source.expand([n for n in chosen if n in source.groups]))
+            chosen = [n for n in chosen if n in source.groups or n not in inside]
+            names = source.expand(chosen)
             if any(source.body(name).shape is None for name in names):
                 report = Rebuilder(source).rebuild()
                 if not report.ok:
@@ -3118,7 +3274,7 @@ class MainWindow(QMainWindow):
             bounds = [bounds_of(source.body(name).shape) for name in names]
             low = tuple(min(pair[0][axis] for pair in bounds) for axis in range(3))
             high = tuple(max(pair[1][axis] for pair in bounds) for axis in range(3))
-            fragment = copy_fragment(source, names, bounds=(low, high))
+            fragment = copy_fragment(source, chosen, bounds=(low, high))
             assets = {}
             source_builder = source._rebuilder or Rebuilder(source)
             source_builder._prepare()
@@ -3136,7 +3292,8 @@ class MainWindow(QMainWindow):
                     assets[sha] = blob
                     entry["type"] = "embedded_import"
                     entry["inputs"] = {"asset": sha}
-            created = self._paste_model_fragment(fragment, "Import", assets)
+            created = self._paste_model_fragment(fragment, "Import", assets,
+                                                 keep_parameter_names=True)
             self.set_hint(f"Imported {', '.join(created)} from {os.path.basename(path)}.")
             return created
         except Exception as exc:  # noqa: BLE001 - never leave a partial import
@@ -3308,6 +3465,7 @@ class MainWindow(QMainWindow):
             self.stage.viewport.erase(presentation)
         self._presentations.clear()
         self._shown.clear()
+        self._display_base.clear()
 
         self.document = document
         self.geometry.reset_document(document)
@@ -3359,6 +3517,7 @@ class MainWindow(QMainWindow):
         self.selection.refresh()
         self._expand_selection_to_groups()
         self.refresh_context_bar()
+        self._probe_edge_finish()
         self._retell_open_tools()
         if self.selection.count:
             # The context bar already carries the selection summary. Keep the
@@ -3367,6 +3526,51 @@ class MainWindow(QMainWindow):
             self.set_hint("" if self.context_bar.isVisible() else self.selection.summary())
         else:
             self.set_hint("Pick a shape from the left, or select geometry to act on it.")
+
+    def _probe_edge_finish(self) -> None:
+        """Ask the geometry process whether the picked edge was filleted.
+
+        The answer lands in ``selection.edge_finish_known`` and refreshes the
+        context bar, so "Edit fillet / chamfer" appears only on real blends.
+        """
+        from .selection import edge_finish_candidate, edge_probe_key
+
+        known = getattr(self.selection, "edge_finish_known", None)
+        if known is None:
+            known = self.selection.edge_finish_known = {}
+        if not edge_finish_candidate(self.selection) or not self.geometry.available:
+            return
+        if any(getattr(widget, "is_tool_panel", False) for widget, _ in self.stage.overlays):
+            # A panel owns the preview channel while it is open; a probe must
+            # never supersede its request.
+            return
+        key = edge_probe_key(self.selection)
+        if key is None or key in known:
+            return
+        if len(known) > 256:
+            known.clear()
+        if not getattr(self, "_edge_probe_connected", False):
+            self.geometry.previewed.connect(self._edge_probe_answer)
+            self._edge_probe_connected = True
+        self._edge_probe_serial = getattr(self, "_edge_probe_serial", 0) + 1
+        token = f"edge-probe-{self._edge_probe_serial}"
+        self._edge_probe_pending = (token, key)
+        pick = self.selection.picks[0]
+        self.geometry.preview({"__inspect_edge": {
+            "body": str(pick.body), "pick": pick.reference(self.document).to_dict(),
+        }}, token)
+
+    def _edge_probe_answer(self, message) -> None:
+        pending = getattr(self, "_edge_probe_pending", None)
+        if pending is None or message.get("token") != pending[0]:
+            return
+        self._edge_probe_pending = None
+        if message.get("failed"):
+            return   # superseded or the worker restarted: no answer either way
+        found = bool(message.get("inspection")) and not message.get("error")
+        self.selection.edge_finish_known[pending[1]] = found
+        if found:
+            self.refresh_context_bar()
 
     def _retell_open_tools(self) -> None:
         """Let an open tool panel re-read the selection.

@@ -27,6 +27,9 @@ class ModelFragment:
     parameters: list[dict] = field(default_factory=list)
     shapes: dict[str, str] = field(default_factory=dict)
     appearance: dict[str, dict] = field(default_factory=dict)
+    #: Embedded import sources (sha256 -> base64 B-Rep) the history needs, so
+    #: a copy pasted into another project brings its imported meshes along.
+    assets: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +42,7 @@ class ModelFragment:
             "parameters": copy.deepcopy(self.parameters),
             "shapes": dict(self.shapes),
             "appearance": copy.deepcopy(self.appearance),
+            "assets": dict(self.assets),
         }
 
     @classmethod
@@ -55,6 +59,7 @@ class ModelFragment:
             parameters=copy.deepcopy(data.get("parameters", [])),
             shapes=dict(data.get("shapes", {})),
             appearance=copy.deepcopy(data.get("appearance", {})),
+            assets=dict(data.get("assets", {})),
         )
 
 
@@ -118,6 +123,12 @@ def copy_fragment(document: Document, items: list[str], bounds=None, *, capture_
             name: base64.b64encode(serialise_shape(document.body(name).shape)).decode("ascii")
             for name in roots if capture_geometry and document.body(name).shape is not None
         },
+        assets={
+            sha: base64.b64encode(document._all_assets[sha]).decode("ascii")
+            for sha in {str(f.inputs.get("asset")) for f in chosen
+                        if f.type_name == "embedded_import"}
+            if sha in document._all_assets
+        },
         appearance={name: copy.deepcopy(document.body(name).to_dict()) for name in roots},
     )
 
@@ -126,8 +137,15 @@ def paste_fragment(
     document: Document,
     fragment: ModelFragment,
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    keep_parameter_names: bool = False,
 ) -> tuple[list[Feature], list[str]]:
-    """Clone *fragment* into *document* and return features and root items."""
+    """Clone *fragment* into *document* and return features and root items.
+
+    With *keep_parameter_names* -- importing from another project -- a named
+    parameter keeps its name unless this project already uses it. A paste
+    within one project always renames, so the copy can diverge.
+    """
     source_features = [Feature.from_dict(entry) for entry in fragment.features]
     from .geometry_service import deserialise_shape
     from .params import Parameter, dependencies
@@ -138,6 +156,9 @@ def paste_fragment(
             raise ValueError("The copied geometry is invalid.")
     if fragment.shapes and set(fragment.shapes) != set(fragment.root_bodies):
         raise ValueError("The copied geometry is incomplete.")
+    for sha, encoded in fragment.assets.items():
+        if sha not in document._all_assets:
+            document.add_asset(base64.b64decode(encoded, validate=True))
     nonce = uuid.uuid4().hex[:8]
     taken = (
         {feature.name for feature in document.features}
@@ -184,6 +205,10 @@ def paste_fragment(
     parameter_map = {}
     for entry in fragment.parameters:
         name = entry["name"]
+        if keep_parameter_names and name not in parameter_names:
+            parameter_names.add(name)
+            parameter_map[name] = name
+            continue
         candidate, suffix = name + "_copy", 2
         while candidate in parameter_names:
             candidate = name + "_copy" + str(suffix)

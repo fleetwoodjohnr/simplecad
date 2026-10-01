@@ -531,7 +531,11 @@ class OcctViewport(QOpenGLWidget):
             if id(obj) in scenery or not isinstance(obj, AIS_Shape):
                 continue
             try:
-                shapes.append(obj.Shape())
+                shape = obj.Shape()
+                if obj.HasTransformation():
+                    from OCP.TopLoc import TopLoc_Location
+                    shape = shape.Moved(TopLoc_Location(obj.LocalTransformation()))
+                shapes.append(shape)
             except Exception:  # noqa: BLE001
                 continue
         return bbox_center(shapes)
@@ -1056,13 +1060,34 @@ class OcctViewport(QOpenGLWidget):
         self.refresh()
         return presentation
 
+    def place(self, presentation, location) -> None:
+        """Move a displayed body to *location* without rebuilding it.
+
+        Picks read the owner's location (see ``_selected_shape``), so faces
+        and edges selected afterwards are reported where they now are.
+        """
+        if self._context is None or presentation is None:
+            return
+        self._context.SetLocation(presentation, location)
+        self.refresh()
+
+    def ghost_presentation(self):
+        """The current preview presentation, if one is shown."""
+        return getattr(self, "_ghost", None)
+
     def transform_ghost(self, transform) -> None:
-        """Move the current preview with a cheap presentation transform."""
+        """Move the current preview with a cheap presentation transform.
+
+        Only the structure's transformation changes, so the presentation is
+        not recomputed -- ``Redisplay`` here re-triangulated large previews on
+        every drag step.
+        """
         presentation = getattr(self, "_ghost", None)
         if self._context is None or presentation is None:
             return
-        presentation.SetLocalTransformation(transform)
-        self._context.Redisplay(presentation, False)
+        from OCP.TopLoc import TopLoc_Location
+
+        self._context.SetLocation(presentation, TopLoc_Location(transform))
         self.refresh()
 
     def show_overlay_shape(self, shape, color: str | None = None,
@@ -2380,7 +2405,10 @@ class OcctViewport(QOpenGLWidget):
             if now - self._last_hover_at >= 1.0 / 60.0:
                 self._last_hover_at = now
                 x, y = self._device_pos(pos)
-                self._context.MoveTo(x, y, self._view, True)
+                # No immediate redraw: paintGL redraws the view (highlight
+                # included) on the update() below, so drawing here as well
+                # rendered every hovered frame twice.
+                self._context.MoveTo(x, y, self._view, False)
                 self.hover_changed.emit(self._describe_detected())
                 self.update()
         self._last_pos = pos

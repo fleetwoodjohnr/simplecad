@@ -142,7 +142,12 @@ def test_arrows_during_rebuild_resume_on_the_same_geometry(model, face):
     low, high = bounding_box(window.document.body("A").shape)
     assert (high[2] if face else low[0]) == pytest.approx(10.75 if face else .75, abs=1e-6)
     assert window.selection.bodies == ["A"]
-    assert len(window.document.features) == 4
+    # A second body nudge folds into the first Move; a face nudge is its own
+    # push/pull. Either way each burst stays its own undo step.
+    assert len(window.document.features) == (4 if face else 3)
+    window.history._finish_pending()
+    assert [a.label for a in window.history._undo][-2:] == (
+        ["Nudge face", "Nudge face"] if face else ["Nudge objects", "Nudge objects"])
 
 
 def test_screen_and_depth_steps_move_all_selected_bodies(model):

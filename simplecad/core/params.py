@@ -12,6 +12,7 @@ get shared, so an expression must never be able to execute arbitrary code.
 from __future__ import annotations
 
 import ast
+import functools
 import math
 from dataclasses import dataclass, field
 
@@ -152,17 +153,28 @@ def dependencies(expression: str) -> set[str]:
     Used by the rebuild engine to build parameter -> feature edges. Unparseable
     text yields an empty set rather than raising: the caller reports the error
     when it evaluates.
+
+    Graph construction asks this for every expression of every feature, and a
+    large project repeats a handful of texts ("0 mm") thousands of times, so
+    the parse is memoised on the text. A fresh set is returned each call.
     """
+    return set(_dependencies(str(expression)))
+
+
+@functools.lru_cache(maxsize=16384)
+def _dependencies(expression: str) -> frozenset[str]:
+    if not any(ch.isalpha() or ch == "_" for ch in expression):
+        return frozenset()
     try:
         tree = ast.parse(_tokenize_units(expression, Dimension.LENGTH), mode="eval")
     except SyntaxError:
-        return set()
+        return frozenset()
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             if node.id not in CONSTANTS and node.id not in FUNCTIONS:
                 found.add(node.id)
-    return found
+    return frozenset(found)
 
 
 def evaluate(

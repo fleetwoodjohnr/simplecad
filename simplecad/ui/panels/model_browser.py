@@ -316,8 +316,18 @@ class ModelBrowser(FloatingCard):
         existing = {self.history_list.item(i).data(Qt.UserRole): self.history_list.item(i)
                     for i in range(self.history_list.count())}
         live = {f.id for f in self.document.features}
+        row_stamps = getattr(self, "_history_row_stamps", {})
+        if row_stamps.get("__context__") != (id(self.document), self._palette):
+            row_stamps = {"__context__": (id(self.document), self._palette)}
+        self._history_row_stamps = row_stamps
         for fid in existing.keys() - live:
             self.history_list.takeItem(self.history_list.row(existing.pop(fid)))
+            row_stamps.pop(fid, None)
+        # Row lookups on a QListWidget are linear, so track the order here and
+        # only move rows that are actually out of place. Doing a lookup per row
+        # made every rebuild quadratic in the length of the history.
+        order = [self.history_list.item(i).data(Qt.UserRole)
+                 for i in range(self.history_list.count())]
         icons = {
             "box": "box", "cylinder": "cylinder", "sphere": "sphere",
             "cone": "cone", "torus": "torus", "tube": "tube",
@@ -332,9 +342,16 @@ class ModelBrowser(FloatingCard):
             if item is None:
                 item = QListWidgetItem()
                 self.history_list.insertItem(index, item)
-            elif self.history_list.row(item) != index:
-                self.history_list.takeItem(self.history_list.row(item))
+                order.insert(index, feature.id)
+            elif index >= len(order) or order[index] != feature.id:
+                row = order.index(feature.id)
+                self.history_list.takeItem(row)
                 self.history_list.insertItem(index, item)
+                order.insert(index, order.pop(row))
+            row_stamp = (feature.name, feature.type_name, feature.state, feature.message)
+            if row_stamps.get(feature.id) == row_stamp and item is existing.get(feature.id):
+                continue
+            row_stamps[feature.id] = row_stamp
             item.setText(feature.name)
             item.setData(Qt.UserRole, feature.id)
             item.setToolTip("")
@@ -453,6 +470,8 @@ class ModelBrowser(FloatingCard):
             menu.addAction("Edit texture…", lambda: self.feature_action.emit(feature_id, "edit"))
         elif feature.type_name in {"fillet", "chamfer", "edge_finish"}:
             menu.addAction("Edit edges…", lambda: self.feature_action.emit(feature_id, "edit"))
+        elif feature.type_name == "clip_joint":
+            menu.addAction("Edit joint…", lambda: self.feature_action.emit(feature_id, "edit"))
         menu.addAction("Rename…", lambda: self._rename_feature(item))
         if feature.suppressed:
             menu.addAction(

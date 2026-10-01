@@ -57,6 +57,39 @@ def preview_signature(state: dict, edit_id=None) -> dict:
             "edit_id": edit_id or state.get("__edit_feature_id")}
 
 
+def _same_topology(old, new) -> bool:
+    """True when *new* is *old* moved: the same TShape at another location."""
+    try:
+        return (not old.IsNull() and not new.IsNull() and old.IsPartner(new)
+                and old.Orientation() == new.Orientation()
+                and not old.IsEqual(new))
+    except Exception:  # noqa: BLE001 - a failed check just sends the shape
+        return False
+
+
+def location_to_wire(location) -> list[float]:
+    """A ``TopLoc_Location`` as the 12 numbers of its 3x4 matrix."""
+    trsf = location.Transformation()
+    return [trsf.Value(row, column) for row in (1, 2, 3) for column in (1, 2, 3, 4)]
+
+
+def location_from_wire(values):
+    from OCP.gp import gp_Trsf
+    from OCP.TopLoc import TopLoc_Location
+
+    trsf = gp_Trsf()
+    trsf.SetValues(*values)
+    return TopLoc_Location(trsf)
+
+
+def body_from_wire(value):
+    """A published body: B-Rep bytes, or a base blob plus a later placement."""
+    if isinstance(value, (tuple, list)) and value and value[0] == "located":
+        shape = deserialise_shape(value[1])
+        return None if shape is None else shape.Located(location_from_wire(value[2]))
+    return deserialise_shape(value)
+
+
 def serialise_shape(shape) -> bytes:
     from OCP.BRepTools import BRepTools
 
@@ -182,6 +215,9 @@ def build_preview_result(document, feature_state: dict) -> dict:
             "warnings": list(context.warnings),
             "inputs": _portable_inputs(feature),
             "message": feature.message,
+            # Plain data a feature leaves for its panel -- clip positions and
+            # orientations, say -- which is not geometry and not a recipe input.
+            "annotations": getattr(feature, "annotations", None),
             "_outputs": outputs,
         }
     except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
@@ -195,8 +231,42 @@ def build_preview_result(document, feature_state: dict) -> dict:
         }
 
 
-def _summarise(report, document) -> dict:
-    """A report the parent can act on without holding kernel objects."""
+def _feature_summary(feature) -> dict:
+    return {
+        "state": feature.state.value,
+        "message": feature.message,
+        "outputs": list(feature.outputs),
+        "output_ids": dict(feature.output_ids),
+        "bindings": {n: r.to_dict() for n, r in feature.bindings.items()},
+        # Some features record what they chose (a thread designation,
+        # say) back onto their own inputs.
+        "inputs": _portable_inputs(feature),
+        "solved_sketch": feature.to_dict()["inputs"].get("sketch") if feature.type_name == "sketch" else None,
+    }
+
+
+def _summarise(report, document, summarised=None, announce=()) -> dict:
+    """A report the parent can act on without holding kernel objects.
+
+    With *summarised* (feature id -> what was last reported), only features
+    whose recipe version, state or message moved since are described. The
+    parent keeps everything else it was already told, so a one-feature edit no
+    longer describes every feature in a large project on every reply.
+    """
+    features = {}
+    for feature in document.features:
+        stamp = (id(feature), getattr(feature, "_version", 0), feature.state.value, feature.message)
+        if (summarised is not None and summarised.get(feature.id) == stamp
+                and feature.id not in announce):
+            continue
+        features[feature.id] = _feature_summary(feature)
+        if summarised is not None:
+            summarised[feature.id] = stamp
+    if summarised is not None:
+        live = {f.id for f in document.features}
+        for fid in list(summarised):
+            if fid not in live:
+                del summarised[fid]
     return {
         "ok": report.ok,
         "signatures": dict(getattr(document, "_geometry_signatures", {})),
@@ -212,22 +282,93 @@ def _summarise(report, document) -> dict:
         # during execute. Without them the parent never learns which body a
         # feature produced, and dependency lookup, deletion and reordering all
         # read that.
-        "features": {
-            feature.id: {
-                "state": feature.state.value,
-                "message": feature.message,
-                "outputs": list(feature.outputs),
-                "output_ids": dict(feature.output_ids),
-                "bindings": {n: r.to_dict() for n, r in feature.bindings.items()},
-                # Some features record what they chose (a thread designation,
-                # say) back onto their own inputs.
-                "inputs": _portable_inputs(feature),
-                "solved_sketch": feature.to_dict()["inputs"].get("sketch") if feature.type_name == "sketch" else None,
-            }
-            for feature in document.features
-        },
+        "features": features,
         "failures": {fid: str(err) for fid, err in report.failures.items()},
     }
+
+
+def _apply_document_values(document, state) -> None:
+    """Copy the non-feature parts of a wire state onto the live document."""
+    from .document import Group
+    document.title = state.get("title", document.title)
+    document.metadata = state.get("metadata", {})
+    document._counters = dict(state.get("counters", {}))
+    document._retired_ids.update(state.get("retired_ids", []))
+    document.assets = {sha: document._all_assets[sha]
+                       for sha in state.get("assets", []) if sha in document._all_assets}
+    groups = {}
+    for entry in state.get("groups", []):
+        group = Group.from_dict(entry)
+        groups[group.name] = group
+    names_by_id = {b.get("id"): b["name"] for b in state.get("bodies", []) if b.get("id")}
+    names_by_id.update({g.id: g.name for g in groups.values()})
+    for entry in state.get("groups", []):
+        if "member_ids" in entry:
+            groups[entry["name"]].members = [names_by_id[i] for i in entry["member_ids"] if i in names_by_id]
+    document.groups = groups
+
+
+def _replace_features(document, state, candidate_ids, stale) -> set[str]:
+    """Swap in new recipes for *candidate_ids*; keep every other instance.
+
+    Returns the ids whose rebuild results can no longer be trusted: the
+    features that actually differ, those using a changed parameter, and
+    everything downstream of either -- in the old and the new graph.
+    """
+    from .document import Feature
+    from .params import ParameterSet
+    existing = {f.id: f for f in document.features}
+    entries = {entry["id"]: entry for entry in state["features"]}
+    changed = set()
+    replacements = {}
+    for fid in candidate_ids:
+        entry = entries.get(fid)
+        current = existing.get(fid)
+        if entry is None:
+            if current is not None:
+                changed.add(fid)
+            continue
+        if current is not None and current.to_dict() == entry:
+            continue
+        replacements[fid] = Feature.from_dict(entry)
+        changed.add(fid)
+    old_parameters = {p["name"]: p for p in document.parameters.to_list()}
+    new_parameters = {p["name"]: p for p in state.get("parameters", [])}
+    parameter_changes = {name for name in old_parameters.keys() | new_parameters.keys()
+                         if old_parameters.get(name) != new_parameters.get(name)}
+    for name in parameter_changes:
+        changed.update(document.features_using_parameter(name))
+    old_dependents = document.dependents_of(changed | stale) if (changed or stale) else set()
+    order = [entry["id"] for entry in state["features"]]
+    if replacements or set(order) != set(existing) or order != [f.id for f in document.features]:
+        document.features = [replacements.get(fid) or existing[fid] for fid in order]
+    if parameter_changes:
+        document.parameters = ParameterSet.from_list(state.get("parameters", []))
+        for name in parameter_changes:
+            changed.update(document.features_using_parameter(name))
+    new_dependents = document.dependents_of(changed | stale) if (changed or stale) else set()
+    keep = {n for f in document.features for n in f.outputs}
+    for name in list(document.bodies):
+        if name not in keep:
+            # Deliberately left in `sent`: the reply loop compares against it
+            # to work out what the parent still has on screen and must drop.
+            del document.bodies[name]
+    return old_dependents | new_dependents
+
+
+def _apply_state_patch(document, state, patch, stale) -> set[str]:
+    """Apply an entity patch in place, touching only the entities it names."""
+    _apply_document_values(document, state)
+    features = patch.get("collections", {}).get("features", {})
+    candidates = set(features.get("set", {})) | set(features.get("remove", []))
+    return _replace_features(document, state, candidates, stale)
+
+
+def _apply_full_state(document, state, stale) -> set[str]:
+    """Adopt a complete state, comparing every feature (recovery path)."""
+    _apply_document_values(document, state)
+    candidates = {f.id for f in document.features} | {e["id"] for e in state["features"]}
+    return _replace_features(document, state, candidates, stale)
 
 
 def serve(connection) -> None:
@@ -248,6 +389,14 @@ def serve(connection) -> None:
     generation = 0
     sent_cache = set()
     sent_entries = set()
+    #: The parent's document state as last applied here. Patches apply to it
+    #: rather than to a fresh ``document.to_dict()`` of the live document.
+    wire_state: dict | None = None
+    #: feature id -> the ``_version`` last summarised to the parent.
+    summarised: dict[str, tuple] = {}
+    #: (revision, what the parent held before that reply) -- restored if the
+    #: parent reports it discarded the reply unapplied.
+    before_reply = None
 
     # The child is where the fragile kernel work belongs, so it is also where a
     # crash is most likely. Arm it there too, or the parent sees only "the
@@ -279,11 +428,13 @@ def serve(connection) -> None:
                 if set(blobs) != set(incoming.bodies):
                     raise ValueError("The cached project geometry is incomplete.")
                 for name, blob in blobs.items():
-                    shape = deserialise_shape(blob)
+                    shape = body_from_wire(blob)
                     if shape is None:
                         raise ValueError(f"The cached geometry for {name} is invalid.")
                     incoming.bodies[name].shape = shape
                 document = incoming
+                wire_state = message["document"]
+                summarised = {}
                 document._all_assets.update(message.get("assets", {}))
                 document.assets = {sha: document._all_assets[sha]
                                    for sha in message["document"].get("assets", [])
@@ -358,6 +509,7 @@ def serve(connection) -> None:
                     "inputs": result["inputs"],
                     "message": result["message"],
                     "inspection": result.get("inspection"),
+                    "annotations": result.get("annotations"),
                 })
             except (OSError, ValueError):
                 return
@@ -391,7 +543,7 @@ def serve(connection) -> None:
                 snapshot._geometry_store.merge(message.get("cache"))
                 for name, blob in message.get("bodies", {}).items():
                     if name in snapshot.bodies and blob:
-                        snapshot.bodies[name].shape = deserialise_shape(blob)
+                        snapshot.bodies[name].shape = body_from_wire(blob)
                 evaluator = Rebuilder(snapshot)
                 evaluator.rebuild(on_feature=lambda f, i, n: connection.send({
                     "kind": PROGRESS, "revision": message.get("revision", 0),
@@ -409,16 +561,24 @@ def serve(connection) -> None:
             continue
 
         try:
-            if "patch" in message:
-                from .changes import apply_patch
-                if document is None or message.get("base_revision") != revision:
+            patch = message.get("patch")
+            if patch is not None:
+                from .changes import apply_patch_shared
+                if (document is None or wire_state is None
+                        or message.get("base_revision") != revision):
                     raise ValueError("The geometry update refers to an obsolete document revision.")
-                state = apply_patch(document.to_dict(), message["patch"])
+                state = apply_patch_shared(wire_state, patch)
             else:
                 state = message["document"]
             stale = set(message.get("stale") or ())
             force = bool(message.get("force"))
             full = bool(message.get("full"))
+            rollback = message.get("rollback")
+            if rollback is not None and before_reply is not None and before_reply[0] == rollback:
+                sent, sent_shapes, sent_cache, sent_entries, summarised = before_reply[1]
+            elif rollback is not None:
+                full = True
+            before_reply = None
 
             incoming_generation = message.get("generation", generation)
             if incoming_generation != generation:
@@ -437,43 +597,17 @@ def serve(connection) -> None:
                                    for sha in state.get("assets", []) if sha in document._all_assets}
                 rebuilder = Rebuilder(document)
                 rebuilder.store.merge(message.get("cache"))
-            else:
-                # Apply the new state onto the existing document so the
-                # rebuilder's cache stays valid for untouched features.
-                previous = {f.id: f.to_dict() for f in document.features}
-                incoming = Document.from_dict(state)
-                incoming_states = {f.id: f.to_dict() for f in incoming.features}
-                changed = {
-                    fid for fid in set(previous) | set(incoming_states)
-                    if previous.get(fid)
-                    != incoming_states.get(fid)
-                }
-                old_parameters = {p["name"]: p for p in document.parameters.to_list()}
-                new_parameters = {p["name"]: p for p in incoming.parameters.to_list()}
-                for parameter in old_parameters.keys() | new_parameters.keys():
-                    if old_parameters.get(parameter) != new_parameters.get(parameter):
-                        changed.update(incoming.features_using_parameter(parameter))
-                changed = document.dependents_of(changed | stale) | incoming.dependents_of(changed | stale)
-                document.title = incoming.title
-                document.parameters = incoming.parameters
-                document.metadata = incoming.metadata
-                existing = {f.id: f for f in document.features}
-                document.features = [existing[f.id] if previous.get(f.id) == incoming_states.get(f.id) else f
-                                     for f in incoming.features]
-                document.groups = incoming.groups
-                document._counters = incoming._counters
-                document._retired_ids.update(incoming._retired_ids)
+                summarised = {}
+            elif patch is not None:
+                # Asset bytes first: the patch selects active assets from them.
                 document._all_assets.update(message.get("assets", {}))
-                document.assets = {sha: document._all_assets[sha]
-                                   for sha in state.get("assets", []) if sha in document._all_assets}
-                keep = {n for f in incoming.features for n in f.outputs}
-                for name in list(document.bodies):
-                    if name not in keep:
-                        del document.bodies[name]
-                        # Deliberately left in `sent`: the reply loop below
-                        # compares against it to work out what the parent still
-                        # has on screen and needs told to drop.
-                rebuilder.invalidate(changed | stale)
+                touched = _apply_state_patch(document, state, patch, stale)
+                rebuilder.invalidate(touched | stale)
+            else:
+                document._all_assets.update(message.get("assets", {}))
+                touched = _apply_full_state(document, state, stale)
+                rebuilder.invalidate(touched | stale)
+            wire_state = state
 
             document._retained_cache_keys = set(message.get("retained_cache_keys", []))
             fragments = {
@@ -524,6 +658,14 @@ def serve(connection) -> None:
                 report.warnings.extend(reused_preview["warnings"])
             revision = message.get("revision", 0)
 
+            held = message.get("held")
+            if held is not None and not full:
+                held = set(held)
+                for name in [n for n in sent if n not in held]:
+                    sent.pop(name, None)
+                    sent_shapes.pop(name, None)
+            before_reply = (message.get("revision", 0), (
+                dict(sent), dict(sent_shapes), set(sent_cache), set(sent_entries), dict(summarised)))
             bodies: dict[str, bytes | None] = {}
             removed: list[str] = []
             # A skipped older result may have contained a deletion that the
@@ -533,11 +675,21 @@ def serve(connection) -> None:
                 previously_sent.update(
                     entry["name"] for entry in state.get("bodies", [])
                 )
+            located: dict[str, list[float]] = {}
             for name, body in document.bodies.items():
                 if body.shape is None:
                     continue
-                if sent_shapes.get(name) is body.shape and name in sent:
+                previous = sent_shapes.get(name)
+                if previous is body.shape and name in sent:
                     blob = sent[name]
+                elif (not full and name in sent and previous is not None
+                        and _same_topology(previous, body.shape)):
+                    # Rigid move of geometry the parent already holds: send
+                    # the new placement, not the shape. A 13 MB imported mesh
+                    # took ~0.8 s to serialise and ~0.3 s to read back per move.
+                    located[name] = location_to_wire(body.shape.Location())
+                    sent_shapes[name] = body.shape
+                    continue
                 else:
                     prepare_display(body.shape)
                     blob = serialise_shape(body.shape)
@@ -554,8 +706,10 @@ def serve(connection) -> None:
             connection.send({
                 "kind": RESULT,
                 "revision": message.get("revision", 0),
-                "report": _summarise(report, document),
+                "report": _summarise(report, document, None if full else summarised,
+                                     set((patch or {}).get("collections", {}).get("features", {}).get("set", {}))),
                 "bodies": bodies,
+                "located": located,
                 "removed": removed,
                 "preview_reused": reused_preview is not None,
                 "generation": generation,
