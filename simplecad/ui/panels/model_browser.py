@@ -387,6 +387,25 @@ class ModelBrowser(FloatingCard):
         )
         self.bodies_selected.emit(list(self._selection_order))
 
+    def show_selected(self, names) -> None:
+        """Mirror a selection made elsewhere, without relaying it back.
+
+        A row left highlighted after the view was deselected could not be
+        clicked again -- re-selecting a selected row emits nothing -- so the
+        body it named could no longer be picked from here at all.
+        """
+        wanted = [str(name) for name in names]
+        self._refreshing = True
+        try:
+            iterator = QTreeWidgetItemIterator(self.bodies_tree)
+            while iterator.value():
+                row = iterator.value()
+                row.setSelected(row.data(0, NAME_ROLE) in wanted)
+                iterator += 1
+        finally:
+            self._refreshing = False
+        self._selection_order = wanted
+
     # -- context menus ---------------------------------------------------
     def _selected_names(self) -> list[str]:
         return [

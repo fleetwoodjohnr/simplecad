@@ -100,6 +100,44 @@ def translation(vector):
     return transform
 
 
+def spun(transform, axis, pivot, degrees: float = 0.0):
+    """*transform*, then a right-handed turn of *degrees* about *axis* at *pivot*."""
+    if not degrees:
+        return transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    spin = gp_Trsf()
+    spin.SetRotation(gp_Ax1(gp_Pnt(*pivot), gp_Dir(*_unit(axis))), math.radians(degrees))
+    return spin.Multiplied(transform)
+
+
+def seating_rotation(moving: PlaneInfo, target_normal, *, flip: bool = False,
+                     rotation: float = 0.0, seat: bool = True):
+    """Turn the moving face to oppose the target (or match it, with *flip*).
+
+    When the faces already oppose, any spin about the normal also seats them;
+    the minimal turn from ``rotation_between`` is the deterministic choice, and
+    *rotation* then spins the part about the target normal through the moving
+    face centre -- positive is anticlockwise seen from above the target face.
+    Without *seat* (Center) only the spin is applied.
+    """
+    wanted = target_normal if flip else _scale(target_normal, -1.0)
+    rotate = rotation_between(moving.normal, wanted, moving.center) if seat else translation((0.0, 0.0, 0.0))
+    return spun(rotate, target_normal, moving.center, rotation)
+
+
+def interference_volume(first, second) -> float:
+    """Volume two solids share; zero when they only touch or stand apart."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    from .occ import boolean_builder, bounding_box, built_shape, volume
+
+    (low_a, high_a), (low_b, high_b) = bounding_box(first), bounding_box(second)
+    if any(high_a[i] < low_b[i] or high_b[i] < low_a[i] for i in range(3)):
+        return 0.0
+    return abs(volume(built_shape(boolean_builder(BRepAlgoAPI_Common, first, second), "overlap check")))
+
+
 @dataclass(frozen=True)
 class AlignResult:
     """A solved placement, with a sentence explaining what it did."""
@@ -323,13 +361,14 @@ def edge_gap_coordinates(
     *, operation: str, flip: bool = False,
     horizontal: str = "center", vertical: str = "center",
     horizontal_gap: float = 0.0, vertical_gap: float = 0.0,
-    moving_bounds=None,
+    moving_bounds=None, rotation: float = 0.0,
 ) -> tuple[float, float]:
     """Place the projected outline at exact distances from face extrema."""
     if horizontal not in {"left", "center", "right"} or vertical not in {"bottom", "center", "top"}:
         raise CadError("Choose a valid face side for placement.")
     moving_u, moving_v = moving_bounds or moving_bounds_for_frame(
-        target_frame, moving_body, moving_face, operation=operation, flip=flip
+        target_frame, moving_body, moving_face, operation=operation, flip=flip,
+        rotation=rotation,
     )
 
     def coordinate(target_bounds, object_bounds, side, gap):
@@ -345,20 +384,16 @@ def edge_gap_coordinates(
     )
 
 
-def moving_bounds_for_frame(target_frame, moving_body, moving_face, *, operation: str, flip: bool = False):
+def moving_bounds_for_frame(target_frame, moving_body, moving_face, *, operation: str,
+                            flip: bool = False, rotation: float = 0.0):
     """Projected moving-outline bounds relative to its mounting-face centre."""
     from .occ import transformed
 
     moving = analyse_plane(moving_face)
     if moving is None:
         raise CadError("Edge distances need a flat mounting face.")
-    rotate = (
-        rotation_between(
-            moving.normal,
-            target_frame.normal if flip else _scale(target_frame.normal, -1.0),
-            moving.center,
-        ) if operation == "stack" else translation((0.0, 0.0, 0.0))
-    )
+    rotate = seating_rotation(moving, target_frame.normal, flip=flip, rotation=rotation,
+                              seat=operation == "stack")
     outline = transformed(moving_body, rotate)
     rotated_center = _transformed_point(rotate, moving.center)
     moving_u = _projected_bounds(outline, target_frame.x_axis, rotated_center)
@@ -497,6 +532,7 @@ def stack(
     y: float = 0.0,
     x_anchor: str = "center",
     y_anchor: str = "center",
+    rotation: float = 0.0,
 ) -> AlignResult:
     """Seat the moving face flat against the target face.
 
@@ -506,8 +542,7 @@ def stack(
     select a face on each part, and they meet face to face with no manual
     rotation.
     """
-    wanted = target.normal if flip else _scale(target.normal, -1.0)
-    rotate = rotation_between(moving.normal, wanted, moving.center)
+    rotate = seating_rotation(moving, target.normal, flip=flip, rotation=rotation)
     if target_frame is None:
         destination = _add(target.center, _scale(target.normal, offset))
     else:
@@ -536,8 +571,9 @@ def center(
     y: float = 0.0,
     x_anchor: str = "center",
     y_anchor: str = "center",
+    rotation: float = 0.0,
 ) -> AlignResult:
-    """Line the moving face's centre up with the target's, without rotating."""
+    """Line the moving face's centre up with the target's, turning only by *rotation*."""
     destination = (
         target_frame.point(
             _anchored(target_frame.x_bounds, x_anchor, x),
@@ -547,8 +583,9 @@ def center(
         if target_frame is not None
         else _add(target.center, _scale(target.normal, offset))
     )
+    spin = seating_rotation(moving, target.normal, rotation=rotation, seat=False)
     return AlignResult(
-        translation(_sub(destination, moving.center)),
+        translation(_sub(destination, moving.center)).Multiplied(spin),
         "center",
         "Centred on the target face.",
     )
@@ -561,6 +598,7 @@ def concentric(
     offset: float = 0.0,
     flip: bool = False,
     seat: bool = True,
+    rotation: float = 0.0,
 ) -> AlignResult:
     """Make two cylindrical features share an axis.
 
@@ -570,7 +608,7 @@ def concentric(
     """
     wanted = _scale(target.direction, -1.0) if flip else target.direction
     pivot = moving.origin
-    rotate = rotation_between(moving.direction, wanted, pivot)
+    rotate = spun(rotation_between(moving.direction, wanted, pivot), wanted, pivot, rotation)
 
     # After rotating, the moving axis is parallel to the target's; shift it onto
     # the target axis, then optionally slide along that axis to seat the parts.
@@ -661,8 +699,13 @@ def solve(
     target_u=None,
     target_normal=None,
     moving_bounds=None,
+    rotation: float = 0.0,
 ) -> AlignResult:
-    """Solve a placement for two selected faces, choosing the operation if not given."""
+    """Solve a placement for two selected faces, choosing the operation if not given.
+
+    *rotation* spins the moving part about the target normal (or the shared
+    axis, for Concentric) after it is seated; see :func:`seating_rotation`.
+    """
     operation = operation or suggest(moving_face, target_face)
     moving = describe_face(moving_face)
     target = describe_face(target_face)
@@ -678,7 +721,7 @@ def solve(
                 "Concentric needs a cylindrical face on both parts.",
                 suggestion="Select a shaft and a hole.",
             )
-        return concentric(moving, target, offset=offset, flip=flip)
+        return concentric(moving, target, offset=offset, flip=flip, rotation=rotation)
 
     if not (isinstance(moving, PlaneInfo) and isinstance(target, PlaneInfo)):
         raise CadError(
@@ -703,13 +746,10 @@ def solve(
             operation=operation, flip=flip,
             horizontal=horizontal, vertical=vertical,
             horizontal_gap=horizontal_gap, vertical_gap=vertical_gap,
-            moving_bounds=moving_bounds,
+            moving_bounds=moving_bounds, rotation=rotation,
         )
-        wanted = target.normal if flip else _scale(target.normal, -1.0)
-        rotate = (
-            rotation_between(moving.normal, wanted, moving.center)
-            if operation == "stack" else translation((0.0, 0.0, 0.0))
-        )
+        rotate = seating_rotation(moving, target.normal, flip=flip, rotation=rotation,
+                                  seat=operation == "stack")
         destination = target_frame.point(coordinate_u, coordinate_v, offset)
         move = translation(_sub(destination, moving.center))
         return AlignResult(move.Multiplied(rotate), operation, "Placed from face edges.")
@@ -728,11 +768,8 @@ def solve(
                 _scale(target_frame.y_axis, float(v or 0.0)),
             ),
         )
-        if operation == "center":
-            rotate = translation((0.0, 0.0, 0.0))
-        else:
-            wanted = target.normal if flip else _scale(target.normal, -1.0)
-            rotate = rotation_between(moving.normal, wanted, moving.center)
+        rotate = seating_rotation(moving, target.normal, flip=flip, rotation=rotation,
+                                  seat=operation != "center")
         rotated_anchor = _transformed_point(rotate, source_anchor)
         move = translation(_sub(destination, rotated_anchor))
         gap = f", offset {offset:g} mm" if offset else ""
@@ -747,9 +784,9 @@ def solve(
     if operation == "center":
         return center(
             moving, target, offset=offset, target_frame=frame,
-            x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor,
+            x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor, rotation=rotation,
         )
     return stack(
         moving, target, offset=offset, flip=flip, target_frame=frame,
-        x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor,
+        x=x, y=y, x_anchor=x_anchor, y_anchor=y_anchor, rotation=rotation,
     )

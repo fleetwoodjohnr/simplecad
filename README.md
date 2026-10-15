@@ -156,6 +156,7 @@ Dimension fields take expressions: `12`, `12mm`, `0.5in`, `wall`, `width / 2`,
 .venv/bin/python scripts/check_measure_snap.py    # the indicator follows, and tells the truth
 .venv/bin/python scripts/check_push.py       # push a face in: preview, readout, guard
 .venv/bin/python scripts/check_nudge.py      # exact 0.25 mm face and body arrow steps
+.venv/bin/python scripts/check_everyday.py   # move, rotate, copy, delete, stack -- real clicks and keys
 .venv/bin/python scripts/check_clips.py      # click two parts, preview, apply, Ctrl+Z / Ctrl+Shift+Z
 .venv/bin/python scripts/check_camera.py     # orbit the selection, never roll, never flip
 .venv/bin/python scripts/check_fillet_drag.py    # pull a fillet out with the mouse

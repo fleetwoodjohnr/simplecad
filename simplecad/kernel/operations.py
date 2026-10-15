@@ -1414,9 +1414,10 @@ class AlignFeature(_BodyOperation):
     """
 
     label = "Align"
+    dimensions = {"rotation": Dimension.ANGLE}
 
     def execute(self, ctx: BuildContext) -> dict:
-        from .align import solve
+        from .align import interference_volume, solve
 
         body = ctx.shape(self, "body")
         moving_face = ctx.resolve(self, "moving_face")
@@ -1444,9 +1445,25 @@ class AlignFeature(_BodyOperation):
             target_basis=self.inputs.get("target_basis"),
             target_u=self.inputs.get("target_u"),
             target_normal=self.inputs.get("target_normal"),
+            rotation=ctx.value(self, "rotation", 0.0),
         )
         self.message = result.description
-        return self._emit(transformed(body, result.transform))
+        placed = transformed(body, result.transform)
+        # Flush or gapped placements must not interpenetrate; a negative gap is
+        # a deliberate interference fit. Warn rather than deform or merge.
+        # ponytail: one boolean per re-solve; skip for huge meshes if it shows in profiles.
+        target = ctx.bodies.get(getattr(self.inputs.get("target_face"), "body", ""))
+        if target is not None and ctx.value(self, "offset", 0.0) >= 0.0:
+            try:
+                overlap = interference_volume(placed, target)
+            except Exception:  # noqa: BLE001 - a failed check must not fail the placement
+                overlap = 0.0
+            if overlap > 1e-3:
+                ctx.warn(
+                    f"{self._target_name()} overlaps the target by {overlap:.3f} mm³ after "
+                    "alignment; pick a face on its outer side, or add a normal gap."
+                )
+        return self._emit(placed)
 
 
 # ----------------------------------------------------------------------

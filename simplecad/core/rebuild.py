@@ -165,7 +165,8 @@ class Rebuilder:
                     grouped.setdefault(feature.id, {})[name] = deserialise_shape(base64.b64decode(blob))
             for fid, shapes in grouped.items():
                 feature = self._graph.features[fid]
-                if set(shapes) == set(feature.outputs) and all(v is not None for v in shapes.values()):
+                if (set(shapes) == set(feature.outputs) - set(feature.dropped)
+                        and all(v is not None for v in shapes.values())):
                     self.store.put(feature, self._signatures[fid], shapes)
             retained.append(checkpoint)
         self.document._geometry_fragments = retained

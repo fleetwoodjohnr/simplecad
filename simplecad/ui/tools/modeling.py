@@ -428,6 +428,29 @@ class _TransformPanel(_SelectionTool):
                 gizmo.translation_filter = self._snap_translation
             gizmo.changed.connect(self._on_gizmo_drag)
             gizmo.committed.connect(self._on_gizmo_commit)
+            from PySide6.QtCore import QTimer
+
+            # After this panel has been laid out, which is what may cover it.
+            QTimer.singleShot(0, lambda: self._reveal_gizmo(pivot))
+
+    def _reveal_gizmo(self, pivot) -> None:
+        """Frame the selection when the gizmo would sit under a panel.
+
+        This panel opens over the left of the view, so a part over there had
+        its handles hidden beneath it and could not be dragged at all.
+        """
+        from PySide6.QtCore import QPoint
+
+        stage = self.window_.stage
+        if pivot is None or stage.viewport.gizmo is None or self.isHidden():
+            return
+        point = stage.viewport.project(pivot)
+        if point is None:
+            return
+        where = QPoint(round(point[0]), round(point[1]))
+        if any(widget.isVisible() and widget.geometry().contains(where)
+               for widget, _anchor in stage.overlays):
+            stage.viewport.zoom_to_selection(animate=True)
 
     def _snap_translation(self, values, bypass: bool = False):
         """Magnetically align moved bounds to nearby centres, edges and corners."""
@@ -729,7 +752,9 @@ class AlignPanel(_SelectionTool):
         self._target_frames = []
         self._reference_error = ""
         self._placement_refs = {}
-        self._edge_mode = not getattr(self, "fixed_operation", False)
+        # Centre on the faces' true area centroids by default. Choosing a side
+        # or an edge distance switches to edge placement (``_edge_changed``).
+        self._edge_mode = False
         self._drag_zero = (0.0, 0.0)
         self._drag_start_gaps = (0.0, 0.0)
         self._moving = None
@@ -768,6 +793,11 @@ class AlignPanel(_SelectionTool):
         role_layout.addWidget(self.target_status, 1, 0)
         role_layout.addWidget(self.pick_target, 1, 1)
         self.add_widget(roles)
+        # Steps through the moving body's flat faces: corrects a guessed
+        # mounting face and reaches a cut face still hidden against its twin.
+        self.next_face = GhostButton("Next face on moving object")
+        self.next_face.clicked.connect(self._next_moving_face)
+        self.add_widget(self.next_face)
 
         self._buttons = QButtonGroup(self)
         self._buttons.setExclusive(True)
@@ -846,6 +876,11 @@ class AlignPanel(_SelectionTool):
         self.add_field("u", "U  (+ right)", 0.0, commit_on_return=commit_on_return)
         self.add_field("v", "V  (+ up)", 0.0, commit_on_return=commit_on_return)
         self.add_field("offset", "Normal gap", 0.0, commit_on_return=commit_on_return)
+        self.add_field("rotation", "Rotate about normal", 0.0, Dimension.ANGLE,
+                       commit_on_return=commit_on_return)
+        self.rotate_quarter = GhostButton("Rotate 90°")
+        self.rotate_quarter.clicked.connect(self._rotate_quarter)
+        self.add_widget(self.rotate_quarter)
         self.flip = GhostButton("Flip")
         self.flip.setCheckable(True)
         self.flip.clicked.connect(lambda: self.preview())
@@ -857,6 +892,13 @@ class AlignPanel(_SelectionTool):
         for key in ("u", "v"):
             self.fields[key].edited_live.connect(lambda _value: self._anchor_changed())
         self.fields["offset"].edited_live.connect(lambda _value: self.preview())
+        self.fields["rotation"].edited_live.connect(lambda _value: self.preview())
+        if pair is None:
+            # Open, then pick: a lone pre-selection is the moving object and
+            # the next click is taken as the target -- no role button needed.
+            self._capture_role = "moving"
+            if len(self.selection.picks) == 1:
+                self._capture_current()
         self._refresh_roles()
         self._update_position_controls()
         from ..widgets.placement import PlacementOverlay
@@ -882,6 +924,39 @@ class AlignPanel(_SelectionTool):
     def _anchor_changed(self) -> None:
         self._edge_mode = False
         self._cached_frames = None
+        self.preview()
+
+    def _rotate_quarter(self) -> None:
+        self.fields["rotation"].set_value((self.value("rotation") + 90.0) % 360.0)
+        self.preview()
+
+    def _next_moving_face(self) -> None:
+        body = self.window_.document.body(self._moving_name) if self._moving_name else None
+        if body is None or body.shape is None:
+            return
+        from ...core.naming import sub_shapes
+        from ...kernel.detect import analyse_plane
+        from ..selection import Picked
+
+        faces = sorted(
+            ((info, index, face) for index, face in enumerate(sub_shapes(body.shape, "face"))
+             if (info := analyse_plane(face)) is not None),
+            key=lambda entry: (-entry[0].area, entry[1]),
+        )
+        if not faces:
+            self.warn("The moving object has no flat face to mount by.")
+            return
+        current = next((i for i, (_info, _index, face) in enumerate(faces)
+                        if self._moving is not None and face.IsSame(self._moving.shape)), -1)
+        info, _index, face = faces[(current + 1) % len(faces)]
+        self._moving = Picked(
+            body=self._moving_name, kind="face", shape=face,
+            presentation=self.window_._presentations.get(self._moving_name), info=info,
+        )
+        self._cached_frames = None
+        self._cached_outline = None
+        self._role_signature = None
+        self._refresh_roles()
         self.preview()
 
     def _selection_pair(self):
@@ -998,6 +1073,7 @@ class AlignPanel(_SelectionTool):
             f"◆  {self._target.body if self._target else 'Target face'}"
         )
         self.swap.setEnabled(self._pair() is not None)
+        self.next_face.setEnabled(bool(self._moving_name))
 
     def _swap_pair(self) -> None:
         if self._pair() is None:
@@ -1054,6 +1130,7 @@ class AlignPanel(_SelectionTool):
             horizontal_gap=self.value("horizontal_gap"),
             vertical_gap=self.value("vertical_gap"),
             moving_bounds=self._edge_bounds(moving, target) if self._edge_mode and self.operation in ("stack", "center") else None,
+            rotation=self.value("rotation", 0.0),
         )
 
     def _edge_bounds(self, moving, target):
@@ -1066,7 +1143,7 @@ class AlignPanel(_SelectionTool):
         # another shape's outline.
         key = (
             frame.center, frame.x_axis, frame.y_axis,
-            self.operation, self.flip.isChecked(),
+            self.operation, self.flip.isChecked(), self.value("rotation", 0.0),
         )
         if (
             self._cached_outline is None or self._cached_outline[0] != key
@@ -1078,6 +1155,7 @@ class AlignPanel(_SelectionTool):
                 moving_bounds_for_frame(
                     frame, body.shape, moving.shape,
                     operation=self.operation, flip=self.flip.isChecked(),
+                    rotation=self.value("rotation", 0.0),
                 ),
                 (moving.shape, body.shape),
             )
@@ -1313,7 +1391,8 @@ class AlignPanel(_SelectionTool):
                 self.confirm.setEnabled(False)
                 return
             self._clear_preview()
-            self.warn("Select a moving body or face and a flat target face.")
+            self.warn("Now select a flat target face." if self._capture_role == "target"
+                      else "Select a moving body or face and a flat target face.")
             return
         moving, target = pair
         self.confirm.setEnabled(True)
@@ -1488,6 +1567,7 @@ class AlignPanel(_SelectionTool):
                     "operation": self.operation,
                     "offset": self.expression("offset", "0"),
                     "flip": self.flip.isChecked(),
+                    "rotation": self.expression("rotation", "0"),
                     "u": self.expression("u", "0"),
                     "v": self.expression("v", "0"),
                     "moving_anchor": self.moving_anchor.value(),
@@ -1528,8 +1608,10 @@ class SectionReplacePanel(AlignPanel):
         super().build()
         self.operation = "stack"
         self.flip.hide()
-        if self.fields["offset"].parentWidget() is not None:
-            self.fields["offset"].parentWidget().hide()
+        self.rotate_quarter.hide()
+        for key in ("offset", "rotation"):
+            if self.fields[key].parentWidget() is not None:
+                self.fields[key].parentWidget().hide()
         self.add_section("Integration")
         self.add_field("boundary", "Join boundary", 0.5)
         self.add_field("setback", "Setback depth", 0.0)

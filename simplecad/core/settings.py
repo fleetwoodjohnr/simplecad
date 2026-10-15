@@ -39,6 +39,7 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "import": "Ctrl+I",
     "copy": "Ctrl+C",
     "paste": "Ctrl+V",
+    "duplicate": "Ctrl+D",
     "cancel": "Escape",
     "confirm": "Return",
     "confirm_alt": "Enter",
@@ -57,11 +58,11 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
 #: Single characters are the obvious case -- a bare "S" would swallow the letter
 #: out of an expression. But Return and Delete need it just as much: Return has
 #: to commit the field being typed into rather than finish a spline, and Delete
-#: has to remove a character rather than a body. Anything with a modifier
-#: (Ctrl+S) is safe, because it cannot be typed.
+#: has to remove a character rather than a body. Ctrl+D is forward-delete in
+#: an X11 text field. Other modified keys (Ctrl+S) are safe: they cannot be typed.
 YIELDS_TO_TYPING = {
     key for key, binding in DEFAULT_SHORTCUTS.items() if len(binding) == 1
-} | {"confirm", "confirm_alt", "delete"}
+} | {"confirm", "confirm_alt", "delete", "duplicate"}
 
 #: Kept for callers that only care about the literal single-character bindings.
 SINGLE_KEY = {

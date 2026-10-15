@@ -69,6 +69,11 @@ class History:
                                  tuple(signatures.values()), signatures)
         self._redo.clear()
 
+    def cancel(self) -> set[str]:
+        """Roll back to the last :meth:`record` and forget it: the action failed."""
+        pending, self._pending = self._pending, None
+        return self._apply(pending) if pending is not None else set()
+
     def record_data(self, label, before):
         self._finish_pending(before)
         self._undo.append(Action(label, json.dumps(make_patch(self.document.to_dict(), before)),

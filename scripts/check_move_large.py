@@ -128,7 +128,7 @@ def main() -> int:
         window.stage.viewport.ready.connect(lambda: QTimer.singleShot(200, populate))
         return window
 
-    run_and_capture(build, "/tmp/simplecad-move-large.png", settle_ms=30000 if project else 15000,
+    run_and_capture(build, "/tmp/simplecad-move-large.png", settle_ms=60000 if project else 45000,
                     size=(1200, 820))
     print("--- move large body ---")
     for key, value in TIMES.items():

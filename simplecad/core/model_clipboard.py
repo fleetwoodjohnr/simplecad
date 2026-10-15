@@ -186,6 +186,8 @@ def paste_fragment(
     }
     body_names = all_outputs | all_inputs | all_ref_bodies
     roots = set(fragment.root_bodies)
+    from .graph import input_names
+    needed = roots.union(*(input_names(feature) for feature in source_features))
     body_map: dict[str, str] = {}
     # Root order is user-visible and must be deterministic. Dependencies are
     # internal, so their set order does not matter.
@@ -246,9 +248,15 @@ def paste_fragment(
             clone.name = body_map[source.name]
         else:
             clone.name = unique(source.name or source.label)
-        clone.dropped = [body_map.get(name, name) for name in source.dropped]
+        # A multi-output feature (Split, a joint) brings every output along,
+        # but a sibling nothing in the fragment reads would only linger as a
+        # hidden body. Drop it the way deleting one half does.
+        unused = [name for name in source.outputs
+                  if len(source.outputs) > 1 and name not in needed]
+        clone.dropped = [body_map.get(name, name) for name in [*source.dropped, *unused]]
         for key, value in list(clone.inputs.items()):
             clone.inputs[key] = expression(_rewrite_value(value, body_map, feature_map, object_map))
+        clone.rename_output_inputs(body_map)
         clones.append(clone)
 
     checkpoint = {

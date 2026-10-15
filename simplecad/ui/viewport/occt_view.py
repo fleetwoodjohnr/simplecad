@@ -637,16 +637,9 @@ class OcctViewport(QOpenGLWidget):
         if not found or box.IsVoid():
             self.fit_all(animate=animate)
             return
-        corner_min = box.CornerMin()
-        corner_max = box.CornerMax()
-        self._frame(
-            lambda: self._view.FitAll(
-                corner_min.X(), corner_min.Y(), corner_min.Z(),
-                corner_max.X(), corner_max.Y(), corner_max.Z(),
-                margin, False,
-            ),
-            animate,
-        )
+        # The box overload: OCP has no six-coordinate FitAll, and calling one
+        # raised, so Zoom to Selection never worked.
+        self._frame(lambda: self._view.FitAll(box, margin, False), animate)
 
     def set_standard_view(self, which: StandardView, animate: bool = True) -> None:
         """Re-aim the camera along a named axis.
@@ -897,6 +890,14 @@ class OcctViewport(QOpenGLWidget):
         top_left = self._device_pos(rect.topLeft())
         bottom_right = self._device_pos(rect.bottomRight())
         previous = self._selection_modes
+        # Read before the rectangle pass replaces it: toggled against an empty
+        # selection, a Shift-box switched off exactly what it had just caught.
+        kept = []
+        if additive:
+            self._context.InitSelected()
+            while self._context.MoreSelected():
+                kept.append(self._context.SelectedOwner())
+                self._context.NextSelected()
 
         # Mode 0 is the whole AIS presentation. Enabling SOLID alongside it can
         # return the same presentation through two different owners; adding the
@@ -924,8 +925,9 @@ class OcctViewport(QOpenGLWidget):
             self._set_overlap_detection(False)
             self.set_selection_modes(previous)
 
-        if not additive:
-            self._context.ClearSelected(False)
+        self._context.ClearSelected(False)
+        for owner in kept:
+            self._context.AddSelect(owner)
         for presentation in found:
             self._context.AddOrRemoveSelected(presentation, False)
         self.refresh()
@@ -994,6 +996,16 @@ class OcctViewport(QOpenGLWidget):
             return False
         from OCP.StdSelect import StdSelect_BRepOwner
 
+        if presentation.HasTransformation():
+            # *shape* is where the body is now, but a moved body's display is
+            # its old geometry under a transformation (see place). An owner
+            # holds display-local geometry, as a click on it would; built from
+            # the world shape it was reported -- and highlighted -- moved twice.
+            from OCP.TopLoc import TopLoc_Location
+
+            shape = shape.Located(
+                TopLoc_Location(presentation.Transformation()).Inverted() * shape.Location()
+            )
         owner = StdSelect_BRepOwner(shape, presentation, 5, True)
         if replace:
             self._context.ClearSelected(False)

@@ -80,6 +80,7 @@ def digest(value):
 
 def signatures(document, graph=None):
     """Fingerprint the recipe, including transitive inputs and parameters."""
+    from .document import OUTPUT_NAME_INPUTS
     from .params import dependencies
     graph = graph or document.prepare_graph()
     parameters = {p.name: p.to_dict() for p in document.parameters}
@@ -120,7 +121,7 @@ def signatures(document, graph=None):
                 return {k: canonical(v) for k, v in value.items()}
             return value
         state["inputs"] = canonical(state["inputs"])
-        for key in ("names", "connector_names"):
+        for key in OUTPUT_NAME_INPUTS:
             if key in state["inputs"]:
                 state["inputs"][key] = [feature.output_ids.get(n, n) for n in state["inputs"][key]]
         state["outputs"] = [feature.output_ids[n] for n in feature.outputs]

@@ -35,6 +35,11 @@ from .graph import ChangeSet, DependencyGraph, OutputRef, output_id
 #: type_name -> Feature subclass, populated by @register.
 REGISTRY: dict[str, type["Feature"]] = {}
 
+#: Inputs holding a feature's own output names as plain strings (Split's two
+#: halves, a clip joint's connectors). Execution re-derives ``outputs`` from
+#: them, so anything that renames an output must rename these too.
+OUTPUT_NAME_INPUTS = ("names", "connector_names")
+
 
 def register(type_name: str):
     """Register a feature class so documents can be loaded back."""
@@ -288,6 +293,12 @@ class Feature:
                 for child in value:
                     yield from walk(child)
         return list(walk(self.inputs))
+
+    def rename_output_inputs(self, mapping: dict[str, str]) -> None:
+        """Apply an output rename to the name lists in :data:`OUTPUT_NAME_INPUTS`."""
+        for key in OUTPUT_NAME_INPUTS:
+            if key in self.inputs:
+                self.inputs[key] = [mapping.get(str(n), str(n)) for n in self.inputs[key]]
 
     def parameter_names(self) -> set[str]:
         """Parameters referenced by this feature's expressions."""
@@ -623,6 +634,7 @@ class Document:
             feature.outputs = [new if n == old else n for n in feature.outputs]
             feature.dropped = [new if n == old else n for n in feature.dropped]
             feature.inputs = rename(feature.inputs)
+            feature.rename_output_inputs({old: new})
             if old in feature.output_ids:
                 feature.output_ids[new] = feature.output_ids.pop(old)
             if old in feature.bindings:

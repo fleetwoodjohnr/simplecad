@@ -136,10 +136,12 @@ class TransformGizmo(QObject):
                 )
             # Attach derives a world-space size from the object bounds, so the
             # screen-persistent size has to be asserted afterwards.
+            # In framebuffer pixels: unscaled, a 2x display drew it half size.
+            ratio = self.viewport.devicePixelRatioF()
             manipulator.SetZoomPersistence(True)
-            manipulator.SetSize(96.0)
-            manipulator.SetGap(8.0)
-            manipulator.SetWidth(2.5)
+            manipulator.SetSize(96.0 * ratio)
+            manipulator.SetGap(8.0 * ratio)
+            manipulator.SetWidth(2.5 * ratio)
         except Exception:  # noqa: BLE001 - an empty body has no box to attach to
             return False
         context.Display(manipulator, False)

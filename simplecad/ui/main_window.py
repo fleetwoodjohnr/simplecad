@@ -973,6 +973,7 @@ class MainWindow(QMainWindow):
             "import": self.import_model,
             "copy": self._copy_shortcut,
             "paste": self._paste_shortcut,
+            "duplicate": self.duplicate_selection,
             "group": self.group_selection,
             "ungroup": self.ungroup_selection,
             "cancel": self.cancel_tool,
@@ -1005,6 +1006,14 @@ class MainWindow(QMainWindow):
                     QKeySequence(binding), self.stage.viewport, activated=handler
                 )
                 shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+                if action == "delete":
+                    # The model tree selects bodies too. WidgetShortcut, not
+                    # WithChildren, so its rename editor keeps its own Delete.
+                    tree_delete = QShortcut(
+                        QKeySequence(binding), self.browser.bodies_tree, activated=handler
+                    )
+                    tree_delete.setContext(Qt.WidgetShortcut)
+                    self._shortcuts.append(tree_delete)
             else:
                 shortcut = QShortcut(QKeySequence(binding), self, activated=handler)
             self._shortcuts.append(shortcut)
@@ -2676,6 +2685,7 @@ class MainWindow(QMainWindow):
                               assets: dict[str, bytes] | None = None,
                               keep_parameter_names: bool = False) -> list[str]:
         """Insert one fragment; shared by Paste and Duplicate."""
+        from ..core.errors import CadError
         from ..core.model_clipboard import paste_fragment
 
         offset = (0.0, 0.0, 0.0)
@@ -2694,10 +2704,15 @@ class MainWindow(QMainWindow):
             )
 
         self.history.record(history_label)
-        for blob in (assets or {}).values():
-            self.document.add_asset(blob)
-        _features, root_items = paste_fragment(self.document, fragment, offset,
-                                               keep_parameter_names=keep_parameter_names)
+        try:
+            for blob in (assets or {}).values():
+                self.document.add_asset(blob)
+            _features, root_items = paste_fragment(self.document, fragment, offset,
+                                                   keep_parameter_names=keep_parameter_names)
+        except (CadError, ValueError) as exc:
+            self.history.cancel()
+            self.set_hint(f"{history_label} failed: {exc}")
+            return []
         self._select_after_rebuild = root_items
         self.mark_dirty()
         self.rebuild()
@@ -2919,8 +2934,14 @@ class MainWindow(QMainWindow):
 
     def close_tool_panels(self) -> None:
         """Dismiss any open tool panel without touching the selection."""
+        focused = QApplication.focusWidget()
         for widget, _anchor in list(self.stage.overlays):
             if getattr(widget, "is_tool_panel", False):
+                if focused is not None and widget.isAncestorOf(focused):
+                    # Its Move/Done/Cancel had focus. Hand it back to the model,
+                    # or Qt passes it down the tab chain to some unrelated
+                    # button and Delete stops reaching the view.
+                    self.stage.viewport.setFocus()
                 self.stage.remove_overlay(widget)
                 teardown = getattr(widget, "teardown", None)
                 if teardown is not None:
@@ -3516,6 +3537,9 @@ class MainWindow(QMainWindow):
             self._cancel_nudge()
         self.selection.refresh()
         self._expand_selection_to_groups()
+        # Only whole bodies light their rows: with a face picked, clicking the
+        # row must still change the selection to the body.
+        self.browser.show_selected(self.selection.bodies if self.selection.only_bodies else [])
         self.refresh_context_bar()
         self._probe_edge_finish()
         self._retell_open_tools()

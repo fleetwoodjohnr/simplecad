@@ -48,6 +48,11 @@ class ActionButton(QPushButton):
         self._icon_name = icon_name
         self._primary = primary
         self.setCursor(Qt.PointingHandCursor)
+        # Toolbar buttons: a click must not take focus. The bar is rebuilt
+        # under the clicked button, and the focus it held then wandered off to
+        # an unrelated widget -- leaving Delete and Return deaf until the user
+        # clicked back into the view. Tab still reaches them.
+        self.setFocusPolicy(Qt.TabFocus)
         self.setMinimumHeight(METRICS.control_height_lg)
         self.apply_palette(palette)
 
@@ -99,6 +104,7 @@ class ContextBar(FloatingCard):
         self.overflow = QToolButton()
         self.overflow.setText("⋯")
         self.overflow.setCursor(Qt.PointingHandCursor)
+        self.overflow.setFocusPolicy(Qt.TabFocus)
         self.overflow.setToolTip("More actions")
         self.overflow.setFixedHeight(METRICS.control_height_lg)
         self.overflow.clicked.connect(self._show_overflow)
@@ -154,6 +160,11 @@ class ContextBar(FloatingCard):
             # Not deleteLater alone: it leaves the widget parented and sized
             # into this layout until the event loop turns, so anything that
             # measures the bar before then measures the *old* selection.
+            # Hidden first: a button added to the visible bar has a queued
+            # show pending, and once parentless that show would pop it up as
+            # its own top-level window, stealing focus from the viewport and
+            # with it Delete. An explicit hide makes the queued show a no-op.
+            button.hide()
             button.setParent(None)
             button.deleteLater()
         self._buttons = []

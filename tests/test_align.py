@@ -432,3 +432,241 @@ def test_a_re_authored_plane_does_not_take_the_placement_with_it():
     assert frame_from_basis(target_face, swapped).x_axis == pytest.approx(
         base.y_axis, abs=1e-12
     )
+
+
+# ----------------------------------------------------------------------
+# Faces made by modelling operations, rotation, flush contact
+# ----------------------------------------------------------------------
+def _rotated(shape, axis, degrees, pivot=(0.0, 0.0, 0.0)):
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+    transform = gp_Trsf()
+    transform.SetRotation(gp_Ax1(gp_Pnt(*pivot), gp_Dir(*axis)), math.radians(degrees))
+    return transformed(shape, transform)
+
+
+def _flat_box(shape):
+    return [value for corner in bounding_box(shape) for value in corner]
+
+
+def _distance(first, second):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    return BRepExtrema_DistShapeShape(first, second).Value()
+
+
+def _image(transform, vector):
+    from OCP.gp import gp_Vec
+
+    result = gp_Vec(*vector)
+    result.Transform(transform)
+    return (result.X(), result.Y(), result.Z())
+
+
+def _assert_flush(moving_face, target_face, transform, moving_body, target_body):
+    """Opposed normals, coincident centroids, zero gap, no overlap."""
+    from simplecad.kernel.align import interference_volume
+
+    placed = analyse_plane(transformed(moving_face, transform))
+    target = analyse_plane(target_face)
+    assert placed.normal == pytest.approx(tuple(-n for n in target.normal), abs=1e-7)
+    assert placed.center == pytest.approx(target.center, abs=1e-6)
+    placed_body = transformed(moving_body, transform)
+    assert _distance(placed_body, target_body) == pytest.approx(0.0, abs=1e-6)
+    assert interference_volume(placed_body, target_body) == pytest.approx(0.0, abs=1e-6)
+    assert volume(placed_body) == pytest.approx(volume(moving_body))
+
+
+def _split_half_on_a_base():
+    from simplecad.core.document import BodyRef, Document
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.primitives import BoxFeature, CylinderFeature
+    from simplecad.kernel.split import SplitFeature
+
+    document = Document("Stack a half")
+    document.add_feature(BoxFeature(
+        inputs={"width": 40, "depth": 30, "height": 12}, outputs=["Base"],
+    ))
+    document.add_feature(CylinderFeature(
+        inputs={"radius": "10", "height": "30", "x": 100}, outputs=["Cylinder"],
+    ))
+    document.add_feature(SplitFeature(
+        inputs={"body": BodyRef("Cylinder"), "normal": [1, 0, 0], "origin": [100, 0, 0],
+                "position": 0.0, "names": ["Half", "Other half"]},
+        outputs=["Half", "Other half"],
+    ))
+    rebuilder = Rebuilder(document)
+    assert rebuilder.rebuild().ok
+    return document, rebuilder
+
+
+def _align_feature(document, moving, moving_face, target, target_face, **inputs):
+    from simplecad.core.document import BodyRef
+    from simplecad.core.naming import make_ref
+    from simplecad.kernel.operations import AlignFeature
+
+    return document.add_feature(AlignFeature(
+        inputs={
+            "body": BodyRef(moving),
+            "moving_face": make_ref(document.body(moving).shape, moving_face,
+                                    document.producer_of(moving).id, body=moving),
+            "target_face": make_ref(document.body(target).shape, target_face,
+                                    document.producer_of(target).id, body=target),
+            "operation": "stack", "moving_anchor": "center", "target_anchor": "center",
+            "u": "0", "v": "0", "offset": "0", "flip": False, "rotation": "0",
+            **inputs,
+        },
+        outputs=[moving],
+    ))
+
+
+def test_a_split_halfs_cut_face_stacks_flush_and_centred_on_a_box(tmp_path):
+    from simplecad.core.project import load, save
+    from simplecad.core.rebuild import Rebuilder
+
+    document, rebuilder = _split_half_on_a_base()
+    half = document.body("Half").shape
+    base = document.body("Base").shape
+    cut_face = face_with_normal(half, (1, 0, 0))
+    top = face_with_normal(base, (0, 0, 1), 12)
+    _assert_flush(cut_face, top, solve(cut_face, top).transform, half, base)
+
+    _align_feature(document, "Half", cut_face, "Base", top)
+    report = rebuilder.rebuild()
+    assert report.ok, report.summary()
+    assert not report.warnings
+    placed = document.body("Half").shape
+    seated = face_with_normal(placed, (0, 0, -1))
+    assert analyse_plane(seated).center == pytest.approx((20, 15, 12), abs=1e-6)
+    assert _distance(placed, base) == pytest.approx(0.0, abs=1e-6)
+    assert volume(placed) == pytest.approx(volume(half))
+    low, high = bounding_box(placed)
+    assert sorted(h - lo for lo, h in zip(low, high)) == pytest.approx([10, 20, 30], abs=1e-5)
+    # Separate bodies, the target untouched.
+    assert document.body("Base").shape is base
+    assert sorted(document.bodies) == ["Base", "Half", "Other half"]
+
+    reopened, _cached = load(save(document, str(tmp_path / "stacked")))
+    assert Rebuilder(reopened).rebuild(force=True).ok
+    assert _flat_box(reopened.body("Half").shape) == pytest.approx(_flat_box(placed), abs=1e-6)
+
+    # Editing the moving part re-seats it; the base stays as it was.
+    next(f for f in reopened.features if f.type_name == "cylinder").inputs["radius"] = "12"
+    assert Rebuilder(reopened).rebuild(force=True).ok
+    assert bounding_box(reopened.body("Half").shape)[0][2] == pytest.approx(12, abs=1e-6)
+    assert _flat_box(reopened.body("Base").shape) == pytest.approx(_flat_box(base), abs=1e-6)
+
+
+def test_stack_between_tilted_faces_of_different_sizes():
+    target_body = _rotated(box(40, 30, 12), (1, 1, 0.3), 37)
+    moving_body = _rotated(box(10, 6, 8, at=(80, 0, 0)), (0.2, -1, 1), 113, (80, 0, 0))
+    target_face = next(f for f in sub_shapes(target_body, "face") if analyse_plane(f))
+    for moving_face in [f for f in sub_shapes(moving_body, "face") if analyse_plane(f)]:
+        _assert_flush(moving_face, target_face, solve(moving_face, target_face).transform,
+                      moving_body, target_body)
+
+
+def test_irregular_boolean_faces_meet_at_their_area_centroids():
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    def cut(first, second):
+        builder = BRepAlgoAPI_Cut(first, second)
+        builder.Build()
+        return builder.Shape()
+
+    # An L-shaped base and a notched block: neither face is a rectangle.
+    base = cut(box(40, 30, 10), box(20, 15, 20, at=(20, 15, -5)))
+    block = cut(box(12, 12, 6, at=(100, 0, 0)), cylinder(4, 20, at=(112, 12, -5)))
+    top = face_with_normal(base, (0, 0, 1), 10)
+    bottom = face_with_normal(block, (0, 0, -1))
+    assert analyse_plane(top).center[0] != pytest.approx(20)  # not the bounding-box middle
+    _assert_flush(bottom, top, solve(bottom, top).transform, block, base)
+
+
+def test_numeric_offsets_and_rotation_about_the_normal():
+    target_body = box(40, 30, 10)
+    moving_body = box(12, 4, 6, at=(100, 0, 0))
+    top = face_with_normal(target_body, (0, 0, 1), 10)
+    bottom = face_with_normal(moving_body, (0, 0, -1))
+    frame = reference_frame(top)
+
+    def placed(rotation, **values):
+        return solve(bottom, top, moving_anchor="center", target_anchor="center",
+                     rotation=rotation, **values).transform
+
+    still = placed(0)
+    long_edge = _image(still, (1, 0, 0))
+    for angle in (90, 180, 37.5, -90):
+        turned = placed(angle)
+        # The face stays seated and centred; only the spin changes.
+        _assert_flush(bottom, top, turned, moving_body, target_body)
+        edge = _image(turned, (1, 0, 0))
+        assert sum(a * b for a, b in zip(edge, long_edge)) == pytest.approx(math.cos(math.radians(angle)))
+        # Positive is anticlockwise seen from above the target face.
+        cross_z = long_edge[0] * edge[1] - long_edge[1] * edge[0]
+        assert cross_z == pytest.approx(math.sin(math.radians(angle)), abs=1e-9)
+
+    shifted = placed(90, u=5, v=-3, offset=2)
+    center = analyse_plane(transformed(bottom, shifted)).center
+    expected = frame.point(5, -3, 2)
+    assert center == pytest.approx(expected, abs=1e-6)
+    assert _distance(transformed(moving_body, shifted), target_body) == pytest.approx(2.0, abs=1e-6)
+
+
+def test_rotation_round_trips_through_an_align_feature():
+    document, rebuilder = _split_half_on_a_base()
+    half = document.body("Half").shape
+    cut_face = face_with_normal(half, (1, 0, 0))
+    top = face_with_normal(document.body("Base").shape, (0, 0, 1), 12)
+    _align_feature(document, "Half", cut_face, "Base", top, rotation="90 deg")
+    assert rebuilder.rebuild().ok
+    low, high = bounding_box(document.body("Half").shape)
+    # A quarter turn swaps the 20 mm and 30 mm footprint, still centred.
+    assert (high[0] - low[0], high[1] - low[1]) == pytest.approx((20, 30), abs=1e-5)
+    assert ((low[0] + high[0]) / 2, (low[1] + high[1]) / 2) == pytest.approx((20, 15), abs=1e-5)
+
+
+def test_stacking_is_deterministic_from_any_starting_orientation():
+    target_body = box(40, 30, 10)
+    top = face_with_normal(target_body, (0, 0, 1), 10)
+    for axis, angle in (((1, 0, 0), 0), ((1, 0, 0), 90), ((0, 1, 0), 180), ((1, 2, 3), 71)):
+        moving_body = _rotated(box(8, 6, 4, at=(100, 0, 0)), axis, angle, (100, 0, 0))
+        moving_face = max((f for f in sub_shapes(moving_body, "face") if analyse_plane(f)),
+                          key=lambda f: analyse_plane(f).area)
+        first = solve(moving_face, top).transform
+        _assert_flush(moving_face, top, first, moving_body, target_body)
+        again = solve(moving_face, top).transform
+        assert [first.Value(r, c) for r in (1, 2, 3) for c in (1, 2, 3, 4)] == pytest.approx(
+            [again.Value(r, c) for r in (1, 2, 3) for c in (1, 2, 3, 4)])
+
+
+def test_a_recessed_mounting_face_warns_instead_of_silently_overlapping():
+    from simplecad.core.document import BodyRef, Document
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.operations import BooleanFeature
+    from simplecad.kernel.primitives import BoxFeature
+
+    document = Document("Step")
+    document.add_feature(BoxFeature(inputs={"width": 40, "depth": 30, "height": 12}, outputs=["Base"]))
+    document.add_feature(BoxFeature(
+        inputs={"width": 20, "depth": 20, "height": 20, "x": 100}, outputs=["Step"]))
+    document.add_feature(BoxFeature(
+        inputs={"width": 10, "depth": 30, "height": 20, "x": 110, "y": -5, "z": 10},
+        outputs=["Cutter"]))
+    document.add_feature(BooleanFeature(
+        inputs={"body": BodyRef("Step"), "tools": [BodyRef("Cutter")], "operation": "cut"},
+        outputs=["Step"]))
+    rebuilder = Rebuilder(document)
+    assert rebuilder.rebuild().ok
+    tread = face_with_normal(document.body("Step").shape, (0, 0, 1), 10)
+    top = face_with_normal(document.body("Base").shape, (0, 0, 1), 12)
+    align = _align_feature(document, "Step", tread, "Base", top)
+
+    report = rebuilder.rebuild()
+    assert report.ok
+    assert any("overlaps the target" in warning for warning in report.warnings)
+
+    # A deliberate interference fit is not second-guessed.
+    align.inputs["offset"] = "-1"
+    report = Rebuilder(document).rebuild(force=True)
+    assert report.ok and not report.warnings

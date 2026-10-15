@@ -143,6 +143,12 @@ def main() -> int:
             QTimer.singleShot(1500, lambda: finish_replace(panel, frame))
 
         def finish_replace(panel, frame):
+            # The live section preview comes from the geometry process; wait for
+            # it (and Done with it) rather than assuming it beat a fixed delay.
+            for _ in range(200):
+                if panel.confirm.isEnabled() and len(panel._section_overlays) >= 2:
+                    break
+                QTest.qWait(50)
             QApplication.processEvents()
             REPORT["section_preview"] = (
                 panel.confirm.isEnabled()
@@ -189,7 +195,7 @@ def main() -> int:
         return window
 
     run_and_capture(
-        build, "/tmp/simplecad-placement.png", settle_ms=11_000, size=(1300, 860)
+        build, "/tmp/simplecad-placement.png", settle_ms=30_000, size=(1300, 860)
     )
     print("--- placement and section replace ---")
     for key, value in REPORT.items():

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from simplecad.core.naming import fingerprint, sub_shapes
 from simplecad.kernel.occ import bounding_box
 from simplecad.kernel.primitives import BoxFeature
+from simplecad.core.units import Dimension
 
 
 @pytest.fixture
@@ -556,3 +557,79 @@ def test_copy_during_rebuild_captures_history_without_stale_shape(model):
         assert "A2" in window.document.bodies
     finally:
         QApplication.clipboard().clear()
+
+
+def test_align_takes_the_next_click_as_its_target_and_rotates_by_quarters(model):
+    from simplecad.kernel.detect import analyse_plane
+    from simplecad.kernel.occ import transformed
+
+    window, viewport = model.window, model.viewport
+    moving = window.document.body("B").shape
+    bottom = next(face for face in sub_shapes(moving, "face")
+                  if (info := analyse_plane(face)) and info.normal[2] < -0.99)
+    viewport.select_subshape(window._presentations["B"], bottom)
+    window.activate_tool("align")
+    panel = next(w for w, _ in window.stage.overlays if getattr(w, "is_tool_panel", False))
+    assert panel._moving is not None and panel._target is None
+
+    model.select("A", face=True)  # one click on A's top face, no role button
+    pair = panel._pair()
+    assert pair is not None and (pair[0].body, pair[1].body) == ("B", "A")
+    low, high = bounding_box(transformed(moving, panel._solve(*pair).transform))
+    assert low[2] == pytest.approx(10, abs=1e-6)
+    assert ((low[0] + high[0]) / 2, (low[1] + high[1]) / 2) == pytest.approx((5, 5), abs=1e-6)
+
+    panel.rotate_quarter.click()
+    panel.rotate_quarter.click()
+    assert panel.value("rotation") == pytest.approx(180)
+    panel.commit()
+    report = model.finish()
+    assert report.ok, report.summary()
+    align = window.document.features[-1]
+    assert align.type_name == "align"
+    assert window.document.parameters.evaluate(str(align.inputs["rotation"]), Dimension.ANGLE) == 180
+    assert bounding_box(window.document.body("B").shape)[0][2] == pytest.approx(10, abs=1e-6)
+
+
+def test_ctrl_d_duplicates_the_selection(model):
+    window = model.window
+    shortcuts = {shortcut.key().toString(): shortcut for shortcut in window._shortcuts}
+    model.select("A")
+    shortcuts["Ctrl+D"].activated.emit()
+    assert model.finish().ok
+    assert "A2" in window.document.bodies
+    assert window.document.body("A2").shape is not None
+
+
+def test_the_tree_follows_the_view_so_a_row_can_be_picked_again(model, monkeypatch):
+    window, viewport = model.window, model.viewport
+    tree = window.browser.bodies_tree
+    # The browser selects through select_shape; route it to the stubbed one.
+    monkeypatch.setattr(viewport, "select_shape",
+                        lambda presentation, replace=True: viewport.select_presentations([presentation]))
+
+    def lit():
+        return [item.text(0) for item in tree.selectedItems()]
+
+    model.select("A")
+    assert lit() == ["A"]
+    model.select("A", face=True)
+    assert lit() == []          # a face is not the body: clicking the row must still pick it
+    model.select("A")
+    viewport.clear_selection()  # Esc, an empty click, a finished tool
+    assert lit() == []
+    tree.findItems("A", Qt.MatchExactly)[0].setSelected(True)   # a click on the row
+    assert window.selection.only_bodies and window.selection.bodies == ["A"]
+    assert lit() == ["A"]
+
+
+def test_delete_reaches_the_model_from_the_tree(model):
+    window = model.window
+    tree = window.browser.bodies_tree
+    on_tree = [shortcut for shortcut in window._shortcuts
+               if shortcut.parent() is tree and shortcut.key().toString() == "Del"]
+    assert len(on_tree) == 1 and on_tree[0].context() == Qt.WidgetShortcut
+    model.select("A")
+    on_tree[0].activated.emit()
+    assert model.finish().ok
+    assert "A" not in window.document.bodies and "B" in window.document.bodies

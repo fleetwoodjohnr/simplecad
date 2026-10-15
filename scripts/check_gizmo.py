@@ -15,30 +15,42 @@ from _harness import run_and_capture  # noqa: E402
 REPORT: dict[str, object] = {}
 
 
-def _find_handle(viewport, centre, ratio, want_axis: int):
-    """Locate a translation arrow on screen by asking OCCT what is under it."""
+def _find_handle(viewport, centre, want_axis: int):
+    """Locate a translation arrow on screen by asking OCCT what is under it.
+
+    Probed in widget pixels through the viewport's own conversion, exactly as a
+    click is, and only where the viewport is not covered by a panel. The middle
+    of the arrow, not its tip: at a fractional scale the outermost pixel rounds
+    onto the neighbouring plane handle, and that drag is not axis-locked.
+    """
     from PySide6.QtCore import QPoint
-    from OCP.AIS import AIS_MM_Translation
+    from PySide6.QtWidgets import QApplication
+    from OCP.AIS import AIS_Manipulator, AIS_MM_Translation
 
     context = viewport.context
     manipulator = viewport.gizmo._manipulator
-    cx, cy = viewport.view.Convert(*centre)
-    best = None
-    for dx in range(-220, 221, 6):
-        for dy in range(-220, 221, 6):
-            context.MoveTo(int(cx + dx), int(cy + dy), viewport.view, False)
+    cx, cy = viewport.project(centre)
+    hits = []
+    for dx in range(-160, 161, 3):
+        for dy in range(-160, 161, 3):
+            point = QPoint(round(cx + dx), round(cy + dy))
+            if QApplication.widgetAt(viewport.mapToGlobal(point)) is not viewport:
+                continue
+            context.MoveTo(*viewport._device_pos(point), viewport.view, False)
+            # The manipulator keeps its last mode after the cursor leaves it.
             if (
-                manipulator.HasActiveMode()
+                context.HasDetected()
+                and isinstance(context.DetectedInteractive(), AIS_Manipulator)
+                and manipulator.HasActiveMode()
                 and manipulator.ActiveMode() == AIS_MM_Translation
                 and manipulator.ActiveAxisIndex() == want_axis
             ):
-                distance = dx * dx + dy * dy
-                if best is None or distance > best[0]:
-                    best = (distance, dx, dy)   # the far end of the arrow
-    if best is None:
+                hits.append(point)
+    if not hits:
         return None
-    _d, dx, dy = best
-    return QPoint(round((cx + dx) / ratio), round((cy + dy) / ratio))
+    middle_x = sorted(p.x() for p in hits)[len(hits) // 2]
+    middle_y = sorted(p.y() for p in hits)[len(hits) // 2]
+    return min(hits, key=lambda p: (p.x() - middle_x) ** 2 + (p.y() - middle_y) ** 2)
 
 
 def main() -> int:
@@ -76,7 +88,7 @@ def main() -> int:
 
             before = bounding_box(shape)[0]
 
-            # Find the +X arrow tip on screen and drag it.
+            # Find the +X arrow on screen and drag it.
             ratio = viewport.devicePixelRatioF()
             centre = [(a + b) / 2 for a, b in zip(*bounding_box(shape))]
             axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
@@ -85,7 +97,7 @@ def main() -> int:
             # Find the X translation arrow rather than guessing where it is:
             # the manipulator sizes and orients itself, and in an isometric view
             # +X on screen is diagonal.
-            handle = _find_handle(viewport, centre, ratio, want_axis=0)
+            handle = _find_handle(viewport, centre, want_axis=0)
             REPORT["handle_found"] = handle is not None
             if handle is None:
                 return
