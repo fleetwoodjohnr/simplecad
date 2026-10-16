@@ -53,6 +53,7 @@ def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False):
     if viewport.gizmo is None:
         return None
     (cx, cy), hits = _ring_hits(viewport, axis)
+    REPORT.setdefault("diag", []).append(f"axis{axis}:hits={len(hits)}")
     if not hits:
         return None
     # The hit furthest from the pivot is on the ring, not near the hub.
@@ -60,16 +61,19 @@ def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False):
     QTest.mouseMove(viewport, start)
     QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
     if viewport._nav.name != "GIZMO":
+        REPORT["diag"].append(f"axis{axis}:nav={viewport._nav.name}")
         QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, start)
         return None
     radius = math.hypot(start.x() - cx, start.y() - cy)
     begin = math.atan2(start.y() - cy, start.x() - cx)
     steps = 24
     end = start
+    along = ((start.x() - cx) / max(radius, 1e-6), (start.y() - cy) / max(radius, 1e-6))
     for index in range(1, steps + 1):
         if linear:
-            # Edge-on, the ring is a line: push along it.
-            end = QPoint(round(start.x() + index * 4), round(start.y()))
+            # Edge-on, the ring is a line through the pivot: push along it.
+            end = QPoint(round(start.x() - along[0] * index * 4),
+                         round(start.y() - along[1] * index * 4))
         else:
             angle = begin - math.radians(sweep_degrees) * index / steps
             end = QPoint(round(cx + radius * math.cos(angle)), round(cy + radius * math.sin(angle)))
@@ -97,7 +101,7 @@ def main() -> int:
     from simplecad.core.document import BodyRef
     from simplecad.ui.main_window import MainWindow
     from simplecad.ui.theme import Mode
-    from simplecad.ui.viewport.camera import StandardView
+    from simplecad.ui.viewport.occt_view import StandardView
 
     def build(_app):
         window = MainWindow(Mode.DARK)
@@ -141,7 +145,7 @@ def main() -> int:
             REPORT["after_empty_click_body"] = str(feature.inputs.get("body")) if feature else None
 
             # Edge-on: in the Top view the X ring is a line through the pivot.
-            viewport.set_standard_view(StandardView.TOP)
+            viewport.set_standard_view(StandardView.TOP, animate=False)
             QApplication.processEvents()
             window.cancel_tool()
             select("Block")
@@ -154,7 +158,7 @@ def main() -> int:
             window.cancel_tool()
 
             # A split half rotates like anything else.
-            viewport.set_standard_view(StandardView.ISO)
+            viewport.set_standard_view(StandardView.ISO, animate=False)
             window.add_feature(CylinderFeature(inputs={"radius": 10, "height": 30, "x": 60},
                                                outputs=["Cylinder"]))
             window.wait_for_rebuild()
@@ -175,11 +179,13 @@ def main() -> int:
                                          if f.state.value not in ("ok", "suppressed")]
             window.cancel_tool()
             viewport.fit_all()
+            # The scenario outlasts any fixed settle time; end the run here.
+            QTimer.singleShot(0, QApplication.instance().quit)
 
         window.stage.viewport.ready.connect(lambda: QTimer.singleShot(500, run))
         return window
 
-    run_and_capture(build, "/tmp/simplecad-check-rotate.png", settle_ms=9000, size=(1300, 860))
+    run_and_capture(build, "/tmp/simplecad-check-rotate.png", settle_ms=600000, size=(1300, 860))
     print("--- rotate ---")
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
