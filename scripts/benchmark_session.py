@@ -196,6 +196,133 @@ def run_synthetic(size, repeats):
         session.stop()
 
 
+def _rss_mb(pid=None) -> float:
+    try:
+        with open(f"/proc/{pid or 'self'}/statm") as handle:
+            return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e6
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _retire(document, name):
+    """MainWindow.delete_body without the window: drop or splice its producers."""
+    for feature in [f for f in document.features if name in f.outputs]:
+        remaining = [o for o in feature.outputs if o != name]
+        if remaining and set(remaining) - set(feature.dropped):
+            feature.dropped = sorted(set(feature.dropped) | {name})
+            continue
+        document.remove_feature(feature.id, splice=False)
+    document.bodies.pop(name, None)
+    document.forget_member(name)
+
+
+def run_long(count, size=40):
+    """A long mixed session: does per-op cost or memory grow with op index?
+
+    Every op is one undoable edit through the real client -> worker -> apply
+    path. Counters that must stay bounded are sampled as the session goes.
+    """
+    from simplecad.core.model_clipboard import copy_fragment, paste_fragment
+    from simplecad.kernel.occ import bounding_box
+
+    document = synthetic(size)
+    session = Session(document)
+    samples, counters = [], []
+    rng = __import__("random").Random(7)
+
+    def live():
+        return [n for n, b in document.bodies.items() if b.shape is not None]
+
+    def op_add(i):
+        session.history.record("Box")
+        document.add_feature(BoxFeature(outputs=[f"New{i}"], inputs={
+            "width": 8, "depth": 8, "height": 8, "x": i * 3.0, "y": 60}))
+        session.rebuild()
+
+    def op_move(i):
+        name = rng.choice(live())
+        session.history.record("Move")
+        document.add_feature(MoveFeature(inputs={"body": BodyRef(name), "dx": 1, "dy": 0, "dz": 0},
+                                         outputs=[name]))
+        session.rebuild()
+
+    def op_rotate(i):
+        name = rng.choice(live())
+        session.history.record("Rotate")
+        document.add_feature(MoveFeature(inputs={"body": BodyRef(name), "dx": 0, "dy": 0, "dz": 0,
+                                                 "rz": 15}, outputs=[name]))
+        session.rebuild()
+
+    def op_duplicate(i):
+        name = rng.choice(live())
+        session.history.record("Duplicate")
+        shape = document.body(name).shape
+        paste_fragment(document, copy_fragment(document, [name], bounds=bounding_box(shape)),
+                       (0.0, 40.0, 0.0))
+        session.rebuild()
+
+    def op_delete(i):
+        names = live()
+        if len(names) < 5:
+            return op_add(i)
+        session.history.record("Delete")
+        _retire(document, rng.choice(names))
+        session.rebuild()
+
+    def op_param(i):
+        feature = next(f for f in document.features if f.type_name == "box")
+        session.history.record("Edit")
+        feature.inputs["height"] = 10 + (i % 5)
+        session.rebuild(stale={feature.id})
+
+    def op_undo_redo(i):
+        for _ in range(3):
+            session.undo()
+        for _ in range(3):
+            session.redo()
+
+    def op_autosave(i):
+        with tempfile.TemporaryDirectory() as folder:
+            session.client.save(document, str(Path(folder) / "auto.scad3"))
+            assert session.client.wait(600_000)
+
+    ops = [("move", op_move)] * 4 + [("rotate", op_rotate)] * 2 + [
+        ("add", op_add), ("duplicate", op_duplicate), ("delete", op_delete),
+        ("param", op_param), ("undo_redo", op_undo_redo), ("autosave", op_autosave)]
+    try:
+        session.measure(lambda: session.rebuild())
+        for i in range(count):
+            kind, action = ops[i % len(ops)]
+            sample = session.measure(lambda: action(i))
+            sample.update(op=kind, index=i)
+            samples.append(sample)
+            if i % max(1, count // 10) == 0 or i == count - 1:
+                store = document._geometry_store
+                counters.append({
+                    "index": i, "features": len(document.features),
+                    "gui_rss_mb": round(_rss_mb(), 1),
+                    "worker_rss_mb": round(_rss_mb(getattr(session.client._process, "pid", None)), 1),
+                    "retired_ids": len(document._retired_ids),
+                    "fragments": len(getattr(document, "_geometry_fragments", [])),
+                    "history_keys": len(session.history.cache_keys()),
+                    "store_entries": len(store.entries) if store else 0,
+                })
+    finally:
+        session.stop()
+
+    def window(part):
+        by_kind = {}
+        for s in part:
+            by_kind.setdefault(s["op"], []).append(s)
+        return {kind: {"wall_ms": round(statistics.median(x["wall_ms"] for x in v), 1),
+                       "gui_ms": round(statistics.median(x["gui_ms"] for x in v), 1)}
+                for kind, v in sorted(by_kind.items())}
+    tenth = max(len(ops), count // 10)
+    return {"case": f"long session, {count} ops on {size} bodies",
+            "first_10pct": window(samples[:tenth]), "last_10pct": window(samples[-tenth:]),
+            "counters": counters}
+
+
 def run_project(path, body, repeats):
     start = time.perf_counter()
     document, _cached = load(path)
@@ -220,11 +347,14 @@ def main():
     parser.add_argument("--project")
     parser.add_argument("--body")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--long", type=int, default=0, help="run a mixed session of N ops instead")
     args = parser.parse_args()
     QApplication.instance() or QApplication([])
     client_module.log.setLevel("ERROR")
     results = []
-    if args.project:
+    if args.long:
+        results.append(run_long(args.long))
+    elif args.project:
         results.append(run_project(os.path.expanduser(args.project), args.body, args.repeats))
     else:
         for size in (int(s) for s in args.sizes.split(",") if s):
