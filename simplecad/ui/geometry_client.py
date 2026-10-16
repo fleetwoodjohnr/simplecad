@@ -712,10 +712,12 @@ class GeometryClient(QObject):
         if self._active_preview and self._active_preview.get("token") == token:
             started = self._preview_sent_at
             edit_waiting = self._pending is not None and self._pending.get("kind") in (REBUILD, SYNC)
-            if edit_waiting or (started is not None
-                                and time.monotonic() - started > PREVIEW_ABANDON_LIMIT):
+            boolean = (self._active_preview.get("feature") or {}).get("type") == "boolean"
+            if boolean or edit_waiting or (started is not None
+                                           and time.monotonic() - started > PREVIEW_ABANDON_LIMIT):
                 # A committed edit must never queue behind a preview nobody
-                # wants, and a long one is cheaper to stop than to wait out.
+                # wants, and a long one -- or a boolean, which can run for
+                # minutes -- is cheaper to stop than to wait out.
                 self._handle_death(cancelled=True)
             # Otherwise let it finish: the panel no longer holds this token,
             # so the answer is dropped, and the next request follows it.

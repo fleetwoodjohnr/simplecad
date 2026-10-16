@@ -141,3 +141,13 @@ def test_rebuild_reports_progress_per_feature(doc):
     Rebuilder(doc).rebuild(on_feature=lambda f, i, n: seen.append((f.name, i, n)))
 
     assert seen == [("Box", 0, 2), ("Cylinder", 1, 2)]
+
+
+def test_asking_for_a_name_does_not_use_it_up():
+    """Matching-part previews asked for "Bolt" and the real bolt became "Bolt2"."""
+    from simplecad.core.document import Document
+
+    document = Document()
+    assert document.unique_name("Bolt", reserve=False) == "Bolt"
+    assert document.unique_name("Bolt", reserve=False) == "Bolt"
+    assert document.unique_name("Bolt") == "Bolt"

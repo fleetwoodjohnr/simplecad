@@ -64,7 +64,7 @@ class FaceTexturePanel(ToolPanel):
             ("offset_v", "Vertical offset", 0.0, Dimension.LENGTH),
         ):
             field = self.add_field(key, label, default, dimension, commit_on_return=False)
-            field.edited_live.connect(lambda _value: self._field_changed())
+            field.edited_live.connect(lambda _value: self._field_changed(typed=True))
 
         density_row = QWidget()
         density_layout = QHBoxLayout(density_row)
@@ -86,7 +86,7 @@ class FaceTexturePanel(ToolPanel):
             ("other_clearance", "Other detail", 2.0),
         ):
             field = self.add_field(key, label, default, commit_on_return=False)
-            field.edited_live.connect(lambda _value: self.preview())
+            field.edited_live.connect(lambda _value: self._schedule())
 
         self.overlay = TextureOverlay(self.window_.stage.viewport, self._palette, self.window_.stage)
         self.window_.stage.add_overlay(self.overlay, "full")
@@ -148,20 +148,20 @@ class FaceTexturePanel(ToolPanel):
         if not self._loading:
             self.preview()
 
-    def _field_changed(self) -> None:
+    def _field_changed(self, typed: bool = False) -> None:
         size, spacing = self.value("size", 3.0), self.value("spacing", 2.0)
         density = round(100 * size / (size + spacing)) if size + spacing > 0 else 10
         self.density.blockSignals(True)
         self.density.setValue(max(10, min(95, density)))
         self.density.blockSignals(False)
         self.density_label.setText(f"Density {self.density.value()}%")
-        self.preview()
+        self._schedule() if typed else self.preview()
 
     def _density_changed(self, value: int) -> None:
         self.density_label.setText(f"Density {value}%")
         size = self.value("size", 3.0)
         self.fields["spacing"].set_value(max(0.0, size * (100 / value - 1)))
-        self.preview()
+        self._schedule()
 
     def _settings(self) -> dict:
         package, pattern = self.pattern.currentData()
@@ -206,13 +206,19 @@ class FaceTexturePanel(ToolPanel):
             self._mapped_face = pick.shape
         self.preview()
 
-    def preview(self) -> None:
+    def _schedule(self) -> None:
+        """Typing or dragging the density slider: lay out once the user pauses."""
         if not hasattr(self, "overlay") or self._loading:
             return
         # Whatever is showing is now out of date: Apply waits for the new one.
         self._preview_valid = False
         self.confirm.setEnabled(False)
         self._refresh_timer.start()
+
+    def preview(self) -> None:
+        """Lay out and request the exact preview now (opening, a new pattern...)."""
+        self._refresh_timer.stop()
+        self._refresh()
 
     def _refresh(self) -> None:
         if not hasattr(self, "overlay") or self._loading:

@@ -707,15 +707,21 @@ class Document:
             (i for i, f in enumerate(self.features) if f.id == feature_id), -1
         )
 
-    def unique_name(self, base: str) -> str:
-        """Allocate a display name without recycling a retired suffix."""
+    def unique_name(self, base: str, *, reserve: bool = True) -> str:
+        """Allocate a display name without recycling a retired suffix.
+
+        ``reserve=False`` only asks: a preview building a throwaway feature
+        must not use the name up, or the part the user then creates is
+        "Bolt2" in a model that has never had a Bolt.
+        """
         taken = {f.name for f in self.features} | set(self.bodies) | set(self.groups)
         suffix = self._counters.get(base, 1)
         while True:
             candidate = base if suffix == 1 else f"{base}{suffix}"
             suffix += 1
             if candidate not in taken:
-                self._counters[base] = suffix
+                if reserve:
+                    self._counters[base] = suffix
                 return candidate
 
     def rename_feature(self, feature_id: str, new_name: str) -> None:

@@ -913,6 +913,9 @@ class _TransformPanel(_SelectionTool):
         self._reset_fields()
         done = "Moved" if self.mode == "move" else "Rotated"
         self.window_.set_hint(f"{done} {self._subject_text()}. Drag again, or Esc to finish.")
+        # The panel stays open, but the keyboard goes back to the model: after
+        # pressing Move, arrows and Delete act on the part, not on the button.
+        self.window_.stage.viewport.setFocus()
         if self.window_.is_rebuilding:
             self._describe()
         else:

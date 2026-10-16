@@ -373,7 +373,7 @@ class MatchingPartPanel(ToolPanel):
                 "y": placement[1],
                 "z": placement[2],
             })
-            feature.name = document.unique_name("Bolt")
+            feature.name = document.unique_name("Bolt", reserve=not for_preview)
             feature.outputs = [feature.name]
             return feature
         if self.kind == "nut":
@@ -383,7 +383,7 @@ class MatchingPartPanel(ToolPanel):
                 "y": placement[1],
                 "z": placement[2],
             })
-            feature.name = document.unique_name("Nut")
+            feature.name = document.unique_name("Nut", reserve=not for_preview)
             feature.outputs = [feature.name]
             return feature
         if self.kind == "apply":
