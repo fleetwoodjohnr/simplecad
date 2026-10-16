@@ -500,3 +500,47 @@ it is already advanced past the collision.
 
 The highest-risk component. Sub-shapes are never referenced by index. See
 `simplecad/core/naming.py`.
+
+## Invariants added in the October 2026 overhaul
+
+**A feature writes only bodies it owns.** Outputs are allocated before
+execution, but Split, joints and Arrange re-derive output names while they run,
+and the rebuilder used to adopt whatever came back. `Rebuilder._check_ownership`
+now accepts a returned name only if the feature declared it, reserves it in an
+`OUTPUT_NAME_INPUTS` list, or was handed it as an input — and never if it is the
+head of an unrelated feature. A violation fails that feature, restores its
+declared outputs and leaves the other object alone. This closes the class of
+bug behind "could not be added" after duplicating a split half.
+
+**Derived feature data is cached per recipe version.** Every recipe mutation,
+nested ones included, bumps `Feature._version` through the observable
+containers. `Feature.cached()` keys the bodies a feature reads, its sub-shape
+references, its parameters, its graph input names and its dependency key on
+that version. Code that edits a frozen reference in place must call `_touch()`
+(the one such place, `Document.remove_feature`, does).
+
+**History pins geometry for recent steps only.** Depth is a preference
+(default 200). `history.RETAINED_GEOMETRY_STEPS` (30) newest undo and redo steps
+keep their cached results; older ones are still undoable and rebuild from the
+recipe. Saving writes the current results plus those steps, not every result the
+session produced. Retired feature IDs are patched as set additions/removals.
+
+**Clipboard checkpoints are used once.** A paste's B-Rep checkpoint seeds the
+result store on the first rebuild and is then dropped, in the worker and — once
+the worker has answered — in the window.
+
+**Rotation.** The gizmo reads a ring drag as the angle about that ring's axis,
+straight from the quaternion (`gizmo.ring_angle`); Euler decomposition confines
+the middle axis to ±90°. New `MoveFeature`s store `order: "xyz"` (world X, then
+Y, then Z); moves without it keep the legacy composition so saved projects
+rebuild identically. `operations.move_transform` is shared by the feature and
+the Rotate panel's preview.
+
+**Previews may defer commit-only checks.** `BuildContext.preview` is set while a
+preview builds. Face textures then skip the recessed depth probe, coplanar-face
+merging and the full topology check and list them in `deferred_checks`; when the
+preview is applied, `geometry_service._finalized_preview` runs them (or the
+commit builds normally if a deferred check needs the full build). Preview
+deadlines are progress-aware: a worker still burning CPU is computing, not hung.
+A cancelled preview is abandoned rather than killed unless an edit is waiting
+behind it or it has run longer than three seconds.
