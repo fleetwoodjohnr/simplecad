@@ -65,6 +65,11 @@ PREVIEW_TIMEOUT = 8.0
 #: longer than an interactive fillet/drag preview. They perform the same kernel
 #: work as a rebuild, so give them the rebuild deadline.
 BOOLEAN_PREVIEW_TIMEOUT = REPLY_TIMEOUT
+#: A cancelled preview that has run this long is stopped by restarting the
+#: worker; a shorter one is simply abandoned and its answer ignored. Killing
+#: every cancelled preview -- the texture panel cancels on each invalid
+#: keystroke -- restarted the engine (and re-sent the whole model) mid-typing.
+PREVIEW_ABANDON_LIMIT = 3.0
 
 #: How many times to bring the child back before giving up on it. A shape that
 #: reliably kills OCCT would otherwise spawn children for as long as the user
@@ -705,7 +710,15 @@ class GeometryClient(QObject):
         if self._pending_preview and self._pending_preview.get("token") == token:
             self._pending_preview = None
         if self._active_preview and self._active_preview.get("token") == token:
-            self._handle_death(cancelled=True)
+            started = self._preview_sent_at
+            edit_waiting = self._pending is not None and self._pending.get("kind") in (REBUILD, SYNC)
+            if edit_waiting or (started is not None
+                                and time.monotonic() - started > PREVIEW_ABANDON_LIMIT):
+                # A committed edit must never queue behind a preview nobody
+                # wants, and a long one is cheaper to stop than to wait out.
+                self._handle_death(cancelled=True)
+            # Otherwise let it finish: the panel no longer holds this token,
+            # so the answer is dropped, and the next request follows it.
 
     def _overdue(self) -> bool:
         """Has the child gone quiet for longer than a rebuild may take?
@@ -764,16 +777,17 @@ class GeometryClient(QObject):
         if not self._preview_busy or self._preview_sent_at is None:
             return False
         feature = (self._active_preview or {}).get("feature") or {}
-        timeout = (
-            BOOLEAN_PREVIEW_TIMEOUT if feature.get("type") == "boolean" or "__inspect_edge" in feature
-            else PREVIEW_TIMEOUT
-        )
-        last_activity = self._preview_sent_at
-        if feature.get("type") == "boolean":
-            last_activity = max(last_activity, self._progress_at or last_activity)
-        if time.monotonic() - last_activity <= timeout:
+        heavy = feature.get("type") == "boolean" or "__inspect_edge" in feature
+        timeout = BOOLEAN_PREVIEW_TIMEOUT if heavy else PREVIEW_TIMEOUT
+        now = time.monotonic()
+        last_activity = max(self._preview_sent_at, self._progress_at or self._preview_sent_at)
+        if now - last_activity <= timeout:
             return False
-        if feature.get("type") == "boolean" and self._worker_progressing():
+        # A worker still burning CPU is computing, not hung. Textures and
+        # modelled threads legitimately take longer than an interactive drag
+        # preview; killing them at 8 s meant a mid-sized texture could never
+        # finish, so Apply never enabled. Only booleans may run without limit.
+        if self._worker_progressing() and (heavy or now - self._preview_sent_at <= REPLY_TIMEOUT):
             return False
         log.warning("preview has not answered in %.0fs; restarting geometry worker", timeout)
         self._handle_death(

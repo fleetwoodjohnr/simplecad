@@ -116,7 +116,7 @@ def test_return_and_delete_are_scoped_to_the_viewport():
     exempt -- Qt gives those to a focused text field first -- but Return is not,
     which is why a window-wide Return made inline dimension editing impossible.
     """
-    assert settings.VIEWPORT_ONLY == {"confirm", "confirm_alt", "delete"}
+    assert settings.VIEWPORT_ONLY == {"confirm", "confirm_alt", "delete", "delete_alt"}
     assert settings.VIEWPORT_ONLY <= set(settings.DEFAULT_SHORTCUTS)
 
 

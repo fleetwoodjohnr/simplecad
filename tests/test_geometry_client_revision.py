@@ -483,3 +483,31 @@ def test_startup_queues_edits_without_blocking_until_ready():
     client._poll()
     assert not client._starting
     assert client._pipe.sent[-1]["kind"] == REBUILD
+
+
+def test_cancelling_a_fresh_preview_with_nothing_waiting_does_not_restart(monkeypatch):
+    """The texture panel cancels on every invalid keystroke; that must not
+    restart the engine and re-send the model each time."""
+    client = _client()
+    assert client.preview({"type": "face_texture"}, token=91)
+    restarts = []
+    monkeypatch.setattr(client, "start", lambda: restarts.append(1) or True)
+    client.cancel_preview(91)
+    assert restarts == [] and client._preview_busy
+
+
+def test_cancelling_a_long_preview_still_stops_it(monkeypatch):
+    import time as _time
+
+    client = _client()
+    assert client.preview({"type": "face_texture"}, token=92)
+    client._preview_sent_at = _time.monotonic() - 10.0
+
+    def restart():
+        client._pipe = Pipe()
+        client.available = True
+        return True
+
+    monkeypatch.setattr(client, "start", restart)
+    client.cancel_preview(92)
+    assert not client._preview_busy or client._active_preview is None

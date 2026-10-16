@@ -148,6 +148,10 @@ class BuildContext:
         self.bodies: dict[str, Any] = {}
         self.warnings: list[str] = []
         self.feature_id = ""
+        #: True while building a preview. A feature may then skip checks that
+        #: only matter for a committed result, and list them in its
+        #: ``deferred_checks`` for the worker to run if the preview is applied.
+        self.preview = False
 
     def value(self, feature: "Feature", key: str, default: float = 0.0) -> float:
         """Evaluate a numeric input, which may be an expression."""
@@ -967,6 +971,17 @@ class Document:
             ("body", name) for name in self.bodies if name not in nested
         ]
         return items
+
+    def export_colours(self) -> dict[str, str]:
+        """The colour of each exported object: a body's own, or a group's first."""
+        colours = {}
+        for kind, name in self.root_items():
+            names = self.expand([name]) if kind == "group" else [name]
+            colour = next((self.bodies[n].color for n in names
+                           if n in self.bodies and self.bodies[n].color), None)
+            if colour:
+                colours[name] = colour
+        return colours
 
     def export_items(self) -> list[tuple[str, list]]:
         """What a file should contain: ``(name, shapes)``, one entry per object.

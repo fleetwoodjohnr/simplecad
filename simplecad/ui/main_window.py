@@ -730,6 +730,9 @@ class MainWindow(QMainWindow):
         #: body name -> the shape currently on screen, so unchanged bodies are
         #: not needlessly re-tessellated on every rebuild.
         self._shown: dict[str, object] = {}
+        #: The colour each presentation was last painted, so a colour-only
+        #: change -- or its undo -- repaints without rebuilding anything.
+        self._shown_colour: dict[str, str] = {}
         #: The shape each presentation was built from, when it has since been
         #: re-placed rather than rebuilt (see ``refresh_view``).
         self._display_base: dict[str, object] = {}
@@ -1000,6 +1003,7 @@ class MainWindow(QMainWindow):
             "confirm": self._confirm_shortcut,
             "confirm_alt": self._confirm_shortcut,
             "delete": self.delete_selection,
+            "delete_alt": self.delete_selection,
             "view_front": lambda: self._standard_view(StandardView.FRONT),
             "view_back": lambda: self._standard_view(StandardView.BACK),
             "view_left": lambda: self._standard_view(StandardView.LEFT),
@@ -1026,7 +1030,7 @@ class MainWindow(QMainWindow):
                     QKeySequence(binding), self.stage.viewport, activated=handler
                 )
                 shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-                if action == "delete":
+                if action in ("delete", "delete_alt"):
                     # The model tree selects bodies too. WidgetShortcut, not
                     # WithChildren, so its rename editor keeps its own Delete.
                     tree_delete = QShortcut(
@@ -2280,11 +2284,13 @@ class MainWindow(QMainWindow):
                     continue
                 if existing is not None:
                     viewport.erase(existing)
-                self._presentations[body.name] = viewport.display(
-                    body.shape, body.color or self._tint_for(body.name)
-                )
+                colour = body.color or self._tint_for(body.name)
+                self._presentations[body.name] = viewport.display(body.shape, colour)
+                self._shown_colour[body.name] = colour
                 self._shown[body.name] = body.shape
                 self._display_base[body.name] = body.shape
+
+            self._repaint_colours()
 
         if first_body and self._presentations:
             viewport.fit_all()
@@ -3036,6 +3042,11 @@ class MainWindow(QMainWindow):
             "search": self.open_search,
             "delete": self.delete_selection,
             "duplicate": self.duplicate_selection,
+            "colour": self.choose_colour,
+            "turn_x": lambda: self.quarter_turn("rx"),
+            "turn_y": lambda: self.quarter_turn("ry"),
+            "turn_z": lambda: self.quarter_turn("rz"),
+            "drop_to_plate": self.drop_to_plate,
             "copy": self.copy_selection,
             "paste": self.paste_selection,
             "group": self.group_selection,
@@ -3054,6 +3065,100 @@ class MainWindow(QMainWindow):
             "view_right": lambda: self._standard_view(StandardView.RIGHT),
         }
         handlers.get(key, lambda: self.set_hint(f"{key} is not available yet."))()
+
+    # -- appearance and one-click placement ---------------------------------
+    def _selected_body_names(self) -> list[str]:
+        self.selection.refresh()
+        if not self.selection.only_bodies:
+            return []
+        return [name for name in self.document.expand(self.selection.items)
+                if self.document.body(name) is not None
+                and self.document.body(name).shape is not None]
+
+    def choose_colour(self) -> None:
+        """Pick a colour for the selected bodies or groups."""
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+
+        names = self._selected_body_names()
+        if not names:
+            self.set_hint("Select one or more bodies or groups to colour.")
+            return
+        first = self.document.body(names[0])
+        chosen = QColorDialog.getColor(QColor(first.color or self._tint_for(first.name)),
+                                       self, "Body colour")
+        if chosen.isValid():
+            self.set_body_colour(names, chosen.name())
+
+    def set_body_colour(self, names, colour: str | None) -> None:
+        """Appearance only: one undo step, repainted in place, nothing rebuilt."""
+        self.history.record("Colour")
+        for name in names:
+            body = self.document.body(name)
+            if body is not None:
+                body.color = colour
+        self._repaint_colours()
+        self.mark_dirty()
+        self.set_hint(f"Coloured {', '.join(names)}.")
+
+    def _repaint_colours(self) -> None:
+        viewport = self.stage.viewport
+        for name, presentation in self._presentations.items():
+            body = self.document.body(name)
+            if body is None:
+                continue
+            wanted = body.color or self._tint_for(name)
+            if self._shown_colour.get(name) != wanted:
+                viewport.set_color(presentation, wanted)
+                self._shown_colour[name] = wanted
+
+    def quarter_turn(self, key: str) -> None:
+        """Turn the selection 90 degrees about its shared centre, in one click."""
+        from ..kernel.occ import bounding_box
+        from ..kernel.operations import MoveFeature
+
+        names = self._selected_body_names()
+        if not names:
+            self.set_hint("Select one or more bodies or groups to turn.")
+            return
+        if self.is_rebuilding:
+            self.set_hint("Still updating the last change — try again in a moment.")
+            return
+        boxes = [bounding_box(self.document.body(n).shape) for n in names]
+        pivot = [(min(b[0][i] for b in boxes) + max(b[1][i] for b in boxes)) / 2 for i in range(3)]
+        self._cancel_nudge()
+        self.history.record(f"Turn 90° about {key[1].upper()}")
+        for name in names:
+            inputs = {"body": BodyRef(name), "dx": 0, "dy": 0, "dz": 0, key: 90,
+                      "pivot": pivot, "order": "xyz"}
+            self.document.add_feature(MoveFeature(inputs=inputs, outputs=[name]))
+        self.mark_dirty()
+        self.rebuild()
+        self.set_hint(f"Turned {', '.join(names)} 90° about {key[1].upper()}.")
+
+    def drop_to_plate(self) -> None:
+        """Sit the selection on z = 0, keeping its layout (as Place on plate does)."""
+        from ..kernel.operations import MoveFeature
+        from ..kernel.printing import place_on_plate
+
+        names = self._selected_body_names()
+        if not names:
+            self.set_hint("Select one or more bodies or groups to drop.")
+            return
+        offset = place_on_plate([self.document.body(n).shape for n in names])
+        if abs(offset[2]) < 1e-9:
+            self.set_hint("Already sitting on the plate.")
+            return
+        self._cancel_nudge()
+        self.history.record("Drop to plate")
+        for name in names:
+            if not self.document.fold_translation([name], offset):
+                self.document.add_feature(MoveFeature(
+                    inputs={"body": BodyRef(name), "dx": 0.0, "dy": 0.0, "dz": offset[2]},
+                    outputs=[name]))
+        self.mark_dirty()
+        self.rebuild()
+        self.set_hint(f"Dropped {', '.join(names)} {abs(offset[2]):.2f} mm onto the plate.")
 
     def rebuild_everything(self) -> None:
         """Replay the whole feature history, ignoring any adopted geometry.
@@ -3129,7 +3234,7 @@ class MainWindow(QMainWindow):
             return
         path = resolved_export_path(path, selected_filter)
         try:
-            export_shapes(items, path)
+            export_shapes(items, path, colours=self.document.export_colours())
         except Exception as exc:  # noqa: BLE001 - surfaced, never fatal
             from ..core.errors import translate
 

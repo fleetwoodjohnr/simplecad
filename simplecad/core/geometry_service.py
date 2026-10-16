@@ -190,6 +190,7 @@ def build_preview_result(document, feature_state: dict) -> dict:
                     "shape": None, "parts": {"base_face": base_face},
                     "error": None, "warnings": [], "inputs": {}, "message": "",
                 }
+        context.preview = True
         preview_parts = getattr(feature, "preview_parts", None)
         parts = preview_parts(context) if callable(preview_parts) else None
         outputs = {}
@@ -219,6 +220,7 @@ def build_preview_result(document, feature_state: dict) -> dict:
             # orientations, say -- which is not geometry and not a recipe input.
             "annotations": getattr(feature, "annotations", None),
             "_outputs": outputs,
+            "_deferred": getattr(feature, "deferred_checks", None),
         }
     except BaseException as exc:  # noqa: BLE001 - OCCT raises non-Exceptions
         return {
@@ -229,6 +231,27 @@ def build_preview_result(document, feature_state: dict) -> dict:
             "inputs": {},
             "message": "",
         }
+
+
+def _finalized_preview(result: dict):
+    """The outputs a preview may seed the committed result with, or None.
+
+    Previews skip commit-only checks and say which (``_deferred``). Merging
+    faces and the topology check run here, once, when the user applies; a
+    check that needs the full build (the recessed depth probe) means the
+    commit builds normally instead of reusing the preview.
+    """
+    outputs = result.get("_outputs")
+    deferred = result.get("_deferred") or {}
+    if not outputs or not deferred:
+        return outputs
+    if deferred.get("probe"):
+        return None
+    from ..kernel.occ import is_valid, unify
+
+    finished = {name: unify(shape) if deferred.get("unify") else shape
+                for name, shape in outputs.items()}
+    return finished if all(is_valid(shape) for shape in finished.values()) else None
 
 
 def _feature_summary(feature) -> dict:
@@ -626,10 +649,13 @@ def serve(connection) -> None:
                 candidate_id = feature.id if feature is not None else None
                 unaffected = [f for f in incoming_features if f["id"] != candidate_id]
                 old_unaffected = [f for f in old["features"] if f["id"] != candidate_id]
+                finalized = None
                 if (feature is not None and unaffected == old_unaffected
                         and state["parameters"] == old["parameters"]
                         and preview_signature(feature.to_dict(), edit_id) == signature):
-                    rebuilder.seed_result(feature, preview_result["_outputs"], preview_result["message"])
+                    finalized = _finalized_preview(preview_result)
+                if finalized:
+                    rebuilder.seed_result(feature, finalized, preview_result["message"])
                     reused_preview = preview_result
             preview_cache = None
 

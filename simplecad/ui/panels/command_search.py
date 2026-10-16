@@ -119,6 +119,19 @@ def catalogue() -> list[Command]:
                 "clipboard control c clone"),
         Command("paste", "Paste", "duplicate", "Paste beside the model",
                 "clipboard control v insert clone"),
+        Command("colour", "Colour…", "colour", "Give the selected bodies a colour",
+                "color paint appearance material tint"),
+        Command("turn_x", "Turn 90° about X", "rotate", "Quarter turn in one click",
+                "rotate flip orient print lay"),
+        Command("turn_y", "Turn 90° about Y", "rotate", "Quarter turn in one click",
+                "rotate flip orient print lay"),
+        Command("turn_z", "Turn 90° about Z", "rotate", "Quarter turn in one click",
+                "rotate spin orient print"),
+        Command("drop_to_plate", "Drop to plate", "plate", "Sit the selection on z = 0",
+                "floor ground bed place print lay down"),
+        Command("preferences", "Preferences…", "settings",
+                "Rotation snap, move step and undo depth",
+                "settings options snapping increment history undo depth"),
         Command("hide", "Hide selection", "eye_off", "", "invisible conceal"),
         Command("rebuild_all", "Rebuild All", "settings",
                 "Replay every feature instead of reusing the saved geometry",
@@ -258,7 +271,7 @@ class CommandSearch(FloatingCard):
             return "File"
         if key in {
             "duplicate", "copy", "paste", "group", "ungroup", "hide",
-            "delete", "undo", "redo",
+            "delete", "undo", "redo", "colour",
         }:
             return "Edit"
         if key.startswith("shape_") or key in {

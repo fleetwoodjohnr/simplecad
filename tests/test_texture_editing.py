@@ -107,6 +107,10 @@ def _panel(window):
 def _preview(panel):
     # Exercise the real preview result without a worker or a GL context.
     for _ in range(2):
+        # The panel lays the pattern out once typing pauses; flush that first.
+        if panel._refresh_timer.isActive():
+            panel._refresh_timer.stop()
+            panel._refresh()
         panel._preview.timer.stop()
         assert panel._preview._state is not None
         panel._preview_answered({"token": 1, **panel._preview._in_process()})

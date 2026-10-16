@@ -88,8 +88,11 @@ def flatten(shapes) -> list:
     return [shape for _name, members in as_items(shapes) for shape in members]
 
 
-def export_shapes(shapes, path: str, *, deflection: float = 0.05) -> str:
-    """Write *shapes* to *path*, choosing the writer from the extension."""
+def export_shapes(shapes, path: str, *, deflection: float = 0.05, colours=None) -> str:
+    """Write *shapes* to *path*, choosing the writer from the extension.
+
+    *colours* maps object names to ``#rrggbb``; only 3MF carries them.
+    """
     items = as_items(shapes)
     if not items:
         raise CadError(
@@ -110,6 +113,8 @@ def export_shapes(shapes, path: str, *, deflection: float = 0.05) -> str:
     os.makedirs(directory, exist_ok=True)
     if writer is export_step:
         return writer(items, path)
+    if writer is export_3mf:
+        return writer(items, path, deflection=deflection, colours=colours)
     return writer(items, path, deflection=deflection)
 
 
@@ -195,7 +200,7 @@ def _merged_mesh(members, deflection: float):
     return vertices, triangles
 
 
-def export_3mf(shapes, path: str, *, deflection: float = 0.05) -> str:
+def export_3mf(shapes, path: str, *, deflection: float = 0.05, colours=None) -> str:
     """A minimal but valid 3MF: one object per *item*, millimetre units.
 
     Per item, not per solid. A group hands us several bodies under one name and
@@ -215,11 +220,21 @@ def export_3mf(shapes, path: str, *, deflection: float = 0.05) -> str:
     resources = ElementTree.SubElement(model, "resources")
     build = ElementTree.SubElement(model, "build")
 
+    # Core-spec base materials: slicers show each object in its body colour.
+    palette = sorted({c.lower() for c in (colours or {}).values()
+                      if isinstance(c, str) and len(c) == 7 and c.startswith("#")})
+    materials_id = str(len(meshes) + 1)
+    if palette:
+        materials = ElementTree.SubElement(resources, "basematerials", {"id": materials_id})
+        for colour in palette:
+            ElementTree.SubElement(materials, "base", {"name": colour, "displaycolor": colour.upper() + "FF"})
+
     for name, mesh_vertices, mesh_triangles, index in meshes:
-        obj = ElementTree.SubElement(
-            resources, "object",
-            {"id": str(index), "type": "model", "name": name},
-        )
+        attributes = {"id": str(index), "type": "model", "name": name}
+        colour = (colours or {}).get(name)
+        if isinstance(colour, str) and colour.lower() in palette:
+            attributes.update(pid=materials_id, pindex=str(palette.index(colour.lower())))
+        obj = ElementTree.SubElement(resources, "object", attributes)
         mesh_element = ElementTree.SubElement(obj, "mesh")
         vertices = ElementTree.SubElement(mesh_element, "vertices")
         for x, y, z in mesh_vertices:

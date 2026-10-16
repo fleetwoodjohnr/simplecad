@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSlider, QWidget
 
 from ...core.document import BodyRef
@@ -34,6 +34,12 @@ class FaceTexturePanel(ToolPanel):
         self._edit_base_face = None
         self._editing = None
         self._loading = False
+        # Laying the pattern out takes 0.1-0.3 s; doing it on every keystroke
+        # froze typing. It runs once the user pauses.
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(200)
+        self._refresh_timer.timeout.connect(self._refresh)
         editing_id = getattr(self.window_, "_texture_edit_feature_id", None)
         self.window_._texture_edit_feature_id = None
 
@@ -203,6 +209,14 @@ class FaceTexturePanel(ToolPanel):
     def preview(self) -> None:
         if not hasattr(self, "overlay") or self._loading:
             return
+        # Whatever is showing is now out of date: Apply waits for the new one.
+        self._preview_valid = False
+        self.confirm.setEnabled(False)
+        self._refresh_timer.start()
+
+    def _refresh(self) -> None:
+        if not hasattr(self, "overlay") or self._loading:
+            return
         pick = self._pick()
         if pick is None and self._editing is None:
             self._guide_valid = False
@@ -214,7 +228,8 @@ class FaceTexturePanel(ToolPanel):
         self._preview_valid = False
         self._guide_valid = False
         self._exact_failed = False
-        self._clear_preview()
+        # The last exact preview stays on screen until the new one replaces
+        # it, so the part never blinks back to bare while it is rebuilt.
         self.confirm.setEnabled(False)
         self.confirm.setText(self.confirm_label)
         settings = self._settings()
@@ -256,7 +271,7 @@ class FaceTexturePanel(ToolPanel):
         ).to_dict()
         if self._editing is not None:
             state["__edit_feature_id"] = self._editing.id
-        self.warn("Pattern guide ready; building the exact preview…")
+        self.warn("Pattern guide ready; updating the exact preview…")
         self._preview.request(state)
 
     def _preview_answered(self, message: dict) -> None:
@@ -268,7 +283,7 @@ class FaceTexturePanel(ToolPanel):
             if face is not None:
                 self._edit_base_face = face
                 self._mapping = mapping_for_face(face)
-                self.preview()
+                self._refresh()
                 return
         if message.get("token") is None:
             return
@@ -317,6 +332,7 @@ class FaceTexturePanel(ToolPanel):
         self._preview_body = None
 
     def teardown(self) -> None:
+        self._refresh_timer.stop()
         self._preview.close()
         self._clear_preview()
         self.window_.stage.remove_overlay(self.overlay)

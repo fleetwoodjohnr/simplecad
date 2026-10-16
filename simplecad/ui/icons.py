@@ -34,6 +34,8 @@ PATHS: dict[str, str] = {
     # --- operations ---
     "extrude": '<path d="M4 20h16"/><path d="M8 16V8h8v8"/><path d="M12 3v6"/><path d="m9 6 3-3 3 3"/>',
     "move": '<path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>',
+    "colour": '<path d="M12 3s6.5 6.6 6.5 11.2a6.5 6.5 0 0 1-13 0C5.5 9.6 12 3 12 3z"/><path d="M9 15a3 3 0 0 0 3 3" opacity=".55"/>',
+    "plate": '<path d="M3 20h18"/><path d="M8 4h8v9H8z"/><path d="M12 13v4m-2-2 2 2 2-2"/>',
     "rotate": '<path d="M20.5 12a8.5 8.5 0 1 1-2.9-6.4"/><path d="M20.5 4v5h-5"/>',
     "scale": '<path d="M4 4h7v7H4z"/><path d="M13 13h7v7h-7z"/><path d="m11 11 2 2"/>',
     "align": '<path d="M4 4v16"/><path d="M8 8h9M8 16h6"/><path d="m14 5 3 3-3 3" opacity=".55"/>',

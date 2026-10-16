@@ -1163,6 +1163,20 @@ class OcctViewport(QOpenGLWidget):
         self.refresh()
         return presentation
 
+    def set_color(self, presentation, color: str) -> None:
+        """Recolour a displayed body in place: no new presentation, no re-mesh."""
+        if self._context is None or presentation is None:
+            return
+        from OCP.Quantity import Quantity_Color, Quantity_TOC_sRGB
+
+        red, green, blue = rgb(color)
+        self._context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_sRGB), False)
+        # SetColor replaces the face-boundary aspect as well; restate it, as
+        # display() does, or the edges vanish into the new colour.
+        self._apply_boundary_aspect(presentation)
+        self._context.Redisplay(presentation, False)
+        self.refresh()
+
     def set_transparency(self, presentation, value: float) -> None:
         """Make a displayed body see-through, or solid again at 0.
 

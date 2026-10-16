@@ -44,6 +44,7 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "confirm": "Return",
     "confirm_alt": "Enter",
     "delete": "Delete",
+    "delete_alt": "Backspace",
     "view_front": "1",
     "view_back": "2",
     "view_left": "3",
@@ -62,7 +63,7 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
 #: an X11 text field. Other modified keys (Ctrl+S) are safe: they cannot be typed.
 YIELDS_TO_TYPING = {
     key for key, binding in DEFAULT_SHORTCUTS.items() if len(binding) == 1
-} | {"confirm", "confirm_alt", "delete", "duplicate"}
+} | {"confirm", "confirm_alt", "delete", "delete_alt", "duplicate"}
 
 #: Kept for callers that only care about the literal single-character bindings.
 SINGLE_KEY = {
@@ -77,7 +78,7 @@ SINGLE_KEY = {
 #: those to a focused text field first -- but Return and Delete are not, so a
 #: window-wide Return shortcut makes it impossible to press Enter in any inline
 #: editor. Scoping them to the viewport is the only thing that actually works.
-VIEWPORT_ONLY = {"confirm", "confirm_alt", "delete"}
+VIEWPORT_ONLY = {"confirm", "confirm_alt", "delete", "delete_alt"}
 
 
 def _read() -> dict:

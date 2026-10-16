@@ -81,7 +81,7 @@ def _strokes(bounds, size, spacing, angles, width_factor=0.23, wave=False):
                 ]
             else:
                 points = [(-radius, y), (radius, y)]
-            line = LineString(points).buffer(width / 2, cap_style="flat", join_style="round")
+            line = LineString(points).buffer(width / 2, cap_style="flat", join_style="mitre")
             shapes.append(rotate_2d(line, angle, origin=(0, 0)))
     return shapes
 
@@ -93,7 +93,9 @@ def _repeated(bounds, size, spacing, kind):
         if kind in {"hexagon", "vent"} and row % 2:
             x += pitch / 2
         if kind in {"dots", "raised_bumps"}:
-            motif = Point(x, y).buffer(size / 2, resolution=12)
+            # Unclipped round motifs are rebuilt as exact circles (see
+            # _circle_of); the polygon only has to serve the 2-D layout.
+            motif = Point(x, y).buffer(size / 2, resolution=8)
         elif kind == "hexagon":
             radius = size / math.sqrt(3)
             points = [
@@ -109,14 +111,15 @@ def _repeated(bounds, size, spacing, kind):
         elif kind == "geometric":
             triangle = Polygon([(x, y + size / 2), (x + size / 2, y - size / 2),
                                 (x - size / 2, y - size / 2)])
-            motif = triangle.boundary.buffer(max(0.08, size * 0.12) / 2)
+            motif = triangle.boundary.buffer(max(0.08, size * 0.12) / 2, join_style="mitre")
         elif kind == "vent":
-            motif = LineString([(x - size * 0.35, y), (x + size * 0.35, y)]).buffer(size * 0.15)
+            motif = LineString([(x - size * 0.35, y), (x + size * 0.35, y)]).buffer(
+                size * 0.15, quad_segs=4)
         else:  # chevron grip
             motif = LineString([
                 (x - size / 2, y - size / 4), (x, y + size / 4),
                 (x + size / 2, y - size / 4),
-            ]).buffer(max(0.08, size * 0.12), cap_style="round", join_style="round")
+            ]).buffer(max(0.08, size * 0.12), cap_style="round", join_style="round", quad_segs=4)
         shapes.append(motif)
         if len(shapes) > MAX_MOTIFS:
             raise CadError("This texture is too dense for the selected face.", suggestion="Increase its size or spacing.")
@@ -420,7 +423,10 @@ def layout_for_face(face, settings: dict, document=None, body_name="", mapping=N
         circularity = 4 * math.pi * region.area / max(region.length ** 2, 1e-12)
         kind = "text" if any(region.intersects(area) for area in text_regions) else "hole" if circularity > 0.87 else "other"
         distance = {"hole": hole, "text": text, "other": other}[kind]
-        protected.append((kind, region, region.buffer(distance, quad_segs=32)))
+        # Eight segments per quarter keeps the layout cheap; scaling by
+        # 1/cos(pi/32) makes the polygon circumscribe the true offset curve,
+        # so the clearance is never less than asked (by at most 0.5% more).
+        protected.append((kind, region, region.buffer(distance / math.cos(math.pi / 32), quad_segs=8)))
     if protected:
         exclusions = unary_union([buffered for _kind, _source, buffered in protected])
         if mapping.period is not None:
@@ -468,6 +474,35 @@ def layout_for_face(face, settings: dict, document=None, body_name="", mapping=N
     return TextureLayout(domain, allowed, protected, motifs, mapping)
 
 
+def _circle_of(polygon):
+    """``((u, v), radius)`` if *polygon* is an unclipped round motif, else None.
+
+    A dot used to reach OCCT as a 48-sided prism -- 50 faces per mark. As a
+    true circle it is three, and the boolean, the validity check, meshing and
+    the reply all shrink with it. Clipped dots (cut by a clearance) keep their
+    polygon outline; every vertex of an unclipped one lies on its circle.
+    """
+    if polygon.interiors:
+        return None
+    coords = list(polygon.exterior.coords)[:-1]
+    if len(coords) < 24:
+        return None
+    cx, cy = polygon.centroid.x, polygon.centroid.y
+    distances = [math.hypot(x - cx, y - cy) for x, y in coords]
+    radius = max(distances)
+    if radius <= 0 or min(distances) < radius * 0.995:
+        return None
+    return (cx, cy), radius
+
+
+def _circle_wire(centre, radius, normal):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+
+    edge = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(*centre), gp_Dir(*normal)), radius)).Edge()
+    return BRepBuilderAPI_MakeWire(edge).Wire()
+
+
 def _planar_tools(layout: TextureLayout, depth: float, mode: str, *, probe=False):
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -486,9 +521,14 @@ def _planar_tools(layout: TextureLayout, depth: float, mode: str, *, probe=False
             length = -depth
     tools = []
     for polygon in layout.motifs:
-        face = BRepBuilderAPI_MakeFace(_wire_from_coords(polygon.exterior.coords, mapping.frame, normal, start))
-        for ring in polygon.interiors:
-            face.Add(_wire_from_coords(ring.coords, mapping.frame, normal, start))
+        circle = _circle_of(polygon)
+        if circle is not None:
+            (u, v), radius = circle
+            face = BRepBuilderAPI_MakeFace(_circle_wire(mapping.point(u, v, start), radius, normal))
+        else:
+            face = BRepBuilderAPI_MakeFace(_wire_from_coords(polygon.exterior.coords, mapping.frame, normal, start))
+            for ring in polygon.interiors:
+                face.Add(_wire_from_coords(ring.coords, mapping.frame, normal, start))
         if not face.IsDone():
             raise CadError("A texture element could not be built.")
         tool = built_shape(BRepPrimAPI_MakePrism(
@@ -563,12 +603,12 @@ def _wrapped_piece_solid(polygon: Polygon, mapping: CylindricalMapping, outer: f
     maker = BRepBuilderAPI_MakeSolid(shell)
     if not maker.IsDone():
         raise CadError("A wrapped texture element did not form a solid.")
+    # Orientation only. Each mark used to get a full BRepCheck and a volume
+    # integral of its own -- a third of a cylinder texture's build time. The
+    # finished result is checked once in execute().
     fixer = ShapeFix_Solid(maker.Solid())
     fixer.Perform()
-    solid = fixer.Solid()
-    if not is_valid(solid) or volume(solid) <= 1e-9:
-        raise CadError("A wrapped texture element is not a valid solid.")
-    return solid
+    return fixer.Solid()
 
 
 def _wall_depth(body, mapping: CylindricalMapping):
@@ -610,17 +650,65 @@ def _cylindrical_tools(layout: TextureLayout, depth: float, mode: str, body, *, 
         inner = -wall - 0.08
     if mapping.radius + mapping.outward_sign * outer <= 0 or mapping.radius + mapping.outward_sign * inner <= 0:
         raise CadError("The texture depth reaches the cylinder axis.")
-    # Curved triangles need a bounded angular chord error.  Vertical strips
-    # make every facet narrow enough while preserving clipped motif boundaries.
-    step = min(2.0, max(0.25, math.sqrt(8 * mapping.radius * 0.025)))
-    solids = []
+    # Curved triangles need a bounded angular chord error -- the display's own
+    # 0.05 mm is enough. Vertical strips make every facet narrow enough while
+    # preserving clipped motif boundaries.
+    step = min(2.0, max(0.25, math.sqrt(8 * mapping.radius * 0.05)))
+    solids, circles = [], []
     for motif in layout.motifs:
         if motif.area < 1e-7:
             continue
-        solids.append(_wrapped_piece_solid(motif, mapping, outer, inner, step))
-        if len(solids) > MAX_MOTIFS:
+        circle = _circle_of(motif)
+        if circle is not None:
+            circles.append(circle)
+        else:
+            solids.append(_wrapped_piece_solid(motif, mapping, outer, inner, step))
+        if len(solids) + len(circles) > MAX_MOTIFS:
             raise CadError("This wrapped texture is too dense.", suggestion="Increase its size or spacing.")
+    if circles:
+        solids.append(_radial_dots(circles, mapping, outer, inner))
     return compound(solids)
+
+
+def _radial_dots(circles, mapping: CylindricalMapping, outer: float, inner: float):
+    """Round marks on a cylinder as exact solids, all in one boolean.
+
+    Each dot is a cylinder pointing out from the axis, cut to the shell between
+    the relief's inner and outer radii -- three or four faces instead of the
+    ~130 triangles a wrapped polygon took. Its outline follows the radial
+    projection rather than the unrolled circle; for a dot of radius r on a
+    cylinder of radius R the difference is about r**3 / (6 R**2) (under 0.01 mm
+    for a 3 mm dot on a 10 mm roller).
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    radii = sorted((mapping.radius + mapping.outward_sign * outer,
+                    mapping.radius + mapping.outward_sign * inner))
+    axis = (mapping.axis.X(), mapping.axis.Y(), mapping.axis.Z())
+    low = min(t - r for (_s, t), r in circles) - 1.0
+    high = max(t + r for (_s, t), r in circles) + 1.0
+
+    def on_axis(t):
+        v = mapping.v_min + t
+        return (mapping.origin.X() + axis[0] * v, mapping.origin.Y() + axis[1] * v,
+                mapping.origin.Z() + axis[2] * v)
+
+    frame = gp_Ax2(gp_Pnt(*on_axis(low)), gp_Dir(*axis))
+    shell = built_shape(boolean_builder(
+        BRepAlgoAPI_Cut,
+        BRepPrimAPI_MakeCylinder(frame, radii[1], high - low).Shape(),
+        BRepPrimAPI_MakeCylinder(frame, radii[0], high - low).Shape(),
+    ), "texture shell")
+    rods = []
+    for (s, t), r in circles:
+        theta = mapping.u_min + s / mapping.radius
+        radial = tuple(mapping.x.Coord(i + 1) * math.cos(theta) + mapping.y.Coord(i + 1) * math.sin(theta)
+                       for i in range(3))
+        rods.append(BRepPrimAPI_MakeCylinder(
+            gp_Ax2(gp_Pnt(*on_axis(t)), gp_Dir(*radial)), r, radii[1] + 1.0).Shape())
+    return built_shape(boolean_builder(BRepAlgoAPI_Common, compound(rods), shell), "texture dots")
 
 
 @register("face_texture")
@@ -673,9 +761,19 @@ class FaceTextureFeature(Feature):
             tools = _planar_tools(layout, depth, mode)
         if tools is None:
             raise CadError("No solid texture elements fit this face.")
+        planar = isinstance(layout.mapping, PlanarMapping)
+        # A preview skips the commit-only work -- the depth probe (a second
+        # boolean as large as the first), merging coplanar faces, and the full
+        # topology check -- which together were over a third of a dense
+        # texture's preview. Applying the preview runs them (see
+        # geometry_service._finalized_preview).
+        previewing = bool(getattr(ctx, "preview", False))
+        self.deferred_checks = (
+            {"probe": mode == "recessed", "unify": planar} if previewing else None
+        )
         before = volume(body)
         with guard("face texture"):
-            if mode == "recessed":
+            if mode == "recessed" and not previewing:
                 probe = (
                     _planar_tools(layout, settings["depth"], mode, probe=True)
                     if isinstance(layout.mapping, PlanarMapping)
@@ -691,12 +789,12 @@ class FaceTextureFeature(Feature):
             # A cylinder's deliberately faceted relief has many small faces.
             # ShapeUpgrade_UnifySameDomain becomes superlinear on that topology
             # and may stall for minutes; the boolean result is already valid.
-            if isinstance(layout.mapping, PlanarMapping):
+            if planar and not previewing:
                 result = unify(result)
         solids_before = _solid_count(body)
         solids_after = _solid_count(result)
         if (
-            not is_valid(result)
+            (not previewing and not is_valid(result))
             or solids_after == 0
             or (mode == "raised" and solids_after != solids_before)
             or abs(volume(result) - before) < 1e-7

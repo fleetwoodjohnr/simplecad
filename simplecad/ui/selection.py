@@ -455,9 +455,16 @@ CONTEXT_ACTIONS = (
     ("split", "Split", "split", _one_body),
     ("ungroup", "Ungroup", "ungroup", _grouped),
     ("duplicate", "Duplicate", "duplicate", _bodies),
+    ("colour", "Colour…", "colour", _bodies),
     ("measure", "Measure", "measure", lambda m: m.count >= 1),
     ("hide", "Hide", "eye_off", _bodies),
     ("delete", "Delete", "trash", _bodies),
+    # One-click print preparation. After Delete so the bar keeps its everyday
+    # actions in view; they are always in the overflow and the right-click menu.
+    ("turn_x", "Turn 90° about X", "rotate", _bodies),
+    ("turn_y", "Turn 90° about Y", "rotate", _bodies),
+    ("turn_z", "Turn 90° about Z", "rotate", _bodies),
+    ("drop_to_plate", "Drop to plate", "plate", _bodies),
 )
 
 

@@ -235,7 +235,7 @@ class PrintPanel(ToolPanel):
         if not path:
             return
         try:
-            export_shapes(items, path)
+            export_shapes(items, path, colours=self.window_.document.export_colours())
         except Exception as exc:  # noqa: BLE001
             from ...core.errors import translate
 
@@ -260,7 +260,7 @@ class PrintPanel(ToolPanel):
             f"{self.window_.document.title}.3mf",
         )
         try:
-            export_shapes(items, path)
+            export_shapes(items, path, colours=self.window_.document.export_colours())
             name = open_in_slicer(path)
         except Exception as exc:  # noqa: BLE001
             from ...core.errors import translate
