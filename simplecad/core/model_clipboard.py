@@ -169,9 +169,13 @@ def paste_fragment(
     def unique(base: str) -> str:
         base = base or "Copy"
         candidate = base
+        # Count on from an existing number instead of appending another one:
+        # a copy of "Cylinder A2" is "Cylinder A3", not "Cylinder A22".
+        numbered = re.match(r"^(.*\D)(\d+)$", base)
+        stem = numbered.group(1) if numbered else base
         suffix = 2
         while candidate in taken:
-            candidate = f"{base}{suffix}"
+            candidate = f"{stem}{suffix}"
             suffix += 1
         taken.add(candidate)
         return candidate

@@ -237,6 +237,39 @@ class Rebuilder:
                     pending.append((ref.feature_id, False))
         return self._evaluate(fid)
 
+    def _check_ownership(self, feature, outputs, declared) -> None:
+        """Refuse a result that would write over a body this feature does not own.
+
+        Outputs are allocated before execution, but features re-derive their
+        output names while they run (Split from its ``names`` input, a joint
+        from its connector list). Anything returned used to be adopted on the
+        spot and given an identity, so a pasted Split whose name list still
+        said "Cylinder A" silently took over the *original* half -- the root of
+        "the feature could not be added" after duplicating a split part. A
+        feature may write what it declared, what it reserves by name, or the
+        bodies it was handed; never the head of an unrelated object.
+        """
+        from .document import OUTPUT_NAME_INPUTS
+
+        reserved = set(declared) | set(feature.bindings)
+        for key in OUTPUT_NAME_INPUTS:
+            reserved.update(str(name) for name in feature.inputs.get(key) or [])
+        for name in outputs:
+            if name in declared:
+                continue
+            owner = self._graph.latest.get(name)
+            foreign = (owner is not None and owner.feature_id
+                       and owner.feature_id != feature.id and name not in feature.bindings)
+            if foreign or (declared and name not in reserved):
+                # execute() may already have rewritten its own outputs; put
+                # them back, or the graph would credit it with that body.
+                feature.outputs = list(declared)
+                raise CadError(
+                    f"{feature.label} tried to write '{name}', which belongs to another object.",
+                    suggestion="The other object was left untouched. Delete and recreate this "
+                               "step, or undo the edit that renamed it.",
+                )
+
     def _evaluate(self, fid):
         if fid in self._failed:
             raise ReferenceLost("An earlier feature failed; keeping the last valid model.")
@@ -268,9 +301,11 @@ class Rebuilder:
                 if self._on_feature:
                     self._on_feature(feature, len(self._report.rebuilt), max(1, self._planned))
                 feature.message = ""
+                declared = list(feature.outputs)
                 outputs = feature.execute(context)
                 if not outputs:
                     raise CadError("This feature produced no geometry.")
+                self._check_ownership(feature, outputs, declared)
                 feature.state = FeatureState.OK
                 self._report.rebuilt.append(fid)
             outputs = feature.keep(outputs)

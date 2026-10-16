@@ -438,3 +438,41 @@ def test_a_cut_split_filleted_part_survives_duplicate_stack_save_and_edit(tmp_pa
 @pytest.mark.slow
 def test_many_duplicates_of_a_modified_part_stay_independent(tmp_path):
     _chained(tmp_path, copies=24)
+
+
+# ----------------------------------------------------------------------
+# Output ownership: a feature may never write over another object's body
+# ----------------------------------------------------------------------
+def test_a_feature_cannot_take_over_another_objects_body():
+    """The pre-fix paste bug, reproduced directly: a cloned Split whose name
+    list still names the original halves. It used to adopt them silently."""
+    document = _split_cylinder()
+    originals = {name: _state(document, name) for name in ("Cylinder A", "Cylinder B")}
+    document.add_feature(CylinderFeature(
+        inputs={"radius": "5", "height": "10", "x": 50}, outputs=["Other"],
+    ))
+    rogue = document.add_feature(SplitFeature(
+        inputs={"body": BodyRef("Other"), "normal": [1, 0, 0], "origin": [50, 0, 0],
+                "position": 0.0, "names": ["Cylinder A", "Cylinder B"]},
+        outputs=["Other A", "Other B"],
+    ))
+
+    report = Rebuilder(document).rebuild(force=True)
+
+    assert rogue.id in report.failures
+    assert "belongs to another object" in str(report.failures[rogue.id])
+    assert {name: _state(document, name) for name in originals} == originals
+    assert document.producer_of("Cylinder A").type_name == "split"
+    assert document.producer_of("Cylinder A").id != rogue.id
+
+
+def test_repeated_duplicates_count_on_instead_of_appending_digits():
+    document = _split_cylinder()
+    names = []
+    source = "Cylinder A"
+    for _ in range(3):
+        _clones, items = paste_fragment(document, copy_fragment(document, [source]), (40, 0, 0))
+        assert Rebuilder(document).rebuild().ok
+        names.append(items[0])
+        source = items[0]
+    assert names == ["Cylinder A2", "Cylinder A3", "Cylinder A4"]
