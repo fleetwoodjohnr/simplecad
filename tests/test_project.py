@@ -7,6 +7,7 @@ still be changed afterwards and the model rebuilds.
 
 from __future__ import annotations
 
+import math
 import zipfile
 import json
 from types import SimpleNamespace
@@ -114,6 +115,59 @@ def test_a_reopened_project_is_still_parametric(stacked, tmp_path):
     assert bounding_box(reopened.bodies["Base"].shape)[1][2] == pytest.approx(30.0)
     # And the stack relationship survived the round trip.
     assert bounding_box(reopened.bodies["Lid"].shape)[0][2] == pytest.approx(30.0, abs=1e-6)
+
+
+def test_a_compact_save_keeps_only_the_finished_bodies(stacked, tmp_path):
+    """Smaller file, same model on reopening, and an early edit still rebuilds."""
+    full = save(stacked, str(tmp_path / "full.scad3"))
+    small = save(stacked, str(tmp_path / "small.scad3"), compact=True)
+    with zipfile.ZipFile(full) as a, zipfile.ZipFile(small) as b:
+        kept = json.loads(b.read("model.json"))["cache"]["entries"]
+        assert len(kept) < len(json.loads(a.read("model.json"))["cache"]["entries"])
+    assert {e["feature_id"] for e in kept.values()} == {
+        stacked.producer_of(name).id for name in stacked.bodies}
+
+    reopened, cached = load(small)
+    assert cached is True
+    assert volume(reopened.bodies["Base"].shape) == pytest.approx(60 * 40 * 12)
+    assert bounding_box(reopened.bodies["Lid"].shape)[0][2] == pytest.approx(12.0, abs=1e-6)
+
+    reopened.parameters.set("height", "30")
+    builder = Rebuilder(reopened)
+    builder.invalidate()
+    assert builder.rebuild().ok
+    assert bounding_box(reopened.bodies["Lid"].shape)[0][2] == pytest.approx(30.0, abs=1e-6)
+
+
+def test_a_compact_save_keeps_an_import_whose_file_has_gone(tmp_path, monkeypatch):
+    """Its saved result is then the only copy of that geometry."""
+    from simplecad.kernel import importing
+    from simplecad.kernel.io_formats import ImportedBody
+    from simplecad.kernel.primitives import CylinderFeature
+
+    seed = Document()
+    seed.add_feature(BoxFeature(inputs={"width": 10, "depth": 10, "height": 10}, outputs=["Box"]))
+    Rebuilder(seed).rebuild()
+    monkeypatch.setattr(importing, "read_bodies",
+                        lambda _path: [ImportedBody("Part", seed.bodies["Box"].shape)])
+    document = Document("Imported")
+    document.add_feature(importing.ImportFeature(inputs={"path": str(tmp_path / "part.step")},
+                                                 outputs=["Part"]))
+    pin = document.add_feature(CylinderFeature(inputs={"radius": 2, "height": 30, "x": 5, "y": 5},
+                                                   outputs=["Pin"]))
+    document.add_feature(operations.BooleanFeature(
+        inputs={"body": BodyRef("Part"), "tools": [BodyRef("Pin")], "operation": "cut"},
+        outputs=["Part"]))
+    assert Rebuilder(document).rebuild().ok
+    path = save(document, str(tmp_path / "small.scad3"), compact=True)
+    monkeypatch.undo()  # the source file is gone: reading it now fails
+
+    reopened, _cached = load(path)
+    reopened.feature(pin.id).inputs["radius"] = 3
+    builder = Rebuilder(reopened)
+    builder.invalidate([pin.id])
+    assert builder.rebuild().ok
+    assert volume(reopened.bodies["Part"].shape) == pytest.approx(1000 - math.pi * 9 * 10, rel=1e-6)
 
 
 def test_references_survive_the_round_trip(stacked, tmp_path):

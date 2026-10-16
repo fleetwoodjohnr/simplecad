@@ -67,3 +67,23 @@ def test_new_actions_are_offered_for_bodies(model):  # noqa: F811
     keys = [key for key, _label, _icon in available_actions(model.window.selection)]
     for key in ("colour", "turn_x", "turn_y", "turn_z", "drop_to_plate"):
         assert key in keys
+
+
+def test_preferences_turn_on_smaller_project_files(model, tmp_path, monkeypatch):  # noqa: F811
+    from simplecad.core import settings
+
+    monkeypatch.setattr(settings, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "SETTINGS_PATH", str(tmp_path / "settings.json"))
+    window = model.window
+    window.activate_tool("preferences")
+    panel = next(w for w, _a in window.stage.overlays if getattr(w, "title", "") == "Preferences")
+    assert not panel.compact.isChecked()
+    panel.compact.setChecked(True)
+    panel.commit()
+    assert settings.ui_preference("compact_saves", False) is True
+
+    sent = {}
+    monkeypatch.setattr(window.geometry, "save", lambda *a, **k: sent.update(k) or True)
+    window._project_path = str(tmp_path / "part.scad3")
+    window.save_document()
+    assert sent["compact"] is True

@@ -39,7 +39,8 @@ def test_save_captures_immutable_recipe_and_reports_worker_failure(monkeypatch, 
     feature = document.add_feature(BoxFeature(inputs={"width": 10}))
     replies = []
     client.saved.connect(replies.append)
-    assert client.save(document, str(tmp_path / "snapshot.scad3"), token=42)
+    assert client.save(document, str(tmp_path / "snapshot.scad3"), token=42, compact=True)
+    assert client._active_save["compact"] is True
     feature.inputs["width"] = 99
     assert client._active_save["document"]["features"][0]["inputs"]["width"] == 10
     client._restarts = MAX_RESTARTS

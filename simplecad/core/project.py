@@ -41,8 +41,14 @@ def _safe_entry(name: str) -> str:
     return f"{BODY_PREFIX}{keep or 'body'}.brep"
 
 
-def save(document: Document, path: str, thumbnail: bytes | None = None) -> str:
-    """Write *document* to *path*."""
+def save(document: Document, path: str, thumbnail: bytes | None = None, *,
+         compact: bool = False) -> str:
+    """Write *document* to *path*.
+
+    *compact* keeps only the results a rebuild asks for: every head and every
+    import. The file is much smaller and still reopens without rebuilding; an
+    edit further back in the timeline rebuilds the steps it depends on.
+    """
     from OCP.BRepTools import BRepTools
 
     if not path.lower().endswith(EXTENSION):
@@ -64,15 +70,25 @@ def save(document: Document, path: str, thumbnail: bytes | None = None) -> str:
     accepted = getattr(document, "_geometry_signatures", {})
     store = document._geometry_store or ResultStore()
     checkpoint = store.export(include_blobs=False)
-    # Results the reopened project can use: every current feature's, and those
-    # the most recent undo steps restore. Older history rebuilds from its
-    # recipe. Writing the whole store wrote every result the session ever
-    # produced, which is how a project reached 94 MB.
+    # Results the reopened project can use: every current feature's, so an
+    # edit anywhere stays incremental, and those the most recent undo steps
+    # restore. Older history rebuilds from its recipe. Compact drops the
+    # intermediate results; on a model built from a large mesh they are most
+    # of the file.
     from .history import RETAINED_GEOMETRY_STEPS
-    wanted = set(current.values()) | set(accepted.values())
-    for stack in ("undo", "redo"):
-        for action in payload["history"].get(stack, [])[-RETAINED_GEOMETRY_STEPS:]:
-            wanted.update(action.get("cache_keys", []))
+    if compact:
+        # Every head a rebuild asks for, hidden ones included: pasted copies
+        # keep internal heads, and rebuilding those cost 2 minutes on reopen.
+        shown = {ref.feature_id for ref in document.prepare_graph().heads.values()}
+        # An import re-reads its source file, which may have moved or gone;
+        # its saved result can be the only copy of that geometry.
+        shown |= {f.id for f in document.features if f.type_name == "import"}
+        wanted = {sig for fid in shown for sig in (current.get(fid), accepted.get(fid)) if sig}
+    else:
+        wanted = set(current.values()) | set(accepted.values())
+        for stack in ("undo", "redo"):
+            for action in payload["history"].get(stack, [])[-RETAINED_GEOMETRY_STEPS:]:
+                wanted.update(action.get("cache_keys", []))
     kept_entries = {key: entry for key, entry in checkpoint["entries"].items() if key in wanted}
     kept_blobs = {output["sha256"] for entry in kept_entries.values()
                   for output in entry.get("outputs", {}).values() if "sha256" in output}

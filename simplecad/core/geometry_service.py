@@ -572,7 +572,8 @@ def serve(connection) -> None:
                     "kind": PROGRESS, "revision": message.get("revision", 0),
                     "feature": f.name, "index": i, "total": n,
                 }))
-                path = save(snapshot, message["path"], message.get("thumbnail"))
+                path = save(snapshot, message["path"], message.get("thumbnail"),
+                            compact=bool(message.get("compact")))
                 connection.send({"kind": SAVED, "token": message.get("token"), "path": path,
                                  "generation": message.get("generation"), "error": None})
             except BaseException as exc:

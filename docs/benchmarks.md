@@ -41,8 +41,74 @@ End-of-session counters: paste checkpoints held 25 → 0, pinned history keys 82
 result-store entries 330 → 270. Cost still grows with document size (5× features),
 not with session length.
 
-## Not improved
+## Project size
 
-Re-saving `UPS Atlas.scad3`: 97.3 MB before, 97.2 MB after. Its size is one cached
+A normal save of `UPS Atlas.scad3` is unchanged: 97.3 MB. Its size is one cached
 result per current feature (many are booleans on a 12.9 MB imported mesh), not
-stale history. Save/open time unchanged (~8.5 s / ~2 s).
+stale history. The new *Smaller files* preference keeps only the results a
+rebuild asks for. Measured in the real window under Xvfb, on a copy in scratch
+space:
+
+| UPS Atlas | Normal save | Smaller files |
+|---|---|---|
+| File size | 97.3 MB | 16.8 MB |
+| Save | 12.1 s | 2.6 s |
+| Reopen (window) | 7.7 s | 4.1 s |
+| First move after reopening | 1.0 s | 1.0 s |
+| Edit a step late in the timeline (Combine17) | 0.4 s | 0.7 s |
+| Edit a step early in the timeline (Chamfer, 77–127 steps rebuilt) | 110 s | 114 s |
+
+The early edit is slow either way: it reruns the booleans against the mesh.
+
+## Compatibility with existing projects
+
+Every `.scad3` on this machine was opened read-only by the original code
+(ccf5475) and by this branch, and compared at each stage: as loaded, after the
+opening rebuild, rebuilt from the recipe with the cache discarded, after undoing
+every saved step, after redoing them all, and after a save-as and reopen
+(volume, area, bounding box and face count of every body, plus every feature's
+state). The originals were never written; their checksums and timestamps are
+unchanged.
+
+| Project | Features | Undo steps | Result |
+|---|---|---|---|
+| AtlasBox | 158 | 0 | identical |
+| Recycling Bin | 5 | 7 | identical |
+| Coffee Funnel | 6 | 22 | identical |
+| Addi_Keychain | 49 | 0 | identical |
+| AtlasBoxLower V1 | 388 | 55 | identical |
+| Dish Soap Holder | 29 | 55 | identical |
+| UPS Atlas (Copy) | 19 | 15 | identical |
+| UPS Atlas (and `Atlas Box.scad3`, a byte-identical copy) | 394 | 80 | identical |
+| Spondge Holder | 135 | 0 | bodies identical; differs only where the old code was wrong (below) |
+
+Spondge Holder holds a split half pasted by the old code. Its copied Split
+still named the original halves, so the old code built the copy's history only
+partly and, on save and reopen, replaced `Box3 A` and `Box3 B` with the copy's
+geometry. This branch builds the copy under its own names and keeps `Box3 A`/`B`
+through save and reopen.
+
+Shared by both versions, so not regressions:
+
+- Rebuilding UPS Atlas from the recipe alone fails: its import still points at
+  `~/Desktop/Atlas/UPS Atlas.step`, and that file now lives in
+  `Atlas 3D Files/Atlas PSU/`. The project opens and edits normally because the
+  saved results stand in for it.
+- Addi_Keychain and Spondge Holder do not rebuild from the recipe alone to
+  what they show: a fillet now too large and an align whose `Torus` was deleted
+  in one, a combine whose `Cylinder2` was deleted in the other. In Spondge
+  Holder an edit to `Box` therefore keeps its last good shape, in the old window
+  and the new. AtlasBoxLower V1 rebuilds to the same volume with 51 faces
+  instead of the saved 47.
+
+Undo and redo through UPS Atlas's 80 saved steps (core, per step summed):
+
+| | Original code | Branch before fix | Branch |
+|---|---|---|---|
+| Undo all 80 | 3.7 s | 3.7 s | 3.6 s |
+| Redo all 80 | 0.0 s | 45.6 s | 0.0 s |
+| Dish Soap Holder, redo all 55 | 2.0 s | 53.8 s | 2.0 s |
+
+Rebuilding from the recipe takes the same time in both versions (three
+alternating runs: Addi_Keychain 12.1–12.6 s vs 11.9–12.2 s, Dish Soap Holder
+25.8–26.0 s vs 25.7–25.9 s).

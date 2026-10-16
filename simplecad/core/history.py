@@ -15,7 +15,9 @@ from .changes import make_patch, apply_patch
 #: Undo steps whose cached geometry stays pinned in memory and in saved files.
 #: Older steps remain undoable; they rebuild from the recipe instead. Pinning
 #: all of them is what made memory, spill files and saved projects grow with
-#: every edit of a long session.
+#: every edit of a long session. The redo stack stays pinned whole in memory:
+#: it only exists after undoing, the next edit empties it, and redoing back to
+#: where you were must not rebuild every step (45 s on a 394-feature project).
 RETAINED_GEOMETRY_STEPS = 30
 
 
@@ -132,8 +134,7 @@ class History:
                                          for a, b in zip(cached[0], stamp)):
             return set(cached[1])
         keys = set(self._pending.cache_keys) if self._pending else set()
-        for action in (self._undo[-RETAINED_GEOMETRY_STEPS:]
-                       + self._redo[-RETAINED_GEOMETRY_STEPS:]):
+        for action in self._undo[-RETAINED_GEOMETRY_STEPS:] + self._redo:
             keys.update(action.cache_keys)
         self._keys_cache = (stamp, frozenset(keys))
         return keys

@@ -3506,7 +3506,8 @@ class MainWindow(QMainWindow):
         """Save the project, asking for a location the first time."""
         from PySide6.QtWidgets import QFileDialog
 
-        from ..core.project import EXTENSION, save
+        from ..core.project import EXTENSION
+        from ..core.settings import ui_preference
 
         path = self._project_path
         if ask or not path:
@@ -3517,7 +3518,8 @@ class MainWindow(QMainWindow):
             if not path:
                 return
         token = {"epoch": self._edit_epoch, "autosave": False}
-        if self.geometry.save(self.document, path, thumbnail=self._thumbnail(), token=token):
+        if self.geometry.save(self.document, path, thumbnail=self._thumbnail(), token=token,
+                              compact=ui_preference("compact_saves", False)):
             self.set_hint("Saving project…")
         else:
             self.set_hint("The geometry engine is unavailable; the project could not be saved. Retry to restart it.")

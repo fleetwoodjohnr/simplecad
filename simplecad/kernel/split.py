@@ -164,7 +164,10 @@ class SplitFeature(Feature):
         point = tuple(origin[i] + normal[i] * position for i in range(3))
 
         source = str(self.inputs.get("body"))
-        names = list(self.inputs.get("names") or [])
+        # The declared halves win. A copy pasted by an older SimpleCAD renamed
+        # its outputs but kept the original's ``names``, and wrote over the
+        # original halves. ``names`` alone still names a legacy record.
+        names = list(self.outputs if len(self.outputs) == 2 else self.inputs.get("names") or [])
         if len(names) != 2:
             names = [f"{source} A", f"{source} B"]
 

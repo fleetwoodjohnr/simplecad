@@ -340,7 +340,7 @@ class GeometryClient(QObject):
     def saving(self):
         return self._active_save is not None or bool(self._pending_saves)
 
-    def save(self, document, path, *, thumbnail=None, token=None):
+    def save(self, document, path, *, thumbnail=None, token=None, compact=False):
         """Queue an immutable recipe and history snapshot behind current work."""
         from ..core.geometry_service import SAVE
         if not self.available and not self.start():
@@ -349,7 +349,8 @@ class GeometryClient(QObject):
         history = getattr(document, "_history", None)
         payload = {"kind": SAVE, "document": document.to_dict(), "path": path,
                    "history": history.to_dict() if history else document._history_data,
-                   "thumbnail": thumbnail, "token": token, "bodies": dict(self._published_bodies),
+                   "thumbnail": thumbnail, "token": token, "compact": compact,
+                   "bodies": dict(self._published_bodies),
                    "generation": self._generation, "revision": self._latest_revision,
                    # The worker saves from its own store; send only what it lacks.
                    "cache": document._geometry_store.export(self._worker_blobs, self._worker_entries)

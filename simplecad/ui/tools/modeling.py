@@ -3601,7 +3601,7 @@ class PreferencesPanel(ToolPanel):
     confirm_label = "Save"
 
     def build(self) -> None:
-        from ...core.settings import number_preference
+        from ...core.settings import number_preference, ui_preference
 
         self.set_subtitle("Snapping applies to the next drag; undo depth applies now.")
         self.add_section("Snapping")
@@ -3611,12 +3611,21 @@ class PreferencesPanel(ToolPanel):
         self.add_section("History")
         self.add_field("history_depth", "Undo steps kept", number_preference("history_depth"),
                        Dimension.SCALAR)
+        self.add_section("Project files")
+        self.compact = QCheckBox("Smaller files: keep only the finished bodies")
+        self.compact.setToolTip("Intermediate steps are not saved. The file can be many times "
+                                "smaller and still reopens at once; an edit far back in the "
+                                "timeline rebuilds the steps it needs.")
+        self.compact.setChecked(ui_preference("compact_saves", False))
+        self.add_widget(self.compact)
 
     def commit(self) -> None:
-        from ...core.settings import NUMBER_PREFERENCES, number_preference, set_number_preference
+        from ...core.settings import (NUMBER_PREFERENCES, number_preference, set_number_preference,
+                                      set_ui_preference)
 
         for key in NUMBER_PREFERENCES:
             set_number_preference(key, self.value(key, number_preference(key)))
+        set_ui_preference("compact_saves", self.compact.isChecked())
         history = self.window_.history
         history.limit = int(number_preference("history_depth"))
         history._undo[:] = history._undo[-history.limit:]

@@ -83,6 +83,30 @@ def test_only_recent_undo_steps_pin_cached_geometry():
     assert box.inputs["height"] == 10
 
 
+def test_redoing_back_after_a_deep_undo_reuses_cached_geometry(monkeypatch):
+    document = _boxes(1)
+    history = History(document, limit=500)
+    rebuilder = Rebuilder(document)
+    box = document.features[0]
+    steps = RETAINED_GEOMETRY_STEPS + 20
+    for height in range(11, 11 + steps):
+        history.record("Height")
+        box.inputs["height"] = height
+        rebuilder.invalidate({box.id})
+        assert rebuilder.rebuild().ok
+    for _ in range(steps):
+        history.undo()
+        assert rebuilder.rebuild().ok
+    executed = []
+    execute = BoxFeature.execute
+    monkeypatch.setattr(BoxFeature, "execute", lambda self, ctx: executed.append(1) or execute(self, ctx))
+    for _ in range(steps):
+        history.redo()
+        assert rebuilder.rebuild().ok
+    assert box.inputs["height"] == 10 + steps
+    assert not executed, "every state redo returns to was built this session"
+
+
 def test_texture_transactions_pin_only_what_they_touched():
     document = _boxes(5)
     document._geometry_signatures = {f.id: f"sig-{f.id}" for f in document.features}

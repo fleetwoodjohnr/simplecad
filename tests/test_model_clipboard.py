@@ -443,19 +443,41 @@ def test_many_duplicates_of_a_modified_part_stay_independent(tmp_path):
 # ----------------------------------------------------------------------
 # Output ownership: a feature may never write over another object's body
 # ----------------------------------------------------------------------
-def test_a_feature_cannot_take_over_another_objects_body():
-    """The pre-fix paste bug, reproduced directly: a cloned Split whose name
-    list still names the original halves. It used to adopt them silently."""
-    document = _split_cylinder()
-    originals = {name: _state(document, name) for name in ("Cylinder A", "Cylinder B")}
+def _rogue_split(document, outputs):
     document.add_feature(CylinderFeature(
         inputs={"radius": "5", "height": "10", "x": 50}, outputs=["Other"],
     ))
-    rogue = document.add_feature(SplitFeature(
+    return document.add_feature(SplitFeature(
         inputs={"body": BodyRef("Other"), "normal": [1, 0, 0], "origin": [50, 0, 0],
                 "position": 0.0, "names": ["Cylinder A", "Cylinder B"]},
-        outputs=["Other A", "Other B"],
+        outputs=outputs,
     ))
+
+
+def test_a_split_pasted_by_an_older_version_builds_its_own_halves():
+    """The pre-fix paste bug as older projects saved it: a cloned Split whose
+    name list still names the original halves. It used to adopt them
+    silently; it now builds the halves it declares."""
+    document = _split_cylinder()
+    originals = {name: _state(document, name) for name in ("Cylinder A", "Cylinder B")}
+    copy = _rogue_split(document, ["Other A", "Other B"])
+
+    assert Rebuilder(document).rebuild(force=True).ok
+    assert {name: _state(document, name) for name in originals} == originals
+    assert document.producer_of("Other A").id == copy.id
+    assert document.producer_of("Cylinder A").id != copy.id
+
+
+def test_a_feature_cannot_take_over_another_objects_body(monkeypatch):
+    """Whatever a feature derives its names from, writing another object's
+    body is refused and the original stays put."""
+    document = _split_cylinder()
+    originals = {name: _state(document, name) for name in ("Cylinder A", "Cylinder B")}
+    rogue = _rogue_split(document, ["Other A", "Other B"])
+    execute = SplitFeature.execute
+    monkeypatch.setattr(SplitFeature, "execute", lambda self, ctx: {
+        ("Cylinder A" if name == "Other A" and self is rogue else name): shape
+        for name, shape in execute(self, ctx).items()})
 
     report = Rebuilder(document).rebuild(force=True)
 

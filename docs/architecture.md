@@ -510,7 +510,10 @@ now accepts a returned name only if the feature declared it, reserves it in an
 `OUTPUT_NAME_INPUTS` list, or was handed it as an input — and never if it is the
 head of an unrelated feature. A violation fails that feature, restores its
 declared outputs and leaves the other object alone. This closes the class of
-bug behind "could not be added" after duplicating a split half.
+bug behind "could not be added" after duplicating a split half. Split takes its
+halves' names from its declared outputs, so a copy pasted by an older version
+(outputs renamed, `names` still the original's) builds its own halves instead
+of failing; `names` alone still names a legacy record with no outputs.
 
 **Derived feature data is cached per recipe version.** Every recipe mutation,
 nested ones included, bumps `Feature._version` through the observable
@@ -520,10 +523,20 @@ that version. Code that edits a frozen reference in place must call `_touch()`
 (the one such place, `Document.remove_feature`, does).
 
 **History pins geometry for recent steps only.** Depth is a preference
-(default 200). `history.RETAINED_GEOMETRY_STEPS` (30) newest undo and redo steps
-keep their cached results; older ones are still undoable and rebuild from the
-recipe. Saving writes the current results plus those steps, not every result the
-session produced. Retired feature IDs are patched as set additions/removals.
+(default 200). The `history.RETAINED_GEOMETRY_STEPS` (30) newest undo steps keep
+their cached results; older ones are still undoable and rebuild from the recipe.
+The redo stack is pinned whole: it exists only after undoing, the next edit
+empties it, and redoing back to where you were must not rebuild (pinning only
+30 made that 45 s on a 394-feature project). Saving writes the current results
+plus 30 steps each way, not every result the session produced. Retired feature
+IDs are patched as set additions/removals.
+
+**Compact saves keep what a rebuild asks for.** `project.save(compact=True)`
+(Preferences → *Smaller files*) writes the results of every graph head —
+hidden heads too, since pasted copies keep internal ones and `rebuild()`
+evaluates them — plus every path-based `import`, whose source file may have
+moved and whose saved result can be the only copy. Everything else rebuilds on
+the first edit that reaches it.
 
 **Clipboard checkpoints are used once.** A paste's B-Rep checkpoint seeds the
 result store on the first rebuild and is then dropped, in the worker and — once
