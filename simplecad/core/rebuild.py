@@ -141,10 +141,14 @@ class Rebuilder:
         self._baseline_ids.difference_update(self.document.features_using_parameter(name))
 
     def _adopt_fragments(self):
-        """Migrate old clipboard checkpoints into the common result store."""
+        """Migrate clipboard checkpoints into the common result store, once.
+
+        A checkpoint either seeds the store now or can never match again (its
+        clone was edited, or its parameters changed). Keeping them made every
+        paste in a session cost a little more on every later rebuild.
+        """
         import base64
         from .geometry_service import deserialise_shape
-        retained = []
         for checkpoint in getattr(self.document, "_geometry_fragments", []):
             states = checkpoint["features"]
             if not states:
@@ -168,8 +172,7 @@ class Rebuilder:
                 if (set(shapes) == set(feature.outputs) - set(feature.dropped)
                         and all(v is not None for v in shapes.values())):
                     self.store.put(feature, self._signatures[fid], shapes)
-            retained.append(checkpoint)
-        self.document._geometry_fragments = retained
+        self.document._geometry_fragments = []
 
     def _input_context(self, feature):
         context = BuildContext(self.document)

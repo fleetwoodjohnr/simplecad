@@ -273,7 +273,8 @@ class GeometryClient(QObject):
                        if sha in document._all_assets},
             "revision": self._revision,
             "generation": self._generation,
-            "fragments": copy.deepcopy(getattr(document, "_geometry_fragments", [])),
+            # Checkpoints are never mutated after a paste creates them.
+            "fragments": list(getattr(document, "_geometry_fragments", [])),
         }
         self._latest_revision = self._revision
         self._latest_document = payload
@@ -315,7 +316,7 @@ class GeometryClient(QObject):
             "force": force,
             "revision": self._revision + 1,
             "generation": self._generation,
-            "fragments": copy.deepcopy(getattr(document, "_geometry_fragments", [])),
+            "fragments": list(getattr(document, "_geometry_fragments", [])),
         }
         self._revision += 1
         self._latest_revision = self._revision
@@ -345,14 +346,18 @@ class GeometryClient(QObject):
                    "history": history.to_dict() if history else document._history_data,
                    "thumbnail": thumbnail, "token": token, "bodies": dict(self._published_bodies),
                    "generation": self._generation, "revision": self._latest_revision,
-                   "cache": document._geometry_store.export() if document._geometry_store else None}
+                   # The worker saves from its own store; send only what it lacks.
+                   "cache": document._geometry_store.export(self._worker_blobs, self._worker_entries)
+                            if document._geometry_store else None}
         needed_assets = set(payload["document"].get("assets", []))
         for stack in ("undo", "redo"):
             for action in payload["history"].get(stack, []):
                 needed_assets.update(action.get("patch", {}).get("values", {}).get("assets", []))
         payload["assets"] = {sha: document._all_assets[sha] for sha in needed_assets
                              if sha in document._all_assets}
-        self._pending_saves.append(copy.deepcopy(payload))
+        # Built fresh above, so no deep copy: on a large project that copy, on
+        # the GUI thread every 90 s, was most of what autosave cost.
+        self._pending_saves.append(payload)
         self._send_next()
         return True
 
@@ -532,6 +537,7 @@ class GeometryClient(QObject):
                     entries, blobs = self._checkpoint_cache_keys()
                     self._worker_entries.intersection_update(entries)
                     self._worker_blobs.intersection_update(blobs)
+                self._prune_fragments()
                 self.finished.emit(message)
             elif self._pending is not None and self._pending["kind"] == REBUILD:
                 # The parent never applied this result. The child rolls back
@@ -676,6 +682,22 @@ class GeometryClient(QObject):
             from ..core.result_store import CACHE_VERSION
             restore["cache"] = {"version": CACHE_VERSION, "entries": copy.deepcopy(entries), "blobs": blobs}
         return restore
+
+    def _prune_fragments(self) -> None:
+        """Forget clipboard checkpoints the worker has answered for.
+
+        A reply to the latest revision means every request before it, and the
+        checkpoints they carried, has been processed. The window used to keep
+        them all -- one encoded B-Rep per paste -- and copy them into every
+        later request for the rest of the session.
+        """
+        document = self._document_identity
+        fragments = getattr(document, "_geometry_fragments", None)
+        if fragments:
+            document._geometry_fragments = [
+                fragment for fragment in fragments
+                if fragment["features"][-1]["id"] not in self._known_fragments
+            ]
 
     def cancel_preview(self, token) -> None:
         if token is None:

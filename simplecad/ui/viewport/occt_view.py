@@ -2036,6 +2036,12 @@ class OcctViewport(QOpenGLWidget):
         current = self._snap_effort.get(key, "full")
         if order[level] <= order[current]:
             return
+        if key not in self._snap_effort and len(self._snap_effort) >= SNAP_CACHE_LIMIT:
+            # Keys are TShapes; an unbounded map pinned every heavy body ever
+            # hovered, long after it was replaced by an edit.
+            oldest = next(iter(self._snap_effort))
+            self._snap_effort.pop(oldest)
+            self._snap_warned.discard(oldest)
         self._snap_effort[key] = level
         if key in self._snap_warned:
             return

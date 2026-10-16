@@ -64,7 +64,19 @@ def save(document: Document, path: str, thumbnail: bytes | None = None) -> str:
     accepted = getattr(document, "_geometry_signatures", {})
     store = document._geometry_store or ResultStore()
     checkpoint = store.export(include_blobs=False)
-    payload["cache"] = {"version": checkpoint["version"], "entries": copy.deepcopy(checkpoint["entries"])}
+    # Results the reopened project can use: every current feature's, and those
+    # the most recent undo steps restore. Older history rebuilds from its
+    # recipe. Writing the whole store wrote every result the session ever
+    # produced, which is how a project reached 94 MB.
+    from .history import RETAINED_GEOMETRY_STEPS
+    wanted = set(current.values()) | set(accepted.values())
+    for stack in ("undo", "redo"):
+        for action in payload["history"].get(stack, [])[-RETAINED_GEOMETRY_STEPS:]:
+            wanted.update(action.get("cache_keys", []))
+    kept_entries = {key: entry for key, entry in checkpoint["entries"].items() if key in wanted}
+    kept_blobs = {output["sha256"] for entry in kept_entries.values()
+                  for output in entry.get("outputs", {}).values() if "sha256" in output}
+    payload["cache"] = {"version": checkpoint["version"], "entries": copy.deepcopy(kept_entries)}
     payload["geometry"] = {}
     payload["diagnostics"] = {f.id: {"state": f.state.value, "message": f.message} for f in document.features}
     entries = {}
@@ -98,7 +110,7 @@ def save(document: Document, path: str, thumbnail: bytes | None = None) -> str:
                     archive.writestr(f"assets/{sha}.brep", blob)
             for sha in list(store.blobs):
                 entry = f"geometry/{sha}.brep"
-                if entry not in entries:
+                if sha in kept_blobs and entry not in entries:
                     archive.writestr(entry, store.blobs[sha])
             for name, blob in entries.items():
                 archive.writestr(name, blob)

@@ -274,3 +274,4 @@ class ContextBar(FloatingCard):
                 lambda _=False, k=key: self.action_triggered.emit(k)
             )
         menu.exec(self.overflow.mapToGlobal(self.overflow.rect().topLeft()))
+        menu.deleteLater()

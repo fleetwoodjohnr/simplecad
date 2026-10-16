@@ -12,6 +12,12 @@ from dataclasses import field
 import json
 from .changes import make_patch, apply_patch
 
+#: Undo steps whose cached geometry stays pinned in memory and in saved files.
+#: Older steps remain undoable; they rebuild from the recipe instead. Pinning
+#: all of them is what made memory, spill files and saved projects grow with
+#: every edit of a long session.
+RETAINED_GEOMETRY_STEPS = 30
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -41,7 +47,10 @@ def _restore_recipe(feature, source) -> None:
 class History:
     """Undo/redo stacks over document snapshots."""
 
-    def __init__(self, document, limit: int = 1000) -> None:
+    def __init__(self, document, limit: int | None = None) -> None:
+        if limit is None:
+            from .settings import number_preference
+            limit = int(number_preference("history_depth"))
         self.document = document
         self.limit = limit
         self._undo: list[Action] = []
@@ -75,11 +84,27 @@ class History:
         return self._apply(pending) if pending is not None else set()
 
     def record_data(self, label, before):
+        """Record a change already applied, given the state from before it.
+
+        Pins only the results of the features the change touched -- it used to
+        pin every feature in the document, once per texture edit.
+        """
         self._finish_pending(before)
-        self._undo.append(Action(label, json.dumps(make_patch(self.document.to_dict(), before)),
-                                 tuple(getattr(self.document, "_geometry_signatures", {}).values())))
+        patch = make_patch(self.document.to_dict(), before)
+        signatures = dict(getattr(self.document, "_geometry_signatures", {}))
+        self._undo.append(Action(label, json.dumps(patch), self._cache_keys_for(patch, signatures)))
         self._undo[:] = self._undo[-self.limit:]
         self._redo.clear()
+
+    def _cache_keys_for(self, patch, signatures) -> tuple[str, ...]:
+        """The *signatures* of every feature *patch* touches, and their dependents."""
+        affected = set(patch.get("collections", {}).get("features", {}).get("set", {}))
+        affected.update(patch.get("collections", {}).get("features", {}).get("remove", []))
+        parameter_change = patch.get("collections", {}).get("parameters", {})
+        for name in set(parameter_change.get("set", {})) | set(parameter_change.get("remove", [])):
+            affected.update(self.document.features_using_parameter(name))
+        affected = self.document.dependents_of(affected) if affected else set()
+        return tuple(signatures[fid] for fid in affected if fid in signatures)
 
     def _finish_pending(self, current=None):
         if self._pending is None:
@@ -87,14 +112,7 @@ class History:
         before, self._pending = self._pending, None
         current = self.document.to_dict() if current is None else current
         patch = make_patch(current, before.data)
-        affected = set(patch.get("collections", {}).get("features", {}).get("set", {}))
-        affected.update(patch.get("collections", {}).get("features", {}).get("remove", []))
-        parameter_change = patch.get("collections", {}).get("parameters", {})
-        for name in set(parameter_change.get("set", {})) | set(parameter_change.get("remove", [])):
-            affected.update(self.document.features_using_parameter(name))
-        affected = self.document.dependents_of(affected) if affected else set()
-        keys = tuple(before.cache_by_feature[fid] for fid in affected
-                     if fid in before.cache_by_feature)
+        keys = self._cache_keys_for(patch, before.cache_by_feature)
         self._undo.append(Action(before.label, json.dumps(patch), keys))
         self._undo[:] = self._undo[-self.limit:]
 
@@ -114,7 +132,8 @@ class History:
                                          for a, b in zip(cached[0], stamp)):
             return set(cached[1])
         keys = set(self._pending.cache_keys) if self._pending else set()
-        for action in self._undo + self._redo:
+        for action in (self._undo[-RETAINED_GEOMETRY_STEPS:]
+                       + self._redo[-RETAINED_GEOMETRY_STEPS:]):
             keys.update(action.cache_keys)
         self._keys_cache = (stamp, frozenset(keys))
         return keys
@@ -188,15 +207,24 @@ class History:
             "parameters": (document.parameters, "name"),
         }
         inverse = {"values": {}, "collections": {}}
+        # Read only what the patch names: sorting every retired ID and scanning
+        # every feature for assets on each undo was O(project) for nothing.
         values = {
-            "title": document.title, "counters": document._counters,
-            "retired_ids": sorted(document._retired_ids), "metadata": document.metadata,
-            "assets": sorted(document.active_asset_keys()),
+            "title": lambda: document.title, "counters": lambda: document._counters,
+            "retired_ids": lambda: sorted(document._retired_ids),
+            "metadata": lambda: document.metadata,
+            "assets": lambda: sorted(document.active_asset_keys()),
         }
         for key in patch.get("values", {}):
-            inverse["values"][key] = json.loads(json.dumps(values.get(key)))
+            inverse["values"][key] = json.loads(json.dumps(values[key]() if key in values else None))
+        for key, change in patch.get("sets", {}).items():
+            present = document._retired_ids if key == "retired_ids" else set()
+            inverse.setdefault("sets", {})[key] = {
+                "add": [item for item in change.get("remove", []) if item in present],
+                "remove": [item for item in change.get("add", []) if item not in present],
+            }
         for key, change in patch.get("keyed", {}).items():
-            mapping = values.get(key) or {}
+            mapping = values[key]() if key in values else {}
             touched = set(change.get("set", {})) | set(change.get("remove", []))
             inverse.setdefault("keyed", {})[key] = {
                 "set": {k: json.loads(json.dumps(mapping[k])) for k in touched if k in mapping},
@@ -274,6 +302,10 @@ class History:
             elif key == "assets":
                 document.assets = {name: document._all_assets[name] for name in value or ()
                                    if name in document._all_assets}
+        retired = patch.get("sets", {}).get("retired_ids")
+        if retired:
+            document._retired_ids = ((document._retired_ids - set(retired.get("remove", [])))
+                                     | set(retired.get("add", [])))
         counters = patch.get("keyed", {}).get("counters")
         if counters:
             for name in counters.get("remove", []):

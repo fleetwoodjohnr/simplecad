@@ -237,13 +237,35 @@ class Feature:
         if document is not None:
             document._feature_changed(self)
 
+    def cached(self, key, compute):
+        """*compute()*, remembered until this feature's recipe next changes.
+
+        Every recipe mutation -- nested ones included, via the observable
+        containers -- bumps ``_version``. The graph walks every feature's
+        inputs several times per edit (bodies read, sub-shape references,
+        parameters, the dependency key); at a few hundred features that walk
+        was most of the GUI-thread cost of each edit and each undo.
+        """
+        version = getattr(self, "_version", 0)
+        memo = self.__dict__.get("_memo")
+        if memo is None or memo[0] != version:
+            memo = (version, {})
+            object.__setattr__(self, "_memo", memo)
+        values = memo[1]
+        if key not in values:
+            values[key] = compute()
+        return values[key]
+
     def dependency_key(self):
         from .graph import input_names
-        return (tuple(self.outputs), tuple(input_names(self)),
-                tuple((r.body, r.feature_id) for r in self.shape_refs()),
-                tuple(self.bindings.items()), tuple(self.output_ids.items()),
-                tuple((str(v), v.object_id, v.feature_id) for v in self.reference_values()),
-                tuple(sorted(self.parameter_names())))
+
+        def compute():
+            return (tuple(self.outputs), tuple(input_names(self)),
+                    tuple((r.body, r.feature_id) for r in self.shape_refs()),
+                    tuple(self.bindings.items()), tuple(self.output_ids.items()),
+                    tuple((str(v), v.object_id, v.feature_id) for v in self.reference_values()),
+                    tuple(sorted(self.parameter_names())))
+        return self.cached("dependency_key", compute)
 
     def __init__(
         self,
@@ -275,7 +297,7 @@ class Feature:
             elif isinstance(value, (list, tuple)):
                 for child in value:
                     yield from walk(child)
-        yield from walk(self.inputs)
+        return iter(self.cached("reference_values", lambda: tuple(walk(self.inputs))))
 
     def body_inputs(self) -> list[str]:
         """Names of bodies this feature reads."""
@@ -292,7 +314,7 @@ class Feature:
             elif isinstance(value, (list, tuple)):
                 for child in value:
                     yield from walk(child)
-        return list(walk(self.inputs))
+        return list(self.cached("shape_refs", lambda: tuple(walk(self.inputs))))
 
     def rename_output_inputs(self, mapping: dict[str, str]) -> None:
         """Apply an output rename to the name lists in :data:`OUTPUT_NAME_INPUTS`."""
@@ -303,11 +325,14 @@ class Feature:
     def parameter_names(self) -> set[str]:
         """Parameters referenced by this feature's expressions."""
         from .params import dependencies
-        names: set[str] = set()
-        for value in self.inputs.values():
-            if isinstance(value, str) and not isinstance(value, BodyRef):
-                names |= dependencies(value)
-        return names
+
+        def compute():
+            names: set[str] = set()
+            for value in self.inputs.values():
+                if isinstance(value, str) and not isinstance(value, BodyRef):
+                    names |= dependencies(value)
+            return frozenset(names)
+        return set(self.cached("parameter_names", compute))
 
     # -- execution ------------------------------------------------------
     def execute(self, ctx: BuildContext) -> dict[str, Any]:
@@ -594,6 +619,8 @@ class Document:
                         for shape_ref in child.shape_refs():
                             if shape_ref.feature_id == feature_id and shape_ref.body == alias:
                                 object.__setattr__(shape_ref, "feature_id", source.feature_id)
+                                # A frozen ref edited in place notifies nothing.
+                                child._touch()
         self._retired_ids.add(feature_id)
         self.features = [f for f in self.features if f.id != feature_id]
         for name, oid in feature.output_ids.items():

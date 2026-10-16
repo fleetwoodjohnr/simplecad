@@ -41,6 +41,13 @@ def output_id(feature_id, name):
 
 
 def input_names(feature):
+    cached = getattr(feature, "cached", None)
+    if cached is not None:
+        return list(cached("input_names", lambda: tuple(_input_names(feature))))
+    return _input_names(feature)
+
+
+def _input_names(feature):
     names = list(feature.body_inputs())
     names.extend(ref.body for ref in feature.shape_refs() if ref.body)
     # Older sketch features use plain strings. Keep their UI representation,

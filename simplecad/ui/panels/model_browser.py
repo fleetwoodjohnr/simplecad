@@ -443,6 +443,7 @@ class ModelBrowser(FloatingCard):
             menu.addSeparator()
             menu.addAction("Delete group", lambda: self.group_delete_requested.emit(name))
             menu.exec(self.bodies_tree.mapToGlobal(position))
+            menu.deleteLater()
             return
 
         body = self.document.body(name)
@@ -472,6 +473,7 @@ class ModelBrowser(FloatingCard):
         menu.addSeparator()
         menu.addAction("Delete", lambda: self.delete_requested.emit(name))
         menu.exec(self.bodies_tree.mapToGlobal(position))
+        menu.deleteLater()
 
     def _feature_menu(self, position) -> None:
         from PySide6.QtWidgets import QMenu
@@ -506,6 +508,7 @@ class ModelBrowser(FloatingCard):
             "Delete", lambda: self.feature_action.emit(feature_id, "delete")
         )
         menu.exec(self.history_list.mapToGlobal(position))
+        menu.deleteLater()
 
     # -- renaming --------------------------------------------------------
     def _rename_row(self, item: QTreeWidgetItem, _column: int = 0) -> None:

@@ -2907,6 +2907,7 @@ class MainWindow(QMainWindow):
         for key, label, _icon_name in actions:
             menu.addAction(label, lambda _checked=False, k=key: self.run_action(k))
         menu.exec(self.stage.viewport.mapToGlobal(position))
+        menu.deleteLater()
 
     def activate_tool(self, key: str) -> None:
         from .tools.registry import activate
@@ -3454,6 +3455,7 @@ class MainWindow(QMainWindow):
         button = self.top_bar.buttons.get("open")
         origin = button.mapToGlobal(button.rect().bottomLeft()) if button else None
         menu.exec(origin)
+        menu.deleteLater()
 
     def open_document(self) -> None:
         from PySide6.QtWidgets import QFileDialog
