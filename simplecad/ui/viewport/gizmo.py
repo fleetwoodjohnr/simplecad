@@ -24,13 +24,20 @@ ROTATION_SNAP_RELEASE = 8.0
 
 @dataclass
 class RotationSnapState:
-    """Unwrap a ring drag and magnetically lock it to quarter turns."""
+    """Unwrap a ring drag and magnetically lock it to multiples of *step*.
+
+    The starting angle is deliberately *not* a detent. It used to be, so any
+    drag under the release distance (8 degrees) snapped back to zero and
+    committed nothing -- a small rotation simply failed.
+    """
 
     previous: float | None = None
     accumulated: float = 0.0
     locked: float | None = None
+    step: float = ROTATION_SNAP_STEP
 
-    def update(self, wrapped: float, bypass: bool = False) -> tuple[float, bool]:
+    def update(self, wrapped: float, bypass: bool = False,
+               fine: bool = False) -> tuple[float, bool]:
         if self.previous is None:
             self.accumulated = wrapped
         else:
@@ -41,15 +48,38 @@ class RotationSnapState:
         if bypass:
             self.locked = None
             return self.accumulated, False
+        if fine:
+            # Ctrl: exact whole degrees, for numbers that read cleanly.
+            self.locked = None
+            return float(round(self.accumulated)), True
+        capture = min(ROTATION_SNAP_CAPTURE, self.step * 0.2)
+        release = capture * ROTATION_SNAP_RELEASE / ROTATION_SNAP_CAPTURE
         if self.locked is not None:
-            if abs(self.accumulated - self.locked) <= ROTATION_SNAP_RELEASE:
+            if abs(self.accumulated - self.locked) <= release:
                 return self.locked, True
             self.locked = None
-        target = round(self.accumulated / ROTATION_SNAP_STEP) * ROTATION_SNAP_STEP
-        if abs(self.accumulated - target) <= ROTATION_SNAP_CAPTURE:
+        target = round(self.accumulated / self.step) * self.step
+        if target != 0.0 and abs(self.accumulated - target) <= capture:
             self.locked = target
             return target, True
         return self.accumulated, False
+
+
+_AXES = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+
+def ring_angle(transform, axis) -> float:
+    """The signed angle, in degrees, a rotation turns about a known *axis*.
+
+    Read straight from the quaternion: ``q = (axis * sin(t/2), cos(t/2))``.
+    Euler angles cannot be used for this -- the middle angle of any Euler
+    convention is confined to +/-90 degrees, which is why the Y ring used to
+    fold back on itself past a quarter turn and could never reach 180.
+    """
+    q = transform.GetRotation()
+    along = q.X() * axis[0] + q.Y() * axis[1] + q.Z() * axis[2]
+    degrees = math.degrees(2.0 * math.atan2(along, q.W()))
+    return (degrees + 180.0) % 360.0 - 180.0
 
 
 class TransformGizmo(QObject):
@@ -71,8 +101,10 @@ class TransformGizmo(QObject):
         self._allow_translation = True
         self._allow_rotation = True
         self._pivot = (0.0, 0.0, 0.0)
-        self._rotation_state = RotationSnapState()
+        self._rotation_state = RotationSnapState(step=ROTATION_SNAP_STEP)
         self._rotation_snapped = False
+        self._screen_fallback = None
+        self.rotation_step = ROTATION_SNAP_STEP
         self.translation_filter = None
         self.translation_snap = ""
 
@@ -150,6 +182,9 @@ class TransformGizmo(QObject):
         self._allow_translation = bool(allow_translation)
         self._allow_rotation = bool(allow_rotation)
         self._pivot = tuple(pivot) if pivot is not None else (0.0, 0.0, 0.0)
+        from ...core.settings import number_preference
+        self.rotation_step = number_preference("rotation_snap")
+        self._rotation_state = RotationSnapState(step=self.rotation_step)
         self.viewport.refresh()
         return True
 
@@ -166,7 +201,7 @@ class TransformGizmo(QObject):
         self._dragging = False
         self._start = None
         self._last = None
-        self._rotation_state = RotationSnapState()
+        self._rotation_state = RotationSnapState(step=self.rotation_step)
         self._rotation_snapped = False
         self.translation_filter = None
         self.translation_snap = ""
@@ -199,8 +234,9 @@ class TransformGizmo(QObject):
         self._dragging = True
         self._start = (device_x, device_y)
         self._last = None
-        self._rotation_state = RotationSnapState()
+        self._rotation_state = RotationSnapState(step=self.rotation_step)
         self._rotation_snapped = False
+        self._screen_fallback = None
         return True
 
     def drag(self, device_x: int, device_y: int, modifiers=None) -> None:
@@ -209,26 +245,30 @@ class TransformGizmo(QObject):
         if self._allow_rotation and not self._allow_translation:
             from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
 
-            raw = gp_Trsf()
-            if not self._manipulator.ObjectTransformation(
-                device_x, device_y, self.viewport.view, raw
-            ):
-                return
-            components = _decompose(
-                raw, allow_translation=False, allow_rotation=True
-            )
             axis_index = int(self._manipulator.ActiveAxisIndex())
             if axis_index not in (0, 1, 2):
                 return
-            wrapped = components[3 + axis_index]
+            axis = _AXES[axis_index]
+            raw = gp_Trsf()
+            if self._screen_fallback is None and self._manipulator.ObjectTransformation(
+                device_x, device_y, self.viewport.view, raw
+            ):
+                wrapped = ring_angle(raw, axis)
+            else:
+                # OCCT cannot intersect the cursor ray with a ring seen edge-on
+                # -- two of the three rings in every standard view -- and used
+                # to ignore the drag outright. Carry on from the screen.
+                wrapped = self._screen_ring_angle(device_x, device_y, axis)
+                if wrapped is None:
+                    return
             bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
+            fine = bool(modifiers is not None and modifiers & Qt.ControlModifier)
             angle, self._rotation_snapped = self._rotation_state.update(
-                wrapped, bypass=bypass
+                wrapped, bypass=bypass, fine=fine
             )
-            axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
             transform = gp_Trsf()
             transform.SetRotation(
-                gp_Ax1(gp_Pnt(*self._pivot), gp_Dir(*axes[axis_index])),
+                gp_Ax1(gp_Pnt(*self._pivot), gp_Dir(*axis)),
                 math.radians(angle),
             )
             self._manipulator.Transform(transform)
@@ -271,7 +311,8 @@ class TransformGizmo(QObject):
                         if index != dominant and abs(translation[index]) < magnitude * .002:
                             translation[index] = 0.0
                 bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
-                dx, dy, dz = self.translation_filter(tuple(translation), bypass)
+                fine = bool(modifiers is not None and modifiers & Qt.ControlModifier)
+                dx, dy, dz = self.translation_filter(tuple(translation), bypass, fine)
                 transform = gp_Trsf()
                 transform.SetTranslation(gp_Vec(dx, dy, dz))
                 self._manipulator.Transform(transform)
@@ -294,6 +335,48 @@ class TransformGizmo(QObject):
             # committed nothing.
             self.changed.emit(*self._last)
 
+    def _screen_ring_angle(self, device_x, device_y, axis):
+        """The ring angle from screen motion alone, continuing the current drag.
+
+        Face-on enough, it is the angle swept around the projected pivot.
+        Edge-on, the ring is a line on screen, so motion *along* that line
+        turns it -- the near side of a ring moves along ``view x axis`` for a
+        positive turn -- at one radian per gizmo radius.
+        """
+        view = self.viewport.view
+        try:
+            px, py = view.Convert(*self._pivot)
+            eye = view.Camera().Direction()
+        except Exception:  # noqa: BLE001 - behind the camera
+            return None
+        if self._screen_fallback is None:
+            base = self._rotation_state.previous or 0.0
+            self._screen_fallback = (device_x, device_y, base)
+        x0, y0, base = self._screen_fallback
+        d = (eye.X(), eye.Y(), eye.Z())
+        facing = sum(a * b for a, b in zip(axis, d))
+        if abs(facing) > 0.35:
+            swept = (math.atan2(-(device_y - py), device_x - px)
+                     - math.atan2(-(y0 - py), x0 - px))
+            turned = math.degrees(swept) * (1.0 if facing < 0 else -1.0)
+        else:
+            tangent = (d[1] * axis[2] - d[2] * axis[1],
+                       d[2] * axis[0] - d[0] * axis[2],
+                       d[0] * axis[1] - d[1] * axis[0])
+            reach = self.viewport.mm_per_pixel(self._pivot) * 50.0
+            try:
+                tx, ty = view.Convert(*(self._pivot[i] + tangent[i] * reach for i in range(3)))
+            except Exception:  # noqa: BLE001
+                return None
+            sx, sy = tx - px, -(ty - py)
+            length = math.hypot(sx, sy)
+            if length < 1e-6:
+                return None
+            radius = 96.0 * self.viewport.devicePixelRatioF()
+            moved = ((device_x - x0) * sx - (device_y - y0) * sy) / length
+            turned = math.degrees(moved / radius)
+        return (base + turned + 180.0) % 360.0 - 180.0
+
     def release(self, apply: bool = True):
         """End the drag. Returns the transform components the user dragged out."""
         if not self._dragging or self._manipulator is None:
@@ -306,8 +389,9 @@ class TransformGizmo(QObject):
         manipulator.DeactivateCurrentMode()
         self._dragging = False
         self._last = None
-        self._rotation_state = RotationSnapState()
+        self._rotation_state = RotationSnapState(step=self.rotation_step)
         self._rotation_snapped = False
+        self._screen_fallback = None
         self.viewport.refresh()
         return components
 
@@ -317,9 +401,9 @@ def _decompose(
 ) -> tuple[float, float, float, float, float, float]:
     """Split a ``gp_Trsf`` into translation and XYZ rotation, in mm and degrees.
 
-    Euler angles in extrinsic XYZ order, because that is the order
-    ``MoveFeature`` composes its rotations in -- so a dragged transform and a
-    typed one mean the same thing.
+    Extrinsic XYZ: about world X first, then Y, then Z (``R = Rz*Ry*Rx``),
+    which is how a ``MoveFeature`` with ``order: "xyz"`` composes them. Not
+    for reading a ring drag -- see :func:`ring_angle`.
     """
     translation = transform.TranslationPart()
     dx, dy, dz = (

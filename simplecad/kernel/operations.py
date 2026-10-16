@@ -740,6 +740,28 @@ class RoundPushPullFeature(_BodyOperation):
             )
 
 
+def move_transform(translate, rotations, pivot, order: str = "") -> object:
+    """The ``gp_Trsf`` a Move applies: rotate about *pivot*, then translate.
+
+    ``order="xyz"`` turns about world X first, then Y, then Z -- the order the
+    Rotate panel lists them in. Moves saved before that key existed compose
+    the other way round (Z first), and keep doing so, or reopening an old
+    project with a two-axis rotation would quietly re-orient the part.
+    The Rotate panel's live preview uses this same function, so what it shows
+    is what the feature builds.
+    """
+    transform = make_transform(translate=tuple(translate))
+    steps = list(zip(((1, 0, 0), (0, 1, 0), (0, 0, 1)), rotations))
+    if order == "xyz":
+        steps.reverse()
+    for axis, angle in steps:
+        if abs(angle) > 1e-12:
+            transform = transform.Multiplied(
+                make_transform(rotate_axis=axis, rotate_degrees=angle, origin=tuple(pivot))
+            )
+    return transform
+
+
 @register("move")
 class MoveFeature(_BodyOperation):
     label = "Move"
@@ -750,26 +772,16 @@ class MoveFeature(_BodyOperation):
         # Rotate about the body's own centre, not the world origin. Spinning a
         # part that happens to sit at x=150 around (0,0,0) flings it across the
         # scene, which is never what "rotate this 90 degrees" means.
-        low, high = bounding_box(body)
-        pivot = tuple((a + b) / 2.0 for a, b in zip(low, high))
         if self.inputs.get("pivot"):
             pivot = tuple(self.inputs["pivot"])
-
-        transform = make_transform(
-            translate=(
-                ctx.value(self, "dx", 0.0),
-                ctx.value(self, "dy", 0.0),
-                ctx.value(self, "dz", 0.0),
-            )
+        else:
+            low, high = bounding_box(body)
+            pivot = tuple((a + b) / 2.0 for a, b in zip(low, high))
+        transform = move_transform(
+            [ctx.value(self, key, 0.0) for key in ("dx", "dy", "dz")],
+            [ctx.value(self, key, 0.0) for key in ("rx", "ry", "rz")],
+            pivot, str(self.inputs.get("order", "")),
         )
-        for axis, key in (((1, 0, 0), "rx"), ((0, 1, 0), "ry"), ((0, 0, 1), "rz")):
-            angle = ctx.value(self, key, 0.0)
-            if abs(angle) > 1e-12:
-                transform = transform.Multiplied(
-                    make_transform(
-                        rotate_axis=axis, rotate_degrees=angle, origin=pivot
-                    )
-                )
         return self._emit(transformed(body, transform, copy_geometry=False))
 
 

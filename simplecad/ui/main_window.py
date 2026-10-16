@@ -661,6 +661,26 @@ class ViewportStage(QWidget):
             button.apply_palette(palette)
 
 
+def _world_axes(right, up, forward):
+    """The signed world axes that best match screen right, up and depth.
+
+    An arrow press is an exact step along *one* model axis. Stepping along the
+    raw camera vectors instead moved a part diagonally in the default iso view
+    -- 0.18 mm in X and 0.18 in Y for "right" -- and nothing landed on a round
+    number. Right picks first, then up from what is left, and depth gets the
+    remaining axis, so the three can never collapse onto the same one.
+    """
+    remaining = [0, 1, 2]
+    chosen = []
+    for vector in (right, up, forward):
+        index = max(remaining, key=lambda i: abs(vector[i]))
+        remaining.remove(index)
+        axis = [0.0, 0.0, 0.0]
+        axis[index] = 1.0 if vector[index] >= 0 else -1.0
+        chosen.append(tuple(axis))
+    return tuple(chosen)
+
+
 class MainWindow(QMainWindow):
     """SimpleCAD's window."""
 
@@ -1279,6 +1299,8 @@ class MainWindow(QMainWindow):
         gizmo = self.stage.viewport.gizmo
         if gizmo is not None:
             gizmo.detach()
+            # Parented to the window, so without this every attach leaked one.
+            gizmo.deleteLater()
         self.stage.viewport.gizmo = None
 
     # -- direct manipulation ---------------------------------------------
@@ -1420,6 +1442,7 @@ class MainWindow(QMainWindow):
             forward[2] * up[0] - forward[0] * up[2],
             forward[0] * up[1] - forward[1] * up[0],
         ))
+        right, up, forward = _world_axes(right, up, forward)
         names = list(self.selection.bodies)
         state = {
             "kind": "move", "bodies": names,
@@ -1606,9 +1629,13 @@ class MainWindow(QMainWindow):
         finally:
             self._nudge_refreshing = False
         # Placement stores durable references and re-resolves them against a
-        # newly displayed body without reading the camera again.
-        for panel, _anchor in self.stage.overlays:
-            if hasattr(panel, "_placement_refs"):
+        # newly displayed body without reading the camera again. Move/Rotate
+        # re-attach their gizmo to the presentations that replaced the old ones.
+        for panel, _anchor in list(self.stage.overlays):
+            hook = getattr(panel, "on_model_rebuilt", None)
+            if hook is not None:
+                hook()
+            elif hasattr(panel, "_placement_refs"):
                 panel.preview()
 
     def _restore_nudge_selection(self) -> None:

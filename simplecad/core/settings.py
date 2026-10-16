@@ -225,3 +225,35 @@ def set_theme_choice(value: str) -> bool:
     data = _read()
     data["theme"] = value
     return _write(data)
+
+
+# ----------------------------------------------------------------------
+# Modelling preferences
+# ----------------------------------------------------------------------
+#: Numeric preferences, their defaults and the range a stored value must lie in.
+NUMBER_PREFERENCES: dict[str, tuple[float, float, float]] = {
+    "rotation_snap": (90.0, 1.0, 180.0),   # degrees between magnetic detents
+    "move_step": (1.0, 0.01, 100.0),       # mm per gizmo translation step
+    "history_depth": (200, 10, 2000),      # undo steps kept
+}
+
+
+def number_preference(name: str) -> float:
+    """A numeric modelling preference, falling back to its default if unset or out of range."""
+    default, low, high = NUMBER_PREFERENCES[name]
+    stored = _read().get("modelling")
+    value = stored.get(name) if isinstance(stored, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        return default
+    return type(default)(value)
+
+
+def set_number_preference(name: str, value: float) -> bool:
+    default, low, high = NUMBER_PREFERENCES[name]
+    data = _read()
+    modelling = data.get("modelling")
+    if not isinstance(modelling, dict):
+        modelling = {}
+    modelling[name] = type(default)(min(high, max(low, value)))
+    data["modelling"] = modelling
+    return _write(data)

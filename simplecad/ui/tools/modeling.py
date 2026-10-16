@@ -333,35 +333,192 @@ class PushPullPanel(_SelectionTool):
 
 
 class _TransformPanel(_SelectionTool):
-    """Shared implementation for the deliberately separate Move and Rotate tools."""
+    """Shared implementation for the deliberately separate Move and Rotate tools.
+
+    The panel works on a *latched subject* -- the bodies selected when the
+    gizmo attached -- rather than on whatever happens to be selected when a
+    drag ends. It used to read the live selection at commit, so a click that
+    missed a ring and landed on empty space left the gizmo on screen with
+    nothing to apply it to, and a click on another body applied the drag to
+    *that* body. A new body selection re-targets the panel; an empty click
+    does not.
+
+    It also stays open after each commit and re-attaches once the rebuild has
+    landed, so turning a part twice no longer means reselecting it and
+    reopening the tool. Esc or Cancel finishes.
+    """
 
     mode = "move"
     field_specs = (("dx", "X", Dimension.LENGTH),
                    ("dy", "Y", Dimension.LENGTH),
                    ("dz", "Z", Dimension.LENGTH))
+    pivot_choices = ("Centre of selection", "World origin", "Custom point")
 
     def build(self) -> None:
-        bodies = self.selection.bodies
-        groups = self.selection.groups
-        subject = ", ".join(groups) if groups else ", ".join(bodies)
-        if groups:
-            subject += f" ({len(bodies)} objects, transforming together)"
-        verb = "move" if self.mode == "move" else "rotate"
-        self.set_subtitle(
-            f"{subject} — drag a handle, or type exact values."
-            if bodies else f"Select a body to {verb}."
-        )
-        if self.mode == "move" and bodies:
-            self.set_subtitle(
-                f"{subject} — ←/→ changes X, ↓/↑ changes Y, exactly 0.25 mm per press."
-            )
+        from ...core.settings import number_preference
+
+        self._subject = list(self.selection.bodies)
+        self._subject_groups = list(self.selection.groups)
+        self._move_step = number_preference("move_step")
+        self._rotation_step = number_preference("rotation_snap")
         for key, label, dimension in self.field_specs:
-            self.add_field(key, label, 0.0, dimension)
+            field = self.add_field(key, label, 0.0, dimension)
+            field.edited_live.connect(lambda _value: self.preview())
         self._origin_ghost = False
+        self._preview_ghost = False
         self._translation_locks = {}
         self._translation_geometry = None
         self._snap_presentation = None
+        self._active_pivot = None
+        self._picking_pivot = False
+        if self.mode == "rotate":
+            self._build_pivot_controls()
+        self._describe()
         self._attach_gizmo()
+
+    # -- subject and pivot -------------------------------------------------
+    def _subject_text(self) -> str:
+        groups = [g for g in self._subject_groups if g in self.window_.document.groups]
+        text = ", ".join(groups) if groups else ", ".join(self._subject)
+        if groups:
+            text += f" ({len(self._subject)} objects, transforming together)"
+        return text
+
+    def _describe(self) -> None:
+        verb = "move" if self.mode == "move" else "rotate"
+        if not self._subject:
+            self.set_subtitle(f"Select a body to {verb}.")
+        elif self.window_.is_rebuilding:
+            self.set_subtitle(f"{self._subject_text()} — updating the model…")
+        elif self.mode == "move":
+            self.set_subtitle(
+                f"{self._subject_text()} — drag an arrow ({self._move_step:g} mm steps; "
+                f"Shift free, Ctrl fine), or type. Arrow keys step 0.25 mm."
+            )
+        else:
+            self.set_subtitle(
+                f"{self._subject_text()} — drag a ring (snaps every {self._rotation_step:g}°; "
+                f"Shift free, Ctrl whole degrees), or type. Turns X, then Y, then Z."
+            )
+
+    def _build_pivot_controls(self) -> None:
+        self.add_section("Turn about")
+        self.pivot_choice = QComboBox()
+        self.pivot_choice.addItems(self.pivot_choices)
+        self.pivot_choice.currentIndexChanged.connect(self._pivot_changed)
+        self.add_widget(self.pivot_choice)
+        self._pivot_rows = []
+        for key, label in (("px", "Pivot X"), ("py", "Pivot Y"), ("pz", "Pivot Z")):
+            field = self.add_field(key, label, 0.0, Dimension.LENGTH, commit_on_return=False)
+            field.committed.connect(lambda _value: self._pivot_changed())
+            self._pivot_rows.append(field.parentWidget())
+        self.pick_pivot = GhostButton("Pick a point on the model")
+        self.pick_pivot.setToolTip("Click a corner, edge midpoint, hole or face centre")
+        self.pick_pivot.clicked.connect(self._begin_pivot_pick)
+        self.add_widget(self.pick_pivot)
+        self._show_pivot_fields()
+
+    def _show_pivot_fields(self) -> None:
+        custom = getattr(self, "pivot_choice", None) is not None and self.pivot_choice.currentIndex() == 2
+        for row in getattr(self, "_pivot_rows", []):
+            row.setVisible(custom)
+        if getattr(self, "pick_pivot", None) is not None:
+            self.pick_pivot.setVisible(custom)
+        self.relayout()
+
+    def _pivot_changed(self, *_args) -> None:
+        self._show_pivot_fields()
+        self._clear_gizmo_feedback()
+        self._attach_gizmo()
+        self.preview()
+
+    def _pivot_point(self, names):
+        choice = self.pivot_choice.currentIndex() if hasattr(self, "pivot_choice") else 0
+        if choice == 1:
+            return (0.0, 0.0, 0.0)
+        if choice == 2:
+            return (self.value("px"), self.value("py"), self.value("pz"))
+        return self._shared_pivot(names)
+
+    def _begin_pivot_pick(self) -> None:
+        viewport = self.window_.stage.viewport
+        overlay = self.window_.stage.measure_overlay
+        self._picking_pivot = True
+        self.window_.detach_gizmo()
+        viewport.clear_snap_cache()
+        viewport.begin_point_pick()
+        overlay.attach(viewport.project)
+        overlay.setGeometry(self.window_.stage.rect())
+        overlay.show()
+        overlay.raise_()
+        viewport.snap_hovered.connect(self._on_pivot_hover)
+        viewport.snap_picked.connect(self._on_pivot_picked)
+        self.window_.set_hint("Click the point to turn about. Esc cancels.")
+
+    def _end_pivot_pick(self) -> None:
+        if not self._picking_pivot:
+            return
+        self._picking_pivot = False
+        viewport = self.window_.stage.viewport
+        overlay = self.window_.stage.measure_overlay
+        for signal, slot in ((viewport.snap_hovered, self._on_pivot_hover),
+                             (viewport.snap_picked, self._on_pivot_picked)):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        viewport.end_point_pick()
+        overlay.clear()
+        overlay.hide()
+
+    def _on_pivot_hover(self, snap) -> None:
+        overlay = self.window_.stage.measure_overlay
+        overlay.hover = snap
+        overlay.update()
+
+    def _on_pivot_picked(self, snap) -> None:
+        if snap is None:
+            return
+        self._end_pivot_pick()
+        for key, value in zip(("px", "py", "pz"), snap.position):
+            self.fields[key].set_value(round(value, 4))
+        self.pivot_choice.setCurrentIndex(2)
+        self._pivot_changed()
+        self.window_.set_hint(
+            f"Turning about ({snap.position[0]:.2f}, {snap.position[1]:.2f}, {snap.position[2]:.2f})."
+        )
+
+    # -- live inputs -------------------------------------------------------
+    def on_selection_changed(self) -> None:
+        gizmo = self.window_.stage.viewport.gizmo
+        if self._picking_pivot or (gizmo is not None and gizmo.dragging):
+            return
+        bodies = list(self.selection.bodies)
+        if not bodies or bodies == self._subject:
+            return
+        self._clear_gizmo_feedback()
+        self._subject = bodies
+        self._subject_groups = list(self.selection.groups)
+        self._reset_fields()
+        self._describe()
+        self._attach_gizmo()
+
+    def on_model_rebuilt(self) -> None:
+        """The rebuild this panel was waiting on has landed: attach to it."""
+        gizmo = self.window_.stage.viewport.gizmo
+        if self._picking_pivot or (gizmo is not None and gizmo.dragging):
+            return
+        document = self.window_.document
+        self._subject = [n for n in self._subject
+                         if document.body(n) is not None and document.body(n).shape is not None]
+        self._clear_gizmo_feedback()
+        self._describe()
+        self._attach_gizmo()
+        self.preview()
+
+    def _reset_fields(self) -> None:
+        for key, _label, _dimension in self.field_specs:
+            self.fields[key].set_value(0.0)
 
     def handle_arrow_key(self, key: int) -> bool:
         if self.mode != "move" or key not in (
@@ -374,47 +531,84 @@ class _TransformPanel(_SelectionTool):
         }[key]
         field = self.fields[field_key]
         field.set_value(field.value() + sign * 0.25)
-        self._preview_keyboard_move()
+        self.preview()
         return True
 
-    def _preview_keyboard_move(self) -> None:
-        from ...kernel.occ import compound, make_transform
-
-        bodies = self.selection.bodies
-        shapes = [
-            body.shape for body in (self.window_.document.body(name) for name in bodies)
+    def _subject_shapes(self):
+        return [
+            body.shape for body in (self.window_.document.body(name) for name in self._subject)
             if body is not None and body.shape is not None
         ]
+
+    def preview(self) -> None:
+        """Show where the typed values put the subject, before committing."""
+        from ...kernel.occ import compound
+        from ...kernel.operations import move_transform
+
+        if self._picking_pivot:
+            return
+        gizmo = self.window_.stage.viewport.gizmo
+        if gizmo is not None and gizmo.dragging:
+            return
+        values = {key: self.value(key, 0.0) for key, _l, _d in self.field_specs}
+        viewport = self.window_.stage.viewport
+        if all(abs(v) < 1e-9 for v in values.values()):
+            if self._preview_ghost:
+                viewport.clear_ghost()
+                self._preview_ghost = False
+                for name in self._subject:
+                    viewport.set_transparency(self.window_._presentations.get(name), 0.0)
+            return
+        shapes = self._subject_shapes()
         if not shapes:
             return
-        viewport = self.window_.stage.viewport
-        if not self._origin_ghost:
-            viewport.show_ghost(
-                compound(shapes), self.window_.palette_.accent, transparency=0.14
+        if not self._preview_ghost:
+            viewport.show_ghost(compound(shapes), self.window_.palette_.accent, transparency=0.14)
+            self._preview_ghost = True
+        if self.mode == "move":
+            transform = move_transform((values["dx"], values["dy"], values["dz"]), (0, 0, 0), (0, 0, 0))
+            self.window_.set_hint(
+                f"Move ΔX {values['dx']:+.2f}  ΔY {values['dy']:+.2f}  ΔZ {values['dz']:+.2f} mm"
+                " — Enter applies"
             )
-            self._origin_ghost = True
-        transform = make_transform(translate=(
-            self.value("dx"), self.value("dy"), self.value("dz")
-        ))
+        else:
+            pivot = self._pivot_point(self._subject) or (0.0, 0.0, 0.0)
+            transform = move_transform((0, 0, 0), (values["rx"], values["ry"], values["rz"]),
+                                       pivot, "xyz")
+            self.window_.set_hint(
+                f"Rotate X {values['rx']:+.1f}°  Y {values['ry']:+.1f}°  Z {values['rz']:+.1f}°"
+                " — Enter applies"
+            )
         viewport.transform_ghost(transform)
-        for name in bodies:
+        for name in self._subject:
             viewport.set_transparency(self.window_._presentations.get(name), 0.78)
-        self.window_.set_hint(
-            f"Keyboard move  ΔX {self.value('dx'):+.2f}  "
-            f"ΔY {self.value('dy'):+.2f} mm — arrows are exact; snapping is bypassed"
-        )
 
+    # -- gizmo -------------------------------------------------------------
     def _attach_gizmo(self) -> None:
-        bodies = self.selection.bodies
-        if not bodies:
+        self.window_.detach_gizmo()
+        self._active_pivot = None
+        if not self._subject or self._picking_pivot:
+            return
+        if self.window_.is_rebuilding:
+            # The shapes on screen are about to be replaced; a pivot read now
+            # would be the old centre, and the presentation the gizmo held
+            # would be erased under it. on_model_rebuilt attaches instead --
+            # and, in case the reply it waits on was for a save, so does this.
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(150, self, self._retry_attach)
             return
         presentations = [
-            self.window_._presentations.get(name) for name in bodies
+            self.window_._presentations.get(name) for name in self._subject
             if self.window_._presentations.get(name) is not None
         ]
         if not presentations:
             return
-        pivot = self._shared_pivot(bodies)
+        pivot = (self._pivot_point(self._subject) if self.mode == "rotate"
+                 else self._shared_pivot(self._subject))
+        if pivot is None:
+            return
+        self._translation_geometry = None
         gizmo = self.window_.attach_gizmo(
             presentations,
             allow_translation=self.mode == "move",
@@ -424,6 +618,7 @@ class _TransformPanel(_SelectionTool):
             pivot=pivot,
         )
         if gizmo is not None:
+            self._active_pivot = pivot
             if self.mode == "move":
                 gizmo.translation_filter = self._snap_translation
             gizmo.changed.connect(self._on_gizmo_drag)
@@ -432,6 +627,11 @@ class _TransformPanel(_SelectionTool):
 
             # After this panel has been laid out, which is what may cover it.
             QTimer.singleShot(0, lambda: self._reveal_gizmo(pivot))
+
+    def _retry_attach(self) -> None:
+        if self.window_.stage.viewport.gizmo is None and not self._picking_pivot:
+            self._describe()
+            self._attach_gizmo()
 
     def _reveal_gizmo(self, pivot) -> None:
         """Frame the selection when the gizmo would sit under a panel.
@@ -452,21 +652,22 @@ class _TransformPanel(_SelectionTool):
                for widget, _anchor in stage.overlays):
             stage.viewport.zoom_to_selection(animate=True)
 
-    def _snap_translation(self, values, bypass: bool = False):
-        """Magnetically align moved bounds to nearby centres, edges and corners."""
+    def _snap_translation(self, values, bypass: bool = False, fine: bool = False):
+        """Magnets to nearby centres, edges and corners; otherwise whole steps.
+
+        A body magnet wins on its axis. Every other moving axis rounds to the
+        move step (Ctrl: a tenth of it), so a drag lands on numbers you would
+        have typed. Shift turns both off.
+        """
         from ...kernel.occ import bounding_box
 
         if bypass:
             self._translation_locks.clear()
             self._show_snap_target(None)
             return tuple(values)
-        selected = set(self.selection.bodies)
+        selected = set(self._subject)
         if self._translation_geometry is None:
-            selected_shapes = [
-                body.shape for body in (
-                    self.window_.document.body(name) for name in selected
-                ) if body is not None and body.shape is not None
-            ]
+            selected_shapes = self._subject_shapes()
             if not selected_shapes:
                 return tuple(values)
             boxes = [bounding_box(shape) for shape in selected_shapes]
@@ -494,6 +695,7 @@ class _TransformPanel(_SelectionTool):
             min(1.0, self.window_.stage.viewport.mm_per_pixel(pivot) * 10.0),
         )
         release = capture * 1.6
+        step = self._move_step / 10.0 if fine else self._move_step
         output = list(values)
         labels = ("near edge", "centre", "far edge")
         active = None
@@ -508,22 +710,25 @@ class _TransformPanel(_SelectionTool):
             if abs(raw) < 1.0e-8:
                 continue
             best = None
-            for name, target in targets:
-                for source_index, source_value in enumerate(source[axis]):
-                    for target_index, target_value in enumerate(target[axis]):
-                        delta = target_value - source_value
-                        if abs(delta) < 1.0e-7:
-                            continue
-                        distance = abs(raw - delta)
-                        if best is None or distance < best[0]:
-                            best = (
-                                distance, delta,
-                                f"{name}: {labels[source_index]} to {labels[target_index]}",
-                            )
+            if not fine:
+                for name, target in targets:
+                    for source_index, source_value in enumerate(source[axis]):
+                        for target_index, target_value in enumerate(target[axis]):
+                            delta = target_value - source_value
+                            if abs(delta) < 1.0e-7:
+                                continue
+                            distance = abs(raw - delta)
+                            if best is None or distance < best[0]:
+                                best = (
+                                    distance, delta,
+                                    f"{name}: {labels[source_index]} to {labels[target_index]}",
+                                )
             if best is not None and best[0] <= capture:
                 output[axis] = best[1]
                 self._translation_locks[axis] = (best[1], best[2])
                 active = best[2]
+            elif step > 0:
+                output[axis] = round(raw / step) * step
         self._show_snap_target(active)
         gizmo = self.window_.stage.viewport.gizmo
         if gizmo is not None:
@@ -547,17 +752,17 @@ class _TransformPanel(_SelectionTool):
     def _on_gizmo_drag(self, dx, dy, dz, rx, ry, rz) -> None:
         from PySide6.QtGui import QCursor
 
+        if self._preview_ghost:
+            self.window_.stage.viewport.clear_ghost()
+            self._preview_ghost = False
         if not self._origin_ghost:
             from ...kernel.occ import compound
 
-            shapes = [
-                body.shape for body in (
-                    self.window_.document.body(name) for name in self.selection.bodies
-                ) if body is not None and body.shape is not None
-            ]
-            self.window_.stage.viewport.show_ghost(
-                compound(shapes), self.window_.palette_.text_faint, transparency=0.72
-            )
+            shapes = self._subject_shapes()
+            if shapes:
+                self.window_.stage.viewport.show_ghost(
+                    compound(shapes), self.window_.palette_.text_faint, transparency=0.72
+                )
             self._origin_ghost = True
         moved = math.sqrt(dx * dx + dy * dy + dz * dz)
         axis, angle = max(
@@ -570,7 +775,7 @@ class _TransformPanel(_SelectionTool):
             )
             suffix = " · snapped" if snapped else ""
             self.window_.set_hint(
-                f"Rotating {axis} {angle:+.1f}°{suffix}. Shift bypasses snapping."
+                f"Rotating {axis} {angle:+.1f}°{suffix}. Shift: free · Ctrl: whole degrees."
             )
             headline = f"{axis}  {angle:+.0f}°{suffix}" if snapped else f"{axis}  {angle:+.2f}°"
             sub = f"X {rx:.2f}°  Y {ry:.2f}°  Z {rz:.2f}°"
@@ -579,7 +784,7 @@ class _TransformPanel(_SelectionTool):
                 self.window_.stage.viewport.gizmo.translation_snap
                 if self.window_.stage.viewport.gizmo is not None else ""
             )
-            suffix = f" · snapped to {snap}" if snap else " · Shift bypasses snapping"
+            suffix = f" · snapped to {snap}" if snap else " · Shift: free · Ctrl: fine"
             self.window_.set_hint(f"Moving {moved:.2f} mm{suffix}")
             active = "/".join(
                 axis for axis, value in (("X", dx), ("Y", dy), ("Z", dz))
@@ -611,20 +816,28 @@ class _TransformPanel(_SelectionTool):
             self.commit()
 
     def _clear_gizmo_feedback(self) -> None:
-        if getattr(self, "_origin_ghost", False):
-            self.window_.stage.viewport.clear_ghost()
+        viewport = self.window_.stage.viewport
+        if getattr(self, "_origin_ghost", False) or getattr(self, "_preview_ghost", False):
+            viewport.clear_ghost()
         self._origin_ghost = False
-        for name in self.selection.bodies:
-            self.window_.stage.viewport.set_transparency(
-                self.window_._presentations.get(name), 0.0
-            )
+        self._preview_ghost = False
+        for name in self._subject:
+            viewport.set_transparency(self.window_._presentations.get(name), 0.0)
         self.window_.stage.drag_readout.finish()
         self._translation_locks.clear()
         self._show_snap_target(None)
 
     def teardown(self) -> None:
+        self._end_pivot_pick()
         self._clear_gizmo_feedback()
         self.window_.detach_gizmo()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key_Escape and self._picking_pivot:
+            self._end_pivot_pick()
+            self._attach_gizmo()
+            return
+        super().keyPressEvent(event)
 
     def _shared_pivot(self, names):
         """The centre of everything selected, for a rotation about the lot."""
@@ -657,9 +870,14 @@ class _TransformPanel(_SelectionTool):
         return tuple(self.value(k, 0.0) for k in keys)
 
     def commit(self) -> None:
-        bodies = self.selection.bodies
+        document = self.window_.document
+        bodies = [n for n in self._subject
+                  if document.body(n) is not None and document.body(n).shape is not None]
         verb = "move" if self.mode == "move" else "rotate"
         if not _need(self.window_, bool(bodies), f"Select a body to {verb}."):
+            return
+        if self.window_.is_rebuilding:
+            self.window_.set_hint("Still updating the last change — try again in a moment.")
             return
         keys = tuple(key for key, _label, _dimension in self.field_specs)
         if all(abs(self.value(k, 0.0)) < 1e-9 for k in keys):
@@ -667,30 +885,38 @@ class _TransformPanel(_SelectionTool):
                 f"Nothing to {verb} — drag a handle or enter a value."
             )
             return
-        self.window_.detach_gizmo()
-        self.window_.history.record(self.title)
         # Several bodies turn about their *shared* centre. Letting each spin
         # about its own would leave a rotated group in the same places it
         # started, every part facing a new way -- which is not what turning an
-        # assembly means.
-        pivot = self._shared_pivot(bodies) if self.mode == "rotate" else None
+        # assembly means. The gizmo's own pivot is used when there is one, so
+        # the committed turn is exactly the one that was dragged.
+        pivot = None
+        if self.mode == "rotate":
+            pivot = self._active_pivot or self._pivot_point(bodies)
+        self._clear_gizmo_feedback()
+        self.window_.detach_gizmo()
+        self.window_.history.record(self.title)
         delta = self._literal_translation(keys) if self.mode == "move" else None
         for name in bodies:
-            if delta is not None and self.window_.document.fold_translation([name], delta):
+            if delta is not None and document.fold_translation([name], delta):
                 continue
             inputs = {
                 "body": BodyRef(name),
-                **{k: self.expression(k, "0")
-                   for k in keys},
+                **{k: self.expression(k, "0") for k in keys},
             }
             if pivot is not None:
                 inputs["pivot"] = list(pivot)
-            self.window_.document.add_feature(
-                MoveFeature(inputs=inputs, outputs=[name])
-            )
+                inputs["order"] = "xyz"
+            document.add_feature(MoveFeature(inputs=inputs, outputs=[name]))
         self.window_.mark_dirty()
         self.window_.rebuild()
-        self.window_.cancel_tool()
+        self._reset_fields()
+        done = "Moved" if self.mode == "move" else "Rotated"
+        self.window_.set_hint(f"{done} {self._subject_text()}. Drag again, or Esc to finish.")
+        if self.window_.is_rebuilding:
+            self._describe()
+        else:
+            self.on_model_rebuilt()
 
 
 @register_tool("move")
