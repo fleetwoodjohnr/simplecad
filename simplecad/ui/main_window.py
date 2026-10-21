@@ -2458,6 +2458,16 @@ class MainWindow(QMainWindow):
         self.rebuild()
         self.set_hint(f"Removed {feature.name}.")
 
+    def _edit_arrangement_from_selection(self) -> None:
+        from .selection import arrangement_for
+
+        self.selection.refresh()
+        feature = arrangement_for(self.selection)
+        if feature is None:
+            self.set_hint("Select an arranged object to edit its arrangement.")
+            return
+        self._feature_action(feature.id, "edit")
+
     def _edit_joint_from_selection(self) -> None:
         from .selection import joint_for
 
@@ -2480,6 +2490,9 @@ class MainWindow(QMainWindow):
             elif feature is not None and feature.type_name == "clip_joint":
                 self._clip_edit_feature_id = target
                 self.activate_tool("clip_joint")
+            elif feature is not None and feature.type_name == "arrange":
+                self._arrange_edit_feature_id = target
+                self.activate_tool("arrange")
             return
         if action == "rename":
             feature_id, _, new = target.partition(":")
@@ -3031,6 +3044,7 @@ class MainWindow(QMainWindow):
         handlers = {
             "edit_face_texture": lambda: self._texture_action("edit"),
             "edit_joint": self._edit_joint_from_selection,
+            "edit_arrange": self._edit_arrangement_from_selection,
             "remove_face_texture": lambda: self._texture_action("delete"),
             "export": self.export_model,
             "import": self.import_model,
