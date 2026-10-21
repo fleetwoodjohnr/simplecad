@@ -221,5 +221,5 @@ def test_one_planar_face_offers_text_and_search_lists_every_new_command():
     commands = {command.key for command in catalogue()}
     assert {
         "text", "shape_star", "shape_heart", "shape_cross",
-        "shape_crescent", "shape_lightning",
+        "shape_crescent", "shape_lightning", "shape_oval", "shape_pill",
     } <= commands

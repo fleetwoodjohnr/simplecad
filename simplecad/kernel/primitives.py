@@ -230,6 +230,78 @@ class PolygonPrismFeature(_Primitive):
             return self._finish(ctx, built_shape(builder, "polygon"))
 
 
+def _extrude_wire(wire, height: float, operation: str):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    face = BRepBuilderAPI_MakeFace(wire).Face()
+    return built_shape(BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 0.0, height)), operation)
+
+
+@register("oval")
+class OvalFeature(_Primitive):
+    """An elliptical prism, centred like the cylinder. Equal sides make a disc."""
+
+    label = "Oval"
+
+    def execute(self, ctx: BuildContext) -> dict:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+        from OCP.gp import gp_Ax2, gp_Dir, gp_Elips, gp_Pnt
+
+        width = self._positive(ctx.value(self, "width", 40.0), "width")
+        depth = self._positive(ctx.value(self, "depth", 25.0), "depth")
+        height = self._positive(ctx.value(self, "height", 10.0), "height")
+        # gp_Elips wants the major radius first, so aim it along the longer side.
+        major = gp_Dir(1, 0, 0) if width >= depth else gp_Dir(0, 1, 0)
+        with guard("oval"):
+            ellipse = gp_Elips(
+                gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), major),
+                max(width, depth) / 2.0, min(width, depth) / 2.0,
+            )
+            wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(ellipse).Edge()).Wire()
+            return self._finish(ctx, _extrude_wire(wire, height, "oval"))
+
+
+@register("pill")
+class PillFeature(_Primitive):
+    """A rectangle with semicircular ends, running along its longer side."""
+
+    label = "Pill"
+
+    def execute(self, ctx: BuildContext) -> dict:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+        from OCP.GC import GC_MakeArcOfCircle, GC_MakeSegment
+        from OCP.gp import gp_Pnt
+        from ..core.errors import CadError
+
+        width = self._positive(ctx.value(self, "width", 40.0), "width")
+        depth = self._positive(ctx.value(self, "depth", 15.0), "depth")
+        height = self._positive(ctx.value(self, "height", 10.0), "height")
+        radius = min(width, depth) / 2.0
+        run = abs(width - depth) / 2.0
+        if run < 1e-6:
+            raise CadError(
+                "A pill must be longer than it is wide.",
+                suggestion="Make the width and depth different, or use Cylinder for a round one.",
+            )
+
+        def point(u: float, v: float):
+            return gp_Pnt(u, v, 0.0) if width > depth else gp_Pnt(v, u, 0.0)
+
+        with guard("pill"):
+            curves = (
+                GC_MakeSegment(point(-run, -radius), point(run, -radius)).Value(),
+                GC_MakeArcOfCircle(point(run, -radius), point(run + radius, 0), point(run, radius)).Value(),
+                GC_MakeSegment(point(run, radius), point(-run, radius)).Value(),
+                GC_MakeArcOfCircle(point(-run, radius), point(-run - radius, 0), point(-run, -radius)).Value(),
+            )
+            wire = BRepBuilderAPI_MakeWire()
+            for curve in curves:
+                wire.Add(BRepBuilderAPI_MakeEdge(curve).Edge())
+            return self._finish(ctx, _extrude_wire(wire.Wire(), height, "pill"))
+
+
 #: Convenience map for the UI's primitive palette.
 PRIMITIVES = {
     "box": BoxFeature,
@@ -240,4 +312,6 @@ PRIMITIVES = {
     "tube": TubeFeature,
     "wedge": WedgeFeature,
     "polygon_prism": PolygonPrismFeature,
+    "oval": OvalFeature,
+    "pill": PillFeature,
 }

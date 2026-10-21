@@ -20,6 +20,8 @@ PATHS: dict[str, str] = {
     "torus": '<ellipse cx="12" cy="12" rx="9.2" ry="6"/><ellipse cx="12" cy="12" rx="3.6" ry="2"/>',
     "tube": '<ellipse cx="12" cy="6" rx="7.5" ry="3.2"/><ellipse cx="12" cy="6" rx="3.6" ry="1.5"/><path d="M4.5 6v12M19.5 6v12"/><path d="M4.5 18a7.5 3.2 0 0 0 15 0"/>',
     "wedge": '<path d="M3 19V9l9-5v15z"/><path d="M12 4l9 5v10H3"/>',
+    "oval": '<ellipse cx="12" cy="12" rx="9" ry="6"/>',
+    "pill": '<path d="M8 7h8a5 5 0 0 1 0 10H8A5 5 0 0 1 8 7z"/>',
     "polygon": '<path d="M12 2.7 20 7.2v9L12 20.7 4 16.2v-9z"/>',
     "triangle": '<path d="M12 3.4 20.6 19H3.4z"/>',
     "pentagon": '<path d="M12 2.9 20.6 9.2 17.3 19.4H6.7L3.4 9.2z"/>',

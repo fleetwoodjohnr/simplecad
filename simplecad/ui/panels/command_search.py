@@ -57,6 +57,11 @@ def catalogue() -> list[Command]:
     return [
         Command("shapes", "Add a shape", "box", "Box, cylinder, sphere and more",
                 "primitive new create cube"),
+        Command("shape_oval", "Oval", "oval",
+                "An elliptical prism", "ellipse elliptical round egg"),
+        Command("shape_pill", "Pill", "pill",
+                "A rectangle with rounded ends",
+                "rounded rectangle obround stadium slot capsule"),
         Command("shape_triangle", "Triangle", "triangle",
                 "A three-sided prism", "polygon prism three"),
         Command("shape_pentagon", "Pentagon", "pentagon",

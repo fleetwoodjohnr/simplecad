@@ -331,7 +331,7 @@ class ModelBrowser(FloatingCard):
         icons = {
             "box": "box", "cylinder": "cylinder", "sphere": "sphere",
             "cone": "cone", "torus": "torus", "tube": "tube",
-            "wedge": "wedge", "polygon_prism": "polygon",
+            "wedge": "wedge", "polygon_prism": "polygon", "oval": "oval", "pill": "pill",
             "star": "star", "heart": "heart", "cross": "cross",
             "crescent": "crescent", "lightning": "lightning", "text": "text",
             "face_texture": "texture",
