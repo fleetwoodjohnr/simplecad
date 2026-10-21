@@ -361,16 +361,40 @@ def _combinable(model: SelectionModel) -> bool:
 
 
 def _arrangeable(model: SelectionModel) -> bool:
-    targets = model.planar_faces()
-    if len(targets) > 1:
+    """Two or more whole objects, or one or more with the face they go on.
+
+    A face is the target only when its object is not itself being arranged;
+    flat and round faces both take a pattern.
+    """
+    faces = model.faces()
+    if len(faces) > 1:
         return False
-    target_body = targets[0].body if targets else None
-    moving = [name for name in model.bodies if name != target_body]
-    return len(moving) >= 3 and all(
-        pick.kind in WHOLE_OBJECT_KINDS
-        or (bool(targets) and pick is targets[0])
-        for pick in model.picks
-    )
+    target = faces[0] if faces else None
+    if target is not None and not (target.is_planar_face or target.is_round_face):
+        return False
+    if not all(pick.kind in WHOLE_OBJECT_KINDS or pick is target for pick in model.picks):
+        return False
+    moving = [name for name in model.bodies if target is None or name != target.body]
+    return len(moving) >= (1 if target is not None else 2)
+
+
+def arrangement_for(model: SelectionModel):
+    """The newest arrangement that placed the first selected object, if any."""
+    if not model.picks:
+        return None
+    graph = model.document.prepare_graph()
+    head = graph.latest.get(str(model.bodies[0]))
+    if head is None:
+        return None
+    for fid in reversed(graph.writers.get(head.object_id, ())):
+        feature = graph.features[fid]
+        if feature.type_name == "arrange" and not feature.suppressed:
+            return feature
+    return None
+
+
+def _has_arrangement(model: SelectionModel) -> bool:
+    return arrangement_for(model) is not None
 
 
 def texture_features(model: SelectionModel) -> list:
@@ -448,6 +472,7 @@ CONTEXT_ACTIONS = (
     ("intersect", "Intersect", "intersect", _combinable),
     # -- whole objects
     ("arrange", "Arrange", "pattern", _arrangeable),
+    ("edit_arrange", "Edit arrangement", "pattern", _has_arrangement),
     ("group", "Group", "group", _groupable),
     ("move", "Move", "move", _bodies),
     ("rotate", "Rotate", "rotate", _bodies),

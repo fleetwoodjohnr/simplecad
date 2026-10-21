@@ -22,8 +22,10 @@ from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel.detect import analyse_plane
 from simplecad.kernel.face_texture import FaceTextureFeature
 from simplecad.kernel.occ import bounding_box, is_valid, volume
+from simplecad.kernel.align import interference_volume
+from simplecad.kernel.arrange import ArrangeFeature
 from simplecad.kernel.operations import (
-    AlignFeature, BooleanFeature, FilletFeature, MoveFeature, ShellFeature,
+    AlignFeature, BooleanFeature, ChamferFeature, FilletFeature, MoveFeature, ShellFeature,
 )
 from simplecad.kernel.primitives import BoxFeature, CylinderFeature
 from simplecad.kernel.split import SplitFeature
@@ -88,6 +90,16 @@ def _filleted(_tmp):
     return d, name
 
 
+def _chamfered(_tmp):
+    d, name = _box(_tmp)
+    _ok(d)
+    shape = d.body(name).shape
+    edge = max(sub_shapes(shape, "edge"), key=lambda e: bounding_box(e)[1][2] - bounding_box(e)[1][1])
+    d.add_feature(ChamferFeature(inputs={"body": BodyRef(name), "edges": [_ref(d, name, edge, "edge")],
+                                         "distance": 1.0}, outputs=[name]))
+    return d, name
+
+
 def _hollowed(_tmp):
     d, name = _box(_tmp)
     _ok(d)
@@ -132,7 +144,7 @@ def _group(_tmp):
 
 SUBJECTS = {
     "box": _box, "cylinder": _cylinder, "split_half": _split_half, "boolean": _boolean,
-    "filleted": _filleted, "hollowed": _hollowed, "textured": _textured,
+    "filleted": _filleted, "chamfered": _chamfered, "hollowed": _hollowed, "textured": _textured,
     "imported_stl": _imported, "group": _group,
 }
 
@@ -222,6 +234,33 @@ def _stack(d, item, before):
         assert bounding_box(d.body(name).shape)[0][2] == pytest.approx(-36.0, abs=1e-4)
 
 
+def _arrange_on_face(d, item, before):
+    d.add_feature(BoxFeature(inputs={"width": 120, "depth": 90, "height": 4, "x": -200,
+                                     "z": -60}, outputs=["Tray"]))
+    d.add_feature(BoxFeature(inputs={"width": 9, "depth": 7, "height": 5, "x": 80},
+                             outputs=["Helper"]))
+    _ok(d)
+    names = _bodies(d, item) + ["Helper"]
+    volumes = {n: volume(d.body(n).shape) for n in names}
+    d.add_feature(ArrangeFeature(inputs={
+        "bodies": [BodyRef(n) for n in names],
+        "target_face": _ref(d, "Tray", _face(d.body("Tray").shape, 1)),
+        "pattern": "packed", "gap": "3", "margin": "2", "frame_mode": "reference",
+    }, outputs=names))
+    report = _ok(d)
+    assert not any("no longer fits" in w for w in report.warnings)
+    tray = d.body("Tray").shape
+    for n in names:
+        shape = d.body(n).shape
+        assert volume(shape) == pytest.approx(volumes[n], rel=1e-6)
+        assert interference_volume(tray, shape) == pytest.approx(0.0, abs=1e-4)
+        low, high = bounding_box(shape)
+        assert -200 + 2 - 1e-4 <= low[0] and high[0] <= -80 - 2 + 1e-4
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert interference_volume(d.body(a).shape, d.body(b).shape) == pytest.approx(0.0, abs=1e-4)
+
+
 def _boolean_cut(d, item, before):
     name = _bodies(d, item)[0]
     original = volume(d.body(name).shape)
@@ -292,6 +331,7 @@ OPERATIONS = {
     "move": _move, "rotate_x": _rotate("rx"), "rotate_y": _rotate("ry"), "rotate_z": _rotate("rz"),
     "duplicate": _duplicate, "stack": _stack, "boolean_cut": _boolean_cut, "fillet": _fillet,
     "delete_undo": _delete_undo, "colour": _colour, "save_reopen": _save_reopen,
+    "arrange_on_face": _arrange_on_face,
 }
 
 

@@ -45,7 +45,6 @@ class Settings:
     radius: float = 0.0            # radial: 0 = choose
     start_angle: float = 0.0
     face_center: bool = False
-    center: tuple[float, float] = (0.0, 0.0)   # radial centre offset
     contain: bool = True           # whole footprint inside, or only its centre
     period: float | None = None    # circumference of a full cylinder
 
@@ -230,14 +229,23 @@ def _grid_layout(job: _Job, area, shape, staggered: bool, row_step=1.0) -> Layou
     edges = 2 if s.distribute == "evenly" else 0
 
     # Columns: clear gaps between cell edges, plus half a pitch for a stagger.
+    # Round a full cylinder the last column is next to the first, so a turn
+    # holds as many gaps as columns and a stagger adds no width.
+    wrapped = job.wrap is not None and abs(job.wrap[1]) < 1e-9
     gap_x = s.gap
-    fixed_x = sum(col_w) + (col_w[0] / 2.0 if shifted else 0.0)
-    slots_x = columns - 1 + edges + (0.5 if shifted else 0.0)
+    if wrapped:
+        fixed_x, slots_x = sum(col_w), columns
+    else:
+        fixed_x = sum(col_w) + (col_w[0] / 2.0 if shifted else 0.0)
+        slots_x = columns - 1 + edges + (0.5 if shifted else 0.0)
     spread_x = s.spacing == "auto" and slots_x > 0 and (hi_x - lo_x - fixed_x) / slots_x >= s.gap
     if spread_x:
         gap_x = (hi_x - lo_x - fixed_x) / slots_x
-    width = fixed_x + gap_x * (columns - 1 + (0.5 if shifted else 0.0))
-    x_start = lo_x + (gap_x if edges else 0.0) if spread_x else _start(lo_x, hi_x, width, side_x)
+    width = fixed_x + gap_x * (columns - 1 + (0.5 if shifted and not wrapped else 0.0))
+    if spread_x:
+        x_start = lo_x + (gap_x / 2.0 if wrapped else gap_x if edges else 0.0)
+    else:
+        x_start = _start(lo_x, hi_x, width, side_x)
 
     # Rows, read from the top down.
     gap_y = s.gap_y if s.gap_y is not None else s.gap
@@ -279,20 +287,60 @@ def _grid(job: _Job, staggered: bool = False) -> Layout:
         need_y = max(heights) * rows + (s.gap_y if s.gap_y is not None else s.gap) * (rows - 1)
         return min(area[2] - area[0] - need_x, area[3] - area[1] - need_y)
 
-    rectangular = job.region.area >= box(*job.bounds).area * 0.999
-    scales = (1.0,) if rectangular else tuple(1.0 - 0.05 * k for k in range(13))
+    # A rectangle takes the grid as it is. Anything else -- a disk, an L, a
+    # plate with holes -- also tries the largest clear rectangle inside it and
+    # ever smaller boxes about its middle; automatic spacing keeps whichever
+    # fitting layout leaves the widest gaps.
+    if job.region.area >= box(*job.bounds).area * 0.999:
+        areas = [job.bounds]
+    else:
+        areas = [job.bounds, _largest_rectangle(job)] + [
+            _scaled(job.bounds, 1.0 - 0.05 * k) for k in range(1, 13)]
     steps = (math.sqrt(3) / 2.0, 0.9, 1.0) if staggered and s.spacing != "auto" else (1.0,)
-    first = None
-    for scale in scales:
-        area = _scaled(job.bounds, scale)
-        ranked = sorted(shapes, key=lambda shape: -slack(shape, area))[:4]
-        for shape in ranked:
+    best = first = None
+    for area in areas:
+        if area is None:
+            continue
+        for shape in sorted(shapes, key=lambda shape: -slack(shape, area))[:4]:
             for step in steps:
                 layout = _grid_layout(job, area, shape, staggered, step)
                 if layout.fits:
-                    return layout
+                    if s.spacing != "auto":
+                        return layout
+                    if best is None or layout.gap > best.gap + 1e-9:
+                        best = layout
+                    break
                 first = first or layout
-    return first
+    return best or first
+
+
+def _largest_rectangle(job: _Job, cells: int = 64):
+    """The biggest axis-aligned rectangle of whole raster cells inside the region."""
+    lo_x, lo_y, hi_x, hi_y = job.bounds
+    step = max(hi_x - lo_x, hi_y - lo_y) / cells
+    if step <= 0:
+        return None
+    nx, ny = max(1, int((hi_x - lo_x) / step)), max(1, int((hi_y - lo_y) / step))
+    xs, ys = numpy.meshgrid(lo_x + numpy.arange(nx) * step, lo_y + numpy.arange(ny) * step)
+    free = shapely.covers(job.inside, shapely.box(xs, ys, xs + step, ys + step))
+    heights = numpy.zeros(nx, dtype=int)
+    best = (0, 0, 0, 0, 0)            # area, left, right (exclusive), top row, height
+    for row in range(ny):
+        heights = numpy.where(free[row], heights + 1, 0)
+        stack = []
+        for col in range(nx + 1):
+            here = heights[col] if col < nx else 0
+            start = col
+            while stack and stack[-1][1] >= here:
+                start, tall = stack.pop()
+                if tall * (col - start) > best[0]:
+                    best = (tall * (col - start), start, col, row, tall)
+            stack.append((start, here))
+    area, left, right, top, tall = best
+    if not area:
+        return None
+    return (lo_x + left * step, lo_y + (top - tall + 1) * step,
+            lo_x + right * step, lo_y + (top + 1) * step)
 
 
 def _scaled(bounds, scale):
@@ -316,9 +364,7 @@ def _radial(job: _Job) -> Layout:
     n = len(items)
     outline = _outline(job.region)
     centre = outline.centroid
-    turn = math.radians(-s.direction)
-    cx = centre.x + s.center[0] * math.cos(turn) - s.center[1] * math.sin(turn)
-    cy = centre.y + s.center[0] * math.sin(turn) + s.center[1] * math.cos(turn)
+    cx, cy = centre.x, centre.y
     reach = [_reach(fp) for fp in items]
     start = math.radians(s.start_angle)
 
@@ -496,8 +542,8 @@ def _packed(job: _Job) -> Layout:
         # Slide the cluster to the chosen alignment when it still fits there.
         low_x, low_y, high_x, high_y = shapely.total_bounds(numpy.array(shapes, dtype=object))
         side_x, side_y = _anchor(s.align)
-        dx = _start(lo_x, hi_x, high_x - low_x, side_x) - low_x
-        dy = _start(lo_y, hi_y, high_y - low_y, side_y) - low_y
+        dx = float(_start(lo_x, hi_x, high_x - low_x, side_x) - low_x)
+        dy = float(_start(lo_y, hi_y, high_y - low_y, side_y) - low_y)
         moved = job.finish(Layout([(u + dx, v + dy, a) for u, v, a in placements], gap=gap))
         if moved.fits:
             return moved
