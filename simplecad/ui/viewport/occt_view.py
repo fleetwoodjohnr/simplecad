@@ -2492,7 +2492,9 @@ class OcctViewport(QOpenGLWidget):
             return
         if was_nav is _Nav.GIZMO and self.gizmo is not None:
             components = self.gizmo.release()
-            if components is not None:
+            # A click is not a drag: pressing the part to grab it and letting
+            # go must not commit the sliver of a turn a hand tremor makes.
+            if components is not None and self._dragged:
                 self.gizmo.committed.emit(*components)
             return
         if was_nav is _Nav.DRAG_FACE and self._drag is not None:

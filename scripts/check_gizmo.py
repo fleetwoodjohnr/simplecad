@@ -126,6 +126,36 @@ def main() -> int:
             REPORT["gizmo_released"] = (
                 viewport.gizmo is None or not viewport.gizmo.dragging
             )
+
+            # The Y arrow used to be all but buried under OCCT's invisible
+            # plane handles.
+            low, high = bounding_box(window.document.bodies["Block"].shape)
+            centre = [(a + b) / 2 for a, b in zip(low, high)]
+            REPORT["y_arrow_found"] = _find_handle(viewport, centre, want_axis=1) is not None
+
+            # Grabbing the part away from the arrows slides it over the ground.
+            # A top corner: well clear of the arrows, which sit at the centre.
+            corner = viewport.project((low[0] + 3, low[1] + 3, high[2]))
+            grab = QPoint(round(corner[0]), round(corner[1]))
+            axis, mm_per_pixel = viewport.screen_axis_for(centre, (0.0, 1.0, 0.0))
+            pixels = 20.0 / mm_per_pixel / ratio
+            QTest.mouseMove(viewport, grab)
+            QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, grab)
+            REPORT["part_drag_started"] = viewport._nav.name == "GIZMO"
+            for step in range(1, 11):
+                QTest.mouseMove(viewport, QPoint(round(grab.x() + axis[0] * pixels * step / 10),
+                                                 round(grab.y() + axis[1] * pixels * step / 10)))
+            end = QPoint(round(grab.x() + axis[0] * pixels), round(grab.y() + axis[1] * pixels))
+            QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+            window.wait_for_rebuild()
+            moved = bounding_box(window.document.bodies["Block"].shape)[0]
+            REPORT["part_drag_moved"] = tuple(round(moved[i] - low[i], 2) for i in range(3))
+            # Where the cursor travelled over the ground plane through the
+            # pivot -- what the part should have followed, whatever the camera.
+            here, there = (viewport._ray_plane(viewport.cursor_ray(point), centre, (0, 0, 1))
+                           for point in (grab, end))
+            REPORT["part_drag_cursor"] = tuple(round(there[i] - here[i], 2) for i in range(3))
+            REPORT["perspective"] = viewport.is_perspective()
             viewport.fit_all()
             window.set_hint("Dragged the gizmo 25 mm along X")
 
@@ -144,6 +174,13 @@ def main() -> int:
         and REPORT.get("moved_yz") == (0.0, 0.0)
         and "move" in (REPORT.get("features") or [])
         and REPORT.get("undoable")
+        and REPORT.get("y_arrow_found")
+        and REPORT.get("part_drag_started")
+        and REPORT.get("part_drag_moved", (0, 0, 0))[1] > 10
+        and REPORT.get("part_drag_moved", (0, 0, 1))[2] == 0.0
+        # Within the 1 mm step snapping of where the cursor went.
+        and all(abs(a - b) <= 0.5 + 1e-6 for a, b in zip(
+            REPORT.get("part_drag_moved", (9, 9, 9)), REPORT.get("part_drag_cursor", (0, 0, 0))))
     )
     print("VERDICT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

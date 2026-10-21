@@ -392,12 +392,14 @@ class _TransformPanel(_SelectionTool):
             self.set_subtitle(f"{self._subject_text()} — updating the model…")
         elif self.mode == "move":
             self.set_subtitle(
-                f"{self._subject_text()} — drag an arrow ({self._move_step:g} mm steps; "
+                f"{self._subject_text()} — drag the part to slide it, or an arrow for one "
+                f"direction ({self._move_step:g} mm steps; "
                 f"Shift free, Ctrl fine), or type. Arrow keys step 0.25 mm."
             )
         else:
             self.set_subtitle(
-                f"{self._subject_text()} — drag a ring (snaps every {self._rotation_step:g}°; "
+                f"{self._subject_text()} — drag the part to turn it, or a ring for any axis "
+                f"(snaps every {self._rotation_step:g}°; "
                 f"Shift free, Ctrl whole degrees), or type. Turns X, then Y, then Z."
             )
 
@@ -613,7 +615,10 @@ class _TransformPanel(_SelectionTool):
             presentations,
             allow_translation=self.mode == "move",
             allow_rotation=self.mode == "rotate",
-            allow_planes=self.mode == "move",
+            # Dragging the part itself is the plane move. OCCT's plane handles
+            # are invisible yet own most of the space between the arrows, and
+            # left the Y arrow almost impossible to grab.
+            allow_planes=False,
             allow_scale=False,
             pivot=pivot,
         )

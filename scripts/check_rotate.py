@@ -43,8 +43,12 @@ def _ring_hits(viewport, want_axis: int):
     return (cx, cy), hits
 
 
-def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False):
-    """Press on ring *axis* and sweep the cursor around the pivot on screen."""
+def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False, miss=False):
+    """Press on ring *axis* and sweep the cursor around the pivot on screen.
+
+    *miss* presses just outside the ring instead -- on a pixel OCCT does not
+    report as the ring -- which must still take that ring.
+    """
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -58,6 +62,18 @@ def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False):
         return None
     # The hit furthest from the pivot is on the ring, not near the hub.
     start = max(hits, key=lambda p: (p.x() - cx) ** 2 + (p.y() - cy) ** 2)
+    if miss:
+        reach = math.hypot(start.x() - cx, start.y() - cy)
+        ux, uy = (start.x() - cx) / reach, (start.y() - cy) / reach
+        start = next(
+            (QPoint(round(start.x() + ux * push), round(start.y() + uy * push))
+             for push in range(6, 16)
+             if not viewport.gizmo._handle_under(*viewport._device_pos(
+                 QPoint(round(start.x() + ux * push), round(start.y() + uy * push))))),
+            None,
+        )
+        if start is None:
+            return None
     QTest.mouseMove(viewport, start)
     QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
     if viewport._nav.name != "GIZMO":
@@ -77,6 +93,46 @@ def _drag_ring(window, axis: int, sweep_degrees: float, *, linear=False):
         else:
             angle = begin - math.radians(sweep_degrees) * index / steps
             end = QPoint(round(cx + radius * math.cos(angle)), round(cy + radius * math.sin(angle)))
+        QTest.mouseMove(viewport, end)
+        QApplication.processEvents()
+    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+    window.wait_for_rebuild()
+    QApplication.processEvents()
+    return window.document.features[-1]
+
+
+def _drag_part(window, sweep_degrees: float):
+    """Press on the part well clear of every ring and sweep around the pivot."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    viewport = window.stage.viewport
+    rings = [p for axis in range(3) for p in _ring_hits(viewport, axis)[1]]
+    cx, cy = viewport.project(viewport.gizmo._pivot)
+    part = viewport.gizmo._attached[0]
+    start = None
+    for step in range(24):
+        angle = math.radians(step * 15)
+        point = QPoint(round(cx + 160 * math.cos(angle)), round(cy + 160 * math.sin(angle)))
+        viewport.context.MoveTo(*viewport._device_pos(point), viewport.view, False)
+        clear = all(math.hypot(p.x() - point.x(), p.y() - point.y()) > 40 for p in rings)
+        if (clear and viewport.context.HasDetected()
+                and viewport.context.DetectedInteractive() is part):
+            start = point
+            break
+    if start is None:
+        return None
+    QTest.mouseMove(viewport, start)
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    if viewport._nav.name != "GIZMO":
+        QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, start)
+        return None
+    begin = math.atan2(start.y() - cy, start.x() - cx)
+    end = start
+    for index in range(1, 25):
+        angle = begin - math.radians(sweep_degrees) * index / 24
+        end = QPoint(round(cx + 160 * math.cos(angle)), round(cy + 160 * math.sin(angle)))
         QTest.mouseMove(viewport, end)
         QApplication.processEvents()
     QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
@@ -144,6 +200,23 @@ def main() -> int:
             feature = _drag_ring(window, 2, 45.0)
             REPORT["after_empty_click_body"] = str(feature.inputs.get("body")) if feature else None
 
+            # A press a few pixels outside a ring still takes that ring.
+            feature = _drag_ring(window, 0, 60.0, miss=True)
+            REPORT["near_miss_rx"] = round(_angle(feature, "rx"), 1)
+
+            # Grabbing the part itself turns it about Z, like a turntable.
+            feature = _drag_part(window, 60.0)
+            REPORT["part_drag"] = tuple(round(_angle(feature, k), 1) for k in ("rx", "ry", "rz"))
+
+            # Clicking a ring without dragging changes nothing.
+            from PySide6.QtTest import QTest
+            from PySide6.QtCore import Qt
+            count = len(window.document.features)
+            _centre, hits = _ring_hits(viewport, 1)
+            QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, hits[len(hits) // 2])
+            window.wait_for_rebuild()
+            REPORT["click_adds_nothing"] = len(window.document.features) == count
+
             # Edge-on: in the Top view the X ring is a line through the pivot.
             viewport.set_standard_view(StandardView.TOP, animate=False)
             QApplication.processEvents()
@@ -196,6 +269,10 @@ def main() -> int:
                 for k in ("rx", "ry", "rz"))
         and REPORT.get("small_drag_committed") and 1 <= abs(REPORT.get("small_drag_rz", 0)) <= 15
         and REPORT.get("after_empty_click_body") == "Block"
+        and abs(REPORT.get("near_miss_rx", 0)) > 40
+        and REPORT.get("part_drag", (1, 1, 0))[:2] == (0.0, 0.0)
+        and 45 < abs(REPORT.get("part_drag", (0, 0, 0))[2]) < 75
+        and REPORT.get("click_adds_nothing")
         and REPORT.get("edge_on_committed") and abs(REPORT.get("edge_on_rx", 0)) > 1
         and abs(REPORT.get("split_half_ry", 0)) > 95
         and REPORT.get("split_half_body") == "Cylinder A"

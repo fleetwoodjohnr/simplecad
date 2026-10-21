@@ -177,8 +177,16 @@ class StubManipulator:
 class StubContext:
     """Detection is OCCT's job; here it only has to not get in the way."""
 
+    detected = None
+
     def MoveTo(self, _x, _y, _view, _redraw):  # noqa: N802 - mirrors OCCT
         pass
+
+    def HasDetected(self):  # noqa: N802
+        return self.detected is not None
+
+    def DetectedInteractive(self):  # noqa: N802
+        return self.detected
 
 
 def gizmo_with_stub():
@@ -193,6 +201,9 @@ def gizmo_with_stub():
 
     gizmo = TransformGizmo(Viewport())
     gizmo._manipulator = StubManipulator()
+    # The cursor is on the handle.
+    gizmo.viewport.context = StubContext()
+    gizmo.viewport.context.detected = gizmo._manipulator
     return gizmo
 
 
