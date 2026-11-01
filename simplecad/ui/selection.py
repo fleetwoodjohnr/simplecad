@@ -327,6 +327,23 @@ def _has_joint(model: SelectionModel) -> bool:
     return joint_for(model) is not None
 
 
+def _has_hinge(model: SelectionModel) -> bool:
+    bodies = {str(p.body) for p in model.picks}
+    if len(bodies) != 1:
+        return False
+    from ..kernel.hinge import hinge_for
+
+    return hinge_for(model.document, next(iter(bodies))) is not None
+
+
+def _hinge_ready(model: SelectionModel) -> bool:
+    """A straight edge on one part, and something on another: the hinge line and the lid."""
+    edges = [p for p in model.picks if p.kind == "edge"]
+    if len(edges) != 1:
+        return False
+    return any(str(p.body) != str(edges[0].body) for p in model.picks)
+
+
 def _has_parameters(model: SelectionModel) -> bool:
     """One body, made by at least one step whose dimensions can be edited."""
     if not _one_body(model):
@@ -446,6 +463,8 @@ CONTEXT_ACTIONS = (
     # -- relationships between two parts, which are the most specific reading
     ("edit_joint", "Edit joint", "clip", _has_joint),
     ("clip_joint", "Joint", "clip", _two_planar_faces),
+    ("edit_hinge", "Edit hinge", "rotate", _has_hinge),
+    ("hinge", "Hinge", "rotate", _hinge_ready),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
     ("threaded_connection", "Create Threaded Connection", "thread", _threadable_pair),
     ("matching_part", "Create Matching Part", "thread", _has_a_thread),

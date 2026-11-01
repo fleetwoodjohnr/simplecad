@@ -169,6 +169,10 @@ def catalogue() -> list[Command]:
                 "clip join parts snap latch connector socket tab slot split print assemble "
                 "dovetail rail slide sliding drawer cover lid removable panel bracket mount "
                 "tongue groove channel mechanical"),
+        Command("hinge", "Hinge…", "rotate",
+                "Pin, print-in-place, snap-on or living hinge between two parts",
+                "hinge lid box door flap knuckle pin pivot swing open living flexure "
+                "mechanical joint"),
         Command("align_threaded", "Align Threaded Parts", "thread",
                 "Seat one part into the other and thread both at once",
                 "assemble mate screw preview assembled"),
@@ -287,7 +291,7 @@ class CommandSearch(FloatingCard):
         }:
             return "Edit"
         if key.startswith("shape_") or key in {
-            "shapes", "text", "sketch", "threaded_connection", "clip_joint",
+            "shapes", "text", "sketch", "threaded_connection", "clip_joint", "hinge",
             "matching_part", "sweep", "loft",
         }:
             return "Create"

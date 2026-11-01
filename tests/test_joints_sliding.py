@@ -195,3 +195,36 @@ def test_the_detent_clicks_home_and_drags_on_the_way_out():
     scraped = interference_volume(_moved(holder, (0, 0, 5.0)), plate)
     assert 0.0 < scraped < 10.0
     assert interference_volume(_moved(holder, (0, 0, joint.annotations["travel"])), plate) < 1e-3
+
+
+def test_rails_join_the_two_halves_of_a_split_block():
+    """Modified geometry: a block split in two gets a cut dovetail across the split."""
+    from simplecad.kernel.split import SplitFeature
+
+    document = Document()
+    document.add_feature(BoxFeature(inputs={"width": 60, "depth": 40, "height": 30},
+                                    outputs=["Block"]))
+    document.add_feature(SplitFeature(inputs={
+        "body": BodyRef("Block"), "normal": [0, 0, 1], "origin": [0, 0, 15], "position": 0.0,
+        "names": ["Base", "Top"]}, outputs=["Base", "Top"]))
+    rebuilder = Rebuilder(document)
+    assert rebuilder.rebuild().ok
+    base, top = document.body("Base").shape, document.body("Top").shape
+    joint = ClipJointFeature(inputs={
+        "clip_version": 2, "body_a": BodyRef("Top"), "body_b": BodyRef("Base"),
+        "face_a": make_ref(top, _face(top, (0, 0, -1)), document.producer_of("Top").id, body="Top"),
+        "face_b": make_ref(base, _face(base, (0, 0, 1)), document.producer_of("Base").id,
+                           body="Base"),
+        "style": "dovetail", "clearance": "sliding", "rails": 1, "detent": 0,
+    }, outputs=["Top", "Base"])
+    document.add_feature(joint)
+    rebuilder.rebuild()
+    built = document.feature(joint.id)
+    assert built.state is FeatureState.OK, built.message
+    assert built.annotations["raised"] is False, "15 mm of base takes a cut channel"
+    top, base = document.body("Top").shape, document.body("Base").shape
+    assert interference_volume(top, base) < 1e-3
+    out = [c * built.annotations["travel"] for c in built.annotations["exit_a"]]
+    assert interference_volume(_moved(top, tuple(out)), base) < 1e-3
+    # Lifting the top straight off is what the dovetail stops.
+    assert interference_volume(_moved(top, (0, 0, 1.0)), base) > 0.1

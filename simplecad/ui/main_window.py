@@ -71,6 +71,7 @@ TOOL_GROUPS = (
         ToolSpec("text", "Text", "text"),
         ToolSpec("thread", "Threaded pair", "threaded_connection"),
         ToolSpec("clip", "Joint", "clip_joint"),
+        ToolSpec("rotate", "Hinge", "hinge"),
         ToolSpec("thread", "Matching part", "matching_part"),
     )),
     ToolGroup("modify", "Modify", "modify", (
@@ -2506,6 +2507,17 @@ class MainWindow(QMainWindow):
             return
         self._feature_action(feature.id, "edit")
 
+    def _edit_hinge_from_selection(self) -> None:
+        from ..kernel.hinge import hinge_for
+
+        self.selection.refresh()
+        bodies = list(dict.fromkeys(str(p.body) for p in self.selection.picks))
+        feature = hinge_for(self.document, bodies[0]) if len(bodies) == 1 else None
+        if feature is None:
+            self.set_hint("Select a hinged part to edit its hinge.")
+            return
+        self._feature_action(feature.id, "edit")
+
     def _edit_joint_from_selection(self) -> None:
         from .selection import joint_for
 
@@ -2531,6 +2543,9 @@ class MainWindow(QMainWindow):
             elif feature is not None and feature.type_name == "arrange":
                 self._arrange_edit_feature_id = target
                 self.activate_tool("arrange")
+            elif feature is not None and feature.type_name == "hinge":
+                self._hinge_edit_feature_id = target
+                self.activate_tool("hinge")
             elif feature is not None:
                 self._parameters_feature_id = target
                 self.activate_tool("edit_parameters")
@@ -3085,6 +3100,7 @@ class MainWindow(QMainWindow):
         handlers = {
             "edit_face_texture": lambda: self._texture_action("edit"),
             "edit_joint": self._edit_joint_from_selection,
+            "edit_hinge": self._edit_hinge_from_selection,
             "edit_arrange": self._edit_arrangement_from_selection,
             "remove_face_texture": lambda: self._texture_action("delete"),
             "export": self.export_model,

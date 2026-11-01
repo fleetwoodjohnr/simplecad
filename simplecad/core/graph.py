@@ -77,6 +77,11 @@ def declared_outputs(feature):
     if kind == "split":
         source = str(feature.inputs.get("body", ""))
         return list(feature.inputs.get("names") or [f"{source} A", f"{source} B"])
+    if kind == "hinge":
+        if str(feature.inputs.get("type")) == "living":
+            return [str(feature.inputs.get("body_a", ""))]
+        return ([str(feature.inputs[k]) for k in ("body_a", "body_b") if k in feature.inputs]
+                + [str(n) for n in feature.inputs.get("names") or []])
     if kind in {"threaded_connection", "clip_joint"}:
         return [str(feature.inputs[k]) for k in ("body_a", "body_b") if k in feature.inputs] + list(feature.inputs.get("connector_names", []))
     if kind in {"arrange", "move_many"}:

@@ -495,6 +495,8 @@ class ModelBrowser(FloatingCard):
             menu.addAction("Edit joint…", lambda: self.feature_action.emit(feature_id, "edit"))
         elif feature.type_name == "arrange":
             menu.addAction("Edit arrangement…", lambda: self.feature_action.emit(feature_id, "edit"))
+        elif feature.type_name == "hinge":
+            menu.addAction("Edit hinge…", lambda: self.feature_action.emit(feature_id, "edit"))
         else:
             from ..tools.properties import editable_inputs
 
