@@ -121,7 +121,7 @@ def layout_points(
 
 
 def _fit_clearance(value, ctx: BuildContext, feature: Feature) -> float:
-    if isinstance(value, str) and value.lower() in ("press", "snug", "sliding"):
+    if isinstance(value, str) and value.lower() in ("press", "snug", "sliding", "loose"):
         from .calibration import effective_fits
         from .thread_specs import printer_profile
 
@@ -403,6 +403,18 @@ class ClipJointFeature(Feature):
             return execute_joint(self, ctx)
         return self._execute_legacy(ctx)
 
+    def preview_parts(self, ctx: BuildContext):
+        """Sliding joints preview each part separately, so the panel can slide
+        one out of the other; every other style previews as one result."""
+        if str(self.inputs.get("style", "")) not in SLIDES or not self.inputs.get("clip_version"):
+            return None
+        from .occ import compound
+
+        outputs = self.execute(ctx)
+        first, second = str(self.inputs.get("body_a")), str(self.inputs.get("body_b"))
+        return {"result": compound([outputs[first], outputs[second]]),
+                "a": outputs[first], "b": outputs[second]}
+
     def _execute_legacy(self, ctx: BuildContext) -> dict[str, object]:
         """Version-1 clip joints: seat A onto B, then clip at clicked points.
 
@@ -514,7 +526,13 @@ STYLES = {
     "snap_tab": "Snap tab",
     "connector": "Printed connector",
     "tab_slot": "Tab & slot",
+    "dovetail": "Dovetail rail",
+    "t_rail": "T-rail",
+    "tongue_groove": "Tongue & groove",
 }
+
+#: Styles that slide together along a rail rather than push together.
+SLIDES = ("dovetail", "t_rail", "tongue_groove")
 
 #: Keyed tab-and-slot: a straight key with a detent bump either side.
 KEY_PRESETS = {
@@ -756,6 +774,8 @@ def _dot(a, b):
 
 
 def mate(face_a, face_b, *, gap_tolerance: float = 0.05) -> Seam:
+    # A sliding joint holds its parts a rail's height apart, so it asks for the
+    # shared area with ``gap_tolerance=math.inf`` and checks the gap itself.
     """Check two faces touch, and describe the area they share.
 
     Raises a :class:`CadError` that says what is wrong -- curved, tilted,
@@ -991,6 +1011,11 @@ def joint_transform(seam: Seam, placement: Placement, male_normal):
 def execute_joint(feature: Feature, ctx: BuildContext) -> dict[str, object]:
     """Build a version-2 joint: one logical feature writing into both parts."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+
+    if str(feature.inputs.get("style", "")) in SLIDES:
+        from .slides import execute_slide
+
+        return execute_slide(feature, ctx)
 
     first_name = str(feature.inputs.get("body_a", ""))
     second_name = str(feature.inputs.get("body_b", ""))

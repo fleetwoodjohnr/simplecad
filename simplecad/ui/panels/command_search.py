@@ -163,9 +163,12 @@ def catalogue() -> list[Command]:
         Command("threaded_connection", "Create Threaded Connection", "thread",
                 "A matched printable thread pair across two parts",
                 "screw bolt nut pair mating"),
-        Command("clip_joint", "Clip / Join Parts", "clip",
-                "Pick two touching faces; snap-together joints are placed for you",
-                "clip join snap latch connector socket tab slot split print assemble"),
+        Command("clip_joint", "Joint…", "clip",
+                "Snap tabs, connectors, tab & slot, or dovetail / T-rail / tongue & groove "
+                "rails that slide together and stop",
+                "clip join parts snap latch connector socket tab slot split print assemble "
+                "dovetail rail slide sliding drawer cover lid removable panel bracket mount "
+                "tongue groove channel mechanical"),
         Command("align_threaded", "Align Threaded Parts", "thread",
                 "Seat one part into the other and thread both at once",
                 "assemble mate screw preview assembled"),

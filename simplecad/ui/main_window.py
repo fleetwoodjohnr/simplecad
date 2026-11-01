@@ -70,7 +70,7 @@ TOOL_GROUPS = (
     ToolGroup("create", "Create", "create", (
         ToolSpec("text", "Text", "text"),
         ToolSpec("thread", "Threaded pair", "threaded_connection"),
-        ToolSpec("clip", "Clip / Join Parts", "clip_joint"),
+        ToolSpec("clip", "Joint", "clip_joint"),
         ToolSpec("thread", "Matching part", "matching_part"),
     )),
     ToolGroup("modify", "Modify", "modify", (

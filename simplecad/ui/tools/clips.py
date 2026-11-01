@@ -11,15 +11,18 @@ both parts back as they were.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSlider, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
 from ...core.document import BodyRef
 from ...core.units import Dimension
 from ...kernel.clips import (
-    DEFAULTS, MAX_CONNECTORS, STYLES, ClipJointFeature, facing, find_seam, seat_offsets,
+    DEFAULTS, MAX_CONNECTORS, SLIDES, STYLES, ClipJointFeature, facing, find_seam, seat_offsets,
 )
+from ...kernel.slides import INSERTIONS, RAIL_DEFAULTS
 from ...kernel.align import planar_frame
 from ..panels.clip_overlay import ClipPlacementOverlay
 from ..theme import METRICS
@@ -29,7 +32,16 @@ from .modeling import _SelectionTool, _need
 from .registry import register_tool
 
 
-FITS = (("snug", "Snug fit"), ("sliding", "Sliding fit"), ("press", "Press fit"))
+FITS = (("snug", "Snug fit"), ("sliding", "Sliding fit"), ("press", "Press fit"),
+        ("loose", "Loose fit"))
+#: Inputs only the sliding styles have, and the field each lives in.
+SLIDE_FIELDS = (
+    ("rail_width", "Rail width", RAIL_DEFAULTS["rail_width"], Dimension.LENGTH),
+    ("rail_height", "Rail height", RAIL_DEFAULTS["rail_height"], Dimension.LENGTH),
+    ("rail_angle", "Dovetail angle", RAIL_DEFAULTS["rail_angle"], Dimension.ANGLE),
+    ("rail_length", "Rail length (0 = full)", RAIL_DEFAULTS["rail_length"], Dimension.LENGTH),
+    ("lip", "Channel wall", RAIL_DEFAULTS["lip"], Dimension.LENGTH),
+)
 
 
 def _spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -66,7 +78,7 @@ def calibrated_fit(key: str) -> float:
 class ClipJointPanel(_SelectionTool):
     """Join two parts of a split print with snap-together joints."""
 
-    title = "Join parts"
+    title = "Joint"
     confirm_label = "Apply"
     width = 348
 
@@ -123,9 +135,12 @@ class ClipJointPanel(_SelectionTool):
         self.style.setToolTip(
             "Snap tab: flexible hooks on one part catch in pockets in the other.\n"
             "Printed connector: a separate double-ended clip, pockets in both parts.\n"
-            "Tab & slot: a straight key with detent bumps, for thin walls."
+            "Tab & slot: a straight key with detent bumps, for thin walls.\n"
+            "Dovetail rail, T-rail, Tongue & groove: one part slides onto the other "
+            "along rails and stops at the end -- removable covers, drawers, wall brackets."
         )
         self.add_widget(self.style)
+        self._build_slide_controls()
         # Not ``size``: this is a QWidget, and shadowing QWidget.size() breaks
         # the stage's layout of the panel.
         self.clip_size = _combo([("small", "Small"), ("medium", "Medium"), ("large", "Large")], 1)
@@ -181,8 +196,9 @@ class ClipJointPanel(_SelectionTool):
         self.add_widget(self.advanced_host)
         self.advanced_host.hide()
 
-        for combo in (self.style, self.clip_size, self.retention, self.material):
+        for combo in (self.clip_size, self.retention, self.material):
             combo.currentIndexChanged.connect(lambda _i: self.preview())
+        self.style.currentIndexChanged.connect(self._style_changed)
         self.fit.currentIndexChanged.connect(self._fit_changed)
         self.placement.currentIndexChanged.connect(self._placement_changed)
         self.count.valueChanged.connect(lambda _v: self.preview())
@@ -198,9 +214,145 @@ class ClipJointPanel(_SelectionTool):
             self._load(editing)
         else:
             self._latch_selection()
+        self._style_changed(preview=False)
         self._placement_changed()
         self._refresh_roles()
         self.preview()
+
+    # -- sliding styles ----------------------------------------------------
+    def _build_slide_controls(self) -> None:
+        """Rails: how many, which way they slide, how big, and the channel."""
+        self.slide_host = QWidget()
+        layout = QVBoxLayout(self.slide_host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(METRICS.space(1.5))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Rails"))
+        self.rails = _spin(1, 4, int(RAIL_DEFAULTS["rails"]))
+        self.rails.valueChanged.connect(lambda _v: self.preview())
+        row.addWidget(self.rails)
+        layout.addLayout(row)
+        self.insertion = QComboBox()
+        self.insertion.setToolTip("The way the rails slide in; the stop is at the far end.")
+        self.insertion.currentIndexChanged.connect(lambda _i: self.preview())
+        layout.addWidget(self.insertion)
+        self.female_mode = _combo([("auto", "Channel: automatic"),
+                                   ("cut", "Channel cut into the part"),
+                                   ("raised", "Raised channel on the face")])
+        self.female_mode.setToolTip(
+            "Cut: the channel is sunk into the other part and the faces touch.\n"
+            "Raised: walls stand on a part too thin to cut into, and hold the rails;\n"
+            "the parts then sit the rail's height apart."
+        )
+        self.female_mode.currentIndexChanged.connect(lambda _i: self.preview())
+        layout.addWidget(self.female_mode)
+        for key, label, value, dimension in SLIDE_FIELDS:
+            self.add_field(key, label, value, dimension, layout)
+            self.fields[key].edited_live.connect(lambda _v: self.preview())
+        self.stop = QCheckBox("Stop at the end")
+        self.stop.setChecked(True)
+        self.detent = QCheckBox("Detent: clicks home at the stop")
+        self.detent.setChecked(True)
+        for box in (self.stop, self.detent):
+            box.toggled.connect(lambda _on: self.preview())
+            layout.addWidget(box)
+        note = QLabel("Fits are starting points: what slides well depends on the material, "
+                      "the printer and how it is calibrated. Measure with Fit & Clearance.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{self._palette.text_muted}; font-size:11px;")
+        layout.addWidget(note)
+        motion = QHBoxLayout()
+        self.apart = QSlider(Qt.Horizontal)
+        self.apart.setRange(0, 100)
+        self.apart.setToolTip("Slide the preview apart to check it comes out freely")
+        self.apart.valueChanged.connect(self._show_apart)
+        self.play = GhostButton("Play")
+        self.play.setToolTip("Slide it out and back in")
+        self.play.clicked.connect(self._play)
+        motion.addWidget(QLabel("Assembled"))
+        motion.addWidget(self.apart, 1)
+        motion.addWidget(QLabel("Apart"))
+        motion.addWidget(self.play)
+        layout.addLayout(motion)
+        self.add_widget(self.slide_host)
+        self._moving = None
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(30)
+        self._play_timer.timeout.connect(self._play_step)
+
+    def _sliding(self) -> bool:
+        return self.style.currentData() in SLIDES
+
+    def _style_changed(self, _index=0, preview: bool = True) -> None:
+        sliding = self._sliding()
+        self.slide_host.setVisible(sliding)
+        for widget in (self.clip_size, self.retention, self.material):
+            widget.setVisible(not sliding)
+        self.fields["rail_angle"].parentWidget().setVisible(self.style.currentData() == "dovetail")
+        for key in ("spacing", "shift", "rotation"):
+            self.fields[key].parentWidget().setVisible(not sliding)
+        self.placement.setVisible(not sliding)
+        self.count.parentWidget().setVisible(not sliding)
+        if sliding and self.fit.currentData() in ("snug", "press") and self._source is None:
+            _select(self.fit, "sliding")
+        if sliding:
+            _select(self.placement, "auto")
+            self.point_host.setVisible(False)
+        self._refresh_insertions()
+        self._refresh_roles()
+        self.relayout()
+        if preview:
+            self.preview()
+
+    def _refresh_insertions(self) -> None:
+        """Name the four slide directions by the world direction they point."""
+        from ...kernel.align import planar_frame
+
+        pick = self.picks.get("b")
+        current = self.insertion.currentData() or getattr(self, "_saved_insertion", "")
+        self.insertion.blockSignals(True)
+        self.insertion.clear()
+        frame = planar_frame(pick.shape) if pick is not None else None
+        for key in INSERTIONS:
+            label = key
+            if frame is not None:
+                sign = -1.0 if key.startswith("-") else 1.0
+                axis = frame.x_axis if key.endswith("u") else frame.y_axis
+                vector = [sign * c for c in axis]
+                index = max(range(3), key=lambda i: abs(vector[i]))
+                word = {(2, 1): "up", (2, -1): "down"}.get((index, 1 if vector[index] > 0 else -1))
+                label = (f"Slides in {'+' if vector[index] > 0 else '−'}{'XYZ'[index]}"
+                         + (f" ({word})" if word else ""))
+            self.insertion.addItem(label, key)
+        self.insertion.insertItem(0, "Slides in: automatic", "")
+        index = self.insertion.findData(current or "")
+        self.insertion.setCurrentIndex(max(0, index))
+        self.insertion.blockSignals(False)
+
+    def _show_apart(self, value: int) -> None:
+        from OCP.TopLoc import TopLoc_Location
+
+        from ...kernel.occ import make_transform
+
+        notes = self._annotations or {}
+        if self._moving is None or not notes.get("slide"):
+            return
+        distance = notes.get("travel", 0.0) * value / 100.0
+        vector = tuple(c * distance for c in notes.get("exit_a", (0.0, 0.0, 0.0)))
+        self.window_.stage.viewport.place(self._moving, TopLoc_Location(make_transform(translate=vector)))
+
+    def _play(self) -> None:
+        self._play_phase = 0
+        self._play_timer.start()
+
+    def _play_step(self) -> None:
+        self._play_phase += 1
+        phase = self._play_phase
+        value = phase * 4 if phase <= 25 else max(0, 200 - phase * 4)
+        self.apart.setValue(min(100, value))
+        if phase >= 50:
+            self._play_timer.stop()
+            self.apart.setValue(0)
 
     # -- faces -----------------------------------------------------------
     def _latch_selection(self) -> None:
@@ -266,6 +418,8 @@ class ClipJointPanel(_SelectionTool):
         self._refs[role] = pick.reference(self.window_.document)
         self.anchors.clear()
         self._update_seat()
+        if role == "b" and hasattr(self, "insertion"):
+            self._refresh_insertions()
 
     def _start_pick(self, role: str) -> None:
         self._role = role
@@ -298,7 +452,7 @@ class ClipJointPanel(_SelectionTool):
             button.setText(("Click a face…  " if picking else "") + text)
             button.setChecked(picking)
         male = "b" if self.flip_button.isChecked() else "a"
-        self.flip_button.setText(f"Tabs on {male.upper()}")
+        self.flip_button.setText(f"{'Rails' if self._sliding() else 'Tabs'} on {male.upper()}")
         ready = all(self._refs.values())
         self.swap_button.setEnabled(ready)
         self.flip_button.setEnabled(ready and self.style.currentData() != "connector")
@@ -306,6 +460,9 @@ class ClipJointPanel(_SelectionTool):
             self.set_subtitle("Click the face on the first part where the parts meet.")
         elif self._role == "b":
             self.set_subtitle("Now click the matching face on the other part.")
+        elif self._sliding():
+            self.set_subtitle("Rails go on one part and channels on the other; check it slides "
+                              "apart with the slider, then Apply.")
         else:
             self.set_subtitle("Joints are placed automatically; adjust them below, then Apply.")
         self.window_.set_hint(self.subtitle.text())
@@ -376,6 +533,15 @@ class ClipJointPanel(_SelectionTool):
                 field = self.fields[key]
                 field.setText(str(inputs[key]))
                 field._commit()
+        self.rails.setValue(int(inputs.get("rails", RAIL_DEFAULTS["rails"]) or 2))
+        _select(self.female_mode, inputs.get("female_mode", "auto"))
+        self.stop.setChecked(bool(inputs.get("stop", True)))
+        self.detent.setChecked(inputs.get("detent", None) != 0)
+        self._saved_insertion = inputs.get("insertion", "")
+        for key, _label, _value, _dimension in SLIDE_FIELDS:
+            if key in inputs:
+                self.fields[key].setText(str(inputs[key]))
+                self.fields[key]._commit()
         if inputs.get("seat"):
             self.seat.show()
             self.seat.setChecked(True)
@@ -520,6 +686,21 @@ class ClipJointPanel(_SelectionTool):
             "male": "b" if self.flip_button.isChecked() and style != "connector" else "a",
             "connector_names": names,
         }
+        if style in SLIDES:
+            inputs.update({
+                "rails": self.rails.value(),
+                "insertion": self.insertion.currentData() or getattr(self, "_saved_insertion", ""),
+                "female_mode": str(self.female_mode.currentData()),
+                "stop": self.stop.isChecked(),
+                **{key: self.expression(key, str(value))
+                   for key, _label, value, _dimension in SLIDE_FIELDS},
+            })
+            if not self.detent.isChecked():
+                inputs["detent"] = 0
+            for key in ("count", "anchors", "spacing", "shift", "rotation", "size",
+                        "retention"):
+                inputs.pop(key, None)
+            inputs["placement"] = "auto"
         if not self.seat.isHidden() and self.seat.isChecked():
             inputs.update(seat=True, seat_x=self._seat_offsets[0], seat_y=self._seat_offsets[1])
         source = self._source
@@ -594,6 +775,9 @@ class ClipJointPanel(_SelectionTool):
     def _clear_preview(self) -> None:
         viewport = self.window_.stage.viewport
         viewport.clear_ghost()
+        if getattr(self, "_moving", None) is not None:
+            viewport.erase(self._moving)
+            self._moving = None
         for name in self._preview_names:
             viewport.set_transparency(self.window_._presentations.get(name), 0.0)
         self._preview_names = []
@@ -621,8 +805,18 @@ class ClipJointPanel(_SelectionTool):
             self.warn("The joint preview could not be displayed.")
             return
         viewport = self.window_.stage.viewport
-        # See-through, so the tabs inside their pockets are visible.
-        viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.55)
+        parts = message.get("parts") or {}
+        if (annotations or {}).get("slide") and parts.get("a") and parts.get("b"):
+            # B stays put; A is its own presentation so the slider can slide it
+            # out along the rails and back.
+            viewport.show_ghost(deserialise_shape(parts["b"]), self.window_.palette_.accent,
+                                transparency=0.55)
+            self._moving = viewport.show_overlay_shape(
+                deserialise_shape(parts["a"]), self.window_.palette_.accent, transparency=0.4)
+            self._show_apart(self.apart.value())
+        else:
+            # See-through, so the tabs inside their pockets are visible.
+            viewport.show_ghost(shape, self.window_.palette_.accent, transparency=0.55)
         self._preview_names = [self._bodies["a"], self._bodies["b"]]
         for name in self._preview_names:
             viewport.set_transparency(self.window_._presentations.get(name), 0.9)
@@ -659,6 +853,7 @@ class ClipJointPanel(_SelectionTool):
         self.window_.cancel_tool()
 
     def teardown(self) -> None:
+        self._play_timer.stop()
         self._preview_controller.close()
         self._clear_preview()
         viewport = self.window_.stage.viewport

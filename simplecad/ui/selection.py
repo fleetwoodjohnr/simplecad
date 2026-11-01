@@ -445,7 +445,7 @@ CONTEXT_ACTIONS = (
     ("remove_face_texture", "Remove texture", "trash", texture_features),
     # -- relationships between two parts, which are the most specific reading
     ("edit_joint", "Edit joint", "clip", _has_joint),
-    ("clip_joint", "Clip / Join Parts", "clip", _two_planar_faces),
+    ("clip_joint", "Joint", "clip", _two_planar_faces),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
     ("threaded_connection", "Create Threaded Connection", "thread", _threadable_pair),
     ("matching_part", "Create Matching Part", "thread", _has_a_thread),
