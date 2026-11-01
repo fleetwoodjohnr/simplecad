@@ -24,11 +24,15 @@ import hashlib
 import json
 import os
 import zipfile
+import zlib
 
 from .document import Document
 from .errors import CadError
 
 EXTENSION = ".scad3"
+#: What reading one damaged entry of an archive can raise. A damaged geometry
+#: entry is skipped and rebuilt from the recipe; it never stops the file opening.
+_READ_ERRORS = (OSError, zipfile.BadZipFile, zlib.error, EOFError)
 #: 4: ``move`` may carry ``axis`` + ``angle`` (a turn about any axis), and the
 #: hinge and sliding-joint features exist. Older builds refuse a v4 file rather
 #: than open it without them. Reading v1-v3 needs no migration: every addition
@@ -178,7 +182,8 @@ def load(path: str) -> tuple[Document, bool]:
             )
         try:
             payload = json.loads(archive.read(MODEL_ENTRY))
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, zipfile.BadZipFile, zlib.error, UnicodeDecodeError,
+                EOFError) as exc:
             raise CadError(
                 f"'{os.path.basename(path)}' could not be read.",
                 suggestion="The file may be damaged.",
@@ -201,7 +206,7 @@ def load(path: str) -> tuple[Document, bool]:
                 blob = archive.read(entry)
                 if hashlib.sha256(blob).hexdigest() == sha:
                     document._all_assets[sha] = blob
-            except (OSError, zipfile.BadZipFile):
+            except _READ_ERRORS:
                 continue
         document.assets = {sha: document._all_assets[sha]
                            for sha in payload.get("assets", []) if sha in document._all_assets}
@@ -222,7 +227,7 @@ def load(path: str) -> tuple[Document, bool]:
                         blob = archive.read(entry)
                         if hashlib.sha256(blob).hexdigest() == sha:
                             blobs[sha] = blob
-                    except (OSError, zipfile.BadZipFile):
+                    except _READ_ERRORS:
                         continue
             document._geometry_store.merge({**payload.get("cache", {}), "blobs": blobs})
             current = signatures(document)
@@ -357,6 +362,6 @@ def read_thumbnail(path: str) -> bytes | None:
         with zipfile.ZipFile(path) as archive:
             if THUMBNAIL_ENTRY in archive.namelist():
                 return archive.read(THUMBNAIL_ENTRY)
-    except (OSError, zipfile.BadZipFile):
+    except _READ_ERRORS:
         return None
     return None

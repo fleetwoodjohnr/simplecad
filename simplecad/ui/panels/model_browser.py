@@ -495,6 +495,12 @@ class ModelBrowser(FloatingCard):
             menu.addAction("Edit joint…", lambda: self.feature_action.emit(feature_id, "edit"))
         elif feature.type_name == "arrange":
             menu.addAction("Edit arrangement…", lambda: self.feature_action.emit(feature_id, "edit"))
+        else:
+            from ..tools.properties import editable_inputs
+
+            if editable_inputs(feature, self.document.parameters):
+                menu.addAction("Edit parameters…",
+                               lambda: self.feature_action.emit(feature_id, "edit"))
         menu.addAction("Rename…", lambda: self._rename_feature(item))
         if feature.suppressed:
             menu.addAction(

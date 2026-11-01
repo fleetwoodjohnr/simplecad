@@ -2531,6 +2531,9 @@ class MainWindow(QMainWindow):
             elif feature is not None and feature.type_name == "arrange":
                 self._arrange_edit_feature_id = target
                 self.activate_tool("arrange")
+            elif feature is not None:
+                self._parameters_feature_id = target
+                self.activate_tool("edit_parameters")
             return
         if action == "rename":
             feature_id, _, new = target.partition(":")

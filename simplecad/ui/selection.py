@@ -327,6 +327,23 @@ def _has_joint(model: SelectionModel) -> bool:
     return joint_for(model) is not None
 
 
+def _has_parameters(model: SelectionModel) -> bool:
+    """One body, made by at least one step whose dimensions can be edited."""
+    if not _one_body(model):
+        return False
+    from .tools.properties import BESPOKE, editable_inputs
+
+    graph = model.document.prepare_graph()
+    head = graph.latest.get(str(model.bodies[0]))
+    if head is None:
+        return False
+    return any(
+        graph.features[fid].type_name not in BESPOKE
+        and editable_inputs(graph.features[fid], model.document.parameters)
+        for fid in graph.writers.get(head.object_id, ()) if fid in graph.features
+    )
+
+
 def _one_body(model: SelectionModel) -> bool:
     return model.only_bodies and len(model.bodies) == 1
 
@@ -478,6 +495,7 @@ CONTEXT_ACTIONS = (
     ("rotate", "Rotate", "rotate", _bodies),
     ("scale", "Scale", "scale", _bodies),
     ("split", "Split", "split", _one_body),
+    ("edit_parameters", "Edit parameters", "settings", _has_parameters),
     ("ungroup", "Ungroup", "ungroup", _grouped),
     ("duplicate", "Duplicate", "duplicate", _bodies),
     ("colour", "Colour…", "colour", _bodies),

@@ -417,3 +417,34 @@ def test_a_reopened_sketch_can_be_re_dimensioned(tmp_path):
     builder.invalidate()
     assert builder.rebuild().ok
     assert volume(reopened.bodies["Solid"].shape) == pytest.approx(60 * 25 * 10)
+
+
+def test_damaged_model_data_is_reported_not_raised_raw(stacked, tmp_path):
+    """Corrupt bytes inside the compressed recipe used to escape as a zlib error."""
+    from simplecad.core.errors import CadError
+
+    path = save(stacked, str(tmp_path / "part.scad3"))
+    with zipfile.ZipFile(path) as archive:
+        entry = archive.getinfo("model.json")
+    data = bytearray(open(path, "rb").read())
+    start = entry.header_offset + 30 + len(entry.filename) + 10
+    for index in range(start, start + 40):
+        data[index] ^= 0xFF
+    damaged = tmp_path / "damaged.scad3"
+    damaged.write_bytes(bytes(data))
+    with pytest.raises(CadError, match="could not be read"):
+        load(str(damaged))
+
+
+def test_damaged_geometry_still_opens_and_rebuilds_from_the_recipe(stacked, tmp_path):
+    path = save(stacked, str(tmp_path / "part.scad3"))
+    with zipfile.ZipFile(path) as archive:
+        entry = next(i for i in archive.infolist() if i.filename.startswith("geometry/"))
+    data = bytearray(open(path, "rb").read())
+    start = entry.header_offset + 30 + len(entry.filename) + 10
+    for index in range(start, start + 20):
+        data[index] ^= 0xFF
+    damaged = tmp_path / "damaged.scad3"
+    damaged.write_bytes(bytes(data))
+    document, _cached = load(str(damaged))
+    assert document.features, "the recipe survives a damaged cache"

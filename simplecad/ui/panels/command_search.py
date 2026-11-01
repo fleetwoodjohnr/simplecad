@@ -134,6 +134,9 @@ def catalogue() -> list[Command]:
                 "rotate spin orient print"),
         Command("drop_to_plate", "Drop to plate", "plate", "Sit the selection on z = 0",
                 "floor ground bed place print lay down"),
+        Command("edit_parameters", "Edit parameters", "settings",
+                "Change the dimensions of the selected part or a step in History",
+                "properties dimensions inspector width height depth radius size resize edit"),
         Command("preferences", "Settings…", "settings",
                 "Theme, units, snapping, undo depth and keyboard shortcuts",
                 "preferences options snapping increment history undo depth keys shortcuts "
