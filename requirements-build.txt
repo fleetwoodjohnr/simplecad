@@ -1,0 +1,3 @@
+# Building the installable packages (packaging/build.py).
+-r requirements.txt
+pyinstaller>=6.16

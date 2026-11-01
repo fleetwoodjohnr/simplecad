@@ -468,9 +468,28 @@ def _flatpak_installed(app_id: str) -> bool:
 
 
 def open_in_slicer(path: str) -> str:
-    """Hand a file to the slicer. Returns the name of the one used."""
+    """Hand a file to the slicer. Returns the name of the one used.
+
+    On Windows and macOS slicers are not on the PATH; the 3MF goes to whatever
+    the system opens 3MF files with, which is the slicer that installed itself
+    as their handler.
+    """
+    import sys
+
     from ..core.errors import CadError
 
+    if sys.platform in ("win32", "darwin"):
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa: S606 - the user's own file, their own handler
+            else:
+                subprocess.Popen(["open", path], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            raise CadError("No program is set to open 3MF files.",
+                           suggestion="Install OrcaSlicer or another slicer, then try again.",
+                           detail=str(exc)) from exc
+        return "the default slicer"
     found = find_slicer()
     if found is None:
         raise CadError(

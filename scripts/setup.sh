@@ -33,7 +33,7 @@ echo "==> Installing desktop entry"
 APPS="$HOME/.local/share/applications"
 ICONS="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$APPS" "$ICONS"
-install -m 0644 "$ROOT/assets/simplecad.svg" "$ICONS/simplecad.svg"
+install -m 0644 "$ROOT/simplecad/assets/simplecad.svg" "$ICONS/simplecad.svg"
 sed "s|SIMPLECAD_LAUNCHER|$ROOT/bin/simplecad|g" "$ROOT/simplecad.desktop" \
     > "$APPS/simplecad.desktop"
 chmod 0644 "$APPS/simplecad.desktop"

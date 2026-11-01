@@ -5,7 +5,7 @@ hole and ask for a bolt, and the bolt arrives at the same designation with the
 clearance on the correct side -- because SimpleCAD reads the thread that is
 already there rather than asking again.
 
-Head and nut dimensions come from ``data/fasteners.json`` (ISO 4014 and ISO
+Head and nut dimensions come from ``simplecad/data/fasteners.json`` (ISO 4014 and ISO
 4032), so adding a size is a data edit.
 """
 

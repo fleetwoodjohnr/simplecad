@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "ruff>=0.6"
+      - run: ruff check .
+
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements.txt
+
+  test-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: System libraries for Qt, OpenGL and the X server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1 libegl1 libglu1-mesa libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libfontconfig1 libdbus-1-3 \
+            fonts-liberation
+      - run: pip install -r requirements-dev.txt
+      - name: Unit and integration tests
+        run: python -m pytest -m "not slow" -q
+      - name: Self-test
+        run: python -m simplecad --self-test
+      - name: Real-window checks (Xvfb)
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" python -m pytest -m gui -q
+
+  test-other:
+    # The geometry kernel, file format, transforms, joints, hinges and updater,
+    # headless. The 3D viewport on these systems is not exercised in CI.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m simplecad --self-test
+      - run: >
+          python -m pytest -q -m "not slow"
+          tests/test_transform_constraints.py tests/test_joints_sliding.py tests/test_hinge.py
+          tests/test_updates.py tests/test_project.py tests/test_operations.py
+          tests/test_document.py tests/test_history.py tests/test_split.py

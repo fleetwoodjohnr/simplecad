@@ -1,0 +1,94 @@
+name: Release
+
+# Push a tag like v0.3.0 (matching simplecad/__init__.py) to build, sign and
+# upload every package to a DRAFT release. Publishing it is a person's job.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04        # older glibc: the AppImage runs on more systems
+            steps: bundle appimage deb rpm flatpak-tarball
+          - os: windows-latest
+            steps: bundle windows
+          - os: macos-14            # Apple silicon
+            steps: bundle macos
+          - os: macos-13            # Intel
+            steps: bundle macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: The tag matches the version in the code
+        shell: bash
+        run: |
+          test "v$(python -c 'import simplecad; print(simplecad.__version__)')" = "${GITHUB_REF_NAME}"
+      - run: pip install -r requirements-build.txt
+      - name: Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libfuse2 file
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool && sudo mv appimagetool /usr/local/bin/
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_Linux_x86_64.tar.gz | tar xz nfpm
+          sudo mv nfpm /usr/local/bin/
+      - name: Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup -y --no-progress
+      - name: Build
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          APPIMAGE_EXTRACT_AND_RUN: "1"   # appimagetool without FUSE
+        run: python packaging/build.py ${{ matrix.steps }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            dist/release/*
+            build/simplecad-bundle-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect, checksum and sign
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          mkdir -p dist/release
+          find artifacts -type f \( -name 'SimpleCAD-*' -o -name 'simplecad-bundle-*' \) -exec cp {} dist/release/ \;
+          python scripts/sign_release.py dist/release
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/release/* --draft \
+            --title "SimpleCAD ${GITHUB_REF_NAME#v}" --generate-notes

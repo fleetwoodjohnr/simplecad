@@ -64,7 +64,7 @@ def test_desktop_entry_declares_one_main_window():
 
 def test_desktop_icon_is_scalable_and_loadable(qtbot):
     root = Path(__file__).parents[1]
-    asset = root / "assets" / "simplecad.svg"
+    asset = root / "simplecad" / "assets" / "simplecad.svg"
     svg = ElementTree.parse(asset).getroot()
     assert svg.attrib["viewBox"] == "0 0 128 128"
     assert not QIcon(str(asset)).isNull()

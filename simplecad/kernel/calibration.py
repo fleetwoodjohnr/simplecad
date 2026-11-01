@@ -31,10 +31,9 @@ PLATE_THICKNESS = 5.0
 #: Spacing between test positions.
 PITCH = 18.0
 
-USER_PROFILE_DIR = os.path.join(
-    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
-    "simplecad", "printers",
-)
+from ..core.paths import data_dir
+
+USER_PROFILE_DIR = os.path.join(data_dir(), "printers")
 
 
 @dataclass(frozen=True)

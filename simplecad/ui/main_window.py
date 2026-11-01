@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import json
 import math
 import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QSize, Qt, QTimer, Signal
@@ -857,6 +858,8 @@ class MainWindow(QMainWindow):
         if not os.environ.get("SIMPLECAD_NO_RECOVERY"):
             # Deferred so the window is up before any dialog appears.
             QTimer.singleShot(400, self._offer_recovery)
+            # Well after startup, and never blocking it.
+            QTimer.singleShot(8000, self.check_for_updates_in_background)
         self.set_hint("Pick a shape from the left to begin.")
 
     # -- theme ----------------------------------------------------------
@@ -914,6 +917,64 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def updates_tab(self, parent):
+        """The Updates page of Settings."""
+        from .dialogs.updates import UpdatesTab
+
+        return UpdatesTab(self, parent)
+
+    def check_for_updates_in_background(self) -> None:
+        """At most once a day, if allowed: say so when a newer release exists."""
+        import time
+
+        from ..core import updates
+        from ..core.settings import update_settings
+        from .dialogs.updates import UpdateWorker
+
+        stored = update_settings()
+        if not stored["check_automatically"] or not updates.check_due(time.time(),
+                                                                     stored["last_checked"]):
+            return
+        worker = UpdateWorker(self)
+
+        def answered(release) -> None:
+            from ..core.settings import set_update_setting
+
+            set_update_setting("last_checked", time.time())
+            if release is not None:
+                set_update_setting("latest", release.version)
+                if updates.is_newer(release.version):
+                    self.set_hint(f"SimpleCAD {release.version} is available — "
+                                  "Settings → Updates to install it.")
+            worker.deleteLater()
+
+        worker.checked.connect(answered)
+        worker.failed.connect(lambda _message: worker.deleteLater())
+        worker.check()
+
+    def restart_application(self) -> None:
+        """Start the (updated) program again, then close this one."""
+        import subprocess
+
+        target = os.environ.get("APPIMAGE") or sys.executable
+        arguments = [] if os.environ.get("APPIMAGE") or getattr(sys, "frozen", False) else [
+            "-m", "simplecad"]
+        if self.close():
+            subprocess.Popen([target, *arguments])  # noqa: S603 - our own executable
+
+    def show_about(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from .. import __version__
+        from ..core.updates import RELEASES_PAGE, install_kind
+
+        QMessageBox.about(
+            self, "About SimpleCAD",
+            f"<b>SimpleCAD {__version__}</b><br>Parametric CAD for mechanical design and "
+            f"3D printing.<br><br>Installed as: {install_kind()}<br>"
+            f'<a href="{RELEASES_PAGE}">Releases</a>',
+        )
 
     def toggle_theme(self) -> None:
         from ..core.settings import set_theme_choice
@@ -3127,6 +3188,8 @@ class MainWindow(QMainWindow):
             "theme": self.toggle_theme,
             "preferences": self.open_settings,
             "settings": self.open_settings,
+            "updates": lambda: self.open_settings("Updates"),
+            "about": self.show_about,
             "projection": self._toggle_projection,
             "view_grid": self._toggle_grid,
             "view_xray": self._toggle_xray,
@@ -3313,7 +3376,10 @@ class MainWindow(QMainWindow):
 
             self.set_hint(str(translate(exc, "export")))
             return
-        self.set_hint(f"Exported to {path}")
+        # STEP, STL, OBJ and 3MF carry shapes only. Say so, rather than let
+        # it look as if the history and parameters went with them.
+        self.set_hint(f"Exported to {path} — shapes only; the history, parameters, "
+                      "joints and hinges stay editable in the .scad3 project.")
 
     # -- import ----------------------------------------------------------
     def import_model(self) -> None:

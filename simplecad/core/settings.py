@@ -12,10 +12,9 @@ import json
 import os
 from functools import lru_cache
 
-CONFIG_DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-    "simplecad",
-)
+from .paths import config_dir
+
+CONFIG_DIR = config_dir()
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 MAX_RECENT = 10
 
@@ -304,4 +303,32 @@ def set_number_preference(name: str, value: float) -> bool:
         modelling = {}
     modelling[name] = type(default)(min(high, max(low, value)))
     data["modelling"] = modelling
+    return _write(data)
+
+
+# ----------------------------------------------------------------------
+# Updates
+# ----------------------------------------------------------------------
+def update_settings() -> dict:
+    """``check_automatically`` (bool), ``last_checked`` (epoch s), ``latest`` (version)."""
+    from .updates import default_auto_check
+
+    stored = _read().get("updates")
+    stored = stored if isinstance(stored, dict) else {}
+    auto = stored.get("check_automatically")
+    return {
+        "check_automatically": auto if isinstance(auto, bool) else default_auto_check(),
+        "last_checked": stored.get("last_checked") if isinstance(
+            stored.get("last_checked"), (int, float)) else None,
+        "latest": stored.get("latest") if isinstance(stored.get("latest"), str) else "",
+    }
+
+
+def set_update_setting(key: str, value) -> bool:
+    data = _read()
+    updates = data.get("updates")
+    if not isinstance(updates, dict):
+        updates = {}
+    updates[key] = value
+    data["updates"] = updates
     return _write(data)

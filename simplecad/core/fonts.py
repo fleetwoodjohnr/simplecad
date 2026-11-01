@@ -21,17 +21,22 @@ FAMILY_FILES: dict[str, tuple[str, ...]] = {
         "liberation-sans-fonts/LiberationSans-Regular.ttf",
         "open-sans/OpenSans-Regular.ttf",
         "google-noto*/NotoSans-Regular.ttf",
+        # Debian/Ubuntu layout, then Windows and macOS system fonts.
+        "*/*/LiberationSans-Regular.ttf", "arial.ttf", "Supplemental/Arial.ttf", "Arial.ttf",
     ),
     "serif": (
         "dejavu-serif-fonts/DejaVuSerif.ttf",
         "liberation-serif-fonts/LiberationSerif-Regular.ttf",
         "google-noto*/NotoSerif-Regular.ttf",
+        "*/*/LiberationSerif-Regular.ttf", "times.ttf", "Supplemental/Times New Roman.ttf",
     ),
     "monospace": (
         "adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
         "liberation-mono-fonts/LiberationMono-Regular.ttf",
         "dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
         "adobe-source-code-pro-fonts/SourceCodePro-Regular.otf",
+        "*/*/LiberationMono-Regular.ttf", "consola.ttf", "cour.ttf",
+        "Supplemental/Courier New.ttf",
     ),
 }
 
@@ -46,17 +51,22 @@ MODELING_FAMILY_FILES: dict[str, tuple[str, ...]] = {
         "open-sans/OpenSans-Regular.ttf",
         "google-noto*/NotoSans-Regular.ttf",
         "adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
+        # Debian/Ubuntu layout, then Windows and macOS system fonts.
+        "*/*/LiberationSans-Regular.ttf", "arial.ttf", "Supplemental/Arial.ttf", "Arial.ttf",
     ),
     "serif": (
         "liberation-serif-fonts/LiberationSerif-Regular.ttf",
         "google-noto*/NotoSerif-Regular.ttf",
         "dejavu-serif-fonts/DejaVuSerif.ttf",
+        "*/*/LiberationSerif-Regular.ttf", "times.ttf", "Supplemental/Times New Roman.ttf",
     ),
     "monospace": (
         "liberation-mono-fonts/LiberationMono-Regular.ttf",
         "adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
         "adobe-source-code-pro-fonts/SourceCodePro-Regular.otf",
         "dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+        "*/*/LiberationMono-Regular.ttf", "consola.ttf", "cour.ttf",
+        "Supplemental/Courier New.ttf",
     ),
 }
 
@@ -64,6 +74,10 @@ FONT_DIRS = (
     "/usr/share/fonts",
     "/usr/local/share/fonts",
     os.path.expanduser("~/.local/share/fonts"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts"),
+    "/System/Library/Fonts",
+    "/Library/Fonts",
+    os.path.expanduser("~/Library/Fonts"),
 )
 
 

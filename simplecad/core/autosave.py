@@ -14,10 +14,9 @@ from __future__ import annotations
 import os
 import time
 
-APP_DIR = os.path.join(
-    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
-    "simplecad",
-)
+from .paths import data_dir
+
+APP_DIR = data_dir()
 RECOVERY_DIR = os.path.join(APP_DIR, "recovery")
 #: Seconds between autosaves.
 INTERVAL = 90

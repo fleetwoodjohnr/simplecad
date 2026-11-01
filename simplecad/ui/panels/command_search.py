@@ -137,6 +137,11 @@ def catalogue() -> list[Command]:
         Command("edit_parameters", "Edit parameters", "settings",
                 "Change the dimensions of the selected part or a step in History",
                 "properties dimensions inspector width height depth radius size resize edit"),
+        Command("updates", "Check for updates…", "settings",
+                "See the installed and latest versions, and install an update",
+                "update upgrade version release new download install"),
+        Command("about", "About SimpleCAD", "settings", "Version and where it is installed",
+                "version info about help"),
         Command("preferences", "Settings…", "settings",
                 "Theme, units, snapping, undo depth and keyboard shortcuts",
                 "preferences options snapping increment history undo depth keys shortcuts "

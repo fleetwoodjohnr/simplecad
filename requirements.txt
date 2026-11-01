@@ -9,3 +9,7 @@ numpy>=2.0
 # Robust planar erosion for Hollow's extruded-profile fallback. OCCT's own
 # planar offset crashes on dense concave outlines such as the Heart primitive.
 shapely>=2.1.2,<3
+# Update checking: comparing versions, and verifying the Ed25519 signature on
+# every release before anything downloaded is installed.
+packaging>=24
+cryptography>=43

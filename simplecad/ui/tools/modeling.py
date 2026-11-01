@@ -592,8 +592,15 @@ class _TransformPanel(_SelectionTool):
         absolute = self._absolute() if absolute is None else absolute
         if self.frame_choice.currentIndex() == 1 and self._subject and not absolute:
             document = self.window_.document
-            turn = accumulated_rotation(document.features, self._subject[0], document.parameters)
-            return frame_from_rotation(turn)
+            # Asked several times per mouse move; the answer only changes with
+            # the model, so it is worked out once per revision.
+            key = (document.revision, self._subject[0])
+            cached = getattr(self, "_local_frame", None)
+            if cached is None or cached[0] != key:
+                turn = accumulated_rotation(document.features, self._subject[0],
+                                            document.parameters)
+                self._local_frame = (key, frame_from_rotation(turn))
+            return self._local_frame[1]
         return WORLD_FRAME
 
     def _absolute(self) -> bool:

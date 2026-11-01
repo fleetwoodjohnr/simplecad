@@ -18,10 +18,8 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-DATA_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
-)
+#: Inside the package, so an installed or frozen build carries it along.
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 #: Loaded in this order. ``printed`` leads because SimpleCAD makes parts for
 #: a printer: an ISO tooth at a small pitch is a support-hungry sliver in
 #: plastic, so the printable coarse series is what should be offered first.

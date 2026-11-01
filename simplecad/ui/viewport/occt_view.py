@@ -191,20 +191,48 @@ def default_surface_format() -> QSurfaceFormat:
     return fmt
 
 
-def _current_gl_context_capsule():
-    """Box the current native GLX context in a PyCapsule for OCCT.
+def _current_gl_context_pointer() -> int | None:
+    """The native handle of the GL context Qt has made current, or None.
 
-    ``Aspect_RenderingContext`` is a ``void*`` and OCP binds it as a capsule, so
-    we read the pointer with ctypes while Qt's context is current.
+    What OCCT calls ``Aspect_RenderingContext``: a ``GLXContext`` on Linux, an
+    ``HGLRC`` on Windows, an ``NSOpenGLContext*`` on macOS. PySide6 exposes no
+    native-interface accessor for any of them, so each is read from the
+    platform's own "current context" call.
     """
+    import sys
+
     try:
+        if sys.platform == "win32":
+            get_context = ctypes.windll.opengl32.wglGetCurrentContext
+            get_context.restype = ctypes.c_void_p
+            get_context.argtypes = []
+            return get_context() or None
+        if sys.platform == "darwin":
+            objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.A.dylib")
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            objc.objc_msgSend.restype = ctypes.c_void_p
+            objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            return objc.objc_msgSend(objc.objc_getClass(b"NSOpenGLContext"),
+                                     objc.sel_registerName(b"currentContext")) or None
         lib = ctypes.CDLL("libGL.so.1")
         get_context = lib.glXGetCurrentContext
+        get_context.restype = ctypes.c_void_p
+        get_context.argtypes = []
+        return get_context() or None
     except (OSError, AttributeError):
         return None
-    get_context.restype = ctypes.c_void_p
-    get_context.argtypes = []
-    pointer = get_context()
+
+
+def _current_gl_context_capsule():
+    """Box the current native GL context in a PyCapsule for OCCT.
+
+    ``Aspect_RenderingContext`` is a ``void*`` and OCP binds it as a capsule, so
+    the pointer is read while Qt's context is current.
+    """
+    pointer = _current_gl_context_pointer()
     if not pointer:
         return None
     new_capsule = ctypes.pythonapi.PyCapsule_New
@@ -1303,8 +1331,12 @@ class OcctViewport(QOpenGLWidget):
 
         capsule = _current_gl_context_capsule()
         if capsule is None:
+            import sys
+
             raise RuntimeError(
-                "No OpenGL context is current; SimpleCAD needs QT_QPA_PLATFORM=xcb"
+                "No OpenGL context is current"
+                + ("; SimpleCAD needs QT_QPA_PLATFORM=xcb" if sys.platform.startswith("linux")
+                   else "")
             )
 
         self._display = Aspect_DisplayConnection()

@@ -1,6 +1,6 @@
 [project]
 name = "simplecad"
-version = "0.1.0"
+version = "0.2.0"
 description = "Modern parametric CAD for Fedora, built for functional 3D printing"
 requires-python = ">=3.12"
 
@@ -11,3 +11,12 @@ markers = [
     "gui: needs a real GL context; run under xvfb-run with QT_QPA_PLATFORM=xcb",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+extend-exclude = ["build", "dist", ".venv", "packaging/simplecad.spec"]
+
+[tool.ruff.lint]
+# The checks that catch real bugs -- syntax errors, undefined names, misuse of
+# comparisons -- rather than style. Widen deliberately, a rule at a time.
+select = ["E9", "F63", "F7", "F82"]
