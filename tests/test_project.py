@@ -17,7 +17,7 @@ import pytest
 from simplecad.core.document import BodyRef, Document
 from simplecad.core.errors import CadError
 from simplecad.core.naming import fingerprint, make_ref, sub_shapes
-from simplecad.core.project import EXTENSION, load, read_thumbnail, save
+from simplecad.core.project import EXTENSION, FORMAT_VERSION, load, read_thumbnail, save
 from simplecad.core.rebuild import Rebuilder
 from simplecad.kernel import operations, primitives  # noqa: F401 - registers types
 from simplecad.kernel.occ import bounding_box, volume
@@ -87,7 +87,7 @@ def test_archive_holds_the_recipe_and_a_geometry_cache(stacked, tmp_path):
     assert sum(n.startswith("geometry/") for n in names) >= 2
     with zipfile.ZipFile(path) as archive:
         recipe = json.loads(archive.read("model.json"))
-    assert recipe["format"] == 3
+    assert recipe["format"] == FORMAT_VERSION == 4
     assert set(recipe["geometry"]) == {b.id for b in stacked.bodies.values()}
     assert recipe["cache"]["entries"]
 

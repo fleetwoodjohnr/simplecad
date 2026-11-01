@@ -144,67 +144,11 @@ def test_picking_finds_the_nearest_entity_and_ignores_distant_ones():
 # which is zero by definition, so every drag previewed and then committed
 # nothing.
 # ----------------------------------------------------------------------
-class StubManipulator:
-    """Reports a translation proportional to how far the mouse moved."""
-
-    def __init__(self) -> None:
-        self.stopped_with = None
-        self.deactivated = False
-        self._origin = (0, 0)
-
-    def HasActiveMode(self):  # noqa: N802 - mirrors the OCCT name
-        return True
-
-    def StartTransform(self, x, y, _view):  # noqa: N802
-        self._origin = (x, y)
-
-    def Transform(self, x, y, _view):  # noqa: N802
-        from OCP.gp import gp_Trsf, gp_Vec
-
-        transform = gp_Trsf()
-        transform.SetTranslation(
-            gp_Vec(float(x - self._origin[0]), float(y - self._origin[1]), 0.0)
-        )
-        return transform
-
-    def StopTransform(self, apply):  # noqa: N802
-        self.stopped_with = apply
-
-    def DeactivateCurrentMode(self):  # noqa: N802
-        self.deactivated = True
-
-
-class StubContext:
-    """Detection is OCCT's job; here it only has to not get in the way."""
-
-    detected = None
-
-    def MoveTo(self, _x, _y, _view, _redraw):  # noqa: N802 - mirrors OCCT
-        pass
-
-    def HasDetected(self):  # noqa: N802
-        return self.detected is not None
-
-    def DetectedInteractive(self):  # noqa: N802
-        return self.detected
-
-
 def gizmo_with_stub():
-    from simplecad.ui.viewport.gizmo import TransformGizmo
+    """Top view, 1 mm per pixel, the cursor on the X arrow."""
+    from tests.gizmo_stub import gizmo_on
 
-    class Viewport:
-        context = StubContext()
-        view = None
-
-        def refresh(self):
-            pass
-
-    gizmo = TransformGizmo(Viewport())
-    gizmo._manipulator = StubManipulator()
-    # The cursor is on the handle.
-    gizmo.viewport.context = StubContext()
-    gizmo.viewport.context.detected = gizmo._manipulator
-    return gizmo
+    return gizmo_on((0.0, 0.0, -1.0), "translation", axis=0)
 
 
 def test_a_drag_commits_what_was_dragged_not_zero():
@@ -218,7 +162,7 @@ def test_a_drag_commits_what_was_dragged_not_zero():
     assert components is not None
     dx, dy, dz, *_rotation = components
     assert dx == pytest.approx(75.0), "the committed move must be the dragged move"
-    assert (dy, dz) == pytest.approx((0.0, 0.0))
+    assert (dy, dz) == (0.0, 0.0)
 
 
 def test_the_preview_is_rolled_back_so_the_move_is_not_applied_twice():

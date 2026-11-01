@@ -29,7 +29,12 @@ from .document import Document
 from .errors import CadError
 
 EXTENSION = ".scad3"
-FORMAT_VERSION = 3
+#: 4: ``move`` may carry ``axis`` + ``angle`` (a turn about any axis), and the
+#: hinge and sliding-joint features exist. Older builds refuse a v4 file rather
+#: than open it without them. Reading v1-v3 needs no migration: every addition
+#: is an optional input with the old behaviour as its default.
+#: See docs/specs/file-format.md.
+FORMAT_VERSION = 4
 MODEL_ENTRY = "model.json"
 BODY_PREFIX = "bodies/"
 THUMBNAIL_ENTRY = "thumbnail.png"

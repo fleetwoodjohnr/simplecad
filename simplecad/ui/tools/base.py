@@ -208,8 +208,8 @@ class ToolPanel(FloatingCard):
         point-picking mode with its overlay still on screen.
         """
 
-    def handle_arrow_key(self, key: int) -> bool:
-        """Handle a model-space arrow key while this tool is active."""
+    def handle_arrow_key(self, key: int, modifiers=None) -> bool:
+        """Handle a model-space arrow key (plain, or with Ctrl) for this tool."""
         return False
 
     def keyPressEvent(self, event) -> None:  # noqa: N802

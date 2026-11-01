@@ -61,7 +61,11 @@ def run_and_capture(build, out_path: str, settle_ms: int = 1400, size=(1280, 820
     """Build a widget, show it, capture it to *out_path*, and quit.
 
     ``build(app)`` must return the top-level widget. Returns a dict of results.
+    ``SIMPLECAD_SHOTS_DIR`` redirects the picture, so a check run as a test
+    does not rewrite the tracked screenshots in ``docs/shots``.
     """
+    if os.environ.get("SIMPLECAD_SHOTS_DIR"):
+        out_path = os.path.join(os.environ["SIMPLECAD_SHOTS_DIR"], os.path.basename(out_path))
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtWidgets import QApplication

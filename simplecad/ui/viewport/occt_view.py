@@ -2493,9 +2493,13 @@ class OcctViewport(QOpenGLWidget):
         if was_nav is _Nav.GIZMO and self.gizmo is not None:
             components = self.gizmo.release()
             # A click is not a drag: pressing the part to grab it and letting
-            # go must not commit the sliver of a turn a hand tremor makes.
+            # go must not commit the sliver of a turn a hand tremor makes --
+            # and must not leave that sliver, or the snaps it caught, behind
+            # for the next drag or for Enter to apply.
             if components is not None and self._dragged:
                 self.gizmo.committed.emit(*components)
+            else:
+                self.gizmo.cancelled.emit()
             return
         if was_nav is _Nav.DRAG_FACE and self._drag is not None:
             distance = self._drag_distance(
@@ -2670,6 +2674,20 @@ class OcctViewport(QOpenGLWidget):
         platform offers it, and its absence costs nothing.
         """
         kind = event.type()
+        if (kind in (QEvent.ShortcutOverride, QEvent.KeyPress)
+                and self._nav is _Nav.GIZMO and self.gizmo is not None
+                and self.gizmo.dragging):
+            index = {Qt.Key_X: 0, Qt.Key_Y: 1, Qt.Key_Z: 2}.get(event.key())
+            modifiers = event.modifiers() & ~Qt.KeypadModifier
+            if index is not None and modifiers in (Qt.NoModifier, Qt.ShiftModifier):
+                # X / Y / Z lock the drag to that axis; Shift+X / Y / Z to the
+                # plane across it. Taken before the shortcut map, where X is
+                # X-ray, sees the key.
+                if kind == QEvent.KeyPress and not event.isAutoRepeat():
+                    plane = bool(modifiers & Qt.ShiftModifier)
+                    self.gizmo.set_constraint("plane" if plane else "axis", index)
+                event.accept()
+                return True
         if kind == QEvent.KeyPress and self._xray_enabled:
             key = event.key()
             if key in (Qt.Key_Tab, Qt.Key_Backtab):

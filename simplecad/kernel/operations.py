@@ -740,7 +740,8 @@ class RoundPushPullFeature(_BodyOperation):
             )
 
 
-def move_transform(translate, rotations, pivot, order: str = "") -> object:
+def move_transform(translate, rotations, pivot, order: str = "", axis=None,
+                   angle: float = 0.0) -> object:
     """The ``gp_Trsf`` a Move applies: rotate about *pivot*, then translate.
 
     ``order="xyz"`` turns about world X first, then Y, then Z -- the order the
@@ -749,8 +750,16 @@ def move_transform(translate, rotations, pivot, order: str = "") -> object:
     project with a two-axis rotation would quietly re-orient the part.
     The Rotate panel's live preview uses this same function, so what it shows
     is what the feature builds.
+
+    *axis* and *angle* are a turn about an arbitrary direction through *pivot*
+    -- a part's own (Local) axis, an edge or a face normal -- applied after
+    the world-axis turns. Moves saved before it existed have neither key.
     """
     transform = make_transform(translate=tuple(translate))
+    if axis is not None and abs(angle) > 1e-12:
+        transform = transform.Multiplied(
+            make_transform(rotate_axis=tuple(axis), rotate_degrees=angle, origin=tuple(pivot))
+        )
     steps = list(zip(((1, 0, 0), (0, 1, 0), (0, 0, 1)), rotations))
     if order == "xyz":
         steps.reverse()
@@ -762,13 +771,56 @@ def move_transform(translate, rotations, pivot, order: str = "") -> object:
     return transform
 
 
+def accumulated_rotation(features, name: str, parameters):
+    """The turn a body has picked up from its Move features, as a ``gp_Trsf``.
+
+    Rotation only, about the origin: it is the body's own frame -- what Local
+    axes and Reset rotation mean. Turns made by other features (an Align that
+    spins a part to a face, a rotated pattern) are not included.
+    """
+    # ponytail: Move features only; read the frame off the geometry if Local
+    # ever has to follow Align / Arrange turns too.
+    from OCP.gp import gp_Trsf
+
+    total = gp_Trsf()
+    for feature in features:
+        if (feature.type_name != "move" or feature.suppressed
+                or str(feature.inputs.get("body", "")) != name):
+            continue
+
+        def number(key, feature=feature):
+            raw = feature.inputs.get(key, 0.0)
+            if isinstance(raw, (int, float)):
+                return float(raw)
+            return parameters.evaluate(str(raw), feature.dimensions.get(key, Dimension.LENGTH))
+
+        try:
+            axis = feature.inputs.get("axis")
+            turn = move_transform(
+                (0.0, 0.0, 0.0), [number(k) for k in ("rx", "ry", "rz")], (0.0, 0.0, 0.0),
+                str(feature.inputs.get("order", "")),
+                tuple(axis) if axis is not None else None,
+                number("angle") if axis is not None else 0.0,
+            )
+        except Exception:  # noqa: BLE001 - an unreadable expression turns nothing
+            continue
+        total = turn.Multiplied(total)
+    return total
+
+
 @register("move")
 class MoveFeature(_BodyOperation):
     label = "Move"
-    dimensions = {"rx": Dimension.ANGLE, "ry": Dimension.ANGLE, "rz": Dimension.ANGLE}
+    dimensions = {"rx": Dimension.ANGLE, "ry": Dimension.ANGLE, "rz": Dimension.ANGLE,
+                  "angle": Dimension.ANGLE}
 
     def execute(self, ctx: BuildContext) -> dict:
         body = ctx.shape(self, "body")
+        axis = self.inputs.get("axis")
+        if axis is not None:
+            axis = tuple(float(v) for v in axis)
+            if len(axis) != 3 or math.sqrt(sum(v * v for v in axis)) < 1e-9:
+                raise CadError("This rotation has no axis to turn about.")
         # Rotate about the body's own centre, not the world origin. Spinning a
         # part that happens to sit at x=150 around (0,0,0) flings it across the
         # scene, which is never what "rotate this 90 degrees" means.
@@ -781,6 +833,7 @@ class MoveFeature(_BodyOperation):
             [ctx.value(self, key, 0.0) for key in ("dx", "dy", "dz")],
             [ctx.value(self, key, 0.0) for key in ("rx", "ry", "rz")],
             pivot, str(self.inputs.get("order", "")),
+            axis, ctx.value(self, "angle", 0.0) if axis is not None else 0.0,
         )
         return self._emit(transformed(body, transform, copy_geometry=False))
 

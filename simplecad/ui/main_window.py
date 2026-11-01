@@ -1376,9 +1376,11 @@ class MainWindow(QMainWindow):
             if direction is not None and event.type() == QEvent.KeyPress:
                 if self._is_typing():
                     return super().eventFilter(watched, event)
-                if active_panel is not None and event.modifiers() == Qt.NoModifier:
+                if active_panel is not None and event.modifiers() in (
+                    Qt.NoModifier, Qt.ControlModifier,
+                ):
                     arrow_handler = getattr(active_panel, "handle_arrow_key", None)
-                    if callable(arrow_handler) and arrow_handler(key):
+                    if callable(arrow_handler) and arrow_handler(key, event.modifiers()):
                         event.accept()
                         return True
                 if event.isAutoRepeat() and key not in self._nudge_keys:
@@ -1415,6 +1417,22 @@ class MainWindow(QMainWindow):
         length = math.sqrt(sum(value * value for value in vector))
         return tuple(value / length for value in vector) if length else (0.0, 0.0, 0.0)
 
+    def screen_vectors(self):
+        """Screen right, up and into-the-screen as world unit vectors, or None."""
+        from .viewport.camera import read_state, view_direction
+
+        camera = read_state(self.stage.viewport.view)
+        if camera is None:
+            return None
+        forward = view_direction(camera)
+        up = self._unit(camera[2])
+        right = self._unit((
+            forward[1] * up[2] - forward[2] * up[1],
+            forward[2] * up[0] - forward[0] * up[2],
+            forward[0] * up[1] - forward[1] * up[0],
+        ))
+        return right, up, forward
+
     def _begin_nudge(self, direction: str, depth: bool = False) -> dict | None:
         """Latch selection and camera axes until this arrow burst finishes."""
         if not self._nudge_allowed():
@@ -1434,19 +1452,10 @@ class MainWindow(QMainWindow):
         if not self.selection.only_bodies or not self.selection.bodies:
             return None
 
-        from .viewport.camera import read_state, view_direction
-
-        camera = read_state(self.stage.viewport.view)
-        if camera is None:
+        vectors = self.screen_vectors()
+        if vectors is None:
             return None
-        forward = view_direction(camera)
-        up = self._unit(camera[2])
-        right = self._unit((
-            forward[1] * up[2] - forward[2] * up[1],
-            forward[2] * up[0] - forward[0] * up[2],
-            forward[0] * up[1] - forward[1] * up[0],
-        ))
-        right, up, forward = _world_axes(right, up, forward)
+        right, up, forward = _world_axes(*vectors)
         names = list(self.selection.bodies)
         state = {
             "kind": "move", "bodies": names,

@@ -111,6 +111,18 @@ class SnapPoint:
     kind: str
     directions: tuple[tuple[float, float, float], ...] = ()
     inference: str | None = None
+    #: The axis a turn about this place would use: a flat face's normal, a
+    #: hole's or arc's axis. Straight edges carry theirs in ``directions``.
+    axis: tuple[float, float, float] | None = None
+
+    @property
+    def turn_axis(self) -> tuple[float, float, float] | None:
+        """The axis this snap stands for, if it stands for one."""
+        if self.axis is not None:
+            return self.axis
+        if self.kind in ("midpoint", "on_edge", "edge") and len(self.directions) == 1:
+            return self.directions[0]
+        return None
 
     @property
     def priority(self) -> int:
@@ -212,9 +224,12 @@ def _edge_points(edge) -> list[SnapPoint]:
         ))
         if curve.GetType() == GeomAbs_Circle:
             # A hole's centre is the thing people actually measure between.
-            found.append(
-                SnapPoint(_point(curve.Circle().Location()), "center")
-            )
+            circle = curve.Circle()
+            normal = circle.Axis().Direction()
+            found.append(SnapPoint(
+                _point(circle.Location()), "center",
+                axis=(normal.X(), normal.Y(), normal.Z()),
+            ))
     except Exception:  # noqa: BLE001 - a degenerate edge simply offers no snaps
         pass
     return found
@@ -251,7 +266,7 @@ def _face_points(shape) -> list[SnapPoint]:
         face = TopoDS.Face_s(explorer.Current())
         plane = analyse_plane(face)
         if plane is not None:
-            found.append(SnapPoint(plane.center, "face"))
+            found.append(SnapPoint(plane.center, "face", axis=tuple(plane.normal)))
         else:
             cylinder = analyse_cylinder(face)
             if cylinder is not None:
@@ -261,7 +276,7 @@ def _face_points(shape) -> list[SnapPoint]:
                 half = cylinder.length / 2.0
                 found.append(SnapPoint(
                     tuple(origin[i] + direction[i] * half for i in range(3)),
-                    "center",
+                    "center", axis=tuple(direction),
                 ))
         explorer.Next()
     return found
