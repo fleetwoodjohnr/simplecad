@@ -10,6 +10,7 @@ exit before starting OCCT or the geometry service.
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
 
@@ -21,7 +22,8 @@ log = logging.getLogger("simplecad.instance")
 
 def _server_name() -> str:
     """A per-user name; two logged-in users must never share an instance."""
-    return f"simplecad-{os.getuid()}"
+    user = os.getuid() if hasattr(os, "getuid") else getpass.getuser()
+    return f"simplecad-{user}"
 
 
 class SingleInstance(QObject):
@@ -29,10 +31,14 @@ class SingleInstance(QObject):
 
     #: Carries the launcher's activation token, or "" when there was none.
     activate_requested = Signal(str)
+    #: A file the second launch was asked to open (a double-click in Files).
+    open_requested = Signal(str)
 
-    def __init__(self, name: str | None = None, parent=None) -> None:
+    def __init__(self, name: str | None = None, parent=None, paths=()) -> None:
         super().__init__(parent)
         self.name = name or _server_name()
+        #: Files this launch was given, forwarded if another process owns the name.
+        self.paths = [os.path.abspath(p) for p in paths]
         self._server = QLocalServer(self)
         self._server.newConnection.connect(self._accept_connections)
         self._owns_server = False
@@ -74,7 +80,9 @@ class SingleInstance(QObject):
         # the launcher; without it the other process is a background window
         # asking for focus on its own behalf, which is what focus-stealing
         # prevention exists to refuse.
-        socket.write(b"activate\n" + _activation_token().encode() + b"\n")
+        message = "activate\n" + _activation_token() + "\n"
+        message += "".join(f"open\t{path}\n" for path in self.paths)
+        socket.write(message.encode())
         socket.flush()
         socket.waitForBytesWritten(300)
         socket.disconnectFromServer()
@@ -90,12 +98,18 @@ class SingleInstance(QObject):
             # happens; the token is read only if it has already arrived. Making
             # the request *conditional* on a payload would reintroduce the race
             # where the peer disconnects before readyRead is delivered.
-            token = ""
+            token, paths = "", []
             if socket.waitForReadyRead(200):
-                lines = bytes(socket.readAll()).split(b"\n")
+                data = bytes(socket.readAll())
+                while socket.waitForReadyRead(50):
+                    data += bytes(socket.readAll())
+                lines = data.decode(errors="ignore").split("\n")
                 if len(lines) > 1:
-                    token = lines[1].decode(errors="ignore").strip()
+                    token = lines[1].strip()
+                paths = [line[5:] for line in lines[2:] if line.startswith("open\t")]
             self.activate_requested.emit(token)
+            for path in paths:
+                self.open_requested.emit(path)
             socket.disconnectFromServer()
             socket.deleteLater()
 

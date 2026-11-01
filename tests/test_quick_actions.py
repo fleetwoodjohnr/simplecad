@@ -75,12 +75,12 @@ def test_preferences_turn_on_smaller_project_files(model, tmp_path, monkeypatch)
     monkeypatch.setattr(settings, "CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(settings, "SETTINGS_PATH", str(tmp_path / "settings.json"))
     window = model.window
-    window.activate_tool("preferences")
-    panel = next(w for w, _a in window.stage.overlays if getattr(w, "title", "") == "Preferences")
-    assert not panel.compact.isChecked()
-    panel.compact.setChecked(True)
-    panel.commit()
+    window.run_action("preferences")
+    dialog = window._settings_dialog
+    assert not dialog.compact.isChecked()
+    dialog.compact.setChecked(True)
     assert settings.ui_preference("compact_saves", False) is True
+    dialog.close()
 
     sent = {}
     monkeypatch.setattr(window.geometry, "save", lambda *a, **k: sent.update(k) or True)

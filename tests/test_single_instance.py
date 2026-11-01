@@ -69,3 +69,19 @@ def test_desktop_icon_is_scalable_and_loadable(qtbot):
     assert svg.attrib["viewBox"] == "0 0 128 128"
     assert not QIcon(str(asset)).isNull()
     assert "Icon=simplecad" in (root / "simplecad.desktop").read_text()
+
+
+def test_a_second_launch_forwards_the_file_it_was_asked_to_open(qtbot, tmp_path):
+    name = f"simplecad-test-{uuid4().hex}"
+    part = tmp_path / "part.step"
+    part.write_text("x")
+    primary = SingleInstance(name)
+    secondary = SingleInstance(name, paths=[str(part)])
+    try:
+        assert primary.claim()
+        with qtbot.waitSignal(primary.open_requested, timeout=1000) as opened:
+            assert not secondary.claim()
+        assert opened.args == [str(part)]
+    finally:
+        secondary.close()
+        primary.close()

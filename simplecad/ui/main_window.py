@@ -699,6 +699,10 @@ class MainWindow(QMainWindow):
                 mode = Mode(stored)
         self.mode = mode
         self.palette_ = resolve(mode)
+        from ..core.settings import display_unit
+        from ..core.units import set_display_unit
+
+        set_display_unit(display_unit())
         self.document = Document("Untitled")
         self.rebuilder = Rebuilder(self.document)
         #: Where this document was last saved, so Ctrl+S does not re-ask.
@@ -884,6 +888,31 @@ class MainWindow(QMainWindow):
         self._shown.clear()
         self._display_base.clear()
         self.refresh_view()
+
+    def set_theme(self, choice: str) -> None:
+        """Light, dark, or follow the desktop ("system"), remembered."""
+        from ..core.settings import set_theme_choice
+
+        set_theme_choice(choice)
+        self.mode = Mode(choice) if choice in ("light", "dark", "system") else Mode.SYSTEM
+        self.palette_ = resolve(self.mode)
+        self.apply_theme()
+
+    def open_settings(self, tab: str = "") -> None:
+        """The Settings window: theme, units, modelling numbers, shortcuts, updates."""
+        from .dialogs.settings import SettingsDialog
+
+        dialog = getattr(self, "_settings_dialog", None)
+        if dialog is None:
+            dialog = SettingsDialog(self)
+            dialog.finished.connect(lambda _r: setattr(self, "_settings_dialog", None))
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            self._settings_dialog = dialog
+        if tab:
+            dialog.show_tab(tab)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def toggle_theme(self) -> None:
         from ..core.settings import set_theme_choice
@@ -3077,6 +3106,8 @@ class MainWindow(QMainWindow):
             "hide": self.hide_selection,
             "rebuild_all": self.rebuild_everything,
             "theme": self.toggle_theme,
+            "preferences": self.open_settings,
+            "settings": self.open_settings,
             "projection": self._toggle_projection,
             "view_grid": self._toggle_grid,
             "view_xray": self._toggle_xray,
@@ -3598,6 +3629,34 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._open_path(path)
+
+    def open_file(self, path: str) -> None:
+        """Open a project, or import a model file, named from outside the app.
+
+        A double-click in the file manager or ``simplecad part.step`` lands
+        here: a ``.scad3`` replaces the document (after asking about unsaved
+        changes, as Open does), any other model file is imported into it.
+        """
+        from ..core.project import EXTENSION
+
+        if not os.path.isfile(path):
+            self.set_hint(f"'{os.path.basename(path)}' could not be found.")
+            return
+        if path.lower().endswith(EXTENSION):
+            if self._dirty and self.document.features:
+                from PySide6.QtWidgets import QMessageBox
+
+                answer = QMessageBox.question(
+                    self, "Open project",
+                    f"Open {os.path.basename(path)}? The current model has unsaved "
+                    "changes, which will be lost.",
+                    QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Cancel,
+                )
+                if answer != QMessageBox.Open:
+                    return
+            self._open_path(path)
+        else:
+            self.import_path(path)
 
     def _open_path(self, path: str) -> None:
         from ..core.project import load

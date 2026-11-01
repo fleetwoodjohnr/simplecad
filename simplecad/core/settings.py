@@ -40,6 +40,8 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "copy": "Ctrl+C",
     "paste": "Ctrl+V",
     "duplicate": "Ctrl+D",
+    "group": "Ctrl+G",
+    "ungroup": "Ctrl+Shift+G",
     "cancel": "Escape",
     "confirm": "Return",
     "confirm_alt": "Enter",
@@ -52,6 +54,20 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "view_top": "5",
     "view_bottom": "6",
     "view_iso": "7",
+}
+
+#: What each shortcut does, as the Settings window lists it.
+SHORTCUT_LABELS: dict[str, str] = {
+    "search": "Command search", "dimension": "Dimension (sketch)", "extrude": "Pull",
+    "move": "Move", "hole": "Hole", "xray": "X-ray", "fit_view": "Zoom to fit",
+    "zoom_selection": "Zoom to selection", "undo": "Undo", "redo": "Redo",
+    "redo_alt": "Redo (alternative)", "save": "Save", "save_as": "Save as",
+    "open": "Open", "export": "Export", "import": "Import", "copy": "Copy",
+    "paste": "Paste", "duplicate": "Duplicate", "group": "Group", "ungroup": "Ungroup",
+    "cancel": "Cancel / close tool", "confirm": "Confirm", "confirm_alt": "Confirm (keypad)",
+    "delete": "Delete", "delete_alt": "Delete (alternative)", "view_front": "Front view",
+    "view_back": "Back view", "view_left": "Left view", "view_right": "Right view",
+    "view_top": "Top view", "view_bottom": "Bottom view", "view_iso": "Isometric view",
 }
 
 #: Actions whose shortcut must yield while the user is typing.
@@ -161,6 +177,16 @@ def reset_shortcuts() -> None:
     _write(data)
 
 
+def reset_shortcut(action: str) -> bool:
+    """Put one action back on its default binding."""
+    data = _read()
+    overrides = data.get("shortcuts")
+    if isinstance(overrides, dict) and action in overrides:
+        del overrides[action]
+        return _write(data)
+    return True
+
+
 def conflicts(bindings: dict[str, str] | None = None) -> dict[str, list[str]]:
     """Bindings claimed by more than one action."""
     bindings = bindings or shortcuts()
@@ -225,6 +251,27 @@ def theme_choice() -> str | None:
 def set_theme_choice(value: str) -> bool:
     data = _read()
     data["theme"] = value
+    return _write(data)
+
+
+#: Length units a value can be shown in. Any unit can always be typed.
+DISPLAY_UNITS = ("mm", "cm", "m", "in")
+
+
+def display_unit() -> str:
+    """The length unit fields and readouts show values in."""
+    value = _read().get("display_unit")
+    return value if value in DISPLAY_UNITS else "mm"
+
+
+def set_display_unit(value: str) -> bool:
+    if value not in DISPLAY_UNITS:
+        return False
+    data = _read()
+    data["display_unit"] = value
+    from .units import set_display_unit as apply
+
+    apply(value)
     return _write(data)
 
 

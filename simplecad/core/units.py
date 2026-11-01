@@ -109,14 +109,40 @@ def parse_quantity(text: str, dimension: Dimension = Dimension.LENGTH) -> float:
         ) from None
 
 
+#: Extra decimals per display unit, so a shown value keeps about the same
+#: precision whatever unit it is in: 0.01 mm, 0.001 cm, 0.00001 m, 0.0001 in.
+_EXTRA_DECIMALS = {"mm": 0, "cm": 1, "m": 3, "in": 2}
+_display_unit = "mm"
+
+
+def set_display_unit(unit: str) -> None:
+    """Show lengths in *unit* from now on. Stored values stay millimetres."""
+    global _display_unit
+    if unit not in _EXTRA_DECIMALS:
+        raise ValueError(f"{unit!r} is not a display unit")
+    _display_unit = unit
+
+
+def display_unit() -> str:
+    return _display_unit
+
+
 def format_quantity(
     value: float, dimension: Dimension = Dimension.LENGTH, decimals: int = 2
 ) -> str:
-    """Render an internal value for display, trimming trailing zeros."""
-    text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
-    if text in ("", "-"):
-        text = "0"
+    """Render an internal value for display, trimming trailing zeros.
+
+    Lengths are shown in the display unit (millimetres unless changed in
+    Settings); the text carries its unit, so it reads back exactly as shown.
+    """
     suffix = INTERNAL_UNIT[dimension]
+    if dimension is Dimension.LENGTH and _display_unit != "mm":
+        value = value / LENGTH_UNITS[_display_unit]
+        decimals += _EXTRA_DECIMALS[_display_unit]
+        suffix = _display_unit
+    text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+    if text in ("", "-", "-0"):
+        text = "0"
     if dimension is Dimension.ANGLE:
         return f"{text}°"
     return f"{text} {suffix}".strip()

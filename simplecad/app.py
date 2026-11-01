@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    instance = SingleInstance()
+    paths = [a for a in arguments[1:] if not a.startswith("-") and os.path.isfile(a)]
+    instance = SingleInstance(paths=paths)
     if not instance.claim():
         return 0
     try:
@@ -73,6 +74,12 @@ def main(argv: list[str] | None = None) -> int:
         instance.activate_requested.connect(
             lambda token: activate_window(window, token)
         )
+        instance.open_requested.connect(window.open_file)
+        for path in paths:
+            # After the event loop starts, so the viewport exists to show it.
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, lambda p=path: window.open_file(p))
         _log_qt_messages()
         from .core.diagnostics import start_gui_watch
 

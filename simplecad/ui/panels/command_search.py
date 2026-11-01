@@ -134,9 +134,10 @@ def catalogue() -> list[Command]:
                 "rotate spin orient print"),
         Command("drop_to_plate", "Drop to plate", "plate", "Sit the selection on z = 0",
                 "floor ground bed place print lay down"),
-        Command("preferences", "Preferences…", "settings",
-                "Rotation snap, move step and undo depth",
-                "settings options snapping increment history undo depth"),
+        Command("preferences", "Settings…", "settings",
+                "Theme, units, snapping, undo depth and keyboard shortcuts",
+                "preferences options snapping increment history undo depth keys shortcuts "
+                "keyboard bindings theme dark light units inches millimetres updates"),
         Command("hide", "Hide selection", "eye_off", "", "invisible conceal"),
         Command("rebuild_all", "Rebuild All", "settings",
                 "Replay every feature instead of reusing the saved geometry",

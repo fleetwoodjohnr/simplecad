@@ -1582,7 +1582,7 @@ class AlignPanel(_SelectionTool):
                 field.returnPressed.connect(self.preview)
                 field.committed.connect(lambda _v: self.preview())
                 self.fields[key] = field
-                edge_layout.addWidget(LabeledField("mm", field, self._palette), row, 1)
+                edge_layout.addWidget(LabeledField("Gap", field, self._palette), row, 1)
             self.add_widget(self.edge_controls)
             self.horizontal_side.currentIndexChanged.connect(lambda _i: self._edge_changed())
             self.vertical_side.currentIndexChanged.connect(lambda _i: self._edge_changed())
@@ -4109,45 +4109,3 @@ def open_vent_tool(window):
     return panel
 
 
-# ----------------------------------------------------------------------
-@register_tool("preferences")
-class PreferencesPanel(ToolPanel):
-    """The few modelling numbers worth changing, in the same floating panel."""
-
-    title = "Preferences"
-    confirm_label = "Save"
-
-    def build(self) -> None:
-        from ...core.settings import number_preference, ui_preference
-
-        self.set_subtitle("Snapping applies to the next drag; undo depth applies now.")
-        self.add_section("Snapping")
-        self.add_field("rotation_snap", "Rotation detents every", number_preference("rotation_snap"),
-                       Dimension.ANGLE)
-        self.add_field("move_step", "Move step", number_preference("move_step"), Dimension.LENGTH)
-        self.add_section("History")
-        self.add_field("history_depth", "Undo steps kept", number_preference("history_depth"),
-                       Dimension.SCALAR)
-        self.add_section("Project files")
-        self.compact = QCheckBox("Smaller files: keep only the finished bodies")
-        self.compact.setToolTip("Intermediate steps are not saved. The file can be many times "
-                                "smaller and still reopens at once; an edit far back in the "
-                                "timeline rebuilds the steps it needs.")
-        self.compact.setChecked(ui_preference("compact_saves", False))
-        self.add_widget(self.compact)
-
-    def commit(self) -> None:
-        from ...core.settings import (NUMBER_PREFERENCES, number_preference, set_number_preference,
-                                      set_ui_preference)
-
-        for key in NUMBER_PREFERENCES:
-            set_number_preference(key, self.value(key, number_preference(key)))
-        set_ui_preference("compact_saves", self.compact.isChecked())
-        history = self.window_.history
-        history.limit = int(number_preference("history_depth"))
-        history._undo[:] = history._undo[-history.limit:]
-        self.window_.set_hint(
-            f"Rotation snaps every {number_preference('rotation_snap'):g}°, moves step "
-            f"{number_preference('move_step'):g} mm, {history.limit} undo steps kept."
-        )
-        self.window_.cancel_tool()
