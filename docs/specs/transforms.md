@@ -21,6 +21,7 @@
 | E | Turning the part from a press near the pivot measured the angle about a point under the cursor. | free rotation |
 | F | The pivot was re-centred after each turn, so +45° then −45° did not return an uneven part. | `_pivot_point` |
 | G | The Move panel's arrow keys always changed X/Y, whatever the camera. A drag overwrote typed but unapplied values. | `handle_arrow_key`, `_on_gizmo_drag` |
+| H | Found during validation of this work: a drag released while the previous change was still rebuilding was refused with "try again", left in the fields, and added to the *next* drag — a Z drag on a slow model also applied the Y drag before it. Such drags are now queued and applied in order, each as its own step, when the rebuild lands (`tests/test_transform_constraints.py`, fails on the previous commit). | `_on_gizmo_commit` |
 
 ## Design
 

@@ -112,3 +112,29 @@ Undo and redo through UPS Atlas's 80 saved steps (core, per step summed):
 Rebuilding from the recipe takes the same time in both versions (three
 alternating runs: Addi_Keychain 12.1–12.6 s vs 11.9–12.2 s, Dish Soap Holder
 25.8–26.0 s vs 25.7–25.9 s).
+
+## Gizmo drag cost: November 2026 pass
+
+`scripts/benchmark_gizmo.py`, a real window under Xvfb. 40 boxes; Move on one;
+the X arrow grabbed and dragged 3 × 40 steps. The figures are `gizmo.drag`
+times: solve, snap filter and preview transform. The repaint is scheduled and
+not counted. `main` and this branch were run back to back on the same machine,
+while a test suite was also running, so treat absolute values loosely.
+
+| | Press | Drag, median | Drag, 95th percentile |
+|---|---|---|---|
+| `main` (`cc83fb7`) | 1.26 ms | 4.97 ms | 10.5 ms |
+| this branch | 1.87 ms | 6.25 ms | 14.1 ms |
+
+About 1.3 ms more per step. Almost all of it is the new point snapping: the
+moving axis is compared with the corners, midpoints, holes and face centres of
+the eight nearest bodies, as well as their boxes. Both stay inside a 60 Hz
+frame. The press is slower by the snap-geometry set-up done when a drag starts.
+
+## Packaged build (Linux, PyInstaller one-folder)
+
+| | |
+|---|---|
+| Bundle size | 1.3 GB unpacked, before matplotlib and PIL were excluded from the spec. OCCT is 264 MB of it, Qt most of the rest |
+| `simplecad --self-test` | Passes. Rebuild, boolean, data files, STEP/3MF out and a geometry worker process in about 6 s |
+| Window under Xvfb | Starts, draws the viewport, grid and view cube, and starts the geometry process |

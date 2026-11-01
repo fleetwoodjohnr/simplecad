@@ -363,3 +363,36 @@ def test_old_moves_without_an_axis_build_exactly_as_before():
     for row in range(1, 4):
         for column in range(1, 5):
             assert old.Value(row, column) == new.Value(row, column)
+
+
+# -- a drag released while the model is still rebuilding -----------------------
+from tests.test_texture_editing import model  # noqa: E402,F401 - the shared window fixture
+
+
+def test_a_drag_released_during_a_rebuild_is_applied_on_its_own(model, monkeypatch):  # noqa: F811
+    """Regression: the refused commit stayed in the fields and the next drag
+    added to it, so a Z drag also applied the Y drag before it -- diagonally."""
+    import simplecad.ui.geometry_client as client
+    from simplecad.kernel.occ import bounding_box
+
+    busy = {"value": False}
+    monkeypatch.setattr(client.GeometryClient, "busy", property(lambda self: busy["value"]))
+    window = model.window
+    model.pick("A")
+    window.activate_tool("move")
+    panel = next(w for w, _a in window.stage.overlays if getattr(w, "title", "") == "Move")
+    low0 = bounding_box(window.document.body("A").shape)[0]
+    busy["value"] = True
+    panel._on_gizmo_started()
+    panel._on_gizmo_commit(0.0, 7.0, 0.0, 0.0, 0.0, 0.0)      # a Y drag, refused for now
+    assert panel._field_values() == (0.0, 0.0, 0.0), "nothing left over for the next drag"
+    panel._on_gizmo_started()
+    panel._on_gizmo_commit(0.0, 0.0, 5.0, 0.0, 0.0, 0.0)      # then a Z drag
+    assert len(panel._queued) == 2
+    busy["value"] = False
+    panel.on_model_rebuilt()
+    low1 = bounding_box(window.document.body("A").shape)[0]
+    assert low1[1] - low0[1] == pytest.approx(7.0)
+    assert low1[2] - low0[2] == pytest.approx(5.0)
+    assert low1[0] == pytest.approx(low0[0])
+    assert not panel._queued

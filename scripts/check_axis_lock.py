@@ -51,10 +51,34 @@ def _probe(viewport, points, want_mode, want_axis, outermost=False):
             hits.append(point)
     if not hits:
         return None
-    return hits[-1] if outermost else hits[len(hits) // 2]
+    # Well out along an arrow, but not its last pixel: the tip is a few pixels
+    # wide, and a press on its very edge can fall to the part behind it.
+    return hits[int(len(hits) * 0.7)] if outermost else hits[len(hits) // 2]
 
 
 GRABBED: list = []
+
+
+def _record_presses() -> None:
+    """Note the constraint of every press that takes, on whichever gizmo.
+
+    The panel re-attaches a new gizmo after each rebuild, so hooking the one
+    on screen before a drag could miss the press that actually happened.
+    """
+    from simplecad.ui.viewport.gizmo import TransformGizmo
+
+    if getattr(TransformGizmo.press, "_recording", False):
+        return
+    original = TransformGizmo.press
+
+    def press(self, x, y):
+        taken = original(self, x, y)
+        if taken:
+            GRABBED.append(self.constraint)
+        return taken
+
+    press._recording = True
+    TransformGizmo.press = press
 
 
 def _drag(viewport, start, end, steps=8):
@@ -63,9 +87,7 @@ def _drag(viewport, start, end, steps=8):
     from PySide6.QtTest import QTest
 
     GRABBED.clear()
-    gizmo = viewport.gizmo
-    if gizmo is not None:
-        gizmo.started.connect(lambda: GRABBED.append(gizmo.constraint))
+    _record_presses()
     QTest.mouseMove(viewport, start)
     QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
     for step in range(1, steps + 1):
@@ -132,6 +154,25 @@ def main() -> int:
         def body_box():
             return bounding_box(window.document.bodies["Block"].shape)
 
+        def settle():
+            """Let the last change land and the panel put its gizmo on it.
+
+            The panel re-attaches a fresh gizmo at the moved position a moment
+            after the rebuild; probing the old one aimed presses at where the
+            arrow used to be, and they landed on the part instead.
+            """
+            import time
+
+            window.wait_for_rebuild()
+            end = time.monotonic() + 0.4
+            # ...and if the part went under the panel, the camera eases round
+            # to show it; aiming at the arrow mid-sweep misses it.
+            while time.monotonic() < end or viewport.animator.running:
+                QApplication.processEvents()
+                time.sleep(0.01)
+                if time.monotonic() > end + 5.0:
+                    break
+
         # The reported "diagonal" move: a click on the part with a little
         # tremor, near another body, then a drag on the Z arrow. The click left
         # magnet locks on X and Y that the drag then applied.
@@ -171,7 +212,35 @@ def main() -> int:
             REPORT["click_then_z_drag"] = shift
             if shift[0] != 0.0 or shift[1] != 0.0:
                 REPORT["failures"].append(f"click-then-drag moved X/Y: {shift}")
-        window.document  # keep Other: it is a magnet target for the sweep too
+        # Pressing Z while dragging the part locks the drag to Z: the part was
+        # sliding over the ground, and from then on it only goes up.
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        select_and_open("move")
+        low, high = body_box()
+        grab = viewport.project((high[0] - 2.0, high[1] - 2.0, high[2]))
+        grab = QPoint(round(grab[0]), round(grab[1]))
+        before = body_box()
+        QTest.mouseMove(viewport, grab)
+        QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, grab)
+        took = viewport.gizmo is not None and viewport.gizmo.dragging
+        for step in range(1, 5):
+            QTest.mouseMove(viewport, QPoint(grab.x() + 6 * step, grab.y() + 3 * step))
+        QTest.keyPress(viewport, Qt.Key_Z)
+        QTest.keyRelease(viewport, Qt.Key_Z)
+        locked = viewport.gizmo.constraint if viewport.gizmo is not None else None
+        end = QPoint(grab.x() + 24, grab.y() - 60)
+        for step in range(1, 9):
+            QTest.mouseMove(viewport, QPoint(grab.x() + 24, grab.y() + 12 - 9 * step))
+        QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+        window.wait_for_rebuild()
+        after = body_box()
+        shift = tuple(round(after[0][i] - before[0][i], 6) for i in range(3))
+        REPORT["z_key_lock"] = (took, locked, shift)
+        if not took or locked != ("axis", 2) or shift[0] != 0.0 or shift[1] != 0.0 or shift[2] == 0.0:
+            REPORT["failures"].append(f"Z key during a part drag: took={took} "
+                                      f"constraint={locked} moved={shift}")
 
         for perspective in (False, True):
             viewport.set_perspective(perspective)
@@ -179,6 +248,7 @@ def main() -> int:
             for direction in _directions():
                 aim(direction)
                 for axis in range(3):
+                    settle()
                     gizmo = viewport.gizmo
                     if gizmo is None:
                         select_and_open("move")
@@ -206,9 +276,18 @@ def main() -> int:
                         QApplication.processEvents()
                         after = body_box()
                         REPORT["drags"] += 1
-                        if grabbed is None or grabbed[0] != "axis":
+                        if grabbed is None:
                             REPORT["failures"].append(
-                                f"{direction} axis {axis}: the press took {grabbed}")
+                                f"{direction} axis {axis}: the press took nothing")
+                            continue
+                        if grabbed[0] == "plane":
+                            # The press fell on the part: it slides in a plane,
+                            # and must not leave it.
+                            REPORT["missed_handle"] = REPORT.get("missed_handle", 0) + 1
+                            shift = after[0][grabbed[1]] - before[0][grabbed[1]]
+                            if abs(shift) > 1e-9:
+                                REPORT["failures"].append(
+                                    f"{direction} part drag left its plane by {shift:+.6f}")
                             continue
                         if grabbed[1] != axis:
                             REPORT["other_arrow"] = REPORT.get("other_arrow", 0) + 1
@@ -231,6 +310,7 @@ def main() -> int:
             for direction in _directions()[::3]:
                 aim(direction)
                 for axis in range(3):
+                    settle()
                     gizmo = viewport.gizmo
                     if gizmo is None:
                         select_and_open("rotate")

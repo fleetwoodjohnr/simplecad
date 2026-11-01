@@ -422,6 +422,7 @@ class _TransformPanel(_SelectionTool):
         self._picked_axis = None
         self._drag_base = None
         self._check_overlaps = []
+        self._queued = []
         self.add_section("Axes")
         self.frame_choice = QComboBox()
         self.frame_choice.addItems(self.frame_choices)
@@ -784,6 +785,8 @@ class _TransformPanel(_SelectionTool):
         gizmo = self.window_.stage.viewport.gizmo
         if self._picking_pivot or (gizmo is not None and gizmo.dragging):
             return
+        if self._apply_queued():
+            return                    # its own rebuild brings us back here
         document = self.window_.document
         self._subject = [n for n in self._subject
                          if document.body(n) is not None and document.body(n).shape is not None]
@@ -1215,13 +1218,34 @@ class _TransformPanel(_SelectionTool):
         )
 
     def _on_gizmo_commit(self, dx, dy, dz, rx, ry, rz) -> None:
-        """A released drag fills the fields, then applies them."""
+        """A released drag fills the fields, then applies them.
+
+        If the previous change is still rebuilding, the drag is queued and
+        applied, as its own step, when the rebuild lands. It used to be left
+        in the fields with a "try again" hint -- and the next drag added to it,
+        so a Z drag committed the Y drag before it too: a diagonal move.
+        """
         values = self._drag_values(dx, dy, dz, rx, ry, rz)
         self._clear_gizmo_feedback()
         self._drag_base = None
+        if not any(abs(v) > 1e-4 for v in (dx, dy, dz, rx, ry, rz)):
+            self._set_fields(values)
+            return
+        if self.window_.is_rebuilding or self._queued:
+            self._queued.append(values)
+            self._reset_fields()
+            self.window_.set_hint("Applying after the model has caught up…")
+            return
         self._set_fields(values)
-        if any(abs(v) > 1e-4 for v in (dx, dy, dz, rx, ry, rz)):
-            self.commit()
+        self.commit()
+
+    def _apply_queued(self) -> bool:
+        """Commit the oldest queued drag. True if one was applied."""
+        if not self._queued or self.window_.is_rebuilding:
+            return False
+        self._set_fields(self._queued.pop(0))
+        self.commit()
+        return True
 
     def _clear_gizmo_feedback(self) -> None:
         viewport = self.window_.stage.viewport
@@ -1236,6 +1260,11 @@ class _TransformPanel(_SelectionTool):
         self._show_snap_target(None)
 
     def teardown(self) -> None:
+        # A drag still waiting for the model is applied, not dropped.
+        while self._queued:
+            self.window_.wait_for_rebuild()
+            if not self._apply_queued():
+                break
         self._end_pivot_pick()
         self._clear_gizmo_feedback()
         self.window_.detach_gizmo()

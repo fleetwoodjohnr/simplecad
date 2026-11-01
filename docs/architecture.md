@@ -557,3 +557,20 @@ commit builds normally if a deferred check needs the full build). Preview
 deadlines are progress-aware: a worker still burning CPU is computing, not hung.
 A cancelled preview is abandoned rather than killed unless an edit is waiting
 behind it or it has run longer than three seconds.
+
+## Added in the November 2026 pass
+
+| Module | Role |
+|---|---|
+| `ui/viewport/gizmo.py` | Solves every gizmo drag from the cursor ray (axis closest approach, plane hit, ring angle) and applies the constraint last. OCCT only draws the handles and says which one is under the cursor. See `specs/transforms.md` |
+| `kernel/slides.py` | Sliding rail joints, built as `clip_joint` styles. 2-D profiles with a mitred clearance offset; cut or raised channels; checks done by sliding the parts with booleans |
+| `kernel/hinge.py` | The `hinge` feature. One node writes both parts (and a pin for the pin type); a living hinge consumes the swinging part. Swing-checked by rotating it with booleans |
+| `ui/tools/properties.py` | A generic editor for any feature's numeric and boolean inputs (Edit parameters) |
+| `ui/dialogs/settings.py`, `ui/dialogs/updates.py` | The Settings window and its Updates tab |
+| `core/updates.py` | GitHub release check, Ed25519 verification, and per-platform installation |
+| `core/paths.py` | Per-platform settings and data folders. Linux keeps its XDG paths |
+| `packaging/` | PyInstaller spec, build driver, Inno Setup script, Flatpak manifest |
+
+The kernel still never imports UI code. A geometry check that the panels show —
+interference, slide-out, swing — runs in the feature, so it runs in the
+geometry process during the preview and never blocks the window.

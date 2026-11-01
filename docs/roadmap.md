@@ -152,13 +152,40 @@ the numbers.
   relationship between two bodies, and Create Threaded Connection is already one
   node writing into two.
 
+**Done: the November 2026 pass** (specifications in [specs/](specs/)):
+
+- **Move and Rotate** solve every drag in the gizmo and apply the axis or plane
+  constraint last, after snapping. Dragging X changes X only, from any camera
+  angle, tested in a real window. Also added: World/Local axes, Move to, X/Y/Z
+  locks, turning about an edge or face axis, and Reset rotation.
+  ([transforms](specs/transforms.md))
+- **Settings window**: theme, display unit, modelling numbers, and rebindable
+  shortcuts. ([settings](specs/settings-and-ui.md))
+- **Edit parameters**: any step's dimensions can be changed after the fact.
+  ([feature editing](specs/feature-editing.md))
+- **Sliding joints**: dovetail, T-rail and tongue-and-groove, with a stop,
+  lead-in and detent, in a cut or raised channel. ([joints](specs/joints.md))
+- **Hinges**: pin, print-in-place, snap-on and living, with a swing check and
+  an optional stop. ([hinges](specs/hinges.md))
+- **Signed updates** from GitHub releases. ([updates](specs/updates.md))
+- **Packages and CI** for Linux, Windows and macOS.
+  ([packaging](specs/packaging.md), [release](release.md))
+
 ## Still outstanding
 
-Nothing from the specification. What is left is depth:
+What is left is depth:
 
-- **A settings window.** Shortcuts and recent files are stored and read, and can
-  be edited by hand or set programmatically, but there is no UI for rebinding a
-  key.
+- **The Windows and macOS viewport has not been run.** Those builds compile,
+  self-test and pass their headless tests in CI; nobody has looked at the 3D
+  view on them yet.
+- **macOS notarisation and Windows Authenticode** need paid certificates.
+- **A 3-D assembly constraint solver.** Parallel and tangent between parts are
+  not solved. Align / Stack / Concentric cover mating, and the sketcher covers
+  2-D constraints.
+- **Rails are placed automatically** across the shared face. There is no
+  click-to-place for them.
+- **Local axes** follow Move/Rotate turns only, not turns made by Align or
+  Arrange.
 - **Sketch dimensions cover distance and diameter.** Angle and radius constraints
   exist and solve; they are not yet offered by clicking on the canvas.
 - **The sketch canvas has no drag-to-edit.** Geometry is placed by clicking and
