@@ -131,6 +131,42 @@ moving axis is compared with the corners, midpoints, holes and face centres of
 the eight nearest bodies, as well as their boxes. Both stay inside a 60 Hz
 frame. The press is slower by the snap-geometry set-up done when a drag starts.
 
+## v0.3.0: gizmo drag and re-attach
+
+`scripts/benchmark_gizmo.py`: a real window under Xvfb, 40 boxes, Move on
+one. New in v0.3.0, the script also times the *re-attach*: from letting go of
+a drag, which commits a Move, until the gizmo is back and can be grabbed again.
+`main` (`e2bb25e`, v0.2.0) and `v0.3` were run alternately on the same machine
+with nothing else running.
+
+| | Press | Drag, median | Drag, 95th percentile | Re-attach, median | Re-attach, max |
+|---|---|---|---|---|---|
+| `main`, run 1 | 1.87 ms | 3.05 ms | 7.46 ms | 250 ms | 266 ms |
+| `v0.3`, run 1 | 1.73 ms | 2.64 ms | 6.54 ms | 238 ms | 285 ms |
+| `main`, run 2 | 1.58 ms | 2.79 ms | 7.08 ms | 261 ms | 285 ms |
+| `v0.3`, run 2 | 1.82 ms | 2.91 ms | 8.04 ms | 229 ms | 259 ms |
+
+**The drag is unchanged** by the ground-plane solve, the plane squares and the
+overlay, and stays inside a 60 Hz frame.
+
+**Where the re-attach goes** (timestamps inside one commit):
+
+| | |
+|---|---|
+| Waiting for the geometry worker's reply | about 215 ms (the client polls every 16 ms, so this is the worker) |
+| `refresh_view`, browser, context bar, Properties | about 40 ms (Properties is 5 ms of it) |
+| `on_model_rebuilt` and `attach` | about 15 ms |
+
+**During that wait the part stays where it was let go.** This was measured on
+both versions by reading the presentation's placement while the rebuild was
+still pending: 12.00 mm on both, for an arrow drag and for a body drag. So
+nothing jumps back. The only effect is that the next drag can start about a
+quarter of a second later.
+
+A drag released before then is queued and applied as its own step (defect H in
+`specs/transforms.md`), so nothing is lost. The worker's round trip is the
+place to cut, if this ever needs to be faster; it was left alone in v0.3.0.
+
 ## Packaged build (Linux, PyInstaller one-folder)
 
 | | |

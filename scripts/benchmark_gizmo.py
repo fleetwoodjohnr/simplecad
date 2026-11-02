@@ -71,6 +71,7 @@ def main() -> int:
                     is manipulator and int(manipulator.ActiveMode()) == int(AIS_MM_Translation)
                     and int(manipulator.ActiveAxisIndex()) == 0):
                 handle = (x, y)
+                handle_reach = reach
         if handle is None:
             RESULT["error"] = "X arrow not found"
             return
@@ -85,6 +86,27 @@ def main() -> int:
                            round(handle[1] + screen[1] * step * 2))
                 drags.append((time.perf_counter() - start) * 1000.0)
             gizmo.release()
+        # Letting go commits a Move; the gizmo detaches and comes back once
+        # the rebuild lands. How long is the user without a handle to grab?
+        gaps = []
+        for _round in range(5):
+            assert gizmo.press(*handle)
+            gizmo.drag(round(handle[0] + screen[0] * 30), round(handle[1] + screen[1] * 30))
+            components = gizmo.release()
+            start = time.perf_counter()
+            gizmo.committed.emit(*components)
+            while time.perf_counter() - start < 5.0:
+                QApplication.processEvents()
+                current = viewport.gizmo
+                if current is not None and current is not gizmo and current.active:
+                    break
+            gaps.append((time.perf_counter() - start) * 1000.0)
+            gizmo = viewport.gizmo
+            centre = viewport.project(gizmo._pivot)
+            handle = (round((centre[0] + screen[0] * (handle_reach)) * viewport.devicePixelRatioF()),
+                      round((centre[1] + screen[1] * (handle_reach)) * viewport.devicePixelRatioF()))
+        RESULT["reattach_median_ms"] = round(statistics.median(gaps), 1)
+        RESULT["reattach_max_ms"] = round(max(gaps), 1)
         drags.sort()
         RESULT["press_ms"] = round(statistics.median(presses), 2)
         RESULT["drag_median_ms"] = round(statistics.median(drags), 3)
