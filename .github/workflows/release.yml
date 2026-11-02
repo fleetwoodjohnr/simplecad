@@ -9,9 +9,14 @@ name: Release
 #   4. checks the full set of files is present, checksums and signs them
 #   5. uploads them to a DRAFT release with the CHANGELOG notes
 # A person reads the draft and publishes it (docs/release.md).
+#
+# Run by hand (Actions -> Release -> Run workflow) it is a dry run: everything
+# above except the tag checks and the release itself, to prove a branch builds,
+# installs and signs on every system before it is tagged.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -43,6 +48,12 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' simplecad/__init__.py)"
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            grep -q "^## ${version}" CHANGELOG.md || {
+              echo "::error::CHANGELOG.md has no section for ${version}"; exit 1; }
+            echo "Dry run of ${version} from ${GITHUB_REF_NAME}: no tag checks, no release"
+            exit 0
+          fi
           if [ "v${version}" != "${tag}" ]; then
             echo "::error::tag ${tag} does not match __version__ ${version}"; exit 1
           fi
@@ -191,7 +202,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          v="${GITHUB_REF_NAME#v}"
+          v="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' simplecad/__init__.py)"
           mkdir -p dist/release
           find artifacts -type f \( -name 'SimpleCAD-*' -o -name 'simplecad-bundle-*' \) \
             -exec cp {} dist/release/ \;
@@ -219,8 +230,12 @@ jobs:
           python scripts/sign_release.py dist/release
           (cd dist/release && sha256sum -c SHA256SUMS)
       - name: Notes from CHANGELOG.md
-        run: python scripts/release_notes.py "${GITHUB_REF_NAME}" > "$RUNNER_TEMP/notes.md"
+        run: |
+          python scripts/release_notes.py "$(python -c 'import simplecad; print(simplecad.__version__)')" \
+            > "$RUNNER_TEMP/notes.md"
+          head -20 "$RUNNER_TEMP/notes.md"
       - name: Draft release (never over an existing one)
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
