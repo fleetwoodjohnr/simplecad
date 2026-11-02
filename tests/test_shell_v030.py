@@ -161,3 +161,17 @@ def test_search_offers_the_new_shell_commands():
     keys = {command.key for command in catalogue()}
     assert {"new", "select_all", "lock", "unlock", "align_arrange", "shortcuts"} <= keys
     assert not {"sweep", "loft"} & keys, "commands with no tool are not offered"
+
+
+def test_the_desktop_theme_is_followed_while_running(model, monkeypatch):  # noqa: F811
+    from simplecad.ui import main_window as module
+    from simplecad.ui.theme import DARK, LIGHT, Mode
+
+    window = model.window
+    window.mode, window.palette_ = Mode.SYSTEM, DARK
+    monkeypatch.setattr(module, "resolve", lambda _mode: LIGHT)
+    assert window.refresh_system_theme()
+    assert window.palette_ is LIGHT
+    assert not window.refresh_system_theme(), "nothing changed the second time"
+    window.mode = Mode.DARK
+    assert not window.refresh_system_theme(), "a chosen theme is not overridden"

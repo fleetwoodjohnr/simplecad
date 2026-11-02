@@ -18,23 +18,39 @@
 
 ## Each release
 
-1. Set the version in `simplecad/__init__.py` **and** `pyproject.toml`. A test
-   checks they agree.
-2. Commit, then tag and push:
+1. Set the version in `simplecad/__init__.py` **and** `pyproject.toml` (a test
+   checks they agree). Then:
+   - add a `## <version>` section to `CHANGELOG.md`; it becomes the release
+     notes and what the in-app updater shows
+   - add a `<release>` line to
+     `packaging/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml`
+2. Merge to `main`, push it, and wait for CI to pass.
+3. Tag that commit with an **annotated** tag and push the tag:
    ```sh
-   git tag v0.3.0 && git push origin v0.3.0
+   git tag -a v0.3.0 -m "SimpleCAD 0.3.0" && git push origin v0.3.0
    ```
-3. `release.yml` then:
-   1. runs CI (lint, audit, Linux tests with real-window checks, headless
-      Windows/macOS tests)
-   2. builds on Linux (AppImage, .deb, .rpm, Flatpak tarball), Windows
-      (installer) and macOS (arm64 and x86_64 DMGs)
-   3. runs `--self-test` on every bundle
-   4. writes and signs `SHA256SUMS`, failing if the secret doesn't match the
-      key built into the app
-   5. uploads everything to a **draft** release
-4. Read the draft, edit the notes, and **Publish**. Installed copies see it on
-   their next check.
+4. `release.yml` then:
+   1. **preflight**: refuses a lightweight tag, a tag that differs from
+      `__version__`, a commit that is not on `main`, or a missing CHANGELOG
+      section
+   2. runs CI in full: lint, audit, Linux tests with the real-window checks,
+      and headless Windows and macOS tests
+   3. builds on Linux (AppImage, .deb, .rpm, Flatpak tarball), Windows
+      (installer) and macOS (arm64 and x86_64 DMGs); appimagetool and nfpm are
+      pinned and checksum-checked
+   4. **installs and runs every package**:
+      - the AppImage
+      - the .deb on Ubuntu
+      - the .rpm on Fedora, with the desktop entry and AppStream validated
+      - the Windows installer, silently
+      - the DMG: mounted, the app run from it
+   5. checks the exact file list, writes and signs `SHA256SUMS` (failing if the
+      secret doesn't match the key built into the app), and runs
+      `sha256sum -c`
+   6. refuses to touch an existing release, then uploads everything to a
+      **draft** with the CHANGELOG notes
+5. Read the draft and **Publish**. Installed copies see it on their next
+   check.
 
 ## Building locally (Linux)
 

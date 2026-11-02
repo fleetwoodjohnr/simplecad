@@ -78,6 +78,30 @@ The tab shows:
   run.
 - `scripts/sign_release.py` signs exactly what the app verifies.
 
+## v0.3.0: every failure leaves things as they were, and says so
+
+- A failed download, from a dropped connection or a full disk, removes its
+  `.part` file and any file it started.
+- Earlier installers are removed from the updates folder before a new download,
+  so it holds one at most.
+- A disk or permission error anywhere in download or install is an
+  `UpdateError` with a sentence for the user, not a stack trace:
+  - an AppImage in a folder the user cannot write to is left untouched, and the
+    user is told to move it
+  - an installer that cannot be started reports where the verified file is
+- The worker thread reports any exception, so the dialog never stays at
+  "Checking…" or "Downloading…".
+- After a failure, Install is enabled again only for a newer release that this
+  copy can install.
+
+Tested in `tests/test_updates.py`:
+- a partial file is removed
+- old downloads are pruned
+- a full disk is an `UpdateError`
+- a read-only AppImage folder gives a message, not a crash
+- an installer that cannot start is reported
+- 0.3.0 is offered to 0.2.0, with each platform's file
+
 ## Known limits
 
 - **macOS notarisation and Windows Authenticode** are not done; they need paid

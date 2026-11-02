@@ -119,16 +119,11 @@ def test_the_three_tabs_switch_between_each_other(model):  # noqa: F811
     window = model.window
     model.pick("A", "B")
     window.activate_tool("align_bodies")
-    tabs = _panel(window, "Align").findChildren(type(_tab_type()))
-    strip = next(w for w in tabs if hasattr(w, "buttons"))
-    strip.buttons["arrange"].click()
-    assert _panel(window, "Arrange") is not None
-
-
-def _tab_type():
     from simplecad.ui.tools.base import ToolTabs
 
-    return ToolTabs.__new__(ToolTabs)
+    (strip,) = _panel(window, "Align").findChildren(ToolTabs)
+    strip.buttons["arrange"].click()
+    assert _panel(window, "Arrange") is not None
 
 
 # -- the context bar -------------------------------------------------------------

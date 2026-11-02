@@ -35,6 +35,8 @@ class UpdateWorker(QObject):
             self.checked.emit(updates.latest_release())
         except updates.UpdateError as exc:
             self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001 - a dead thread would leave "Checking…" forever
+            self.failed.emit(f"The update check failed ({exc}).")
 
     def download(self, release, kind: str) -> None:
         threading.Thread(target=self._download, args=(release, kind), daemon=True).start()
@@ -53,6 +55,8 @@ class UpdateWorker(QObject):
             self.downloaded.emit(path)
         except updates.UpdateError as exc:
             self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"The download failed ({exc}). Nothing was installed.")
 
 
 class UpdatesTab(QWidget):
@@ -147,8 +151,13 @@ class UpdatesTab(QWidget):
         self.status.setText(reason or f"SimpleCAD {release.version} is available.")
 
     def _failed(self, message: str) -> None:
+        from ...core import updates
+
         self.check_button.setEnabled(True)
-        self.install_button.setEnabled(self.release is not None)
+        # Only a newer release this copy can install is worth trying again.
+        self.install_button.setEnabled(
+            self.release is not None and updates.is_newer(self.release.version)
+            and updates.can_install(self.kind))
         self.bar.hide()
         self.status.setText(message)
 

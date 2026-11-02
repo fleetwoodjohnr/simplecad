@@ -171,6 +171,21 @@ the numbers.
 - **Packages and CI** for Linux, Windows and macOS.
   ([packaging](specs/packaging.md), [release](release.md))
 
+**Done: v0.3.0** ([CHANGELOG](../CHANGELOG.md)):
+
+- **Graphite**: a new visual system, with bundled fonts and one type scale.
+- **Rail, menu and panel.** Move, Rotate, Scale and Align & Arrange on the
+  rail; an app menu; Properties under the tree; a resizable, remembered panel.
+- **Selection.** Lock, Select all, right-click selection, inline rename.
+- **Move.** The ground-plane body drag, XY / XZ / YZ squares, Esc or
+  right-click cancel, a Snap toggle with a 10 px reach, and an angle wedge.
+  ([transforms](specs/transforms.md))
+- **Align & Arrange**: Align (line up, spread out), Stack & Place (opens on the
+  operation clicked), Arrange on the build plate, and Mirror.
+  ([settings and UI](specs/settings-and-ui.md))
+- **Release.** A new icon in every size; installers installed and run in the
+  release workflow; pinned tools; release notes from the CHANGELOG.
+
 ## Still outstanding
 
 What is left is depth:

@@ -227,18 +227,37 @@ def _download(url: str, destination: str, progress=None, timeout: float = 60.0) 
 
     request = Request(url, headers={"User-Agent": f"SimpleCAD/{current_version()}"})
     partial = destination + ".part"
-    with urlopen(request, timeout=timeout) as response, open(partial, "wb") as out:  # noqa: S310
-        total = int(response.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            block = response.read(1 << 16)
-            if not block:
-                break
-            out.write(block)
-            done += len(block)
-            if progress and total:
-                progress(int(done * 100 / total))
-    os.replace(partial, destination)
+    try:
+        with urlopen(request, timeout=timeout) as response, open(partial, "wb") as out:  # noqa: S310
+            total = int(response.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                block = response.read(1 << 16)
+                if not block:
+                    break
+                out.write(block)
+                done += len(block)
+                if progress and total:
+                    progress(int(done * 100 / total))
+        os.replace(partial, destination)
+    finally:
+        # A dropped connection or a full disk leaves no half-file behind.
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+def prune_downloads(folder: str, keep: str) -> None:
+    """Remove earlier downloads, so the updates folder holds one installer at most."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        if name != keep:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
 
 
 def download_verified(release: Release, kind: str, folder: str, *, fetch=_fetch_bytes,
@@ -270,13 +289,17 @@ def download_verified(release: Release, kind: str, folder: str, *, fetch=_fetch_
     expected = expected_hash(sums.decode("utf-8", "replace"), name)
     if expected is None:
         raise UpdateError(f"The signed checksums do not list {name}. Nothing was installed.")
-    os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, name)
     try:
+        os.makedirs(folder, exist_ok=True)
+        prune_downloads(folder, keep=name)
         download(release.assets[name], path, progress)
-    except Exception as exc:  # noqa: BLE001
+        actual = sha256_of(path)
+    except Exception as exc:  # noqa: BLE001 - network, disk or permission: all mean "not installed"
+        if os.path.exists(path):
+            os.remove(path)
         raise UpdateError(f"The download failed ({exc}). Nothing was installed.") from exc
-    if sha256_of(path) != expected:
+    if actual != expected:
         os.remove(path)
         raise UpdateError("The download does not match its signed checksum and was deleted. "
                           "Nothing was installed.")
@@ -296,9 +319,16 @@ def replace_appimage(new_file: str, target: str | None = None) -> str:
         raise UpdateError("This copy is not an AppImage.")
     backup = target + ".bak"
     staged = target + ".new"
-    shutil.copyfile(new_file, staged)
-    os.chmod(staged, 0o755)
-    shutil.copy2(target, backup)
+    try:
+        shutil.copyfile(new_file, staged)
+        os.chmod(staged, 0o755)
+        shutil.copy2(target, backup)
+    except OSError as exc:
+        # Usually a folder this user cannot write to. Nothing has changed yet.
+        if os.path.exists(staged):
+            os.remove(staged)
+        raise UpdateError(f"Could not write beside the AppImage ({exc}). Move it to a folder "
+                          "you own, or download the update by hand.") from exc
     try:
         os.replace(staged, target)
     except OSError as exc:
@@ -332,16 +362,20 @@ def install(path: str, kind: str, *, opener=None, runner=None) -> str:
     if kind == "appimage":
         replace_appimage(path)
         return "restart"
-    if kind in ("deb", "rpm", "macos"):
-        # The software centre (or Finder, for a disk image) takes it from here
-        # and asks for whatever permission it needs. No privileges from us.
-        opener = opener or _open_with_system
-        opener(path)
-        return "handed-off"
-    if kind == "windows":
-        runner = runner or (lambda p: subprocess.Popen([p]))  # noqa: S603 - verified installer
-        runner(path)
-        return "quit-to-install"
+    try:
+        if kind in ("deb", "rpm", "macos"):
+            # The software centre (or Finder, for a disk image) takes it from
+            # here and asks for whatever permission it needs. No privileges from us.
+            opener = opener or _open_with_system
+            opener(path)
+            return "handed-off"
+        if kind == "windows":
+            runner = runner or (lambda p: subprocess.Popen([p]))  # noqa: S603 - verified installer
+            runner(path)
+            return "quit-to-install"
+    except OSError as exc:
+        raise UpdateError(f"Could not start the installer ({exc}). The verified file is at "
+                          f"{path}; open it by hand.") from exc
     raise UpdateError(notify_only_reason(kind) or f"Cannot install updates for a {kind} copy.")
 
 

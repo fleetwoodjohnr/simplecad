@@ -67,16 +67,20 @@ identical to before.
 | Action | Result |
 |---|---|
 | Drag an arrow | Moves along that axis only |
-| Drag the part | Slides it in the world plane most face-on to the camera (ground preferred unless a vertical plane is 1.5× more face-on) |
+| Drag the part | Slides it on the ground (world XY) at the height it was grabbed, so it stays under the cursor and Z never changes. Below 12° camera elevation, screen motion maps onto the ground at the true scale instead of a runaway ray hit (v0.3.0) |
+| Drag a plane square | Moves in XY, XZ or YZ only. A plane seen within `PLANE_EDGE_ON` (0.15) of edge-on is not drawn or offered (v0.3.0) |
+| Esc or right-click during a drag | Puts the part back (`cancel_drag`), keeps the tool and selection. Other buttons pressed mid-drag are ignored (v0.3.0) |
 | X / Y / Z during a drag | Lock to that axis; the motion so far is projected onto it. Same key again releases |
 | Shift+X / Y / Z during a drag | Lock to the plane across that axis |
-| Shift | No snapping |
+| Snap button (view controls) | Snapping on or off, remembered (`view.snap`). Shift does the opposite for as long as it is held (v0.3.0) |
+| Shift | The opposite of the Snap button |
 | Ctrl | Fine snapping (a tenth of the move step) |
 | Axes: World / Local | Arrows, rings and fields follow the part's own turned axes |
 | Move by / Move to | Offset, or world coordinates of the reference point |
 | Reference point (Centre / Min / Max) | What Move to places and what the grid snaps |
 | Arrow keys in Move | Step 0.25 mm along the panel axis nearest screen right/up; Ctrl+Up/Down steps in depth |
-| Snap angle 5 / 15 / 45 / 90° | Ring detent step (saved as the `rotation_snap` preference) |
+| Snap angle 5 / 15 / 45 / 90° | Ring detent step (saved as the `rotation_snap` preference). A wedge with the angle is drawn while turning (v0.3.0) |
+| Snap step 0.1 / 0.5 / 1 / 5 / 10 mm | Grid step for drags (saved as the `move_step` preference) (v0.3.0) |
 | Turn about | Centre of selection (fixed for the session), World origin, Custom point, or Edge or face axis (Z ring turns about it) |
 | Reset rotation | Adds one Move that undoes every Rotate the part has had, about its current centre |
 | After a move | Warns if the part now overlaps another body (bounding-box prefilter, then a boolean common; bodies over 600 faces are skipped) |
@@ -86,8 +90,9 @@ identical to before.
 - other bodies' bounding-box edges and centres
 - corners, edge midpoints, hole centres and face centres of the 8 nearest bodies
 
-within 10 px. Otherwise the reference point lands on the move-step grid. Axes
-not being moved are never touched.
+within 10 px on screen, at any zoom (it was capped at 1 mm before v0.3.0).
+Otherwise the reference point lands on the move-step grid. Axes not being moved
+are never touched.
 
 ## File format
 
@@ -117,5 +122,24 @@ The first three criteria are tested by `tests/test_transform_constraints.py`
 - **Local axes** follow Move/Rotate features only. A turn made by Align or
   Arrange is not part of the local frame.
 - **Collision** is a warning after the move, not "stop at contact".
-- **Plane handles** stay off: OCCT's invisible plane handles made the Y arrow
-  hard to grab. The keyboard locks and the part drag cover plane moves.
+- **Plane handles** are drawn by the window (`panels/gizmo_overlay.py`) and
+  hit-tested by the gizmo (`plane_handles`), not OCCT's: its plane parts were
+  invisible until hovered and made the Y arrow hard to grab. Where a square
+  covers part of an arrow, the square takes the press, because it is drawn on top.
+- **The body drag is ground only.** Raising a part is the Z arrow, an XZ / YZ
+  square, or the Z key mid-drag.
+
+## v0.3.0 acceptance (tests/test_gizmo_v030.py, scripts/check_gizmo.py)
+
+- A body drag keeps Z at exactly 0 from six working views, orthographic and
+  perspective. In perspective the grabbed point stays under the cursor
+  (within 0.01 px).
+- At 5° elevation, 50 px right moves 50 mm along screen-right on the ground.
+- Each plane square moves only its two axes. An edge-on plane is neither drawn
+  nor lockable, and a refused lock leaves the drag as it was.
+- `cancel_drag` rolls the preview back, keeps the gizmo attached and commits
+  nothing. In the real window, Esc mid-drag leaves the part and the history
+  unchanged.
+- Snap toggle and Shift are exact opposites.
+- Two bodies dragged together move by the same amount in one undo step,
+  through the headless window and the real one.

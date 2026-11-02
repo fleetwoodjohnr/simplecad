@@ -964,11 +964,18 @@ class MainWindow(QMainWindow):
         """
         app = QApplication.instance()
         hints = app.styleHints()
+        # Bound methods, not lambdas: Qt drops these connections when this
+        # window is destroyed, where a lambda would outlive it.
         if hasattr(hints, "colorSchemeChanged"):
-            hints.colorSchemeChanged.connect(lambda *_: self.refresh_system_theme())
-        app.applicationStateChanged.connect(
-            lambda state: state == Qt.ApplicationActive and self.refresh_system_theme()
-        )
+            hints.colorSchemeChanged.connect(self._on_color_scheme_changed)
+        app.applicationStateChanged.connect(self._on_application_state)
+
+    def _on_color_scheme_changed(self, *_args) -> None:
+        self.refresh_system_theme()
+
+    def _on_application_state(self, state) -> None:
+        if state == Qt.ApplicationActive:
+            self.refresh_system_theme()
 
     def refresh_system_theme(self) -> bool:
         """Follow the desktop if the theme is "system". True if it changed."""

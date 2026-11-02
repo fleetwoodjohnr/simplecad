@@ -261,3 +261,94 @@ def test_sign_release_script_signs_what_the_app_verifies(keys, tmp_path, monkeyp
     sums = (tmp_path / "SHA256SUMS").read_bytes()
     assert updates.verify_signature(sums, (tmp_path / "SHA256SUMS.sig").read_bytes(), public)
     assert json.dumps(updates.expected_hash(sums.decode(), "SimpleCAD-1.0.0-linux-x86_64.AppImage"))
+
+
+# -- v0.3.0: failures leave nothing behind and always say what happened ------------
+def test_a_failed_download_leaves_no_partial_file(tmp_path):
+    destination = tmp_path / "SimpleCAD.AppImage"
+
+    class Broken:
+        headers = {"Content-Length": "10"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, _size):
+            raise ConnectionResetError("connection dropped")
+
+    import urllib.request
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = lambda *_a, **_k: Broken()
+    try:
+        with pytest.raises(ConnectionResetError):
+            updates._download("https://dl/x", str(destination))
+    finally:
+        urllib.request.urlopen = original
+    assert not (tmp_path / "SimpleCAD.AppImage.part").exists()
+    assert not destination.exists()
+
+
+def test_old_downloads_are_pruned_before_a_new_one(keys, tmp_path):
+    private, public = keys
+    name = updates.asset_name("9.9.0", "deb")
+    payload = b"new package"
+    sums, signature = _signed(private, {name: payload})
+    folder = tmp_path / "updates"
+    folder.mkdir()
+    (folder / "SimpleCAD-0.1.0-linux-x86_64.deb").write_bytes(b"old")
+    (folder / f"{name}.part").write_bytes(b"half")
+    release = _release(assets=(name, updates.SUMS, updates.SIGNATURE))
+    fetch = {release.assets[updates.SUMS]: sums, release.assets[updates.SIGNATURE]: signature}
+    path = updates.download_verified(
+        release, "deb", str(folder), fetch=fetch.__getitem__, key=public,
+        download=lambda _url, dest, _progress: open(dest, "wb").write(payload))
+    assert sorted(p.name for p in folder.iterdir()) == [name]
+    assert open(path, "rb").read() == payload
+
+
+def test_a_disk_error_during_download_is_an_update_error(keys, tmp_path):
+    private, public = keys
+    name = updates.asset_name("9.9.0", "deb")
+    sums, signature = _signed(private, {name: b"x"})
+    release = _release(assets=(name, updates.SUMS, updates.SIGNATURE))
+    fetch = {release.assets[updates.SUMS]: sums, release.assets[updates.SIGNATURE]: signature}
+
+    def full_disk(_url, _dest, _progress):
+        raise OSError(28, "No space left on device")
+
+    with pytest.raises(updates.UpdateError, match="Nothing was installed"):
+        updates.download_verified(release, "deb", str(tmp_path), fetch=fetch.__getitem__,
+                                  key=public, download=full_disk)
+
+
+def test_an_appimage_in_a_read_only_folder_is_a_message_not_a_crash(tmp_path, monkeypatch):
+    target = tmp_path / "SimpleCAD.AppImage"
+    target.write_bytes(b"old")
+    new = tmp_path / "new.AppImage"
+    new.write_bytes(b"new")
+    monkeypatch.setattr(updates.shutil, "copyfile",
+                        lambda *_a, **_k: (_ for _ in ()).throw(PermissionError("read-only")))
+    with pytest.raises(updates.UpdateError, match="folder you own"):
+        updates.replace_appimage(str(new), str(target))
+    assert target.read_bytes() == b"old"
+    assert not (tmp_path / "SimpleCAD.AppImage.new").exists()
+
+
+def test_an_installer_that_cannot_start_is_reported(tmp_path):
+    def missing(_path):
+        raise FileNotFoundError("xdg-open")
+
+    with pytest.raises(updates.UpdateError, match="open it by hand"):
+        updates.install(str(tmp_path / "x.deb"), "deb", opener=missing)
+
+
+def test_v0_3_0_is_offered_to_a_v0_2_0_install_and_picks_each_platforms_file():
+    assert updates.is_newer("v0.3.0", "0.2.0")
+    assert not updates.is_newer("v0.3.0", "0.3.0")
+    assert updates.asset_name("0.3.0", "windows").endswith("windows-x86_64-setup.exe")
+    assert updates.asset_name("0.3.0", "appimage").startswith("SimpleCAD-0.3.0-linux-")
+    assert updates.asset_name("0.3.0", "macos").endswith(".dmg")

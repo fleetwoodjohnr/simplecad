@@ -6,10 +6,11 @@
 |---|---|---|
 | Unit and integration, headless | `tests/` (`pytest -m "not slow"`, about 7 min) | Every push (CI, Linux) and before every commit |
 | Slow kernel tests (modelled threads, big booleans) | `tests/`, marked `slow` | Before a release (`pytest`) |
-| Real-window checks | `scripts/check_*.py`, about 50 scripts; the core six are wrapped by `tests/test_gui_checks.py` | `xvfb-run -a pytest -m gui` (CI, Linux). Never on the desktop display: they run only when `-m gui` is asked for |
+| Real-window checks | `scripts/check_*.py`, about 50 scripts; the core ones are wrapped by `tests/test_gui_checks.py` | `xvfb-run -a pytest -m gui` (CI, Linux). Never on the desktop display: they run only when `-m gui` is asked for |
 | Project compatibility | `scripts/compare_projects.py --old <checkout> files…` | After any change to rebuild, history or the file format: every real project, old code against new |
 | Packaged build | `simplecad --self-test` | On every bundle in the release workflow, and in CI from source on Linux, Windows and macOS |
-| Lint, dependency audit | `ruff check .`, `pip-audit -r requirements.txt` | CI |
+| Lint, dependency audit | `ruff check .`, `pip-audit -r requirements-build.txt` (runtime and build) | CI |
+| Installers | The release workflow installs and runs every package (AppImage, deb, rpm on Fedora, Windows installer, DMG) | Every tag |
 
 ## What each new subsystem is held to
 
@@ -21,7 +22,10 @@
 | Sliding joints | `joints.md` | `test_joints_sliding.py`, `scripts/check_joint_slide.py` |
 | Hinges | `hinges.md` | `test_hinge.py`, `scripts/check_hinge.py` |
 | Updates | `updates.md` | `test_updates.py` |
-| Packaging | `packaging.md` | `--self-test` on every bundle; a local Linux bundle |
+| Packaging | `packaging.md` | `--self-test` on every bundle and installed package; `test_packaging_assets.py`; a local Linux bundle |
+| Move / Rotate (v0.3.0) | `transforms.md` | `test_gizmo_v030.py` (ground drag in ortho and perspective, grazing views, plane squares, cancel, snap toggle, wedge, two bodies), `scripts/check_gizmo.py` (real window: arrow, ground drag, plane square, Esc, two bodies) |
+| Shell (v0.3.0) | `settings-and-ui.md` | `test_shell_v030.py` (rail, app menu, Properties, lock, Select all, New project), `test_ui_theme.py` (tokens, fonts, every icon name) |
+| Align & Arrange (v0.3.0) | `settings-and-ui.md` | `test_align_arrange_v030.py` (align/distribute arithmetic and panel, Stack & Place opening on its key, context bar, Arrange on the plate, Mirror, mirrored normals), `test_scenarios.py` 8–10 |
 
 ## Rules
 

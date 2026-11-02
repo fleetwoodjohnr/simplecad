@@ -59,3 +59,16 @@ def test_window_icon_resolves_from_the_package():
 
     path = Path(main_window.__file__).resolve().parents[1] / "assets" / "simplecad.svg"
     assert path == SVG and path.is_file()
+
+
+def test_this_version_has_release_notes():
+    """The release workflow and the in-app updater both show this section."""
+    import subprocess
+    import sys
+
+    from simplecad import __version__
+
+    notes = subprocess.run([sys.executable, str(ROOT / "scripts" / "release_notes.py"), __version__],
+                           capture_output=True, text=True, check=True).stdout
+    assert len(notes.strip()) > 200
+    assert not notes.startswith("## "), "the heading itself is not part of the notes"

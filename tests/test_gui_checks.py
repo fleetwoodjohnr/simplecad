@@ -31,6 +31,10 @@ CHECKS = (
     # timing and fails intermittently under Xvfb on main as well.
     "check_joint_slide",
     "check_hinge",
+    # v0.3.0: Align & Arrange and selection, driven with real input.
+    "check_arrange",
+    "check_box_select",
+    "check_placement",
 )
 
 

@@ -110,3 +110,53 @@ jobs:
           tests/test_updates.py tests/test_project.py tests/test_operations.py
           tests/test_document.py tests/test_history.py tests/test_split.py
           tests/test_settings.py
+
+  viewport-other:
+    # Experimental (v0.3.0): does the real 3D view draw and take a gizmo drag
+    # on Windows and macOS? Allowed to fail: until it has passed reliably, a
+    # failure here is information, not a broken build. Windows runners have no
+    # usable OpenGL, so Mesa's software renderer (llvmpipe) stands in.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      MESA_VERSION: "26.2.5"
+      MESA_SHA256: 997123ef4ce8896204ab912d5b54f19372c487ff9835bcefafa2fca23b8953c2
+      SIMPLECAD_NO_RECOVERY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Software OpenGL for the Windows runner (Mesa llvmpipe, checksum-verified)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA_VERSION/mesa3d-$env:MESA_VERSION-release-msvc.7z"
+          Invoke-WebRequest $url -OutFile mesa.7z
+          $hash = (Get-FileHash mesa.7z -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:MESA_SHA256) { throw "Mesa checksum mismatch: $hash" }
+          7z x mesa.7z -omesa | Out-Null
+          $python = Split-Path (Get-Command python).Source
+          Copy-Item mesa\x64\*.dll $python
+          "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: A gizmo drag in a real window
+        shell: bash
+        env:
+          SIMPLECAD_SHOTS_DIR: ${{ runner.temp }}/shots
+        run: |
+          mkdir -p "$SIMPLECAD_SHOTS_DIR"
+          python scripts/check_gizmo.py
+      - name: Keep what the window looked like
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viewport-${{ matrix.os }}
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore

@@ -2,9 +2,24 @@
 
 | Platform | Package | Built by | Verified here |
 |---|---|---|---|
-| Linux x86_64 | AppImage, .deb, .rpm, Flatpak (wrapping the bundle) | `packaging/build.py bundle appimage deb rpm flatpak-tarball` on ubuntu-22.04 | The bundle is built and `--self-test`ed locally; the window starts from the bundle under Xvfb |
-| Windows x64 | Inno Setup installer with uninstaller and `.scad3` association | `build.py bundle windows` on windows-latest | No: CI only |
-| macOS arm64 and x86_64 | `.app` in a `.dmg` | `build.py bundle macos` on macos-14 / macos-13 | No: CI only |
+| Linux x86_64 | AppImage, .deb, .rpm, Flatpak tarball (wrapping the bundle) | `packaging/build.py bundle appimage deb rpm flatpak-tarball` on ubuntu-22.04 | The bundle is built and `--self-test`ed locally; the window starts from the bundle under Xvfb. In CI the AppImage is run, the .deb installed on Ubuntu and run, and the .rpm installed on Fedora 44 and run, with its desktop entry and AppStream data validated |
+| Windows x64 | Inno Setup installer with uninstaller and `.scad3` association | `build.py bundle windows` on windows-2025 (Inno Setup 6.7.1) | CI only: installed silently and the installed program run with `--self-test` |
+| macOS arm64 and x86_64 | `.app` in a `.dmg` with an Applications link | `build.py bundle macos` on macos-15 / macos-15-intel | CI only: the DMG mounted, the app copied out and run with `--self-test` |
+
+The Flatpak is not built in CI: the manifest wraps the released tarball for a
+local `flatpak-builder` install.
+
+## Icons and metadata (v0.3.0)
+
+- One source, `simplecad/assets/simplecad.svg`, with flat shapes only: QtSvg
+  ignores SVG filters.
+- `build.py icons` renders PNGs from 16 to 1024 px and uses Pillow to write a
+  seven-size `.ico` (16–256) and a full `.icns`.
+- deb and rpm install every hicolor size and the SVG.
+- `packaging/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml` (AppStream) goes
+  into deb, rpm, the AppImage and the Flatpak.
+- `tests/test_packaging_assets.py` checks the icon sizes, the metainfo and the
+  release notes.
 
 ## Portability changes made to the code
 

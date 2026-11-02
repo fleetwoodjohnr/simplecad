@@ -113,7 +113,8 @@ def main() -> int:
             original = positions()
             box_select()
             REPORT["box_selected_six"] = sorted(window.selection.bodies) == names
-            REPORT["arrange_offered"] = "arrange" in window.context_bar.keys()
+            # v0.3: objects alone open Align & Arrange, one tab away from Arrange.
+            REPORT["arrange_offered"] = "align_arrange" in window.context_bar.keys()
             window.run_action("arrange")
             tool = panel()
             REPORT["panel_waits_for_the_face"] = (
