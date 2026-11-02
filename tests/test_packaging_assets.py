@@ -21,7 +21,7 @@ def _build_module():
 
 def test_the_icon_uses_nothing_qt_cannot_draw():
     """QtSvg ignores filters and blurs: the old icon's glow never rendered."""
-    text = SVG.read_text()
+    text = SVG.read_text(encoding="utf-8")
     for unsupported in ("<filter", "feGaussianBlur", "feDropShadow", "mask="):
         assert unsupported not in text
     ElementTree.fromstring(text)

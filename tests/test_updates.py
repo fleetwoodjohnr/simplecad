@@ -349,6 +349,7 @@ def test_an_installer_that_cannot_start_is_reported(tmp_path):
 def test_v0_3_0_is_offered_to_a_v0_2_0_install_and_picks_each_platforms_file():
     assert updates.is_newer("v0.3.0", "0.2.0")
     assert not updates.is_newer("v0.3.0", "0.3.0")
-    assert updates.asset_name("0.3.0", "windows").endswith("windows-x86_64-setup.exe")
-    assert updates.asset_name("0.3.0", "appimage").startswith("SimpleCAD-0.3.0-linux-")
-    assert updates.asset_name("0.3.0", "macos").endswith(".dmg")
+    arch = updates.machine()
+    assert updates.asset_name("0.3.0", "windows") == f"SimpleCAD-0.3.0-windows-{arch}-setup.exe"
+    assert updates.asset_name("0.3.0", "appimage") == f"SimpleCAD-0.3.0-linux-{arch}.AppImage"
+    assert updates.asset_name("0.3.0", "macos") == f"SimpleCAD-0.3.0-macos-{arch}.dmg"

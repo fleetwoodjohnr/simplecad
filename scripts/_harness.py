@@ -25,8 +25,10 @@ os.environ.pop("QT_XCB_GL_INTEGRATION", None)
 # Each invocation gets a clean profile. Persistent test settings made one
 # screenshot's collapsed inspector or theme choice silently leak into the next
 # script, so visual checks no longer described their own setup.
+# os.getuid is Unix-only; Windows gets a per-user temp folder anyway.
 _SANDBOX = os.path.join(
-    tempfile.gettempdir(), f"simplecad-scripts-{os.getuid()}-{os.getpid()}"
+    tempfile.gettempdir(),
+    f"simplecad-scripts-{getattr(os, 'getuid', lambda: 'user')()}-{os.getpid()}",
 )
 os.environ.setdefault("XDG_CONFIG_HOME", os.path.join(_SANDBOX, "config"))
 os.environ.setdefault("XDG_DATA_HOME", os.path.join(_SANDBOX, "data"))

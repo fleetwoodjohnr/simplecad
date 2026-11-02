@@ -16,7 +16,7 @@ _FIRST_ARG = {"icon", "IconButton", "ToolTile", "ToolSpec", "ToolGroup", "svg"}
 
 def _referenced_icons():
     for path in UI.rglob("*.py"):
-        tree = ast.parse(path.read_text(), str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -44,7 +44,7 @@ def test_no_inline_pixel_font_sizes():
     offenders = [
         f"{path.name}:{number}"
         for path in UI.rglob("*.py") if path.name != "theme.py"
-        for number, line in enumerate(path.read_text().splitlines(), 1)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if literal.search(line)
     ]
     assert not offenders, offenders
