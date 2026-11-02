@@ -284,6 +284,9 @@ class OcctViewport(QOpenGLWidget):
     #: that was displayed is still displayed, but the window has to hand the
     #: bodies back -- see ``MainWindow._on_viewport_rebound``.
     rebound = Signal()
+    #: After every frame. Overlays that must track the 3D view exactly (the
+    #: gizmo's plane squares) listen with a queued connection.
+    painted = Signal()
 
     def __init__(self, palette: Palette, parent=None) -> None:
         super().__init__(parent)
@@ -378,6 +381,8 @@ class OcctViewport(QOpenGLWidget):
         #: effective value is max(tool, X-ray).
         self._xray_enabled = False
         self._body_presentations: dict[int, tuple[object, float]] = {}
+        #: Presentations of locked bodies: drawn, but never picked.
+        self._unpickable: list = []
         #: Position whose detected stack Tab/Shift+Tab is currently walking.
         self._xray_cycle_pos: QPoint | None = None
 
@@ -768,6 +773,8 @@ class OcctViewport(QOpenGLWidget):
             if self._view_cube is not None and obj == self._view_cube:
                 continue
             self._context.Deactivate(obj)
+            if self._is_unpickable(obj):
+                continue
             for mode in modes:
                 self._context.Activate(obj, int(mode))
             self._apply_sensitivity(obj)
@@ -776,6 +783,30 @@ class OcctViewport(QOpenGLWidget):
     @property
     def selection_modes(self) -> tuple[SelectionMode, ...]:
         return self._selection_modes
+
+    def _is_unpickable(self, presentation) -> bool:
+        # OCP hands back a fresh wrapper per lookup, so identity is by ==.
+        return any(presentation == locked for locked in self._unpickable)
+
+    def set_pickable(self, presentation, pickable: bool) -> None:
+        """Lock or unlock one body against clicks, hover and box select.
+
+        A locked body is still drawn; it simply owns no pick zones, so a click
+        goes through it to whatever is behind and a marquee passes over it.
+        Survives later :meth:`set_selection_modes` calls, which re-activate
+        everything else.
+        """
+        if self._context is None or presentation is None:
+            return
+        locked = self._is_unpickable(presentation)
+        if not pickable and not locked:
+            self._unpickable.append(presentation)
+            self._context.Deactivate(presentation)
+        elif pickable and locked:
+            self._unpickable = [p for p in self._unpickable if not p == presentation]
+            for mode in self._selection_modes:
+                self._context.Activate(presentation, int(mode))
+            self._apply_sensitivity(presentation)
 
     def set_additive_selection(self, enabled: bool) -> None:
         """Let a picking tool collect bodies with unmodified clicks."""
@@ -1225,6 +1256,7 @@ class OcctViewport(QOpenGLWidget):
     def erase(self, presentation) -> None:
         if self._context is not None and presentation is not None:
             self._body_presentations.pop(id(presentation), None)
+            self._unpickable = [p for p in self._unpickable if not p == presentation]
             self._context.Remove(presentation, False)
             self.refresh()
 
@@ -1232,6 +1264,7 @@ class OcctViewport(QOpenGLWidget):
         if self._context is None:
             return
         self._body_presentations.clear()
+        self._unpickable = []
         self._xray_cycle_pos = None
         self._context.RemoveAll(False)
         if self._view_cube is not None:
@@ -1793,6 +1826,7 @@ class OcctViewport(QOpenGLWidget):
             log.warning("the 3D view failed to draw (%s); re-attaching", exc)
             return
         self._note_frame_health(gl_context)
+        self.painted.emit()
 
     def _note_frame_health(self, gl_context) -> None:
         """Did that frame actually reach the screen?
@@ -2309,8 +2343,30 @@ class OcctViewport(QOpenGLWidget):
         ratio = self.devicePixelRatioF()
         return int(round(pos.x() * ratio)), int(round(pos.y() * ratio))
 
+    def cancel_gizmo_drag(self) -> bool:
+        """End a gizmo drag without applying it. True if one was running."""
+        if self._nav is not _Nav.GIZMO or self.gizmo is None or not self.gizmo.dragging:
+            return False
+        self.gizmo.cancel_drag()
+        self._nav = _Nav.NONE
+        self._dragged = False
+        self.update()
+        return True
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self._events["press"] += 1
+        if self._nav in (_Nav.GIZMO, _Nav.DRAG_FACE, _Nav.DRAG_HANDLE) and (
+            event.button() != Qt.LeftButton
+        ):
+            # A second button during a drag used to start an orbit over the
+            # top of it, leaving the gizmo "dragging" with nothing to end it.
+            # Right-click cancels a gizmo drag, as Esc does; anything else is
+            # ignored until the left button comes up.
+            if event.button() == Qt.RightButton and self._nav is _Nav.GIZMO:
+                self.cancel_gizmo_drag()
+                self._swallow_release = Qt.RightButton
+            event.accept()
+            return
         self._press_pos = event.position().toPoint()
         self._last_pos = self._press_pos
         self._dragged = False
@@ -2463,6 +2519,11 @@ class OcctViewport(QOpenGLWidget):
         elif self._picking_points:
             self.request_snap(pos, event.modifiers())
         elif self._picking_enabled:
+            if self.gizmo is not None and self.gizmo.active and self.gizmo.show_planes:
+                hovered = self.gizmo.plane_handle_at(*self._device_pos(pos))
+                if hovered != self.gizmo.hover_plane:
+                    self.gizmo.hover_plane = hovered
+                    self.update()
             # OCCT hit testing over a dense model can outnumber rendered frames
             # by an order of magnitude. Clicks re-detect precisely on release.
             now = time.monotonic()
@@ -2479,6 +2540,14 @@ class OcctViewport(QOpenGLWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         self._events["release"] += 1
+        if getattr(self, "_swallow_release", None) == event.button():
+            # The right-click that cancelled a drag must not also open a menu.
+            self._swallow_release = None
+            return
+        if self._nav in (_Nav.GIZMO, _Nav.DRAG_FACE, _Nav.DRAG_HANDLE) and (
+            event.button() != Qt.LeftButton
+        ):
+            return
         was_nav = self._nav
         self._nav = _Nav.NONE
         if self._view is None:
@@ -2599,6 +2668,33 @@ class OcctViewport(QOpenGLWidget):
         self.selection_changed.emit()
         self.update()
 
+    def select_under(self, pos) -> bool:
+        """Right-click: select what is under the cursor, unless it already is.
+
+        The menu then offers actions for the thing that was right-clicked, as
+        everywhere else, instead of for whatever happened to be selected
+        before. A right-click on part of the current selection keeps it, so a
+        multi-selection is not lost on the way to its menu.
+        """
+        if (self._context is None or self._view is None or not self._picking_enabled
+                or self._sketch_plane is not None or self._picking_points):
+            return False
+        x, y = self._device_pos(pos)
+        self._context.MoveTo(x, y, self._view, False)
+        if not self._context.HasDetected():
+            return False
+        detected = self._context.DetectedInteractive()
+        if detected is None or (self._view_cube is not None and detected == self._view_cube):
+            return False
+        if any(detected == entry["presentation"] for entry in self.selected_entries()):
+            return False
+        from OCP.AIS import AIS_SelectionScheme_Replace
+
+        self._context.SelectDetected(AIS_SelectionScheme_Replace)
+        self.selection_changed.emit()
+        self.update()
+        return True
+
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         """Select the individual object, ignoring any group it belongs to.
 
@@ -2709,6 +2805,15 @@ class OcctViewport(QOpenGLWidget):
         if (kind in (QEvent.ShortcutOverride, QEvent.KeyPress)
                 and self._nav is _Nav.GIZMO and self.gizmo is not None
                 and self.gizmo.dragging):
+            if event.key() == Qt.Key_Escape:
+                # Esc mid-drag is part of the gesture, like X / Y / Z: it puts
+                # the part back and leaves the tool open. Taken here, before
+                # the window's Esc closes the tool.
+                if kind == QEvent.KeyPress:
+                    self.cancel_gizmo_drag()
+                    self.notice.emit("Cancelled. The part is back where it was.")
+                event.accept()
+                return True
             index = {Qt.Key_X: 0, Qt.Key_Y: 1, Qt.Key_Z: 2}.get(event.key())
             modifiers = event.modifiers() & ~Qt.KeypadModifier
             if index is not None and modifiers in (Qt.NoModifier, Qt.ShiftModifier):

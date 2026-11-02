@@ -34,8 +34,8 @@ def load() -> dict[str, Callable]:
     picking an edge and pressing Fillet is exactly that first thing.
     """
     from . import (  # noqa: F401 - registers the built-in tools
-        clips, combining, matching, measuring, modeling, arranging, shapes, sketching,
-        splitting, text, face_texture, edge_edit, properties, hinge,
+        aligning, clips, combining, matching, measuring, modeling, arranging, shapes, sketching,
+        splitting, text, face_texture, edge_edit, properties, hinge, mirroring,
     )
     from ..printws import fit_panel, panel  # noqa: F401
 
@@ -55,6 +55,9 @@ def activate(window, key: str) -> None:
         return
 
     window.close_tool_panels()
+    # One panel can serve several keys (Stack, Center, Concentric all open the
+    # Stack & Place panel); it reads which one was asked for from here.
+    window.requested_tool = key
     panel = factory(window)
     # A plain function tool (like the shape picker) manages its own panel.
     if panel is not None and hasattr(panel, "is_tool_panel"):

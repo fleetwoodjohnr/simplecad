@@ -35,7 +35,7 @@ from .panels.sketch_bar import SketchBar
 from .panels.context_bar import ContextBar
 from .panels.model_browser import ModelBrowser
 from .selection import SelectionModel, available_actions, texture_features
-from .theme import DARK, METRICS, Mode, Palette, resolve, stylesheet
+from .theme import DARK, METRICS, Mode, Palette, load_fonts, resolve, stylesheet
 from .viewport.occt_view import OcctViewport, SelectionMode, StandardView
 from .widgets.controls import FloatingCard, Hint, IconButton, ToolTile
 
@@ -64,8 +64,21 @@ PINNED_TOOLS = (
     ToolSpec("sketch", "Sketch", "sketch"),
     ToolSpec("extrude", "Pull", "pushpull"),
     ToolSpec("move", "Move", "move"),
+    ToolSpec("rotate", "Rotate", "rotate"),
+    ToolSpec("scale", "Scale", "scale"),
+    ToolSpec("align", "Align", "align_arrange"),
     ToolSpec("measure", "Measure", "measure"),
 )
+
+#: Tools that move, reshape or remove the selection, refused on a locked body.
+TRANSFORM_TOOLS = frozenset({
+    "move", "rotate", "scale", "align_arrange", "align", "align_bodies", "stack", "center",
+    "concentric", "place_on_face", "arrange", "mirror", "split", "pushpull", "subtract",
+    "join", "intersect", "fillet", "chamfer", "shell", "hole",
+})
+
+#: Which shortcut action each rail tool answers to, for its tooltip.
+TOOL_SHORTCUTS = {"pushpull": "extrude", "move": "move", "rotate": "rotate", "hole": "hole"}
 
 TOOL_GROUPS = (
     ToolGroup("create", "Create", "create", (
@@ -76,10 +89,6 @@ TOOL_GROUPS = (
         ToolSpec("thread", "Matching part", "matching_part"),
     )),
     ToolGroup("modify", "Modify", "modify", (
-        ToolSpec("align", "Align", "align"),
-        ToolSpec("pattern", "Arrange", "arrange"),
-        ToolSpec("rotate", "Rotate", "rotate"),
-        ToolSpec("scale", "Scale", "scale"),
         ToolSpec("hole", "Hole", "hole"),
         ToolSpec("thread", "Thread", "thread"),
         ToolSpec("fillet", "Fillet", "fillet"),
@@ -115,6 +124,13 @@ EXPORT_SUFFIXES = frozenset(suffix for _label, suffix in EXPORT_FILTERS) | {".st
 
 #: Every accepted arrow-key press moves geometry by this exact distance.
 NUDGE_STEP_MM = 0.25
+
+
+def about_heading() -> str:
+    """What About shows first: the name and version, exactly."""
+    from .. import __version__
+
+    return f"SimpleCAD \u2014 Version {__version__}"
 
 
 def resolved_export_path(path: str, selected_filter: str) -> str:
@@ -175,12 +191,16 @@ class TopBar(QWidget):
         layout.setContentsMargins(14, 0, 12, 0)
         layout.setSpacing(8)
 
+        self.menu_button = IconButton("menu", palette, "Menu: new, open, settings, about")
+        self.menu_button.clicked.connect(lambda _=False: self.action_triggered.emit("app_menu"))
+        layout.addWidget(self.menu_button)
+
         self.brand_icon = QLabel()
         self.brand_icon.setObjectName("BrandIcon")
         self.brand_icon.setFixedSize(28, 28)
         app_icon = QApplication.instance().windowIcon()
         if app_icon.isNull():
-            icon_path = Path(__file__).resolve().parents[2] / "assets" / "simplecad.svg"
+            icon_path = Path(__file__).resolve().parents[1] / "assets" / "simplecad.svg"
             if icon_path.exists():
                 app_icon = QIcon(str(icon_path))
         if not app_icon.isNull():
@@ -234,10 +254,10 @@ class TopBar(QWidget):
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
         self.wordmark.setStyleSheet(
-            f"color:{palette.text}; font-size:14px; font-weight:700;"
-            "letter-spacing:0.35px;"
+            f"color:{palette.text}; font-size:{METRICS.font_size_lg}px; font-weight:700;"
+            "letter-spacing:0.2px;"
         )
-        self.title.setStyleSheet(f"color:{palette.text_muted}; font-size:12px;")
+        self.title.setStyleSheet(f"color:{palette.text_muted}; font-size:{METRICS.font_size_ui}px;")
         self.brand_icon.setStyleSheet("background:transparent; border:none;")
         self.search_control.setIcon(icon("search", palette.text_muted, 18))
         self.setStyleSheet(
@@ -249,7 +269,7 @@ class TopBar(QWidget):
             divider.setStyleSheet(f"background:{palette.border}; border:none;")
         for button in [
             value for key, value in self.buttons.items() if key != "search"
-        ] + [self.theme_button]:
+        ] + [self.theme_button, self.menu_button]:
             button.apply_palette(palette)
         self._update_responsive()
 
@@ -296,6 +316,7 @@ class ToolRail(QWidget):
         layout.setSpacing(METRICS.space(1))
         for spec in PINNED_TOOLS:
             tile = ToolTile(spec.icon, spec.label, palette)
+            tile.setToolTip(self.tooltip_for(spec))
             tile.clicked.connect(lambda _=False, k=spec.key: self._pick(k))
             layout.addWidget(tile, 0, Qt.AlignHCenter)
             self._tiles[spec.key] = tile
@@ -315,6 +336,25 @@ class ToolRail(QWidget):
             layout.addWidget(tile, 0, Qt.AlignHCenter)
             self._group_tiles[group.key] = tile
         self.apply_palette(palette)
+
+    @staticmethod
+    def tooltip_for(spec: ToolSpec) -> str:
+        """The tool's name and, when it has one, its keyboard shortcut."""
+        from ..core.settings import shortcuts
+
+        action = TOOL_SHORTCUTS.get(spec.key)
+        key = shortcuts().get(action) if action else None
+        label = "Align & Arrange" if spec.key == "align_arrange" else spec.label
+        return f"{label}  ({key})" if key else label
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """Drop the labels when the window is too short for every tile."""
+        tiles = list(self._tiles.values()) + list(self._group_tiles.values())
+        needed = len(tiles) * (ToolTile.FULL_HEIGHT + METRICS.space(1)) + METRICS.space(10)
+        compact = self.height() < needed
+        for tile in tiles:
+            tile.set_compact(compact)
+        super().resizeEvent(event)
 
     def _pick(self, key: str) -> None:
         self.set_active(key)
@@ -391,7 +431,7 @@ class ToolFlyout(FloatingCard):
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
         for index, spec in enumerate(group.tools):
-            button = QPushButton(spec.label, self)
+            button = QPushButton(spec.label.replace("&", "&&"), self)
             button.setCursor(Qt.PointingHandCursor)
             button.setMinimumHeight(42)
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -410,7 +450,7 @@ class ToolFlyout(FloatingCard):
         super().apply_palette(palette)
         self._palette = palette
         self._eyebrow.setStyleSheet(
-            f"color:{palette.accent_hover}; font-size:9px; font-weight:700;"
+            f"color:{palette.accent_text}; font-size:{METRICS.font_size_xs}px; font-weight:700;"
             "letter-spacing:1px;"
         )
         for button, spec in zip(self._buttons, self._specs):
@@ -492,6 +532,10 @@ class ViewportStage(QWidget):
         self.measure_overlay.hide()
         self.selection_band = SelectionBand(palette, self)
         self.viewport.band_changed.connect(self.selection_band.show_rect)
+        from .panels.gizmo_overlay import GizmoOverlay
+
+        self.gizmo_overlay = GizmoOverlay(palette, self.viewport, self)
+        self.gizmo_overlay.hide()
 
         self.view_controls = FloatingCard(palette, self, shadow=False)
         row = QHBoxLayout(self.view_controls)
@@ -499,6 +543,8 @@ class ViewportStage(QWidget):
         row.setSpacing(2)
         self._view_buttons: dict[str, IconButton] = {}
         for name, tooltip, key in (
+            ("snap", "Snapping: grid and nearby edges, corners and holes. "
+                     "Hold Shift to do the opposite while dragging", "snap"),
             ("fit", "Zoom to fit  (F)", "fit"),
             ("ortho", "Orthographic / perspective", "projection"),
             ("grid", "Grid", "grid"),
@@ -506,7 +552,7 @@ class ViewportStage(QWidget):
         ):
             button = IconButton(
                 name, palette, tooltip, size=32,
-                checkable=key in ("grid", "xray"),
+                checkable=key in ("grid", "xray", "snap"),
             )
             row.addWidget(button)
             self._view_buttons[key] = button
@@ -592,7 +638,7 @@ class ViewportStage(QWidget):
         # The three full-size overlays have to track a resize whether or not
         # anything is being re-stacked. Setting a geometry that is already set
         # costs nothing.
-        for overlay in (self.measure_overlay, self.selection_band):
+        for overlay in (self.measure_overlay, self.selection_band, self.gizmo_overlay):
             if overlay.isVisible():
                 overlay.setGeometry(self.rect())
 
@@ -609,7 +655,8 @@ class ViewportStage(QWidget):
         """
         # Full-size drawing layers sit above the GL view but below interactive
         # cards. Otherwise a projected marker can paint across its own panel.
-        order: list[QWidget] = [
+        order: list[QWidget] = [self.gizmo_overlay] if self.gizmo_overlay.isVisible() else []
+        order += [
             widget for widget, anchor in self.overlays if anchor == "full"
         ]
         order.append(self.view_controls)
@@ -657,6 +704,7 @@ class ViewportStage(QWidget):
         self.drag_readout.apply_palette(palette)
         self.measure_overlay.apply_palette(palette)
         self.selection_band.apply_palette(palette)
+        self.gizmo_overlay.apply_palette(palette)
         self.hint.apply_palette(palette)
         self.view_controls.apply_palette(palette)
         for button in self._view_buttons.values():
@@ -688,6 +736,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, mode: Mode = Mode.SYSTEM) -> None:
         super().__init__()
+        load_fonts()
         self.setWindowTitle("SimpleCAD")
         self.resize(1440, 900)
 
@@ -786,6 +835,7 @@ class MainWindow(QMainWindow):
         self._browser_preferred_expanded = settings.ui_preference(
             "browser_expanded", True
         )
+        self.browser.set_expanded_width(settings.ui_value("browser_width", 296))
         self.browser.set_collapsed(
             not self._browser_preferred_expanded, emit=False
         )
@@ -820,6 +870,8 @@ class MainWindow(QMainWindow):
         self.stage._view_buttons["projection"].clicked.connect(self._toggle_projection)
         self.stage._view_buttons["grid"].clicked.connect(self._toggle_grid)
         self.stage._view_buttons["xray"].clicked.connect(self._toggle_xray)
+        self.stage._view_buttons["snap"].setChecked(settings.view_preference("snap", True))
+        self.stage._view_buttons["snap"].toggled.connect(self._set_snapping)
         self.browser.visibility_toggled.connect(self._set_body_visible)
         self.browser.isolate_requested.connect(self.isolate_body)
         self.browser.show_all_requested.connect(self.show_all_bodies)
@@ -835,6 +887,13 @@ class MainWindow(QMainWindow):
         self.browser.group_delete_requested.connect(self.delete_group)
         self.browser.group_duplicate_requested.connect(self._duplicate_group)
         self.browser.collapsed_changed.connect(self._browser_collapsed)
+        self.browser.lock_toggled.connect(self.set_locked)
+        self.browser.width_changed.connect(lambda _w: self.stage._layout_overlays())
+        self.browser.width_committed.connect(
+            lambda width: settings.set_ui_value("browser_width", width))
+        self.browser.properties.move_requested.connect(self.move_selection_to)
+        self.browser.properties.size_requested.connect(self.resize_selection)
+        self.browser.properties.rotate_requested.connect(lambda: self.activate_tool("rotate"))
 
         # Arrow nudging belongs to the two places a model selection is made.
         # A narrow event filter lets an unhandled key fall through normally --
@@ -855,6 +914,8 @@ class MainWindow(QMainWindow):
         self._install_shortcuts()
         self._start_autosave()
         self.apply_theme()
+        self._follow_system_theme()
+        self._restore_window_geometry()
         if not os.environ.get("SIMPLECAD_NO_RECOVERY"):
             # Deferred so the window is up before any dialog appears.
             QTimer.singleShot(400, self._offer_recovery)
@@ -892,6 +953,33 @@ class MainWindow(QMainWindow):
         self._shown.clear()
         self._display_base.clear()
         self.refresh_view()
+
+    def _follow_system_theme(self) -> None:
+        """Re-read the desktop's light/dark choice while running.
+
+        Qt announces a change on Wayland, Windows and macOS. Under xcb -- which
+        SimpleCAD uses on Linux for OCCT's GLX -- it never does, so the choice is
+        also re-read whenever the window becomes active again: a user who flips
+        the desktop theme comes back to a window that already matches.
+        """
+        app = QApplication.instance()
+        hints = app.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(lambda *_: self.refresh_system_theme())
+        app.applicationStateChanged.connect(
+            lambda state: state == Qt.ApplicationActive and self.refresh_system_theme()
+        )
+
+    def refresh_system_theme(self) -> bool:
+        """Follow the desktop if the theme is "system". True if it changed."""
+        if self.mode is not Mode.SYSTEM:
+            return False
+        palette = resolve(Mode.SYSTEM)
+        if palette is self.palette_:
+            return False
+        self.palette_ = palette
+        self.apply_theme()
+        return True
 
     def set_theme(self, choice: str) -> None:
         """Light, dark, or follow the desktop ("system"), remembered."""
@@ -966,12 +1054,11 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
-        from .. import __version__
         from ..core.updates import RELEASES_PAGE, install_kind
 
         QMessageBox.about(
             self, "About SimpleCAD",
-            f"<b>SimpleCAD {__version__}</b><br>Parametric CAD for mechanical design and "
+            f"<b>{about_heading()}</b><br>Parametric CAD for mechanical design and "
             f"3D printing.<br><br>Installed as: {install_kind()}<br>"
             f'<a href="{RELEASES_PAGE}">Releases</a>',
         )
@@ -1073,7 +1160,10 @@ class MainWindow(QMainWindow):
             "dimension": self._dimension_shortcut,
             "extrude": lambda: self.activate_tool("pushpull"),
             "move": lambda: self.activate_tool("move"),
+            "rotate": lambda: self.activate_tool("rotate"),
             "hole": lambda: self.activate_tool("hole"),
+            "new": self.new_project,
+            "select_all": self.select_all,
             "xray": self._toggle_xray,
             "fit_view": self.zoom_to_fit,
             "zoom_selection": self.zoom_to_selection,
@@ -1195,6 +1285,19 @@ class MainWindow(QMainWindow):
         self.stage._view_buttons["grid"].setChecked(visible)
         settings.set_view_preference("grid", visible)
         self.set_hint("Ground grid on." if visible else "Ground grid off.")
+
+    @property
+    def snapping(self) -> bool:
+        return self.stage._view_buttons["snap"].isChecked()
+
+    def _set_snapping(self, enabled: bool) -> None:
+        from ..core import settings
+
+        settings.set_view_preference("snap", bool(enabled))
+        gizmo = self.stage.viewport.gizmo
+        if gizmo is not None:
+            gizmo.snap_enabled = bool(enabled)
+        self.set_hint("Snapping on." if enabled else "Snapping off. Hold Shift to snap while dragging.")
 
     def _toggle_projection(self) -> None:
         viewport = self.stage.viewport
@@ -1385,6 +1488,12 @@ class MainWindow(QMainWindow):
 
         self.detach_gizmo()
         gizmo = TransformGizmo(self.stage.viewport, self)
+        gizmo.snap_enabled = self.snapping
+        # Move gets the XY / XZ / YZ squares; a tool that asked for OCCT's own
+        # plane parts (Arrange) keeps those instead of both.
+        gizmo.show_planes = bool(options.get("allow_translation", True)
+                                 and not options.get("allow_rotation", True)
+                                 and not options.get("allow_planes", False))
         if not gizmo.attach(presentation, **options):
             return None
         self.stage.viewport.gizmo = gizmo
@@ -1529,6 +1638,8 @@ class MainWindow(QMainWindow):
         if not self._nudge_allowed():
             return None
         self.selection.refresh()
+        if self.selection.bodies and self.refuse_locked(self.selection.bodies):
+            return None
         faces = self.selection.planar_faces() or self.selection.round_faces()
         if self.selection.count == 1 and len(faces) == 1:
             if depth or direction not in ("up", "down"):
@@ -1730,6 +1841,7 @@ class MainWindow(QMainWindow):
                 self._cancel_nudge()
             self.selection.refresh()
             self.refresh_context_bar()
+            self.refresh_properties()
         finally:
             self._nudge_refreshing = False
         # Placement stores durable references and re-resolves them against a
@@ -2325,8 +2437,32 @@ class MainWindow(QMainWindow):
         from ..core import autosave
 
         autosave.clear(self._session_id)
+        self._save_window_geometry()
         self.geometry.stop()
         super().closeEvent(event)
+
+    def _restore_window_geometry(self) -> None:
+        """Open where and as large as it was last closed."""
+        from PySide6.QtCore import QByteArray
+
+        from ..core.settings import ui_value
+
+        saved = ui_value("window_geometry")
+        if isinstance(saved, str) and saved:
+            self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii")))
+
+    def _save_window_geometry(self) -> None:
+        # Only a real, visible window on a real display: test and offscreen
+        # windows must not overwrite where the user keeps theirs.
+        from PySide6.QtGui import QGuiApplication
+
+        from ..core.settings import set_ui_value
+
+        if not self.isVisible() or QGuiApplication.platformName() in ("offscreen", "minimal"):
+            return
+        if os.environ.get("SIMPLECAD_SHOTS_DIR"):
+            return
+        set_ui_value("window_geometry", bytes(self.saveGeometry().toBase64()).decode("ascii"))
 
     def _tint_for(self, name: str) -> str:
         """The default colour for a body that has not been given one.
@@ -2391,6 +2527,8 @@ class MainWindow(QMainWindow):
                 self._display_base[body.name] = body.shape
 
             self._repaint_colours()
+            for name, presentation in self._presentations.items():
+                viewport.set_pickable(presentation, not self.is_locked(name))
 
         if first_body and self._presentations:
             viewport.fit_all()
@@ -3035,13 +3173,14 @@ class MainWindow(QMainWindow):
         """Show the same valid actions as the contextual bar on a right click."""
         from PySide6.QtWidgets import QMenu
 
+        self.stage.viewport.select_under(position)
         self.selection.refresh()
         actions = available_actions(self.selection)
         if not actions:
             return
         menu = QMenu(self)
         for key, label, _icon_name in actions:
-            menu.addAction(label, lambda _checked=False, k=key: self.run_action(k))
+            menu.addAction(label.replace("&", "&&"), lambda _checked=False, k=key: self.run_action(k))
         menu.exec(self.stage.viewport.mapToGlobal(position))
         menu.deleteLater()
 
@@ -3049,13 +3188,32 @@ class MainWindow(QMainWindow):
         from .tools.registry import activate
 
         self.close_tool_flyout()
+        # The selection is already current (``_on_selection``); re-reading it
+        # from the view here would drop picks a tool or script set directly.
+        if key in TRANSFORM_TOOLS and self.refuse_locked(self.selection.bodies):
+            return
         self.rail.set_active(key)
+        if key == "align_arrange":
+            key = self._align_arrange_tool()
         self._cancel_nudge()
         # A flat face already selected is an unambiguous request to sketch on
         # it, so skip the plane picker.
         if key == "sketch" and self.sketch_on_selection():
             return
         activate(self, key)
+
+    def _align_arrange_tool(self) -> str:
+        """Which Align & Arrange tab fits what is selected.
+
+        Two or more whole objects are lined up or spread out; a face involved
+        means one object goes onto another (Stack & Place); anything else
+        starts on Align, which explains what to pick.
+        """
+        from .selection import ALIGN_TOOL_FOR
+        from .tools.registry import is_tool
+
+        chosen = ALIGN_TOOL_FOR(self.selection)
+        return chosen if is_tool(chosen) else "align"
 
     def _open_tool_group(self, key: str) -> None:
         """Open one non-native flyout beside the category that requested it."""
@@ -3117,6 +3275,13 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
     def cancel_tool(self) -> None:
+        if self.stage.viewport.cancel_gizmo_drag():
+            self.set_hint("Cancelled. The part is back where it was.")
+            return
+        for panel, _anchor in list(self.stage.overlays):
+            cancel_pick = getattr(panel, "cancel_pick", None)
+            if cancel_pick is not None and cancel_pick():
+                return
         if self._tool_flyout is not None:
             self.close_tool_flyout()
             return
@@ -3144,6 +3309,8 @@ class MainWindow(QMainWindow):
         if not names:
             self.set_hint("Select a body to delete.")
             return
+        if self.refuse_locked(names):
+            return
         self.history.record("Delete")
         self.mark_dirty()
         for name in names:
@@ -3169,6 +3336,11 @@ class MainWindow(QMainWindow):
             "save": self.save_document,
             "save_as": lambda: self.save_document(ask=True),
             "open": self.show_open_menu,
+            "open_file": self.open_document,
+            "new": self.new_project,
+            "select_all": self.select_all,
+            "app_menu": self.show_app_menu,
+            "shortcuts": lambda: self.open_settings("Shortcuts"),
             "undo": self.undo,
             "redo": self.redo,
             "search": self.open_search,
@@ -3184,6 +3356,8 @@ class MainWindow(QMainWindow):
             "group": self.group_selection,
             "ungroup": self.ungroup_selection,
             "hide": self.hide_selection,
+            "lock": lambda: self.lock_selection(True),
+            "unlock": lambda: self.lock_selection(False),
             "rebuild_all": self.rebuild_everything,
             "theme": self.toggle_theme,
             "preferences": self.open_settings,
@@ -3257,6 +3431,8 @@ class MainWindow(QMainWindow):
         if not names:
             self.set_hint("Select one or more bodies or groups to turn.")
             return
+        if self.refuse_locked(names):
+            return
         if self.is_rebuilding:
             self.set_hint("Still updating the last change — try again in a moment.")
             return
@@ -3280,6 +3456,8 @@ class MainWindow(QMainWindow):
         names = self._selected_body_names()
         if not names:
             self.set_hint("Select one or more bodies or groups to drop.")
+            return
+        if self.refuse_locked(names):
             return
         offset = place_on_plate([self.document.body(n).shape for n in names])
         if abs(offset[2]) < 1e-9:
@@ -3307,6 +3485,50 @@ class MainWindow(QMainWindow):
         self.set_hint("Rebuilding every feature…")
         self.rebuilder.drop_baseline()
         self.rebuild(force=True)
+
+    def is_locked(self, name: str) -> bool:
+        from .selection import is_locked
+
+        return is_locked(self.document, name)
+
+    def set_locked(self, names, locked: bool) -> None:
+        """Lock or unlock bodies (a group locks every member)."""
+        changed = []
+        for name in self.document.expand(list(names)):
+            body = self.document.body(name)
+            if body is None or bool(body.metadata.get("locked")) == locked:
+                continue
+            if locked:
+                body.metadata["locked"] = True
+            else:
+                body.metadata.pop("locked", None)
+            changed.append(name)
+        if not changed:
+            return
+        if locked:
+            self.stage.viewport.clear_selection()
+        self.refresh_view()
+        self.browser.refresh()
+        self.mark_dirty()
+        self.refresh_context_bar()
+        verb = "Locked" if locked else "Unlocked"
+        self.set_hint(f"{verb} {', '.join(changed)}."
+                      + (" Unlock it in the model tree to change it." if locked else ""))
+
+    def lock_selection(self, locked: bool) -> None:
+        self.selection.refresh()
+        names = self.selection.items or self.browser._selected_names()
+        if not names:
+            self.set_hint("Select an object to lock.")
+            return
+        self.set_locked(names, locked)
+
+    def refuse_locked(self, names) -> bool:
+        """Say so, and return True, when any of *names* is locked."""
+        locked = [n for n in self.document.expand(list(names)) if self.is_locked(n)]
+        if locked:
+            self.set_hint(f"{', '.join(locked)} is locked. Unlock it in the model tree first.")
+        return bool(locked)
 
     def hide_selection(self) -> None:
         """Hide whatever is selected -- a group as one thing."""
@@ -3682,6 +3904,80 @@ class MainWindow(QMainWindow):
         remember_file(path)
         self.set_hint(f"Saved to {path}")
 
+    def new_project(self) -> None:
+        """Start an empty project, asking first if there is unsaved work."""
+        if self._dirty and self.document.features:
+            from PySide6.QtWidgets import QMessageBox
+
+            answer = QMessageBox.question(
+                self, "New project",
+                "Start a new project? The current model has unsaved changes, which will be lost.",
+                QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Discard:
+                return
+        self.set_document(Document("Untitled"))
+        self.refresh_view()
+        self.browser.refresh()
+        self.refresh_properties()
+        self.set_hint("New project. Pick a shape from the left to begin.")
+
+    def select_all(self) -> None:
+        """Select every visible object that is not locked."""
+        items = []
+        for kind, name in self.document.root_items():
+            names = self.document.expand([name]) if kind == "group" else [name]
+            if any(self._presentations.get(n) is not None and not self.is_locked(n) for n in names):
+                items.append(name)
+        if not items:
+            self.set_hint("Nothing to select.")
+            return
+        self.select_items(items)
+
+    def show_app_menu(self) -> None:
+        """The one menu: files, settings and help, under the top-left button."""
+        menu = self.build_app_menu()
+        button = self.top_bar.menu_button
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        menu.deleteLater()
+
+    def build_app_menu(self):
+        from PySide6.QtWidgets import QMenu
+
+        from ..core.settings import recent_files, shortcuts
+
+        keys = shortcuts()
+        menu = QMenu(self)
+        palette = self.palette_
+
+        def add(label, key, action, icon_name=None):
+            entry = menu.addAction(label, action)
+            if icon_name:
+                entry.setIcon(icon(icon_name, palette.text_muted, 16))
+            if key and keys.get(key):
+                entry.setShortcut(QKeySequence(keys[key]))
+                entry.setShortcutVisibleInContextMenu(True)
+            return entry
+
+        add("New project", "new", self.new_project, "new")
+        add("Open…", "open", self.open_document, "folder")
+        recent = recent_files()
+        if recent:
+            submenu = menu.addMenu("Open recent")
+            for path in recent:
+                submenu.addAction(os.path.basename(path), lambda p=path: self.open_file(p))
+        add("Save", "save", self.save_document, "save")
+        add("Save as…", "save_as", lambda: self.save_document(ask=True))
+        menu.addSeparator()
+        add("Import…", "import", self.import_model, "import")
+        add("Export…", "export", self.export_model, "export")
+        menu.addSeparator()
+        add("Settings…", None, self.open_settings, "settings")
+        add("Keyboard shortcuts…", None, lambda: self.open_settings("Shortcuts"), "keyboard")
+        add("Check for updates…", None, lambda: self.open_settings("Updates"), "update")
+        add("About SimpleCAD", None, self.show_about, "info")
+        return menu
+
     def show_open_menu(self) -> None:
         """Open, with recent projects listed underneath."""
         from PySide6.QtWidgets import QMenu
@@ -3844,6 +4140,7 @@ class MainWindow(QMainWindow):
         # row must still change the selection to the body.
         self.browser.show_selected(self.selection.bodies if self.selection.only_bodies else [])
         self.refresh_context_bar()
+        self.refresh_properties()
         self._probe_edge_finish()
         self._retell_open_tools()
         if self.selection.count:
@@ -3946,12 +4243,113 @@ class MainWindow(QMainWindow):
         if self.context_bar.isVisible():
             self.refresh_context_bar()
 
+    # -- properties ------------------------------------------------------
+    def _properties_subject(self):
+        """(names, low, high) for the Properties card, or None."""
+        names = [n for n in self._selected_body_names()
+                 if self.document.body(n) is not None and self.document.body(n).shape is not None]
+        if not names:
+            return None
+        low, high = _combined_bounds([self.document.body(n).shape for n in names])
+        return names, low, high
+
+    def refresh_properties(self) -> None:
+        """Show where the selection is and how big, under the model tree."""
+        card = self.browser.properties
+        subject = None if self.browser.collapsed else self._properties_subject()
+        if subject is None:
+            card.show_for(None)
+            self.stage._layout_overlays()
+            return
+        names, low, high = subject
+        rotation = None
+        if len(names) == 1:
+            from ..kernel.operations import accumulated_rotation
+            from .panels.properties_card import euler_xyz
+
+            try:
+                rotation = euler_xyz(accumulated_rotation(
+                    self.document.features, names[0], self.document.parameters))
+            except Exception:  # noqa: BLE001 - a turn that cannot be read shows as zero
+                rotation = (0.0, 0.0, 0.0)
+        items = self.selection.items
+        title = items[0] if len(items) == 1 else f"{len(names)} objects"
+        card.show_for(title, low, high, rotation,
+                      locked=any(self.is_locked(n) for n in names))
+        self.stage._layout_overlays()
+
+    def move_selection_to(self, axis: int, value: float) -> None:
+        """Properties → Position: one Move that puts the reference point at *value*."""
+        from ..kernel.operations import MoveFeature
+        from .panels.properties_card import reference_point
+
+        subject = self._properties_subject()
+        if subject is None:
+            return
+        names, low, high = subject
+        if self.refuse_locked(names):
+            return
+        if self.is_rebuilding:
+            self.set_hint("Still updating the last change — try again in a moment.")
+            self.refresh_properties()
+            return
+        delta = value - reference_point(low, high, self.browser.properties.reference_key())[axis]
+        offset = [0.0, 0.0, 0.0]
+        offset[axis] = delta
+        self._cancel_nudge()
+        self.history.record(f"Move {'XYZ'[axis]}")
+        for name in names:
+            if not self.document.fold_translation([name], tuple(offset)):
+                self.document.add_feature(MoveFeature(
+                    inputs={"body": BodyRef(name), "dx": offset[0], "dy": offset[1],
+                            "dz": offset[2]},
+                    outputs=[name]))
+        self.mark_dirty()
+        self.rebuild()
+        self.set_hint(f"Moved {', '.join(names)} {delta:+.2f} mm along {'XYZ'[axis]}.")
+
+    def resize_selection(self, axis: int, size: float, proportional: bool) -> None:
+        """Properties → Size: one Scale about the reference point."""
+        from ..kernel.operations import ScaleFeature
+        from .panels.properties_card import reference_point
+
+        subject = self._properties_subject()
+        if subject is None:
+            return
+        names, low, high = subject
+        if self.refuse_locked(names):
+            return
+        current = high[axis] - low[axis]
+        if current < 1e-9:
+            self.set_hint("This object has no size along that axis to scale.")
+            return
+        if self.is_rebuilding:
+            self.set_hint("Still updating the last change — try again in a moment.")
+            self.refresh_properties()
+            return
+        factor = size / current
+        factors = [factor] * 3 if proportional else [1.0, 1.0, 1.0]
+        factors[axis] = factor
+        pivot = list(reference_point(low, high, self.browser.properties.reference_key()))
+        self._cancel_nudge()
+        self.history.record("Resize")
+        for name in names:
+            self.document.add_feature(ScaleFeature(
+                inputs={"body": BodyRef(name), "sx": factors[0], "sy": factors[1],
+                        "sz": factors[2], "pivot": pivot},
+                outputs=[name]))
+        self.mark_dirty()
+        self.rebuild()
+        label = ("WDH"[axis])
+        self.set_hint(f"Resized {', '.join(names)}: {label} {current:.2f} → {size:.2f} mm.")
+
     def _browser_collapsed(self, collapsed: bool) -> None:
         """Remember an explicit inspector choice without treating reflow as one."""
         from ..core import settings
 
         self._browser_preferred_expanded = not collapsed
         settings.set_ui_preference("browser_expanded", not collapsed)
+        self.refresh_properties()
         self.stage._layout_overlays()
 
     def _context_bar_width(self) -> int:

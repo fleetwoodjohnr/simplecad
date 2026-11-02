@@ -160,8 +160,15 @@ def analyse_plane(face) -> PlaneInfo | None:
     BRepGProp.SurfaceProperties_s(shaped, props)
     centre = props.CentreOfMass()
 
-    direction = adaptor.Plane().Axis().Direction()
+    plane = adaptor.Plane()
+    direction = plane.Axis().Direction()
     normal = (direction.X(), direction.Y(), direction.Z())
+    # A plane's normal is its X direction crossed with its Y direction, which
+    # is the axis only for a right-handed frame. A mirrored body has
+    # left-handed planes: read from the axis alone every normal pointed into
+    # the part, and Arrange stood a mirrored copy upside down under the plate.
+    if not plane.Position().Direct():
+        normal = tuple(-v for v in normal)
     if shaped.Orientation() == TopAbs_REVERSED:
         normal = tuple(-v for v in normal)
     return PlaneInfo(

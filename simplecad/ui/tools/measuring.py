@@ -310,7 +310,7 @@ class MeasurePanel(ToolPanel):
                 else "Select an edge, a face or a body."
             )
             empty.setStyleSheet(
-                f"color:{self._palette.text_faint}; font-size:12px; "
+                f"color:{self._palette.text_faint}; font-size:{METRICS.font_size_ui}px; "
                 f"padding:{METRICS.space(3)}px 0;"
             )
             self.readings_layout.addWidget(empty)

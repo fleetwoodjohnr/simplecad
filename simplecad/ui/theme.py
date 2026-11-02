@@ -42,6 +42,7 @@ class Palette:
     accent_hover: str
     accent_press: str
     accent_soft: str        # tinted background for selected rows
+    accent_text: str        # accent used as text/icon colour on a surface
     danger: str
     warning: str
     success: str
@@ -63,109 +64,119 @@ class Palette:
 
 
 DARK = Palette(
-    bg="#0B1018",
-    surface="#111823",
-    surface_raised="#18212E",
-    surface_sunken="#0C121B",
-    border="#253247",
-    border_strong="#3A4D68",
-    text="#EAF2FF",
-    text_muted="#9AABC0",
-    text_faint="#61738A",
-    text_on_accent="#FFFFFF",
-    accent="#2F9BFF",
-    accent_hover="#55B0FF",
-    accent_press="#1E79D0",
-    accent_soft="#163452",
-    danger="#F0616D",
-    warning="#E8A33D",
-    success="#3FBF7F",
-    view_top="#1B2635",
-    view_bottom="#090E15",
-    face="#B9C2CF",
+    bg="#0F1012",
+    surface="#16171A",
+    surface_raised="#1D1F23",
+    surface_sunken="#121315",
+    border="#2A2C31",
+    border_strong="#3D4047",
+    text="#ECEDEF",
+    text_muted="#A0A4AB",
+    text_faint="#6C7078",
+    text_on_accent="#1A1206",
+    accent="#F2A93B",
+    accent_hover="#F7BC5E",
+    accent_press="#D98F22",
+    accent_soft="#33281A",
+    accent_text="#F7BC5E",
+    danger="#F25C69",
+    warning="#FF7A45",
+    success="#4CC38A",
+    view_top="#202226",
+    view_bottom="#0E0F11",
+    face="#B8BCC4",
     body_tints=(
-        "#B9C2CF",  # slate
-        "#9FB4CC",  # steel blue
-        "#A8C0AE",  # sage
-        "#CBB2A0",  # clay
-        "#CFC5A2",  # sand
-        "#B6ADC9",  # lavender
-        "#9FC3C4",  # teal
-        "#CBA9AE",  # rose
+        "#B8BCC4",  # slate
+        "#A3B1C2",  # steel
+        "#A9BFAF",  # sage
+        "#C9B4A4",  # clay
+        "#CCC4A6",  # sand
+        "#B5AFC8",  # lavender
+        "#A3C2C2",  # teal
+        "#C9ACB1",  # rose
     ),
-    edge="#263447",
-    hover="#55B0FF",
-    selected="#FF9A3D",
-    ghost="#2F9BFF",
-    grid="#172130",
-    grid_axis_x="#87505A",
-    grid_axis_y="#477765",
-    cube_box="#33445B",
-    cube_text="#EAF2FF",
+    edge="#2A2D33",
+    hover="#8EC5FF",
+    selected="#F2A93B",
+    ghost="#8EC5FF",
+    grid="#1C1E22",
+    grid_axis_x="#8A4B52",
+    grid_axis_y="#4A7A5E",
+    cube_box="#34373D",
+    cube_text="#ECEDEF",
 )
 
 LIGHT = Palette(
-    bg="#E8EEF6",
-    surface="#F6F9FC",
+    bg="#EEEEEC",
+    surface="#F6F6F4",
     surface_raised="#FFFFFF",
-    surface_sunken="#ECF2F8",
-    border="#D2DDE9",
-    border_strong="#9DB1C7",
-    text="#142033",
-    text_muted="#5E7086",
-    text_faint="#8798AB",
-    text_on_accent="#FFFFFF",
-    accent="#0A84F3",
-    accent_hover="#2999FF",
-    accent_press="#0568BF",
-    accent_soft="#DDEFFF",
-    danger="#D93F4C",
-    warning="#B7791F",
+    surface_sunken="#EFEFED",
+    border="#DCDCD8",
+    border_strong="#B5B5AF",
+    text="#1B1C1E",
+    text_muted="#5F6268",
+    text_faint="#8E9197",
+    text_on_accent="#1B1C1E",
+    accent="#E8A33A",
+    accent_hover="#F0B457",
+    accent_press="#D08A1F",
+    accent_soft="#FBEBD0",
+    accent_text="#8F5400",
+    danger="#D33A48",
+    warning="#C2410C",
     success="#1F9D5F",
-    view_top="#F8FBFF",
-    view_bottom="#CFDBE9",
-    face="#C9D2DE",
+    view_top="#FAFAF9",
+    view_bottom="#DCDDDF",
+    face="#C8CBD0",
     body_tints=(
-        "#C9D2DE",  # slate
-        "#AFC4DC",  # steel blue
-        "#B7CFBD",  # sage
-        "#DCC3B1",  # clay
-        "#DED4B1",  # sand
-        "#C5BCD8",  # lavender
-        "#AFD2D3",  # teal
-        "#DBB9BE",  # rose
+        "#C8CBD0",  # slate
+        "#B2C0D2",  # steel
+        "#B9CFBF",  # sage
+        "#DAC5B4",  # clay
+        "#DCD4B6",  # sand
+        "#C5BFD8",  # lavender
+        "#B3D2D2",  # teal
+        "#D9BCC1",  # rose
     ),
-    edge="#344457",
-    hover="#0A84F3",
-    selected="#E8730C",
-    ghost="#0A84F3",
-    grid="#C6D2DF",
-    grid_axis_x="#A86B73",
-    grid_axis_y="#67917F",
-    cube_box="#D2DEEB",
-    cube_text="#142033",
+    edge="#3A3D44",
+    hover="#2F7FE0",
+    selected="#E08A12",
+    ghost="#2F7FE0",
+    grid="#D3D4D6",
+    grid_axis_x="#B0707A",
+    grid_axis_y="#6A9A80",
+    cube_box="#DDDEE0",
+    cube_text="#1B1C1E",
 )
 
 
 @dataclass(frozen=True)
 class Metrics:
-    """Spacing, radius and type scale for the compact studio shell."""
+    """Spacing, radius and type scale for the Graphite shell.
+
+    One type scale, used everywhere: ``font_size_xs`` for badges and rail
+    labels, ``sm`` for hints and section labels, ``ui`` for dense rows and
+    numeric fields, the base size for controls, ``lg`` for panel titles and
+    ``title`` for the rare large heading.
+    """
 
     unit: int = 4
-    radius_sm: int = 8
-    radius: int = 12
-    radius_lg: int = 14
-    control_height: int = 36
-    control_height_lg: int = 40
-    font_size: int = 13
+    radius_sm: int = 6
+    radius: int = 8
+    radius_lg: int = 10
+    control_height: int = 32
+    control_height_lg: int = 36
+    font_size_xs: int = 10
     font_size_sm: int = 11
+    font_size_ui: int = 12
+    font_size: int = 13
     font_size_lg: int = 15
-    font_size_title: int = 18
+    font_size_title: int = 20
     font_family: str = field(
-        default="Inter, 'Adwaita Sans', 'Cantarell', 'Segoe UI', system-ui, sans-serif"
+        default="Inter, 'Segoe UI', 'SF Pro Text', 'Adwaita Sans', system-ui, sans-serif"
     )
     font_mono: str = field(
-        default="'JetBrains Mono', 'Source Code Pro', 'DejaVu Sans Mono', monospace"
+        default="'JetBrains Mono', 'SF Mono', Consolas, 'DejaVu Sans Mono', monospace"
     )
 
     def space(self, steps: float) -> int:
@@ -283,8 +294,10 @@ def _qt_prefers_dark() -> bool | None:
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     """Generate the application stylesheet from tokens.
 
-    Deliberately restrained: compact controls, crisp hairlines and clearly
-    layered surfaces. The 3D content remains the visual focus.
+    Graphite: neutral surfaces, hairline borders and a single amber accent, so
+    the model stays the most colourful thing on screen. Every standard control
+    gets the same four states -- hover, pressed, focus and disabled -- here,
+    once, rather than per widget.
     """
     p, m = palette, metrics
     return f"""
@@ -297,9 +310,10 @@ QWidget#Root, QMainWindow {{ background: {p.bg}; }}
 QToolTip {{
     background: {p.surface_raised};
     color: {p.text};
-    border: 1px solid {p.border};
+    border: 1px solid {p.border_strong};
     border-radius: {m.radius_sm}px;
-    padding: {m.space(1.5)}px {m.space(2.5)}px;
+    padding: {m.space(1)}px {m.space(2)}px;
+    font-size: {m.font_size_ui}px;
 }}
 
 /* ---- Surfaces ---- */
@@ -315,24 +329,33 @@ QFrame#FloatingPanel {{
 }}
 QLabel#PanelTitle {{
     font-size: {m.font_size_lg}px;
-    font-weight: 650;
-    letter-spacing: 0.15px;
+    font-weight: 600;
     color: {p.text};
 }}
 QLabel#Muted, QLabel#Hint {{ color: {p.text_muted}; font-size: {m.font_size_sm}px; }}
+QLabel#SectionLabel {{
+    color: {p.text_faint}; font-size: {m.font_size_sm}px;
+    font-weight: 600; letter-spacing: 0.8px;
+}}
 
 /* ---- Buttons ---- */
-QPushButton {{
+QPushButton, QToolButton#Segment {{
     background: {p.surface_raised};
     border: 1px solid {p.border};
     border-radius: {m.radius_sm}px;
     padding: 0 {m.space(3)}px;
     min-height: {m.control_height}px;
     color: {p.text};
+    font-weight: 500;
 }}
-QPushButton:hover  {{ background: {p.surface_sunken}; border-color: {p.border_strong}; }}
-QPushButton:pressed{{ background: {p.accent_soft}; }}
-QPushButton:disabled {{ color: {p.text_faint}; border-color: {p.border}; }}
+QPushButton:hover, QToolButton#Segment:hover {{
+    background: {p.surface_sunken}; border-color: {p.border_strong};
+}}
+QPushButton:pressed, QToolButton#Segment:pressed {{ background: {p.accent_soft}; }}
+QPushButton:focus, QToolButton#Segment:focus {{ border-color: {p.accent}; }}
+QPushButton:disabled, QToolButton#Segment:disabled {{
+    color: {p.text_faint}; border-color: {p.border}; background: {p.surface};
+}}
 QPushButton[variant="primary"] {{
     background: {p.accent};
     border: 1px solid {p.accent};
@@ -340,13 +363,16 @@ QPushButton[variant="primary"] {{
     font-weight: 600;
 }}
 QPushButton[variant="primary"]:hover   {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
-QPushButton[variant="primary"]:pressed {{ background: {p.accent_press}; }}
+QPushButton[variant="primary"]:pressed {{ background: {p.accent_press}; border-color: {p.accent_press}; }}
+QPushButton[variant="primary"]:disabled {{
+    background: {p.surface_sunken}; border-color: {p.border}; color: {p.text_faint};
+}}
 QPushButton[variant="ghost"] {{ background: transparent; border: 1px solid transparent; }}
-QPushButton[variant="ghost"]:hover {{ background: {p.surface_raised}; }}
-QPushButton:checked {{
+QPushButton[variant="ghost"]:hover {{ background: {p.surface_sunken}; }}
+QPushButton:checked, QToolButton#Segment:checked {{
     background: {p.accent_soft};
     border-color: {p.accent};
-    color: {p.accent_hover};
+    color: {p.accent_text};
 }}
 
 /* ---- Inputs ---- */
@@ -355,49 +381,101 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     color: {p.text};
     border: 1px solid {p.border};
     border-radius: {m.radius_sm}px;
-    padding: 0 {m.space(2.5)}px;
+    padding: 0 {m.space(2)}px;
     min-height: {m.control_height}px;
     selection-background-color: {p.accent};
     selection-color: {p.text_on_accent};
 }}
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {{
+    border-color: {p.border_strong};
+}}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-    border: 2px solid {p.accent};
+    border: 1px solid {p.accent};
+    background: {p.surface_raised};
 }}
 QLineEdit[invalid="true"] {{ border: 1px solid {p.danger}; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
-    color: {p.text_muted};
+    color: {p.text_faint}; background: {p.surface};
+}}
+QLineEdit#ValueField {{
+    font-family: {m.font_mono};
+    font-size: {m.font_size_ui}px;
+    font-weight: 600;
 }}
 QComboBox::drop-down {{ border: none; width: {m.space(6)}px; }}
+QComboBox::down-arrow {{ image: url("{_arrow_file(p.text_muted)}"); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{
     background: {p.surface_raised};
-    border: 1px solid {p.border};
+    border: 1px solid {p.border_strong};
     border-radius: {m.radius_sm}px;
     padding: {m.space(1)}px;
     outline: none;
+    selection-background-color: {p.accent_soft};
+    selection-color: {p.text};
 }}
+QCheckBox, QRadioButton {{ spacing: {m.space(2)}px; }}
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 16px; height: 16px;
+    border: 1px solid {p.border_strong};
+    background: {p.surface_sunken};
+}}
+QCheckBox::indicator {{ border-radius: 4px; }}
+QRadioButton::indicator {{ border-radius: 8px; }}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {p.accent}; }}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+    background: {p.accent}; border-color: {p.accent};
+}}
+QCheckBox:disabled, QRadioButton:disabled {{ color: {p.text_faint}; }}
+QSlider::groove:horizontal {{
+    height: 4px; border-radius: 2px; background: {p.border};
+}}
+QSlider::sub-page:horizontal {{ background: {p.accent}; border-radius: 2px; }}
+QSlider::handle:horizontal {{
+    width: 14px; height: 14px; margin: -6px 0; border-radius: 7px;
+    background: {p.surface_raised}; border: 1px solid {p.border_strong};
+}}
+QSlider::handle:horizontal:hover {{ border-color: {p.accent}; }}
+
+/* ---- Tabs ---- */
+QTabWidget::pane {{ border: 1px solid {p.border}; border-radius: {m.radius}px; top: -1px; }}
+QTabBar::tab {{
+    background: transparent; color: {p.text_muted};
+    padding: {m.space(1.5)}px {m.space(3)}px; border: none;
+    border-bottom: 2px solid transparent;
+}}
+QTabBar::tab:hover {{ color: {p.text}; }}
+QTabBar::tab:selected {{ color: {p.text}; border-bottom: 2px solid {p.accent}; }}
 
 /* ---- Lists / trees ---- */
-QTreeView, QListView {{
+QTreeView, QListView, QTableView {{
     background: transparent;
     border: none;
     outline: none;
     show-decoration-selected: 1;
 }}
 QTreeView::item, QListView::item {{
-    min-height: {m.space(8)}px;
+    min-height: {m.space(7)}px;
     border-radius: {m.radius_sm}px;
     padding: {m.space(0.5)}px {m.space(1.5)}px;
 }}
 QTreeView::item:hover, QListView::item:hover {{ background: {p.surface_sunken}; }}
+QTreeView::branch {{ background: transparent; }}
+QTreeView::branch:selected {{ background: {p.accent_soft}; }}
+QTreeWidget#BodiesTree::item {{ border-radius: 0px; }}
 QTreeView::item:selected, QListView::item:selected {{
     background: {p.accent_soft};
     color: {p.text};
 }}
+QHeaderView::section {{
+    background: transparent; color: {p.text_faint}; border: none;
+    border-bottom: 1px solid {p.border}; padding: {m.space(1)}px {m.space(2)}px;
+    font-size: {m.font_size_sm}px; font-weight: 600;
+}}
 
 /* ---- Scrollbars ---- */
-QScrollBar:vertical, QScrollBar:horizontal {{ background: transparent; width: 10px; height: 10px; margin: 0; }}
+QScrollBar:vertical, QScrollBar:horizontal {{ background: transparent; width: 8px; height: 8px; margin: 0; }}
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
-    background: {p.border_strong}; border-radius: 5px; min-height: 32px; min-width: 32px;
+    background: {p.border_strong}; border-radius: 4px; min-height: 32px; min-width: 32px;
 }}
 QScrollBar::handle:hover {{ background: {p.text_faint}; }}
 QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{
@@ -407,19 +485,71 @@ QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::su
 /* ---- Menus ---- */
 QMenu {{
     background: {p.surface_raised};
-    border: 1px solid {p.border};
+    border: 1px solid {p.border_strong};
     border-radius: {m.radius}px;
-    padding: {m.space(1.5)}px;
+    padding: {m.space(1)}px;
 }}
 QMenu::item {{
-    padding: {m.space(2)}px {m.space(4)}px;
+    padding: {m.space(1.5)}px {m.space(6)}px {m.space(1.5)}px {m.space(3)}px;
     border-radius: {m.radius_sm}px;
-    min-width: 160px;
+    min-width: 180px;
 }}
 QMenu::item:selected {{ background: {p.accent_soft}; }}
-QMenu::separator {{ height: 1px; background: {p.border}; margin: {m.space(1.5)}px {m.space(2)}px; }}
+QMenu::item:disabled {{ color: {p.text_faint}; }}
+QMenu::separator {{ height: 1px; background: {p.border}; margin: {m.space(1)}px {m.space(2)}px; }}
+
+/* ---- Dialogs ---- */
+QDialog {{ background: {p.surface}; }}
+QMessageBox QLabel {{ color: {p.text}; }}
 
 /* ---- Misc ---- */
 QSplitter::handle {{ background: transparent; }}
 QToolTip, QMenu, QFrame#FloatingPanel {{ font-size: {m.font_size}px; }}
 """
+
+
+def _arrow_file(colour: str) -> str:
+    """A chevron for combo boxes, written once per colour.
+
+    Qt style sheets take images only by URL, and a styled combo box draws no
+    arrow at all without one -- every drop-down looked like a text field.
+    """
+    import os
+    import tempfile
+
+    from .icons import svg
+
+    folder = os.path.join(tempfile.gettempdir(), f"simplecad-icons-{os.getuid() if hasattr(os, 'getuid') else 0}")
+    path = os.path.join(folder, f"chevron-{colour.lstrip('#')}.svg")
+    if not os.path.exists(path):
+        os.makedirs(folder, exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(svg("chevron_down", colour, 12, 2.0))
+    return path.replace(os.sep, "/")
+
+
+_FONTS: list[str] | None = None
+
+
+def load_fonts() -> list[str]:
+    """Register the bundled Inter and JetBrains Mono with Qt.
+
+    Bundling is what makes the type identical on Linux, Windows and macOS --
+    without it the stack above falls back to whatever each desktop ships.
+    Returns the families that registered; a missing file is skipped, never fatal.
+    """
+    global _FONTS
+    if _FONTS is not None:
+        return _FONTS
+    from pathlib import Path
+
+    from PySide6.QtGui import QFontDatabase
+
+    folder = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+    families: list[str] = []
+    for path in sorted(folder.glob("*.ttf")):
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        if font_id >= 0:
+            families.extend(QFontDatabase.applicationFontFamilies(font_id))
+    _FONTS = sorted(set(families))
+    return _FONTS

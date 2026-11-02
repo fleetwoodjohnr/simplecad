@@ -28,11 +28,16 @@ from ...kernel.section_replace import SectionReplaceFeature
 from ...kernel.thread_specs import (
     clearance_presets, effective_clearance_for, recommend,
 )
+from ..icons import icon
 from ..theme import METRICS
 from ..widgets.controls import AnchorGrid, GhostButton, LabeledField, ValueField
 from .base import FeaturePreviewController, ToolPanel
 from ...kernel.vent import VentCutFeature
 from .registry import register_tool
+
+#: How near, in screen pixels, a dragged part is pulled onto another part's
+#: edges, centres, corners and holes.
+SNAP_REACH_PX = 10.0
 
 
 #: Preview requests are numbered across the whole session rather than per panel.
@@ -399,6 +404,7 @@ class _TransformPanel(_SelectionTool):
     frame_choices = ("World axes", "Local axes")
     anchor_choices = ("Centre", "Minimum corner", "Maximum corner")
     angle_presets = (5.0, 15.0, 45.0, 90.0)
+    step_presets = (0.1, 0.5, 1.0, 5.0, 10.0)
     #: Arrow keys step this far, in mm, along the axis nearest the screen.
     arrow_step = 0.25
     #: Bodies with more faces than this are not overlap-checked after a move.
@@ -457,6 +463,8 @@ class _TransformPanel(_SelectionTool):
         for key, label, dimension in self.field_specs:
             field = self.add_field(key, label, 0.0, dimension)
             field.edited_live.connect(lambda _value: self.preview())
+        if self.mode == "move":
+            self._build_step_presets()
         if self.mode == "rotate":
             self._build_angle_presets()
             self._build_pivot_controls()
@@ -514,6 +522,36 @@ class _TransformPanel(_SelectionTool):
             self._preset_group.addButton(button)
             layout.addWidget(button)
         self.add_widget(row)
+
+    def _build_step_presets(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+
+        self.add_section("Snap step")
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(METRICS.space(1))
+        self._step_group = QButtonGroup(row)
+        self._step_group.setExclusive(True)
+        for value in self.step_presets:
+            button = QPushButton(f"{value:g}")
+            button.setCheckable(True)
+            button.setChecked(abs(value - self._move_step) < 1e-9)
+            button.setToolTip(f"Drags land on a {value:g} mm grid (Ctrl: a tenth of it)")
+            button.clicked.connect(lambda _checked=False, v=value: self.set_move_step(v))
+            self._step_group.addButton(button)
+            layout.addWidget(button)
+        self.add_widget(row)
+
+    def set_move_step(self, value: float) -> None:
+        from ...core.settings import set_number_preference
+
+        set_number_preference("move_step", float(value))
+        self._move_step = float(value)
+        self._translation_geometry = None
+        for button in self._step_group.buttons():
+            button.setChecked(button.text() == f"{value:g}")
+        self._describe()
 
     def set_angle_step(self, value: float) -> None:
         from ...core.settings import set_number_preference
@@ -932,10 +970,11 @@ class _TransformPanel(_SelectionTool):
             presentations,
             allow_translation=self.mode == "move",
             allow_rotation=self.mode == "rotate",
-            # Dragging the part itself is the plane move. OCCT's plane handles
-            # are invisible yet own most of the space between the arrows, and
-            # left the Y arrow almost impossible to grab. X / Y / Z and
-            # Shift+X / Y / Z lock an axis or a plane during any drag instead.
+            # OCCT's plane parts are invisible until hovered and own most of
+            # the space between the arrows, which left the Y arrow almost
+            # impossible to grab. The window draws its own XY / XZ / YZ
+            # squares instead (gizmo.plane_handles), and the part itself drags
+            # on the ground.
             allow_planes=False,
             allow_scale=False,
             pivot=pivot,
@@ -1038,10 +1077,9 @@ class _TransformPanel(_SelectionTool):
         source, targets, pivot, anchor = self._translation_geometry
         anchor = anchor if world else to_frame(anchor, frame)
         base = self._base_delta_components()
-        capture = max(
-            0.05,
-            min(1.0, self.window_.stage.viewport.mm_per_pixel(pivot) * 10.0),
-        )
+        # Ten pixels on screen, however far out the camera is. It used to be
+        # capped at 1 mm, which zoomed out was a pixel or two and never caught.
+        capture = max(0.05, self.window_.stage.viewport.mm_per_pixel(pivot) * SNAP_REACH_PX)
         release = capture * 1.6
         step = self._move_step / 10.0 if fine else self._move_step
         output = list(values)
@@ -1269,12 +1307,22 @@ class _TransformPanel(_SelectionTool):
         self._clear_gizmo_feedback()
         self.window_.detach_gizmo()
 
+    def cancel_pick(self) -> bool:
+        """Esc while picking a pivot: stop picking, keep the tool. True if it was.
+
+        Called by the window's Esc before anything else, because the window-wide
+        shortcut consumed the key before this panel ever saw it.
+        """
+        if not self._picking_pivot:
+            return False
+        self._end_pivot_pick()
+        if self._pivot_index() == 3 and self._picked_axis is None:
+            self.pivot_choice.setCurrentIndex(0)
+        self._attach_gizmo()
+        return True
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == Qt.Key_Escape and self._picking_pivot:
-            self._end_pivot_pick()
-            if self._pivot_index() == 3 and self._picked_axis is None:
-                self.pivot_choice.setCurrentIndex(0)
-            self._attach_gizmo()
+        if event.key() == Qt.Key_Escape and self.cancel_pick():
             return
         super().keyPressEvent(event)
 
@@ -1499,11 +1547,19 @@ class RotatePanel(_TransformPanel):
 @register_tool("concentric")
 @register_tool("center")
 @register_tool("place_on_face")
+@register_tool("align_stack")
 class AlignPanel(_SelectionTool):
-    """A role-led, anchored placement workflow with a live face frame."""
+    """Stack & Place: one object onto a face of another, with a live face frame.
 
-    title = "Align"
+    Stack, Center, Concentric, Place on Face and the old Align & Stack all open
+    this one panel, on the operation that was clicked.
+    """
+
+    title = "Stack & Place"
     confirm_label = "Done"
+    #: Which operation each key opens on. Others follow ``suggest``.
+    REQUESTED = {"stack": "stack", "align_stack": "stack", "center": "center",
+                 "concentric": "concentric"}
 
     OPERATIONS = (
         ("stack", "Stack"),
@@ -1546,13 +1602,20 @@ class AlignPanel(_SelectionTool):
             self._moving, self._target = pair
             self._moving_name = self._moving.body
         self.operation = "stack"
+        requested = self.REQUESTED.get(getattr(self.window_, "requested_tool", ""))
+        if not getattr(self, "fixed_operation", False):
+            from .aligning import POSITION_TABS
+            from .base import ToolTabs
+
+            self.add_widget(ToolTabs(self.window_, POSITION_TABS, "align"))
         if pair is not None:
             moving, target = pair
-            self.operation = suggest(moving.shape, target.shape)
+            self.operation = requested or suggest(moving.shape, target.shape)
             self.set_subtitle(
                 "Choose the two anchors, then drag or type an exact offset."
             )
         else:
+            self.operation = requested or "stack"
             self.set_subtitle(
                 "1. Pick the object to move.  2. Pick a flat target face."
             )
@@ -1625,7 +1688,45 @@ class AlignPanel(_SelectionTool):
             for key in ("horizontal_gap", "vertical_gap"):
                 self.fields[key].edited_live.connect(lambda _v: self._edge_changed())
 
-        self.add_section("Anchor to anchor")
+        commit_on_return = bool(getattr(self, "fixed_operation", False))
+        self.add_field("offset", "Normal gap", 0.0, commit_on_return=commit_on_return)
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(METRICS.space(1))
+        self.rotate_quarter = GhostButton("Rotate 90°")
+        self.rotate_quarter.clicked.connect(self._rotate_quarter)
+        self.flip = GhostButton("Flip")
+        self.flip.setCheckable(True)
+        self.flip.clicked.connect(lambda: self.preview())
+        self.swap = GhostButton("Swap")
+        self.swap.setToolTip("Swap which object moves and which face it goes onto")
+        self.swap.setEnabled(pair is not None)
+        self.swap.clicked.connect(self._swap_pair)
+        for button in (self.rotate_quarter, self.flip, self.swap):
+            actions_layout.addWidget(button)
+        self.add_widget(actions)
+
+        # The anchor grid and the signed U/V offsets do what the face-edge
+        # distances above already do, another way. Kept for those who use
+        # them, behind one click, so the panel leads with one method.
+        # Section Replace has no edge distances, so it shows them outright.
+        if getattr(self, "fixed_operation", False):
+            more_layout = None
+        else:
+            self.more_toggle = GhostButton("More placement options")
+            self.more_toggle.setCheckable(True)
+            self.more_toggle.setIcon(icon("chevron_down", self._palette.text_muted, 14))
+            self.add_widget(self.more_toggle)
+            self.more = QWidget()
+            more_layout = QVBoxLayout(self.more)
+            more_layout.setContentsMargins(0, 0, 0, 0)
+            more_layout.setSpacing(METRICS.space(1.5))
+            self.more.hide()
+            self.more_toggle.toggled.connect(self._show_more)
+            self.add_widget(self.more)
+
+        self.add_section("Anchor to anchor", into=more_layout)
         anchor_row = QWidget()
         self.anchor_row = anchor_row
         anchor_layout = QHBoxLayout(anchor_row)
@@ -1641,34 +1742,23 @@ class AlignPanel(_SelectionTool):
         target_column.addWidget(self.target_anchor)
         anchor_layout.addLayout(moving_column)
         anchor_layout.addLayout(target_column)
-        self.add_widget(anchor_row)
+        self.add_widget(anchor_row, into=more_layout)
         self.moving_anchor.changed.connect(lambda _value: self._anchor_changed())
         self.target_anchor.changed.connect(lambda _value: self._anchor_changed())
 
-        self.add_section("Signed face offsets")
+        self.add_section("Signed face offsets", into=more_layout)
         self.direction_hint = QLabel("←  −U / Left     Right / +U  →\n↓  −V / Down       Up / +V  ↑")
         self.direction_hint.setAlignment(Qt.AlignCenter)
         self.direction_hint.setStyleSheet(
             f"color:{self._palette.text_muted}; padding:5px;"
         )
-        self.add_widget(self.direction_hint)
-        commit_on_return = bool(getattr(self, "fixed_operation", False))
-        self.add_field("u", "U  (+ right)", 0.0, commit_on_return=commit_on_return)
-        self.add_field("v", "V  (+ up)", 0.0, commit_on_return=commit_on_return)
-        self.add_field("offset", "Normal gap", 0.0, commit_on_return=commit_on_return)
+        self.add_widget(self.direction_hint, into=more_layout)
+        self.add_field("u", "U  (+ right)", 0.0, commit_on_return=commit_on_return,
+                       into=more_layout)
+        self.add_field("v", "V  (+ up)", 0.0, commit_on_return=commit_on_return,
+                       into=more_layout)
         self.add_field("rotation", "Rotate about normal", 0.0, Dimension.ANGLE,
-                       commit_on_return=commit_on_return)
-        self.rotate_quarter = GhostButton("Rotate 90°")
-        self.rotate_quarter.clicked.connect(self._rotate_quarter)
-        self.add_widget(self.rotate_quarter)
-        self.flip = GhostButton("Flip")
-        self.flip.setCheckable(True)
-        self.flip.clicked.connect(lambda: self.preview())
-        self.add_widget(self.flip)
-        self.swap = GhostButton("Swap moving / target")
-        self.swap.setEnabled(pair is not None)
-        self.swap.clicked.connect(self._swap_pair)
-        self.add_widget(self.swap)
+                       commit_on_return=commit_on_return, into=more_layout)
         for key in ("u", "v"):
             self.fields[key].edited_live.connect(lambda _value: self._anchor_changed())
         self.fields["offset"].edited_live.connect(lambda _value: self.preview())
@@ -1845,12 +1935,18 @@ class AlignPanel(_SelectionTool):
             self._capture_role = None
             self.warn("")
 
+    def _show_more(self, shown: bool) -> None:
+        self.more.setVisible(shown)
+        self.more_toggle.setIcon(icon("chevron_up" if shown else "chevron_down",
+                                      self._palette.text_muted, 14))
+        self.relayout()
+
     def _refresh_roles(self) -> None:
         self.moving_status.setText(
-            f"●  {self._moving_name or 'Moving object'}"
+            f"Moving:  {self._moving_name or '—'}"
         )
         self.target_status.setText(
-            f"◆  {self._target.body if self._target else 'Target face'}"
+            f"Onto:  {self._target.body if self._target else '—'}"
         )
         self.swap.setEnabled(self._pair() is not None)
         self.next_face.setEnabled(bool(self._moving_name))
@@ -3140,20 +3236,6 @@ class AlignThreadedPanel(_ThreadTool):
         self.window_.mark_dirty()
         self.window_.rebuild()
         self.window_.cancel_tool()
-
-
-@register_tool("align_stack")
-class AlignAndStackPanel(AlignPanel):
-    """Stack, with the offset field to hand -- the spec's *Align & Stack*."""
-
-    title = "Align & stack"
-
-    def build(self) -> None:
-        super().build()
-        self._choose("stack")
-        self.set_subtitle(
-            self.subtitle.text() + "  Set an offset to leave a gap."
-        )
 
 
 @register_tool("threaded_connection")

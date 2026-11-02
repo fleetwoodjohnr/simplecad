@@ -361,6 +361,59 @@ def _has_parameters(model: SelectionModel) -> bool:
     )
 
 
+def is_locked(document, name) -> bool:
+    """Whether a body is locked against picking, moving and deleting.
+
+    Stored in the body's own metadata, which every project format version
+    already saves and restores, so a lock needs no file-format change and an
+    older SimpleCAD simply ignores it.
+    """
+    body = document.body(str(name))
+    return bool(body is not None and body.metadata.get("locked"))
+
+
+def _locked(model: SelectionModel) -> bool:
+    return any(is_locked(model.document, name) for name in model.bodies)
+
+
+def _lockable(model: SelectionModel) -> bool:
+    return _bodies(model) and not _locked(model)
+
+
+def _owners(model: SelectionModel) -> bool:
+    """Any pick that belongs to a body: a face or edge moves its whole body.
+
+    Move, Rotate and Scale already act on the owner of whatever is picked, so
+    hiding them until the user discovers how to select a *whole* body was the
+    single most common "how do I move this?" stumble.
+    """
+    return bool(model.bodies)
+
+
+def align_tool_for(model: SelectionModel) -> str:
+    """The Align & Arrange tab that fits the selection.
+
+    Two or more whole objects: line them up or spread them out (Align). A face
+    in the selection: put one thing onto another (Stack & Place). Several
+    objects and a face: pattern them onto it (Arrange).
+    """
+    faces = model.faces()
+    if faces:
+        return "arrange" if len(model.bodies) >= 3 and _arrangeable(model) else "align"
+    if model.only_bodies and len(model.items) >= 2:
+        return "align_bodies"
+    return "align"
+
+
+#: Kept as a callable name for the window's router.
+ALIGN_TOOL_FOR = align_tool_for
+
+#: What stays on offer while a locked body is selected: nothing that moves,
+#: reshapes or removes it.
+SAFE_WHEN_LOCKED = frozenset({"unlock", "measure", "duplicate", "colour", "hide",
+                              "group", "ungroup"})
+
+
 def _one_body(model: SelectionModel) -> bool:
     return model.only_bodies and len(model.bodies) == 1
 
@@ -412,6 +465,17 @@ def _arrangeable(model: SelectionModel) -> bool:
     return len(moving) >= (1 if target is not None else 2)
 
 
+def _several_objects(model: SelectionModel) -> bool:
+    """Two or more whole objects: the Align tab's subject."""
+    return model.only_bodies and len(model.items) >= 2
+
+
+def _arrange_on_face(model: SelectionModel) -> bool:
+    """Two or more objects and the face they go on. One object and a face is
+    Place on Face; objects alone are Align & Arrange."""
+    return _arrangeable(model) and bool(model.faces()) and len(model.bodies) >= 3
+
+
 def arrangement_for(model: SelectionModel):
     """The newest arrangement that placed the first selected object, if any."""
     if not model.picks:
@@ -457,23 +521,26 @@ def texture_features(model: SelectionModel) -> list:
 
 
 CONTEXT_ACTIONS = (
+    ("unlock", "Unlock", "unlock", _locked),
     ("edit_edge_finish", "Edit fillet / chamfer", "fillet", _has_edge_finish),
     ("edit_face_texture", "Edit texture", "texture", texture_features),
     ("remove_face_texture", "Remove texture", "trash", texture_features),
-    # -- relationships between two parts, which are the most specific reading
+    # -- relationships between two parts, which are the most specific reading.
+    # One way in for each: Stack leads for two flat faces and Align & Arrange
+    # holds Center and the rest; Center, Align & Stack and Section Replace
+    # used to sit here too, five buttons for one panel.
     ("edit_joint", "Edit joint", "clip", _has_joint),
+    ("stack", "Stack", "stack", _two_planar_faces),
+    ("align_arrange", "Align & Arrange", "align", _two_planar_faces),
     ("clip_joint", "Joint", "clip", _two_planar_faces),
     ("edit_hinge", "Edit hinge", "rotate", _has_hinge),
     ("hinge", "Hinge", "rotate", _hinge_ready),
     ("align_threaded", "Align & Thread", "thread", _threadable_pair),
-    ("threaded_connection", "Create Threaded Connection", "thread", _threadable_pair),
+    ("threaded_connection", "Threaded pair", "thread", _threadable_pair),
     ("matching_part", "Create Matching Part", "thread", _has_a_thread),
-    ("concentric", "Concentric", "concentric", _two_round_faces),
-    ("stack", "Stack", "stack", _two_planar_faces),
-    ("align_stack", "Align & Stack", "align", _two_planar_faces),
-    ("center", "Center", "align", _two_planar_faces),
+    ("concentric", "Concentric", "concentric",
+     lambda m: _two_round_faces(m) and not _threadable_pair(m)),
     ("place_on_face", "Place on Face", "align", _body_and_target_face),
-    ("section_replace", "Section Replace", "cut", _section_replaceable),
     # -- a face
     #
     # Pull answers for round faces too, and leads on them. Dragging the side of
@@ -486,7 +553,7 @@ CONTEXT_ACTIONS = (
      )),
     ("thread", "Thread", "thread",
      lambda m: len(m.round_faces()) == 1 and m.count == 1),
-    ("hole", "Hole", "hole", lambda m: len(m.planar_faces()) >= 1),
+    ("hole", "Hole", "hole", lambda m: len(m.planar_faces()) >= 1 and len(m.bodies) == 1),
     ("sketch", "Sketch on face", "sketch",
      lambda m: len(m.planar_faces()) == 1 and m.count == 1),
     ("text", "Add text", "text",
@@ -495,7 +562,7 @@ CONTEXT_ACTIONS = (
      lambda m: m.count == 1 and (
          len(m.planar_faces()) == 1 or len(m.round_faces()) == 1
      )),
-    ("shell", "Hollow", "shell", lambda m: len(m.planar_faces()) >= 1),
+    ("shell", "Hollow", "shell", lambda m: len(m.planar_faces()) >= 1 and len(m.bodies) == 1),
     # Below the face actions on purpose: threading a face to match something
     # else is a real thing to want, but not more likely than pulling it.
     ("matching_part", "Create Matching Part", "thread", _matchable_target),
@@ -506,20 +573,23 @@ CONTEXT_ACTIONS = (
     ("subtract", "Subtract", "subtract", _combinable),
     ("join", "Join", "union", _combinable),
     ("intersect", "Intersect", "intersect", _combinable),
-    # -- whole objects
-    ("arrange", "Arrange", "pattern", _arrangeable),
+    # -- whole objects: several of them line up, or go onto a face together
+    ("align_arrange", "Align & Arrange", "align", _several_objects),
+    ("arrange", "Arrange", "pattern", _arrange_on_face),
     ("edit_arrange", "Edit arrangement", "pattern", _has_arrangement),
     ("group", "Group", "group", _groupable),
-    ("move", "Move", "move", _bodies),
-    ("rotate", "Rotate", "rotate", _bodies),
-    ("scale", "Scale", "scale", _bodies),
+    ("move", "Move", "move", _owners),
+    ("rotate", "Rotate", "rotate", _owners),
+    ("scale", "Scale", "scale", _owners),
     ("split", "Split", "split", _one_body),
     ("edit_parameters", "Edit parameters", "settings", _has_parameters),
     ("ungroup", "Ungroup", "ungroup", _grouped),
     ("duplicate", "Duplicate", "duplicate", _bodies),
+    ("mirror", "Mirror", "mirror", _bodies),
     ("colour", "Colour…", "colour", _bodies),
     ("measure", "Measure", "measure", lambda m: m.count >= 1),
     ("hide", "Hide", "eye_off", _bodies),
+    ("lock", "Lock", "lock", _lockable),
     ("delete", "Delete", "trash", _bodies),
     # One-click print preparation. After Delete so the bar keeps its everyday
     # actions in view; they are always in the overflow and the right-click menu.
@@ -538,8 +608,9 @@ def available_actions(model: SelectionModel) -> list[tuple[str, str, str]]:
     truncating here is what used to make the bar look half-loaded, because the
     caller had no way to tell a short list from a cut-off one.
     """
+    locked = _locked(model)
     return [
         (key, label, icon)
         for key, label, icon, predicate in CONTEXT_ACTIONS
-        if predicate(model)
+        if (not locked or key in SAFE_WHEN_LOCKED) and predicate(model)
     ]

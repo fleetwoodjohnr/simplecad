@@ -24,7 +24,6 @@ def _find_handle(viewport, centre, want_axis: int):
     onto the neighbouring plane handle, and that drag is not axis-locked.
     """
     from PySide6.QtCore import QPoint
-    from PySide6.QtWidgets import QApplication
     from OCP.AIS import AIS_Manipulator, AIS_MM_Translation
 
     context = viewport.context
@@ -34,7 +33,10 @@ def _find_handle(viewport, centre, want_axis: int):
     for dx in range(-160, 161, 3):
         for dy in range(-160, 161, 3):
             point = QPoint(round(cx + dx), round(cy + dy))
-            if QApplication.widgetAt(viewport.mapToGlobal(point)) is not viewport:
+            # Covered by a card? Asked of the stage in its own coordinates:
+            # global positions are unreliable without a window manager.
+            stage = viewport.parentWidget()
+            if stage is not None and stage.childAt(viewport.mapTo(stage, point)) is not viewport:
                 continue
             context.MoveTo(*viewport._device_pos(point), viewport.view, False)
             # The manipulator keeps its last mode after the cursor leaves it.
@@ -156,6 +158,97 @@ def main() -> int:
                            for point in (grab, end))
             REPORT["part_drag_cursor"] = tuple(round(there[i] - here[i], 2) for i in range(3))
             REPORT["perspective"] = viewport.is_perspective()
+
+            # v0.3: a plane square moves along its two axes only. Move stays
+            # open and re-attaches once the last drag's rebuild has landed.
+            def reattached():
+                for _ in range(40):
+                    if viewport.gizmo is not None and viewport.gizmo.active:
+                        return True
+                    QTest.qWait(100)
+                return False
+
+            reattached()
+            gizmo = viewport.gizmo
+            squares = dict(gizmo.plane_handles()) if gizmo is not None else {}
+            REPORT["plane_squares"] = sorted(squares)
+            normal = 1 if 1 in squares else (sorted(squares) or [None])[0]
+            if normal is not None:
+                corners = squares[normal]
+                start = QPoint(round(sum(x for x, _ in corners) / 4 / ratio),
+                               round(sum(y for _, y in corners) / 4 / ratio))
+                before_plane = bounding_box(window.document.bodies["Block"].shape)[0]
+                QTest.mouseMove(viewport, start)
+                QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+                REPORT["plane_constraint"] = viewport.gizmo.constraint if viewport.gizmo else None
+                for step in range(1, 9):
+                    QTest.mouseMove(viewport, QPoint(start.x() + 5 * step, start.y() + 3 * step))
+                QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier,
+                                   QPoint(start.x() + 40, start.y() + 24))
+                window.wait_for_rebuild()
+                after_plane = bounding_box(window.document.bodies["Block"].shape)[0]
+                REPORT["plane_moved"] = tuple(round(after_plane[i] - before_plane[i], 3)
+                                              for i in range(3))
+                REPORT["plane_normal"] = normal
+
+            # Esc mid-drag puts the part back and keeps the tool.
+            reattached()
+            low, high = bounding_box(window.document.bodies["Block"].shape)
+            centre = [(a + b) / 2 for a, b in zip(low, high)]
+            handle = _find_handle(viewport, centre, want_axis=0)
+            features = len(window.document.features)
+            if handle is not None:
+                QTest.mouseMove(viewport, handle)
+                QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
+                for step in range(1, 7):
+                    QTest.mouseMove(viewport, QPoint(handle.x() + 8 * step, handle.y()))
+                REPORT["esc_dragging_before"] = bool(viewport.gizmo and viewport.gizmo.dragging)
+                QTest.keyClick(viewport, Qt.Key_Escape)
+                REPORT["esc_nav_after"] = viewport._nav.name
+                QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier,
+                                   QPoint(handle.x() + 48, handle.y()))
+                window.wait_for_rebuild()
+                REPORT["esc_detail"] = (len(window.document.features) - features, tuple(
+                    round(a - b, 3) for a, b in zip(
+                        bounding_box(window.document.bodies["Block"].shape)[0], low)))
+                REPORT["esc_restored"] = (
+                    bounding_box(window.document.bodies["Block"].shape)[0] == low
+                    and len(window.document.features) == features
+                )
+                REPORT["esc_kept_tool"] = viewport.gizmo is not None and viewport.gizmo.active
+
+            # Two bodies drag together, as one step.
+            window.add_feature(BoxFeature(inputs={"width": 20, "depth": 20, "height": 20,
+                                                  "x": 60}, outputs=["Second"]))
+            window.wait_for_rebuild()
+            window.cancel_tool()
+            window.select_items(["Block", "Second"])
+            viewport.fit_all()
+            QTest.qWait(1200)               # the camera sweeps; let it land
+            window.activate_tool("move")
+            REPORT["two_bodies_gizmo"] = reattached()
+            QTest.qWait(300)
+            starts = {n: bounding_box(window.document.bodies[n].shape)[0]
+                      for n in ("Block", "Second")}
+            shapes = [window.document.bodies[n].shape for n in ("Block", "Second")]
+            lows = [bounding_box(s)[0] for s in shapes]
+            highs = [bounding_box(s)[1] for s in shapes]
+            centre = [(min(lo[i] for lo in lows) + max(hi[i] for hi in highs)) / 2 for i in range(3)]
+            handle = _find_handle(viewport, centre, want_axis=0)
+            REPORT["two_bodies_handle"] = handle is not None
+            if handle is not None:
+                axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
+                pixels = 15.0 / mm_per_pixel / ratio
+                end = QPoint(round(handle.x() + axis[0] * pixels), round(handle.y() + axis[1] * pixels))
+                QTest.mouseMove(viewport, handle)
+                QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
+                QTest.mouseMove(viewport, end)
+                QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+                window.wait_for_rebuild()
+                REPORT["two_bodies_moved"] = tuple(
+                    round(bounding_box(window.document.bodies[n].shape)[0][0] - starts[n][0], 2)
+                    for n in ("Block", "Second"))
+                REPORT["two_bodies_label"] = window.history.undo_label
             viewport.fit_all()
             window.set_hint("Dragged the gizmo 25 mm along X")
 
@@ -181,6 +274,13 @@ def main() -> int:
         # Within the 1 mm step snapping of where the cursor went.
         and all(abs(a - b) <= 0.5 + 1e-6 for a, b in zip(
             REPORT.get("part_drag_moved", (9, 9, 9)), REPORT.get("part_drag_cursor", (0, 0, 0))))
+        # v0.3: plane squares, Esc, and two bodies together.
+        and REPORT.get("plane_constraint") == ("plane", REPORT.get("plane_normal"))
+        and REPORT.get("plane_moved", (1, 1, 1))[REPORT.get("plane_normal", 0)] == 0.0
+        and any(abs(v) > 1.0 for v in REPORT.get("plane_moved", (0, 0, 0)))
+        and REPORT.get("esc_restored") and REPORT.get("esc_kept_tool")
+        and len(set(REPORT.get("two_bodies_moved", (0, 1)))) == 1
+        and abs(REPORT.get("two_bodies_moved", (0, 0))[0] - 15.0) < 2.0
     )
     print("VERDICT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

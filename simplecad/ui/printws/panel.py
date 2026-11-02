@@ -61,7 +61,7 @@ class FindingRow(QWidget):
         text.setMinimumHeight(text.heightForWidth(self._text_width))
         text.setStyleSheet(
             f"color:{colour if finding.severity is not Severity.OK else palette.text_muted};"
-            "font-size:12px;"
+            f"font-size:{METRICS.font_size_ui}px;"
         )
         layout.addWidget(text, 1)
 
@@ -87,12 +87,16 @@ class PrintPanel(ToolPanel):
         row = QHBoxLayout(placement)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(METRICS.space(1))
-        for label, handler in (
-            ("Place on plate", self.place_on_plate),
-            ("Center", self.center_on_plate),
-            ("Orient", self.orient_for_printing),
+        # "All": these act on everything visible, unlike Drop to plate on the
+        # context bar, which acts on the selection.
+        for label, tip, handler in (
+            ("Drop all", "Sit everything visible on the plate (z = 0)", self.place_on_plate),
+            ("Center all", "Centre everything visible on the build plate", self.center_on_plate),
+            ("Orient each", "Turn each part to its flat lay with the least overhang",
+             self.orient_for_printing),
         ):
             button = GhostButton(label)
+            button.setToolTip(tip)
             button.clicked.connect(handler)
             row.addWidget(button)
         self.add_widget(placement)
@@ -143,7 +147,7 @@ class PrintPanel(ToolPanel):
             Severity.NOTE: self._palette.text_muted,
             Severity.WARNING: self._palette.warning,
         }[analysis.worst]
-        self.verdict.setStyleSheet(f"color:{colour}; font-size:12.5px; font-weight:600;")
+        self.verdict.setStyleSheet(f"color:{colour}; font-size:{METRICS.font_size_ui}px; font-weight:600;")
         self.verdict.setText(analysis.summary())
         self.adjustSize()
         self.window_.stage._layout_overlays()
@@ -191,30 +195,37 @@ class PrintPanel(ToolPanel):
         if not shapes:
             self.window_.set_hint("There is nothing to orient yet.")
             return
-        axis, angle = best_print_orientation(shapes[0], self.profile)
-        if not angle:
-            self.window_.set_hint("This is already the best of the six flat lays.")
+        # Each part gets its own best lay: one turn computed from the first
+        # part and applied to every part used to tip the others over.
+        turns = []
+        for body in list(self.window_.document.visible_bodies()):
+            axis, angle = best_print_orientation(body.shape, self.profile)
+            if angle:
+                turns.append((body.name, axis, angle))
+        if not turns:
+            self.window_.set_hint("Every part is already in the best of its six flat lays.")
             self.refresh_analysis()
             return
 
         self.window_.history.record("Rotate for printing")
-        for body in list(self.window_.document.visible_bodies()):
+        for name, axis, angle in turns:
             self.window_.document.add_feature(
                 MoveFeature(
                     inputs={
-                        "body": BodyRef(body.name),
+                        "body": BodyRef(name),
                         "rx": angle if axis[0] else 0,
                         "ry": angle if axis[1] else 0,
                         "rz": angle if axis[2] else 0,
                     },
-                    outputs=[body.name],
+                    outputs=[name],
                 )
             )
         self.window_.mark_dirty()
         self.window_.rebuild()
         self.window_.wait_for_rebuild()
         self.place_on_plate()
-        self.window_.set_hint(f"Rotated {angle:.0f}° for printing.")
+        self.window_.set_hint(f"Turned {len(turns)} part{'s' if len(turns) != 1 else ''} "
+                              "to print with the least overhang.")
 
     # -- export ----------------------------------------------------------
     def commit(self) -> None:

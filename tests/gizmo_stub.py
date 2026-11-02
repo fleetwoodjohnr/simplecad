@@ -181,3 +181,38 @@ def gizmo_on(direction=(0.0, 0.0, -1.0), mode="translation", axis=0, pivot=(0.0,
     else:
         viewport.context.detected = manipulator
     return gizmo
+
+
+class PerspectiveStubView(StubView):
+    """A pinhole camera *distance* mm from *target*, along *direction*.
+
+    Rays start at the eye and fan out through each pixel, so a plane hit
+    depends on the plane's height: what makes "the part stays under the
+    cursor" a real test rather than an orthographic tautology.
+    """
+
+    def __init__(self, direction, target=(0.0, 0.0, 0.0), centre=(400, 300), scale=1.0,
+                 distance=600.0):
+        super().__init__(direction, target, centre, scale)
+        self.distance = distance
+        self.eye = tuple(target[i] - self.direction[i] * distance for i in range(3))
+
+    def ConvertWithProj(self, x, y):  # noqa: N802
+        sx = (x - self.centre[0]) * self.scale
+        sy = -(y - self.centre[1]) * self.scale
+        through = tuple(self.target[i] + sx * self.right[i] + sy * self.up[i] for i in range(3))
+        ray = _unit(tuple(through[i] - self.eye[i] for i in range(3)))
+        return (*self.eye, *ray)
+
+    def Convert(self, x, y, z):  # noqa: N802
+        offset = (x - self.eye[0], y - self.eye[1], z - self.eye[2])
+        depth = sum(offset[i] * self.direction[i] for i in range(3))
+        factor = self.distance / depth
+        sx = sum(offset[i] * self.right[i] for i in range(3)) * factor / self.scale
+        sy = sum(offset[i] * self.up[i] for i in range(3)) * factor / self.scale
+        return (self.centre[0] + sx, self.centre[1] - sy)
+
+    def Camera(self):  # noqa: N802
+        camera = StubCamera(self)
+        camera.IsOrthographic = lambda: False
+        return camera

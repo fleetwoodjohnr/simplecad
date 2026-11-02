@@ -31,6 +31,7 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "undo": "Ctrl+Z",
     "redo": "Ctrl+Shift+Z",
     "redo_alt": "Ctrl+Y",
+    "new": "Ctrl+N",
     "save": "Ctrl+S",
     "save_as": "Ctrl+Shift+S",
     "open": "Ctrl+O",
@@ -41,6 +42,8 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "duplicate": "Ctrl+D",
     "group": "Ctrl+G",
     "ungroup": "Ctrl+Shift+G",
+    "select_all": "Ctrl+A",
+    "rotate": "R",
     "cancel": "Escape",
     "confirm": "Return",
     "confirm_alt": "Enter",
@@ -60,7 +63,8 @@ SHORTCUT_LABELS: dict[str, str] = {
     "search": "Command search", "dimension": "Dimension (sketch)", "extrude": "Pull",
     "move": "Move", "hole": "Hole", "xray": "X-ray", "fit_view": "Zoom to fit",
     "zoom_selection": "Zoom to selection", "undo": "Undo", "redo": "Redo",
-    "redo_alt": "Redo (alternative)", "save": "Save", "save_as": "Save as",
+    "redo_alt": "Redo (alternative)", "new": "New project", "save": "Save",
+    "save_as": "Save as", "select_all": "Select all", "rotate": "Rotate",
     "open": "Open", "export": "Export", "import": "Import", "copy": "Copy",
     "paste": "Paste", "duplicate": "Duplicate", "group": "Group", "ungroup": "Ungroup",
     "cancel": "Cancel / close tool", "confirm": "Confirm", "confirm_alt": "Confirm (keypad)",
@@ -78,7 +82,7 @@ SHORTCUT_LABELS: dict[str, str] = {
 #: an X11 text field. Other modified keys (Ctrl+S) are safe: they cannot be typed.
 YIELDS_TO_TYPING = {
     key for key, binding in DEFAULT_SHORTCUTS.items() if len(binding) == 1
-} | {"confirm", "confirm_alt", "delete", "delete_alt", "duplicate"}
+} | {"confirm", "confirm_alt", "delete", "delete_alt", "duplicate", "select_all"}
 
 #: Kept for callers that only care about the literal single-character bindings.
 SINGLE_KEY = {
@@ -223,6 +227,24 @@ def ui_preference(name: str, default: bool = True) -> bool:
     stored = _read().get("ui", {})
     value = stored.get(name) if isinstance(stored, dict) else None
     return default if not isinstance(value, bool) else value
+
+
+def ui_value(name: str, default=None):
+    """A remembered shell value that is not a switch: a width, a geometry."""
+    stored = _read().get("ui", {})
+    value = stored.get(name) if isinstance(stored, dict) else None
+    return default if value is None else value
+
+
+def set_ui_value(name: str, value) -> bool:
+    """Store a JSON-serialisable shell value without disturbing other settings."""
+    data = _read()
+    ui = data.get("ui")
+    if not isinstance(ui, dict):
+        ui = {}
+    ui[name] = value
+    data["ui"] = ui
+    return _write(data)
 
 
 def set_ui_preference(name: str, value: bool) -> bool:

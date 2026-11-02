@@ -45,9 +45,24 @@ RING_EDGE_ON = 0.2
 #: Around the pivot, in device pixels, where a turn is not measured: the angle
 #: of a cursor right next to the centre swings wildly with every pixel.
 ROTATE_DEAD_ZONE_PX = 24.0
-#: The ground plane is preferred for dragging a part unless the camera is
-#: this many times more face-on to a vertical one.
+#: The ground plane is preferred for turning a part by its body unless the
+#: camera is this many times more face-on to a vertical one.
 GROUND_PREFERENCE = 1.5
+#: Dragging a part by its body slides it on the ground and never changes its
+#: height. Below this elevation (sin 12 degrees) the ground is seen so nearly
+#: edge-on that a ray-plane hit amplifies motion wildly, so screen motion is
+#: mapped onto the ground at the true scale instead.
+GROUND_GRAZING = math.sin(math.radians(12.0))
+#: A plane handle whose plane is seen this nearly edge-on is not offered.
+PLANE_EDGE_ON = 0.15
+#: Where the XY / XZ / YZ squares sit along their two arrows, as fractions of
+#: the arrow length on screen.
+PLANE_HANDLE_SPAN = (0.24, 0.5)
+#: The arrows' length in logical pixels, which the squares are laid out
+#: against: ``SetSize(144)`` with zoom persistence draws an arrow about three
+#: quarters of that long (measured in the real window).
+ARROW_LENGTH_PX = 108.0
+WORLD_UP = (0.0, 0.0, 1.0)
 
 WORLD_FRAME = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 _AXES = WORLD_FRAME
@@ -114,6 +129,19 @@ def constrain(components, constraint):
     if kind == "axis":
         return tuple(value if i == index else 0.0 for i, value in enumerate(components))
     return tuple(0.0 if i == index else value for i, value in enumerate(components))
+
+
+def point_in_polygon(point, polygon) -> bool:
+    """Even-odd test: is *point* inside the screen polygon?"""
+    x, y = point
+    inside = False
+    count = len(polygon)
+    for i in range(count):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % count]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / ((y2 - y1) or 1e-12) + x1:
+            inside = not inside
+    return inside
 
 
 def to_world(components, frame):
@@ -255,6 +283,13 @@ class TransformGizmo(QObject):
         self.rotation_step = ROTATION_SNAP_STEP
         self.translation_filter = None
         self.translation_snap = ""
+        #: The toolbar's Snap toggle. Shift inverts it while held.
+        self.snap_enabled = True
+        #: Draw and offer the XY / XZ / YZ squares (Move only).
+        self.show_planes = False
+        #: The plane square under the cursor, for the overlay to light up.
+        self.hover_plane = None
+        self._grab_height = None
 
     def _reset_gesture(self) -> None:
         self._constraint = None
@@ -359,6 +394,13 @@ class TransformGizmo(QObject):
 
     def detach(self) -> None:
         context = self.viewport.context
+        if self._manipulator is not None and self._dragging:
+            # Mid-drag the real presentations are displaced; without this they
+            # stayed where the cursor had dragged them.
+            try:
+                self._manipulator.StopTransform(False)
+            except Exception:  # noqa: BLE001
+                pass
         if self._manipulator is not None and context is not None:
             try:
                 self._manipulator.Detach()
@@ -405,29 +447,41 @@ class TransformGizmo(QObject):
         context = self.viewport.context
         if context is None:
             return False
-        exact = self._handle_under(device_x, device_y)
+        # Plane squares are drawn over the arrows, so where one covers part of
+        # an arrow the square is what the user sees and what a press takes.
+        plane = self.plane_handle_at(device_x, device_y)
+        exact = False if plane is not None else self._handle_under(device_x, device_y)
+        if not exact and plane is None:
+            context.MoveTo(device_x, device_y, self.viewport.view, False)
         on_part = context.HasDetected() and any(
             context.DetectedInteractive() is item for item in self._attached or ()
-        ) if not exact else False
-        grab = (device_x, device_y) if exact else self._nearby_handle(
-            device_x, device_y, PART_GRAB_REACH_PX if on_part else None
-        )
+        ) if not exact and plane is None else False
+        if exact or plane is not None:
+            grab = (device_x, device_y)
+        else:
+            grab = self._nearby_handle(
+                device_x, device_y, PART_GRAB_REACH_PX if on_part else None
+            )
         self._reset_gesture()
         ray = self._ray(device_x, device_y)
         if ray is None:
             return False
-        if grab is None:
+        self._grab_height = None
+        if plane is not None:
+            constraint = ("plane", plane)
+        elif grab is None:
             if not on_part:
                 return False
             # Every handle missed, but the press is on the part: the part is
-            # the handle. Move slides it in the plane most face-on to the
-            # camera; Rotate turns it about the axis that faces the camera.
+            # the handle. Move slides it on the ground at the height it was
+            # grabbed, so it stays under the cursor and never rises or sinks;
+            # Rotate turns it about the axis that faces the camera.
             self._free = True
-            index = facing_axis(ray[1], self.frame)
             if self._allow_translation:
-                constraint = ("plane", index)
+                constraint = ("ground", 2)
+                self._grab_height = self._picked_height()
             elif self._allow_rotation:
-                constraint = ("ring", index)
+                constraint = ("ring", facing_axis(ray[1], self.frame))
             else:
                 return False
             grab = (device_x, device_y)
@@ -450,6 +504,117 @@ class TransformGizmo(QObject):
             self._dragging = False
             return False
         self.started.emit()
+        return True
+
+    def _picked_height(self):
+        """The Z of the point on the part under the cursor, if OCCT knows it."""
+        try:
+            selector = self.viewport.context.MainSelector()
+            if selector.NbPicked() > 0:
+                return float(selector.PickedPoint(1).Z())
+        except Exception:  # noqa: BLE001 - stub contexts and older OCCT
+            pass
+        return None
+
+    # -- plane handles ---------------------------------------------------
+    def _centre(self):
+        """Where the handles are drawn now: the pivot, plus the drag so far."""
+        base = self._origin if self._dragging and self._origin is not None else self._pivot
+        if self._dragging and self._constraint and self._constraint[0] != "ring":
+            moved = to_world(self._components, self.frame)
+            return tuple(base[i] + moved[i] for i in range(3))
+        return tuple(base)
+
+    def plane_handles(self):
+        """``[(normal index, [four device points])]`` for the XY, XZ and YZ squares.
+
+        Drawn by the window over the viewport and hit-tested here, rather than
+        by OCCT: its own plane parts were invisible until hovered and stole
+        presses meant for the arrows. A plane seen nearly edge-on is left out --
+        dragging in it would amplify motion just as a grazing ground does.
+        """
+        if (self._manipulator is None or not self._allow_translation or not self.show_planes
+                or self._pivot is None):
+            return []
+        centre = self._centre()
+        screen = self._project(centre)
+        if screen is None:
+            return []
+        ray = self._ray(int(round(screen[0])), int(round(screen[1])))
+        ratio = self.viewport.devicePixelRatioF()
+        try:
+            mm = self.viewport.mm_per_pixel(centre) / ratio
+        except Exception:  # noqa: BLE001
+            return []
+        if ray is None or mm <= 0.0:
+            return []
+        near, far = (f * ARROW_LENGTH_PX * ratio * mm for f in PLANE_HANDLE_SPAN)
+        found = []
+        for normal in range(3):
+            if abs(_dot(self.frame[normal], ray[1])) < PLANE_EDGE_ON:
+                continue
+            a, b = (self.frame[i] for i in range(3) if i != normal)
+            corners = []
+            for u, v in ((near, near), (far, near), (far, far), (near, far)):
+                point = tuple(centre[i] + a[i] * u + b[i] * v for i in range(3))
+                projected = self._project(point)
+                if projected is None:
+                    break
+                corners.append((float(projected[0]), float(projected[1])))
+            if len(corners) == 4:
+                found.append((normal, corners))
+        return found
+
+    def plane_handle_at(self, device_x: int, device_y: int):
+        """The normal index of the plane square under the cursor, or None."""
+        for normal, corners in self.plane_handles():
+            if point_in_polygon((device_x, device_y), corners):
+                return normal
+        return None
+
+    def wedge(self):
+        """The turn so far, for drawing: (pivot on screen, start angle, sweep), degrees.
+
+        Screen angles run counter-clockwise from screen right. None unless a
+        ring is being dragged and has a direction yet.
+        """
+        if not self._dragging or not self._constraint or self._constraint[0] != "ring":
+            return None
+        if self._last is None:
+            return None
+        index = self._constraint[1]
+        angle = self._last[3 + index]
+        pivot = self._project(self._pivot)
+        if pivot is None:
+            return None
+        start = 0.0
+        if getattr(self, "_ring", None) is not None:
+            tip = self._project(tuple(self._pivot[i] + self._ring[i] for i in range(3)))
+            if tip is not None:
+                start = math.degrees(math.atan2(-(tip[1] - pivot[1]), tip[0] - pivot[0]))
+        ray = self._ray(int(round(pivot[0])), int(round(pivot[1])))
+        facing = 1.0
+        if ray is not None and _dot(self.frame[index], ray[1]) > 0.0:
+            facing = -1.0     # the axis points away from the viewer: turns read mirrored
+        return ((pivot[0], pivot[1]), start, angle * facing, angle)
+
+    def cancel_drag(self) -> bool:
+        """Esc or a right-click mid-drag: put everything back and stay attached."""
+        if not self._dragging or self._manipulator is None:
+            return False
+        try:
+            self._manipulator.StopTransform(False)
+            self._manipulator.DeactivateCurrentMode()
+        except Exception:  # noqa: BLE001
+            pass
+        self._dragging = False
+        self._last = None
+        self._rotation_state = RotationSnapState(step=self.rotation_step)
+        self._rotation_snapped = False
+        self._offset = (0, 0)
+        self._reset_gesture()
+        self.viewport.refresh()
+        self.cancelled.emit()
         return True
 
     def _handle_constraint(self):
@@ -551,6 +716,16 @@ class TransformGizmo(QObject):
         ray = self._ray(device_x, device_y)
         if ray is None:
             return False
+        if kind == "ground":
+            if abs(_dot(ray[1], WORLD_UP)) < GROUND_GRAZING:
+                self._measure = ("screen-ground", (device_x, device_y), self._ground_axes(ray[1]))
+                return True
+            height = self._grab_height if self._grab_height is not None else self._origin[2]
+            hit = plane_hit(ray, (0.0, 0.0, height), WORLD_UP, self._perspective())
+            if hit is None:
+                return False
+            self._measure = ("ground", hit)
+            return True
         if kind == "axis":
             if abs(_dot(axis, ray[1])) > AXIS_EDGE_ON:
                 self._measure = ("screen-axis", (device_x, device_y), self._screen_axis(axis))
@@ -574,6 +749,13 @@ class TransformGizmo(QObject):
             self._measure = ("ring", None)
             self._ring = self._ring_vector(ray, axis)
         return True
+
+    @staticmethod
+    def _ground_axes(direction):
+        """Unit ground vectors for screen right and screen up, seen low down."""
+        forward = _unit((direction[0], direction[1], 0.0)) or (0.0, 1.0, 0.0)
+        right = (forward[1], -forward[0], 0.0)
+        return right, forward
 
     def _screen_axis(self, axis):
         """The unit screen direction an axis points in, in device pixels."""
@@ -610,9 +792,23 @@ class TransformGizmo(QObject):
             (x0, y0), (sx, sy) = self._measure[1], self._measure[2]
             output[index] = ((device_x - x0) * sx + (device_y - y0) * sy) * self._device_mm()
             return tuple(output)
+        if mode == "screen-ground":
+            (x0, y0), (right, forward) = self._measure[1], self._measure[2]
+            mm = self._device_mm()
+            across, away = (device_x - x0) * mm, -(device_y - y0) * mm
+            world = (right[0] * across + forward[0] * away,
+                     right[1] * across + forward[1] * away, 0.0)
+            return self._constrain(to_frame(world, self.frame), self._constraint)
         ray = self._ray(device_x, device_y)
         if ray is None:
             return None
+        if mode == "ground":
+            hit = plane_hit(ray, self._measure[1], WORLD_UP, self._perspective())
+            if hit is None:
+                return None
+            moved = _sub(hit, self._measure[1])
+            return self._constrain(to_frame((moved[0], moved[1], 0.0), self.frame),
+                                   self._constraint)
         if mode == "axis":
             now = axis_parameter(ray, self._origin, axis)
             if now is None:
@@ -636,14 +832,22 @@ class TransformGizmo(QObject):
         wanted = self._initial_constraint if kind is None else (kind, int(index))
         if wanted == self._constraint:
             wanted = self._initial_constraint
-        self._base = constrain(self._components, wanted)
+        x, y = self._cursor or (self._start[0] + self._offset[0], self._start[1] + self._offset[1])
+        if wanted[0] == "plane":
+            ray = self._ray(x, y)
+            if ray is None or abs(_dot(self.frame[wanted[1]], ray[1])) < PLANE_EDGE_ON:
+                return False      # seen edge-on: dragging in it would run away
+        previous = (self._constraint, self._measure, self._base)
         self._constraint = wanted
-        x, y = self._cursor or self._start
         if not self._begin_measure(x, y):
+            self._constraint, self._measure, self._base = previous
             return False
+        self._base = self._constrain(self._components, wanted)
         names = "XYZ"
         if wanted[0] == "axis":
             text = f"{names[wanted[1]]} only"
+        elif wanted[0] == "ground":
+            text = "On the ground"
         else:
             text = f"{''.join(n for i, n in enumerate(names) if i != wanted[1])} plane"
         self.constraint_changed.emit(text)
@@ -657,7 +861,10 @@ class TransformGizmo(QObject):
         device_x += self._offset[0]
         device_y += self._offset[1]
         self._cursor = (device_x, device_y)
-        bypass = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
+        shift = bool(modifiers is not None and modifiers & Qt.ShiftModifier)
+        # Snapping follows the toolbar toggle; Shift does the opposite for as
+        # long as it is held.
+        bypass = shift == self.snap_enabled
         fine = bool(modifiers is not None and modifiers & Qt.ControlModifier)
         if self._constraint[0] == "ring":
             self._drag_ring(device_x, device_y, bypass, fine)
@@ -679,13 +886,13 @@ class TransformGizmo(QObject):
     def _apply_translation(self, components, snapping) -> None:
         from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 
-        components = constrain(components, self._constraint)
+        components = self._constrain(components, self._constraint)
         if self.translation_filter is not None and snapping is not None:
             components = self.translation_filter(tuple(components), *snapping)
             # The filter snaps; it never decides direction. Re-applying the
             # constraint here is what makes "dragging X changes X only" true
             # whatever the snapping did -- a stale magnet lock once added Y.
-            components = constrain(components, self._constraint)
+            components = self._constrain(components, self._constraint)
         self._components = tuple(components)
         dx, dy, dz = to_world(components, self.frame)
         transform = gp_Trsf()
@@ -698,6 +905,15 @@ class TransformGizmo(QObject):
             gp_Dir(*self.frame[2]), gp_Dir(*self.frame[0]),
         ))
         self._last = (dx, dy, dz, 0.0, 0.0, 0.0)
+
+    def _constrain(self, components, constraint):
+        """:func:`constrain`, plus the ground: world Z exactly zero, in any frame."""
+        if constraint is not None and constraint[0] == "ground":
+            if tuple(self.frame) == WORLD_FRAME:
+                return (components[0] + 0.0, components[1] + 0.0, 0.0)
+            world = to_world(components, self.frame)
+            return to_frame((world[0], world[1], 0.0), self.frame)
+        return constrain(components, constraint)
 
     def _drag_ring(self, device_x, device_y, bypass, fine) -> None:
         from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf

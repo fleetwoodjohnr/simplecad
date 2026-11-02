@@ -225,7 +225,12 @@ class _Pattern(_BodyOperation):
 
 @register("mirror")
 class MirrorFeature(_Pattern):
-    """Reflect a body across a plane and keep both halves."""
+    """Reflect a body across a plane.
+
+    By default both halves are kept and fused, as files written before v0.3
+    expect. With ``keep: False`` the body is replaced by its reflection alone:
+    a flip in place, or -- applied to a copy -- the other half of a pair.
+    """
 
     label = "Mirror"
 
@@ -236,6 +241,9 @@ class MirrorFeature(_Pattern):
         origin = tuple(self.inputs.get("origin") or (0.0, 0.0, 0.0))
         transform = gp_Trsf()
         transform.SetMirror(gp_Ax2(gp_Pnt(*origin), gp_Dir(*normal)))
+        if self.inputs.get("keep", True) is False:
+            with guard("mirror"):
+                return self._emit(transformed(ctx.shape(self, "body"), transform))
         return self._apply(ctx, [transform])
 
 

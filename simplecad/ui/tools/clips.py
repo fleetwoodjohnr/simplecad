@@ -259,7 +259,7 @@ class ClipJointPanel(_SelectionTool):
         note = QLabel("Fits are starting points: what slides well depends on the material, "
                       "the printer and how it is calibrated. Measure with Fit & Clearance.")
         note.setWordWrap(True)
-        note.setStyleSheet(f"color:{self._palette.text_muted}; font-size:11px;")
+        note.setStyleSheet(f"color:{self._palette.text_muted}; font-size:{METRICS.font_size_sm}px;")
         layout.addWidget(note)
         motion = QHBoxLayout()
         self.apart = QSlider(Qt.Horizontal)

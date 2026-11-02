@@ -158,7 +158,7 @@ class SplitPanel(_SelectionTool):
         label.setAlignment(Qt.AlignCenter)
         label.setStyleSheet(
             f"color:{self._palette.text}; font-family:{METRICS.font_mono};"
-            f"font-size:13px; font-weight:600; padding:{METRICS.space(1)}px 0;"
+            f"font-size:{METRICS.font_size}px; font-weight:600; padding:{METRICS.space(1)}px 0;"
         )
         return label
 

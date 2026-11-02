@@ -222,7 +222,7 @@ class SketchPanel(ToolPanel):
             SketchState.CONFLICTING: self._palette.danger,
             SketchState.OVER: self._palette.warning,
         }.get(result.state, self._palette.text_muted)
-        self.state.setStyleSheet(f"color:{colour}; font-size:12px;")
+        self.state.setStyleSheet(f"color:{colour}; font-size:{METRICS.font_size_ui}px;")
         self.state.setText(f"{result.state.label()} — {result.message}")
 
     def commit(self) -> None:

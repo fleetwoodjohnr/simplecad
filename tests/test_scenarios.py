@@ -239,3 +239,78 @@ def test_7_hundreds_of_operations_keep_history_whole():
         assert redone[name] == pytest.approx(final[name], abs=1e-6)
     # What stays pinned is bounded by recent history, not session length.
     assert len(m.history.cache_keys()) <= RETAINED_GEOMETRY_STEPS * 4 + len(m.d.features)
+
+
+# -- v0.3.0 brief -----------------------------------------------------------------
+def test_8_a_cylinder_turns_exactly_90_degrees():
+    m = Model()
+    m.do("Cylinder", lambda: m.add(CylinderFeature(inputs={"radius": 5, "height": 40},
+                                                   outputs=["Cyl"])))
+    m.turn("Cyl", "rx", 90)
+    low, high = bounding_box(m.shape("Cyl"))
+    extents = [h - lo for lo, h in zip(low, high)]
+    assert extents == pytest.approx([10.0, 40.0, 10.0], abs=1e-6), "its length now runs along Y"
+    centre = [(a + b) / 2 for a, b in zip(low, high)]
+    assert centre == pytest.approx([0.0, 0.0, 20.0], abs=1e-6), "turned in place, not moved"
+
+
+def test_9_slice_duplicate_and_edit_both_halves_independently():
+    m = Model()
+    m.do("Cylinder", lambda: m.add(CylinderFeature(inputs={"radius": 10, "height": 30},
+                                                   outputs=["Cyl"])))
+    m.split("Cyl", "Left", "Right")
+    copy = m.duplicate("Left", offset=(60, 0, 0))
+    source = next(f for f in m.d.features if f.type_name == "cylinder"
+                  and copy in m.d.expand([copy]) and f.outputs != ["Cyl"]
+                  and f.id != m.d.features[0].id)
+    m.do("Edit copy", lambda: source.inputs.update(height=50) or m.rebuilder.invalidate({source.id}))
+    left, right, twin = (bounding_box(m.shape(n)) for n in ("Left", "Right", copy))
+    assert left[1][2] - left[0][2] == pytest.approx(30.0), "the original half is untouched"
+    assert right[1][2] - right[0][2] == pytest.approx(30.0)
+    assert twin[1][2] - twin[0][2] == pytest.approx(50.0), "the copy took its own edit"
+    m.do("Edit original", lambda: m.d.features[0].inputs.update(radius=4)
+         or m.rebuilder.invalidate({m.d.features[0].id}))
+    assert bounding_box(m.shape("Left"))[1][1] == pytest.approx(4.0, abs=1e-6)
+    assert bounding_box(m.shape(copy))[1][1] - bounding_box(m.shape(copy))[0][1] == \
+        pytest.approx(20.0, abs=1e-6), "and the copy does not follow the original"
+
+
+def test_10_mirror_align_and_plate_survive_undo_redo_and_reopen(tmp_path):
+    from simplecad.kernel.advanced import MirrorFeature
+    from simplecad.kernel.arrange import ArrangeFeature
+
+    m = Model()
+    m.do("Box", lambda: m.add(BoxFeature(inputs={"width": 20, "depth": 10, "height": 5},
+                                         outputs=["A"])))
+    m.do("Box", lambda: m.add(BoxFeature(inputs={"width": 8, "depth": 8, "height": 12, "x": 40},
+                                         outputs=["B"])))
+    copy = m.duplicate("A", offset=(0, 0, 0))
+    m.do("Mirror copy", lambda: m.add(MirrorFeature(inputs={
+        "body": BodyRef(copy), "normal": [1, 0, 0], "origin": [20, 5, 2.5], "keep": False},
+        outputs=[copy])))
+    assert bounding_box(m.shape(copy))[0][0] == pytest.approx(20.0, abs=1e-6)
+    m.move("B", dz=7)
+    m.do("Arrange", lambda: m.add(ArrangeFeature(inputs={
+        "bodies": [BodyRef("A"), BodyRef("B"), BodyRef(copy)], "pattern": "linear",
+        "target": "plate", "spacing": "fixed", "gap": "4", "boundary": "auto", "margin": "2",
+        "move_x": 0.0, "move_y": 0.0, "move_normal": 0.0, "frame_mode": "reference"},
+        outputs=["A", "B", copy])))
+    final = {n: bounding_box(m.shape(n)) for n in ("A", "B", copy)}
+    assert all(box[0][2] == pytest.approx(0.0, abs=1e-6) for box in final.values())
+    for _ in range(5):
+        m.undo()
+    assert copy not in m.d.bodies
+    for _ in range(5):
+        m.redo()
+    for name, box in final.items():
+        again = bounding_box(m.shape(name))
+        assert all(again[i][j] == pytest.approx(box[i][j], abs=1e-6)
+                   for i in range(2) for j in range(3)), name
+    path = str(tmp_path / "v030.scad3")
+    save(m.d, path)
+    reopened, _cached = load(path)
+    assert Rebuilder(reopened).rebuild().ok
+    for name, box in final.items():
+        again = bounding_box(reopened.body(name).shape)
+        assert all(again[i][j] == pytest.approx(box[i][j], abs=1e-6)
+                   for i in range(2) for j in range(3))

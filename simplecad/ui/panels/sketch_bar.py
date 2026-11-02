@@ -115,4 +115,4 @@ class SketchBar(FloatingCard):
         if hint:
             text = f"{text}  ·  {hint}"
         self.state.setText(text)
-        self.state.setStyleSheet(f"color:{colour}; font-size:12.5px; font-weight:600;")
+        self.state.setStyleSheet(f"color:{colour}; font-size:{METRICS.font_size_ui}px; font-weight:600;")

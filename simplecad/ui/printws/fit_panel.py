@@ -60,7 +60,7 @@ class FitPanel(ToolPanel):
         )
         note.setWordWrap(True)
         note.setStyleSheet(
-            f"color:{self._palette.text_muted}; font-size:12px;"
+            f"color:{self._palette.text_muted}; font-size:{METRICS.font_size_ui}px;"
         )
         self.add_widget(note)
 

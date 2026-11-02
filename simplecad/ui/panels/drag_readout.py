@@ -65,7 +65,7 @@ class DragReadout(QWidget):
         )
         self.size_label.setStyleSheet(
             f"border:none; background:transparent; color:{palette.text}; "
-            f"font-family:{METRICS.font_mono}; font-size:15px; font-weight:700;"
+            f"font-family:{METRICS.font_mono}; font-size:{METRICS.font_size_lg}px; font-weight:700;"
         )
 
     # ------------------------------------------------------------------
@@ -84,7 +84,7 @@ class DragReadout(QWidget):
         accent = tone or self._palette.accent
         self.delta_label.setStyleSheet(
             f"border:none; background:transparent; color:{accent}; "
-            f"font-family:{METRICS.font_mono}; font-size:12px; font-weight:600;"
+            f"font-family:{METRICS.font_mono}; font-size:{METRICS.font_size_ui}px; font-weight:600;"
         )
         self.size_label.setText(headline)
         self.delta_label.setText(sub)

@@ -700,6 +700,23 @@ _LENGTHS = {"gap": 5.0, "gap_y": None, "margin": 0.0, "inset_left": 0.0, "inset_
 _ANGLES = ("direction", "rotation", "start_angle")
 
 
+def plate_face(profile=None):
+    """The printer's build plate as a face at z = 0: Arrange's target with no face picked.
+
+    Built from the stored printer profile each time, so an arrangement on the
+    plate needs nothing in the file but ``target: "plate"``. The frame is
+    pinned to world X and Y, so its U and V are the plate's own edges.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pln, gp_Pnt
+
+    from .thread_specs import printer_profile
+
+    volume = (profile or printer_profile())["build_volume"]
+    plane = gp_Pln(gp_Ax3(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0), gp_Dir(1.0, 0.0, 0.0)))
+    return BRepBuilderAPI_MakeFace(plane, 0.0, float(volume["x"]), 0.0, float(volume["y"])).Face()
+
+
 @register("arrange")
 class ArrangeFeature(Feature):
     """Arrange several bodies without fusing or renaming any of them."""
@@ -768,9 +785,12 @@ class ArrangeFeature(Feature):
         names = [str(value) for value in self.inputs.get("bodies", [])]
         items = [(name, ctx.named_shape(name)) for name in names]
         target_face = ctx.resolve(self, "target_face", required=False)
+        if target_face is None and self.inputs.get("target") == "plate":
+            target_face = plate_face()
         if target_face is None:
             raise CadError("Pick the face to arrange the objects on.",
-                           suggestion="Click a flat face, or the round side of a cylinder.")
+                           suggestion="Click a flat face, or the round side of a cylinder, "
+                                      "or use the build plate.")
         contacts = {}
         refs = self.inputs.get("contact_faces") or []
         if refs:

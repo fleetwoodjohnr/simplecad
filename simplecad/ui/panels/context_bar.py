@@ -23,7 +23,7 @@ which is visibly there.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
 )
@@ -43,7 +43,8 @@ class ActionButton(QPushButton):
     """A pill with an icon and a label, sized to be easy to hit."""
 
     def __init__(self, key: str, label: str, icon_name: str, palette: Palette, primary: bool):
-        super().__init__(label)
+        # "&" is Qt's mnemonic marker: "Align & Arrange" drew as "Align _Arrange".
+        super().__init__(label.replace("&", "&&"))
         self.key = key
         self._icon_name = icon_name
         self._primary = primary
@@ -102,7 +103,7 @@ class ContextBar(FloatingCard):
         self.layout_.addWidget(self.separator)
 
         self.overflow = QToolButton()
-        self.overflow.setText("⋯")
+        self.overflow.setIconSize(QSize(18, 18))
         self.overflow.setCursor(Qt.PointingHandCursor)
         self.overflow.setFocusPolicy(Qt.TabFocus)
         self.overflow.setToolTip("More actions")
@@ -118,18 +119,19 @@ class ContextBar(FloatingCard):
         super().apply_palette(palette)
         self._palette = palette
         self.summary.setStyleSheet(
-            f"color:{palette.text_muted}; font-size:12.5px;"
+            f"color:{palette.text_muted}; font-size:{METRICS.font_size_ui}px;"
             f"background:{palette.surface_sunken}; border:1px solid {palette.border};"
             f"border-radius:{METRICS.radius_sm}px; padding:6px {METRICS.space(2)}px;"
         )
         self.separator.setStyleSheet(f"background:{palette.border}; border:none;")
+        self.overflow.setIcon(icon("more", palette.text, 18))
         self.overflow.setStyleSheet(
             f"""
             QToolButton {{
                 background:transparent; color:{palette.text};
                 border:1px solid {palette.border};
                 border-radius:{METRICS.control_height_lg // 2}px;
-                padding:0 {METRICS.space(2)}px; font-size:15px;
+                padding:0 {METRICS.space(2)}px; font-size:{METRICS.font_size_lg}px;
             }}
             QToolButton:hover {{ background:{palette.surface_sunken}; }}
             """
@@ -268,7 +270,7 @@ class ContextBar(FloatingCard):
         menu = QMenu(self)
         for key, label, icon_name in self._overflow_actions:
             action = menu.addAction(
-                icon(icon_name, self._palette.text, 18), label
+                icon(icon_name, self._palette.text, 18), label.replace("&", "&&")
             )
             action.triggered.connect(
                 lambda _=False, k=key: self.action_triggered.emit(k)

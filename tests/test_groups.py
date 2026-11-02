@@ -185,12 +185,15 @@ class TestSelectionQueries:
         model = self._model(document, ["A", "B", "C"])
         assert model.items == ["Frame", "C"]
 
-    def test_three_whole_bodies_offer_arrange(self, document):
+    def test_three_whole_bodies_offer_align_and_arrange(self, document):
+        """Objects alone open Align & Arrange (whose Arrange tab is one click
+        away); plain Arrange is offered only with the face they go on."""
         from simplecad.ui.selection import available_actions
 
         model = self._model(document, ["A", "B", "C"])
         actions = {key for key, _label, _icon in available_actions(model)}
-        assert "arrange" in actions
+        assert "align_arrange" in actions
+        assert "arrange" not in actions
 
     def test_two_whole_bodies_offer_boolean_actions(self, document):
         from simplecad.ui.selection import available_actions

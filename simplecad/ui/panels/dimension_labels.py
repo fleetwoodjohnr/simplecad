@@ -39,10 +39,10 @@ class DimensionLabel(QLabel):
                 border: 1px solid {palette.border};
                 border-radius: {METRICS.radius_sm}px;
                 padding: 2px 7px;
-                font-size: 12px;
+                font-size:{METRICS.font_size_ui}px;
                 font-weight: 600;
             }}
-            QLabel:hover {{ border-color: {palette.accent}; color: {palette.accent_hover}; }}
+            QLabel:hover {{ border-color: {palette.accent}; color: {palette.accent_text}; }}
             """
         )
 
@@ -72,7 +72,7 @@ class DimensionEditor(QLineEdit):
                 border: 1px solid {palette.accent};
                 border-radius: {METRICS.radius_sm}px;
                 padding: 2px 6px;
-                font-size: 12px;
+                font-size:{METRICS.font_size_ui}px;
                 selection-background-color: {palette.accent};
             }}
             """

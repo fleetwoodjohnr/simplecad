@@ -13,7 +13,7 @@ a group, indented once more, and needs no explaining.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QStackedWidget, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout, QWidget,
@@ -26,6 +26,11 @@ from ..widgets.controls import FloatingCard, IconButton
 #: Item data roles: the name, and whether the row is a group or a body.
 NAME_ROLE = Qt.UserRole
 KIND_ROLE = Qt.UserRole + 1
+
+#: Tree columns: the name, then the two row toggles.
+EYE_COLUMN, LOCK_COLUMN = 1, 2
+#: How wide the panel may be dragged, and how close to its left edge the grip is.
+MIN_WIDTH, MAX_WIDTH, DEFAULT_WIDTH, GRIP_PX = 240, 560, 296, 7
 
 
 class _Tab(QLabel):
@@ -56,7 +61,7 @@ class _Tab(QLabel):
         background = p.accent_soft if self._current else "transparent"
         border = p.border_strong if self._current else "transparent"
         self.setStyleSheet(
-            f"color:{color}; font-size:12.5px; font-weight:600;"
+            f"color:{color}; font-size:{METRICS.font_size_ui}px; font-weight:600;"
             f"background:{background}; border:1px solid {border};"
             f"border-radius:{METRICS.radius_sm}px; padding:0 8px;"
         )
@@ -88,6 +93,11 @@ class ModelBrowser(FloatingCard):
     group_delete_requested = Signal(str)
     group_duplicate_requested = Signal(str)
     collapsed_changed = Signal(bool)
+    #: (names, locked) from a row's lock toggle
+    lock_toggled = Signal(list, bool)
+    #: live while the left edge is dragged, then once on release
+    width_changed = Signal(int)
+    width_committed = Signal(int)
 
     def __init__(self, palette: Palette, document, parent=None) -> None:
         super().__init__(palette, parent)
@@ -95,6 +105,10 @@ class ModelBrowser(FloatingCard):
         self._selection_order: list[str] = []
         self._refreshing = False
         self._collapsed = False
+        self._expanded_width = DEFAULT_WIDTH
+        self._resizing: tuple[float, int] | None = None
+        self._renaming: tuple | None = None
+        self.setMouseTracking(True)
 
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(
@@ -130,7 +144,15 @@ class ModelBrowser(FloatingCard):
 
         self.stack = QStackedWidget()
         self.bodies_tree = QTreeWidget()
+        self.bodies_tree.setObjectName("BodiesTree")
+        self.bodies_tree.setColumnCount(3)
         self.bodies_tree.setHeaderHidden(True)
+        header = self.bodies_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, header.ResizeMode.Stretch)
+        for column in (EYE_COLUMN, LOCK_COLUMN):
+            header.setSectionResizeMode(column, header.ResizeMode.Fixed)
+            header.resizeSection(column, 26)
         self.bodies_tree.setRootIsDecorated(True)
         self.bodies_tree.setIndentation(14)
         self.bodies_tree.setFrameShape(QTreeWidget.NoFrame)
@@ -153,11 +175,19 @@ class ModelBrowser(FloatingCard):
         self.empty.setAlignment(Qt.AlignCenter)
         self.layout_.addWidget(self.empty)
 
+        from .properties_card import PropertiesCard
+
+        self.properties = PropertiesCard(palette, self)
+        self.layout_.addWidget(self.properties)
+
         self.tab_bodies.clicked.connect(lambda: self.show_tab(0))
         self.tab_history.clicked.connect(lambda: self.show_tab(1))
         self.bodies_tree.itemSelectionChanged.connect(self._rows_selected)
         self.history_list.itemClicked.connect(self._feature_clicked)
         self.bodies_tree.itemDoubleClicked.connect(self._rename_row)
+        self.bodies_tree.itemChanged.connect(self._rename_committed)
+        self.bodies_tree.itemDelegate().closeEditor.connect(self._rename_closed)
+        self.bodies_tree.viewport().installEventFilter(self)
         self.history_list.itemDoubleClicked.connect(self._rename_feature)
         self.bodies_tree.itemExpanded.connect(self._remember_expansion)
         self.bodies_tree.itemCollapsed.connect(self._remember_expansion)
@@ -181,12 +211,13 @@ class ModelBrowser(FloatingCard):
         for tab in (self.tab_bodies, self.tab_history):
             tab.apply_palette(palette)
         self.collapse_button.apply_palette(palette)
+        self.properties.apply_palette(palette)
         self.count_badge.setStyleSheet(
             f"background:{palette.accent}; color:{palette.text_on_accent};"
-            "border:none; border-radius:9px; font-size:9px; font-weight:700;"
+            f"border:none; border-radius:9px; font-size:{METRICS.font_size_xs}px; font-weight:700;"
         )
         self.empty.setStyleSheet(
-            f"color:{palette.text_faint}; font-size:12px; padding:{METRICS.space(4)}px 0;"
+            f"color:{palette.text_faint}; font-size:{METRICS.font_size_ui}px; padding:{METRICS.space(4)}px 0;"
         )
         self.refresh()
 
@@ -217,13 +248,36 @@ class ModelBrowser(FloatingCard):
             METRICS.space(1.5) if collapsed else METRICS.space(2),
             METRICS.space(1.5) if collapsed else METRICS.space(2),
         )
-        self.setFixedWidth(48 if collapsed else 280)
+        self.setFixedWidth(48 if collapsed else self._expanded_width)
+        if collapsed:
+            self.properties.hide()
         self.refresh()
         self.count_badge.setVisible(collapsed and bool(self.document.bodies))
         self.count_badge.raise_()
         self.adjustSize()
         if changed and emit:
             self.collapsed_changed.emit(collapsed)
+
+    #: Room the panel leaves above it for the ViewCube and below it for the
+    #: contextual bar, which share the stage's right-hand side.
+    TOP_OFFSET, BOTTOM_RESERVE = 128, 72
+
+    def fit_to_height(self, height: int) -> None:
+        """Shrink the lists so the panel never runs under the bottom bar."""
+        if self._collapsed:
+            return
+        room = height - self.TOP_OFFSET - self.BOTTOM_RESERVE
+        fixed = self.header.sizeHint().height() + METRICS.space(6)
+        if not self.properties.isHidden():
+            fixed += self.properties.sizeHint().height()
+        if not self.empty.isHidden():
+            fixed += self.empty.sizeHint().height()
+        lists = max(72, min(320, room - fixed))
+        for widget in (self.bodies_tree, self.history_list):
+            widget.setMinimumHeight(min(160, lists))
+            widget.setMaximumHeight(lists)
+        # The stack sizes to its pages' hints, not their limits.
+        self.stack.setMaximumHeight(lists)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -253,7 +307,8 @@ class ModelBrowser(FloatingCard):
 
     def _fill_bodies(self) -> None:
         stamp = (id(self.document), self._palette,
-                 tuple((b.id, b.name, b.visible) for b in self.document.bodies.values()),
+                 tuple((b.id, b.name, b.visible, bool(b.metadata.get("locked")))
+                       for b in self.document.bodies.values()),
                  tuple((g.id, g.name, tuple(g.members), g.visible, g.expanded)
                        for g in self.document.groups.values()))
         if stamp == getattr(self, "_body_stamp", None):
@@ -284,17 +339,94 @@ class ModelBrowser(FloatingCard):
             item.setText(
                 0, f"{name}  ({len(members)})"
             )
-            if group is not None and not group.visible:
-                item.setForeground(0, _color(palette.text_faint))
+            visible = group is None or group.visible
+            locked = bool(members) and all(self._is_locked(m) for m in members)
             for child_kind, child_name in self.document.group_members(name):
                 item.addChild(self._row(child_kind, child_name))
             item.setExpanded(group.expanded if group is not None else True)
         else:
             body = self.document.body(name)
             item.setIcon(0, icon("body", palette.text_muted, 18))
-            if body is not None and not body.visible:
-                item.setForeground(0, _color(palette.text_faint))
+            visible = body is None or body.visible
+            locked = self._is_locked(name)
+        if not visible or locked:
+            item.setForeground(0, _color(palette.text_faint))
+        item.setIcon(EYE_COLUMN, icon("eye" if visible else "eye_off",
+                                      palette.border_strong if visible else palette.text_muted, 16))
+        item.setToolTip(EYE_COLUMN, "Hide" if visible else "Show")
+        item.setIcon(LOCK_COLUMN, icon("lock" if locked else "unlock",
+                                       palette.text_muted if locked else palette.border_strong, 16))
+        item.setToolTip(LOCK_COLUMN, "Unlock" if locked else "Lock: stop it being picked, moved or deleted")
         return item
+
+    def _is_locked(self, name: str) -> bool:
+        body = self.document.body(name)
+        return bool(body is not None and body.metadata.get("locked"))
+
+    # -- row toggles and the resize grip ----------------------------------
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        """A press on a row's eye or lock toggles it without selecting the row."""
+        from PySide6.QtCore import QEvent
+
+        if (watched is self.bodies_tree.viewport() and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton):
+            position = event.position().toPoint()
+            item = self.bodies_tree.itemAt(position)
+            column = self.bodies_tree.columnAt(position.x())
+            if item is not None and column in (EYE_COLUMN, LOCK_COLUMN):
+                self._toggle(item, column)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _toggle(self, item: QTreeWidgetItem, column: int) -> None:
+        name = item.data(0, NAME_ROLE)
+        kind = item.data(0, KIND_ROLE)
+        if column == LOCK_COLUMN:
+            members = self.document.expand([name]) if kind == "group" else [name]
+            locked = bool(members) and all(self._is_locked(m) for m in members)
+            self.lock_toggled.emit([name], not locked)
+        elif kind == "group":
+            group = self.document.group(name)
+            if group is not None:
+                self.group_visibility_toggled.emit(name, not group.visible)
+        else:
+            body = self.document.body(name)
+            if body is not None:
+                self.visibility_toggled.emit(name, not body.visible)
+
+    def set_expanded_width(self, width: int) -> None:
+        self._expanded_width = max(MIN_WIDTH, min(MAX_WIDTH, int(width)))
+        if not self._collapsed:
+            self.setFixedWidth(self._expanded_width)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if (not self._collapsed and event.button() == Qt.LeftButton
+                and event.position().x() <= GRIP_PX):
+            self._resizing = (event.globalPosition().x(), self.width())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._resizing is not None:
+            start_x, start_width = self._resizing
+            self.set_expanded_width(start_width + (start_x - event.globalPosition().x()))
+            self.width_changed.emit(self._expanded_width)
+            event.accept()
+            return
+        if not self._collapsed and event.position().x() <= GRIP_PX:
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._resizing is not None:
+            self._resizing = None
+            self.width_committed.emit(self._expanded_width)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _remember_expansion(self, item: QTreeWidgetItem) -> None:
         if item.data(0, KIND_ROLE) != "group":
@@ -521,19 +653,45 @@ class ModelBrowser(FloatingCard):
         menu.deleteLater()
 
     # -- renaming --------------------------------------------------------
-    def _rename_row(self, item: QTreeWidgetItem, _column: int = 0) -> None:
-        from PySide6.QtWidgets import QInputDialog
-
-        old = item.data(0, NAME_ROLE)
-        kind = item.data(0, KIND_ROLE)
-        title = "Rename group" if kind == "group" else "Rename body"
-        new, accepted = QInputDialog.getText(self, title, "Name:", text=old)
-        if not accepted or not new.strip() or new.strip() == old:
+    def _rename_row(self, item: QTreeWidgetItem, column: int = 0) -> None:
+        """Rename in place: the row itself becomes the text field."""
+        if column != 0:
             return
-        if kind == "group":
-            self.group_rename_requested.emit(old, new.strip())
-        else:
-            self.rename_requested.emit(old, new.strip())
+        old = item.data(0, NAME_ROLE)
+        self._renaming = (item, old, item.data(0, KIND_ROLE))
+        self._refreshing = True
+        try:
+            item.setText(0, old)  # a group row also shows its member count
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+        finally:
+            self._refreshing = False
+        self.bodies_tree.editItem(item, 0)
+
+    def _rename_committed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._refreshing or self._renaming is None or column != 0:
+            return
+        target, old, kind = self._renaming
+        if item is not target:
+            return
+        self._renaming = None
+        new = item.text(0).strip()
+        # Deferred: the editor is still committing into this very row, and a
+        # rename rebuilds the tree underneath it.
+        signal = self.group_rename_requested if kind == "group" else self.rename_requested
+        QTimer.singleShot(0, lambda: self._finish_rename(signal, old, new))
+
+    def _finish_rename(self, signal, old: str, new: str) -> None:
+        if new and new != old:
+            signal.emit(old, new)
+        self._body_stamp = None
+        self.refresh()
+
+    def _rename_closed(self, *_args) -> None:
+        """Esc, or Enter on an unchanged name: put the row back as it was."""
+        if self._renaming is None:
+            return
+        self._renaming = None
+        QTimer.singleShot(0, lambda: self._finish_rename(None, "", ""))
 
     def _rename_feature(self, item: QListWidgetItem) -> None:
         from PySide6.QtWidgets import QInputDialog

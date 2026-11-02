@@ -637,6 +637,75 @@ def align_edges(moving_points, target_points, *, offset: float = 0.0) -> AlignRe
 
 
 # ----------------------------------------------------------------------
+# Lining whole objects up, and spreading them out
+# ----------------------------------------------------------------------
+#: Which side of each object lines up: its lowest, middle or highest extent.
+ALIGN_SIDES = ("min", "centre", "max")
+#: What the objects line up with.
+ALIGN_REFERENCES = ("selection", "first", "last")
+
+
+def _side(box, axis: int, side: str) -> float:
+    low, high = box
+    if side == "min":
+        return low[axis]
+    if side == "max":
+        return high[axis]
+    return (low[axis] + high[axis]) / 2.0
+
+
+def align_offsets(boxes, axis: int, side: str, reference: str = "selection") -> list[float]:
+    """How far to move each box along *axis* so its *side* lines up.
+
+    *boxes* are ``(low, high)`` bounding boxes in selection order. With
+    ``"selection"`` the target is that side of everything together -- the
+    leftmost left edge, the overall centre, the rightmost right edge -- which is
+    what "align left" means in every drawing program. ``"first"`` and
+    ``"last"`` line everything up with one object, which then does not move.
+    """
+    if side not in ALIGN_SIDES or reference not in ALIGN_REFERENCES:
+        raise ValueError(f"unknown side {side!r} or reference {reference!r}")
+    if not boxes:
+        return []
+    if reference == "first":
+        target = _side(boxes[0], axis, side)
+    elif reference == "last":
+        target = _side(boxes[-1], axis, side)
+    else:
+        low = min(box[0][axis] for box in boxes)
+        high = max(box[1][axis] for box in boxes)
+        target = {"min": low, "max": high, "centre": (low + high) / 2.0}[side]
+    return [target - _side(box, axis, side) for box in boxes]
+
+
+def distribute_offsets(boxes, axis: int, gap: float | None = None) -> list[float]:
+    """How far to move each box along *axis* so the clear gaps between them are equal.
+
+    Ordered by where the boxes are now, so nothing jumps over its neighbour.
+    Without *gap* the two outermost stay put and the space between is shared
+    equally -- which needs at least three. With a fixed *gap* the first stays
+    put and the rest follow at exactly that clearance, which works for two.
+    Objects bigger than the space simply end up overlapping less evenly; a
+    negative computed gap is allowed rather than refused, as in other tools.
+    """
+    count = len(boxes)
+    offsets = [0.0] * count
+    if count < 2 or (gap is None and count < 3):
+        return offsets
+    order = sorted(range(count), key=lambda i: (_side(boxes[i], axis, "centre"), i))
+    sizes = [boxes[i][1][axis] - boxes[i][0][axis] for i in order]
+    start = boxes[order[0]][0][axis]
+    if gap is None:
+        end = boxes[order[-1]][1][axis]
+        gap = (end - start - sum(sizes)) / (count - 1)
+    cursor = start
+    for index, size in zip(order, sizes):
+        offsets[index] = cursor - boxes[index][0][axis]
+        cursor += size + gap
+    return [0.0 if abs(value) < 1e-12 else value for value in offsets]
+
+
+# ----------------------------------------------------------------------
 # Smart suggestion
 # ----------------------------------------------------------------------
 #: What each operation is called in the UI.

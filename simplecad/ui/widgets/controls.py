@@ -70,21 +70,36 @@ class IconButton(QToolButton):
 class ToolTile(QToolButton):
     """A compact icon-over-label tile for navigation and sketch tools."""
 
+    FULL_HEIGHT = 52
+    COMPACT_HEIGHT = 40
+
     def __init__(self, name: str, label: str, palette: Palette, parent=None) -> None:
         super().__init__(parent)
         self._name = name
         self._palette = palette
+        self._compact = False
         self.setText(label)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.setIconSize(QSize(22, 22))
-        self.setFixedSize(58, 52)
+        self.setFixedSize(58, self.FULL_HEIGHT)
         self.apply_palette(palette)
+
+    def set_compact(self, compact: bool) -> None:
+        """Icon only, for a window too short to label every tile.
+
+        The tooltip still names the tool, so nothing becomes undiscoverable.
+        """
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self.setToolButtonStyle(Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextUnderIcon)
+        self.setFixedSize(58, self.COMPACT_HEIGHT if compact else self.FULL_HEIGHT)
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
-        colour = palette.accent_hover if self.isChecked() else palette.text_muted
+        colour = palette.accent_text if self.isChecked() else palette.text_muted
         self.setIcon(icon(self._name, colour, 22))
         self.setStyleSheet(
             f"""
@@ -93,12 +108,12 @@ class ToolTile(QToolButton):
                 border-radius: {METRICS.radius}px;
                 background: transparent;
                 color: {palette.text_muted};
-                font-size: 9.5px;
+                font-size:{METRICS.font_size_xs}px;
                 font-weight: 600;
                 padding-top: 3px;
             }}
             QToolButton:hover   {{ background: {palette.surface_raised}; color: {palette.text}; }}
-            QToolButton:checked {{ background: {palette.accent_soft}; color: {palette.accent_hover}; }}
+            QToolButton:checked {{ background: {palette.accent_soft}; color: {palette.accent_text}; }}
             """
         )
 
@@ -107,7 +122,7 @@ class ToolTile(QToolButton):
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
-        color = self._palette.accent_hover if self.isChecked() else self._palette.text_muted
+        color = self._palette.accent_text if self.isChecked() else self._palette.text_muted
         self.setIcon(icon(self._name, color, 22))
         super().leaveEvent(event)
 
@@ -159,7 +174,7 @@ class SectionLabel(QLabel):
 
     def apply_palette(self, palette: Palette) -> None:
         self.setStyleSheet(
-            f"color:{palette.text_faint}; font-size:10.5px;"
+            f"color:{palette.text_faint}; font-size:{METRICS.font_size_sm}px;"
             f"font-weight:600; letter-spacing:0.7px;"
         )
 
@@ -200,10 +215,9 @@ class ValueField(QLineEdit):
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
-        self.setStyleSheet(
-            'QLineEdit#ValueField { font-family:"JetBrains Mono"; '
-            "font-size:12px; font-weight:600; }"
-        )
+        # Mono, tabular and semibold: set once in the app stylesheet
+        # (``QLineEdit#ValueField``) so every numeric field matches.
+        self.setStyleSheet("")
 
     def set_parameters(self, parameters) -> None:
         self._parameters = parameters
@@ -343,12 +357,12 @@ class AnchorGrid(QWidget):
             QToolButton {{
                 border:1px solid {palette.border}; border-radius:8px;
                 background:{palette.surface}; color:{palette.text_muted};
-                font-size:16px;
+                font-size:{METRICS.font_size_lg}px;
             }}
             QToolButton:hover {{ border-color:{palette.accent}; color:{palette.text}; }}
             QToolButton:checked {{
                 background:{palette.accent_soft}; border-color:{palette.accent};
-                color:{palette.accent_hover}; font-weight:700;
+                color:{palette.accent_text}; font-weight:700;
             }}
             """
         )

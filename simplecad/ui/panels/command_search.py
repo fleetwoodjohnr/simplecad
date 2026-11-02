@@ -93,11 +93,14 @@ def catalogue() -> list[Command]:
         Command("face_texture", "Face texture", "texture",
                 "Add printable relief to a selected flat or cylindrical face",
                 "pattern honeycomb knurl grip rib wave dot surface"),
-        Command("move", "Move", "move", "Translate and rotate a body",
-                "translate rotate position"),
-        Command("arrange", "Arrange objects", "pattern",
-                "Equalize clear spacing and keep objects in line",
-                "distribute align row gap spacing multiple"),
+        Command("move", "Move", "move", "Move objects along X, Y and Z",
+                "translate position drag shift"),
+        Command("align_arrange", "Align & Arrange", "align",
+                "Line objects up, stack one on another, or lay them out in a pattern",
+                "align distribute stack place arrange grid row centre center left right"),
+        Command("arrange", "Arrange", "pattern",
+                "Lay objects out in a grid, row or pattern on a face or the build plate",
+                "distribute row grid gap spacing multiple pattern pack plate"),
         Command("rotate", "Rotate", "rotate", "Turn a body about an axis",
                 "turn spin orient angle"),
         Command("scale", "Scale", "scale", "Resize a body by a factor",
@@ -150,11 +153,12 @@ def catalogue() -> list[Command]:
         Command("rebuild_all", "Rebuild All", "settings",
                 "Replay every feature instead of reusing the saved geometry",
                 "refresh recompute regenerate history force"),
-        Command("stack", "Stack", "stack", "Seat one face flat on another",
-                "align mate assemble"),
+        Command("stack", "Stack", "stack", "Seat one face flat on another (Stack & Place)",
+                "align mate assemble on top"),
         Command("concentric", "Concentric", "concentric",
                 "Line up two round features", "align axis shaft hole"),
-        Command("center", "Center", "align", "Centre one face on another", "align"),
+        Command("center", "Center on a face", "align",
+                "Centre one face on another (Stack & Place)", "align middle"),
         Command("place_on_face", "Place on Face", "align",
                 "Position a body from a face edge or centre",
                 "align x y left right bottom top offset"),
@@ -165,7 +169,7 @@ def catalogue() -> list[Command]:
                 "Simple, counterbore, countersink or threaded", "drill bore"),
         Command("thread", "Thread", "thread",
                 "Thread a shaft or a hole", "screw bolt nut metric iso"),
-        Command("threaded_connection", "Create Threaded Connection", "thread",
+        Command("threaded_connection", "Threaded pair", "thread",
                 "A matched printable thread pair across two parts",
                 "screw bolt nut pair mating"),
         Command("clip_joint", "Joint…", "clip",
@@ -178,11 +182,9 @@ def catalogue() -> list[Command]:
                 "Pin, print-in-place, snap-on or living hinge between two parts",
                 "hinge lid box door flap knuckle pin pivot swing open living flexure "
                 "mechanical joint"),
-        Command("align_threaded", "Align Threaded Parts", "thread",
+        Command("align_threaded", "Align & Thread", "thread",
                 "Seat one part into the other and thread both at once",
                 "assemble mate screw preview assembled"),
-        Command("align_stack", "Align & Stack", "stack",
-                "Stack two faces with an offset", "mate assemble"),
         Command("matching_part", "Create Matching Part", "thread",
                 "A bolt, nut or threaded hole that fits an existing thread",
                 "bolt nut screw fastener mating pair"),
@@ -199,9 +201,8 @@ def catalogue() -> list[Command]:
                 "Place on the plate, check printability, export", "slice 3mf stl"),
         Command("sketch", "Sketch", "sketch",
                 "Draw a profile and extrude it", "2d profile rectangle circle"),
-        Command("sweep", "Sweep", "extrude", "Drag a profile along a path", "path"),
-        Command("loft", "Loft", "extrude", "Blend between profiles", "between"),
-        Command("mirror", "Mirror", "align", "Reflect across a plane", "flip"),
+        Command("mirror", "Mirror", "mirror",
+                "Flip objects across a plane, or add a mirrored copy", "flip reflect symmetric"),
         Command("measure", "Measure", "measure",
                 "Length, distance, angle, area, volume",
                 "dimension distance size how big"),
@@ -221,6 +222,14 @@ def catalogue() -> list[Command]:
         Command("view_right", "Right view", "ortho", "", "view"),
         Command("projection", "Toggle perspective", "perspective", "", "ortho camera"),
         Command("theme", "Light / dark", "moon", "Switch the theme", "appearance"),
+        Command("new", "New project", "new", "Start an empty project", "blank fresh empty file"),
+        Command("select_all", "Select all", "box", "Every visible, unlocked object",
+                "everything all objects"),
+        Command("lock", "Lock selection", "lock",
+                "Stop the selected objects being picked, moved or deleted", "freeze pin protect"),
+        Command("unlock", "Unlock selection", "unlock", "", "unfreeze unpin"),
+        Command("shortcuts", "Keyboard shortcuts…", "keyboard", "See and change every shortcut",
+                "keys bindings hotkeys"),
         Command("save", "Save", "save", "Save this project", "store write"),
         Command("save_as", "Save as…", "save", "", "store write"),
         Command("open", "Open…", "folder", "Open a project", "load"),
@@ -317,11 +326,11 @@ class CommandSearch(FloatingCard):
         super().apply_palette(palette)
         self._palette = palette
         self.eyebrow.setStyleSheet(
-            f"color:{palette.accent_hover}; font-size:9px; font-weight:700;"
+            f"color:{palette.accent_text}; font-size:{METRICS.font_size_xs}px; font-weight:700;"
             "letter-spacing:1px;"
         )
         self.key_hint.setStyleSheet(
-            f"color:{palette.text_faint}; font-size:10px;"
+            f"color:{palette.text_faint}; font-size:{METRICS.font_size_xs}px;"
         )
         if hasattr(self, "query"):
             self.refilter(self.query.text())
@@ -365,12 +374,12 @@ class CommandSearch(FloatingCard):
         copy.setContentsMargins(0, 0, 0, 0)
         copy.setSpacing(1)
         title = QLabel(command.label)
-        title.setStyleSheet(f"color:{palette.text}; font-size:12.5px; font-weight:600;")
+        title.setStyleSheet(f"color:{palette.text}; font-size:{METRICS.font_size_ui}px; font-weight:600;")
         detail = QLabel(
             f"{self._category(command)}  ·  {command.hint}"
             if command.hint else self._category(command)
         )
-        detail.setStyleSheet(f"color:{palette.text_faint}; font-size:10.5px;")
+        detail.setStyleSheet(f"color:{palette.text_faint}; font-size:{METRICS.font_size_sm}px;")
         copy.addWidget(title)
         copy.addWidget(detail)
         layout.addLayout(copy, 1)
@@ -381,7 +390,7 @@ class CommandSearch(FloatingCard):
             badge.setStyleSheet(
                 f"color:{palette.text_muted}; background:{palette.surface_sunken};"
                 f"border:1px solid {palette.border}; border-radius:5px;"
-                "padding:3px 6px; font-size:9.5px;"
+                f"padding:3px 6px; font-size:{METRICS.font_size_xs}px;"
             )
             badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             layout.addWidget(badge)

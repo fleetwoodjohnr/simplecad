@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ...core.document import BodyRef
 from ...core.units import Dimension
 from ...kernel.arrange import ArrangeFeature
+from ..icons import icon
 from ..theme import METRICS
 from ..viewport.occt_view import SelectionMode
 from ..widgets.controls import AnchorGrid, GhostButton
@@ -55,7 +56,7 @@ ROLE_MODES = {
 
 @register_tool("arrange")
 class ArrangePanel(_SelectionTool):
-    title = "Arrange objects"
+    title = "Arrange"
     confirm_label = "Apply"
     width = 336
 
@@ -70,6 +71,7 @@ class ArrangePanel(_SelectionTool):
         self._names: list[str] = []
         self._target = None          # Picked, for describing it and its axes
         self._target_ref = None      # what the feature stores
+        self._plate = False          # arranging on the build plate, no face picked
         self._contacts: dict = {}    # body -> SubShapeRef
         self._edges: list = []       # SubShapeRefs of picked boundary edges
         self._edge_picks: list = []
@@ -90,6 +92,11 @@ class ArrangePanel(_SelectionTool):
         else:
             self._latch_selection()
 
+        if source is None:
+            from .aligning import POSITION_TABS
+            from .base import ToolTabs
+
+            self.add_widget(ToolTabs(window, POSITION_TABS, "arrange"))
         self._build_subjects()
         self._build_pattern()
         self._build_row()
@@ -117,21 +124,6 @@ class ArrangePanel(_SelectionTool):
         for widget in widgets:
             layout.addWidget(widget, 1)
         return host
-
-    def _choices(self, options, changed, columns=3) -> tuple[QWidget, dict]:
-        """A segmented row of checkable buttons, the house pattern for a choice."""
-        host = QWidget()
-        grid = QGridLayout(host)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(METRICS.space(1))
-        buttons = {}
-        for index, (key, label) in enumerate(options):
-            button = GhostButton(label)
-            button.setCheckable(True)
-            button.clicked.connect(lambda _=False, k=key: changed(k))
-            grid.addWidget(button, index // columns, index % columns)
-            buttons[key] = button
-        return host, buttons
 
     def _group(self) -> tuple[QWidget, QVBoxLayout]:
         host = QWidget()
@@ -172,8 +164,28 @@ class ArrangePanel(_SelectionTool):
         self.target_button = GhostButton("")
         self.target_button.setCheckable(True)
         self.target_button.clicked.connect(lambda: self._toggle_role("target"))
+        self.plate_button = GhostButton("Use the build plate")
+        self.plate_button.setCheckable(True)
+        self.plate_button.setToolTip(
+            "No face to arrange on? Lay the objects out on the printer's build plate.")
+        self.plate_button.clicked.connect(self._use_plate)
         self.add_widget(self.objects_button)
         self.add_widget(self.target_button)
+        self.add_widget(self.plate_button)
+
+    def _use_plate(self, on: bool) -> None:
+        self._plate = bool(on)
+        if self._plate:
+            self._target = None
+            self._target_ref = None
+            self._edges, self._edge_picks = [], []
+            self._start(None)
+            if self.pattern == "row":
+                self._choose_pattern("grid")
+        else:
+            self._start("target")
+        self._refresh()
+        self.preview()
 
     def _build_pattern(self) -> None:
         self.add_section("Pattern")
@@ -321,6 +333,7 @@ class ArrangePanel(_SelectionTool):
         self._contacts = {ref.body: ref for ref in inputs.get("contact_faces") or []}
         self._edges = list(inputs.get("boundary_edges") or [])
         ref = inputs.get("target_face")
+        self._plate = ref is None and inputs.get("target") == "plate"
         if ref is None:
             return
         self._target_ref = ref
@@ -344,6 +357,7 @@ class ArrangePanel(_SelectionTool):
                       info=analyse_plane(shape) or analyse_cylinder(shape))
 
     def _set_target(self, pick) -> None:
+        self._plate = False
         self._target = pick
         self._target_ref = pick.reference(self.window_.document)
         self._edges, self._edge_picks = [], []
@@ -526,22 +540,28 @@ class ArrangePanel(_SelectionTool):
         pattern = self.pattern
         row = pattern == "row"
         target = self._target
-        self.pattern_buttons["row"].setVisible(target is None or row)
+        self.pattern_buttons["row"].setVisible((target is None and not self._plate) or row)
         for key, button in self.pattern_buttons.items():
             if key != "row":
                 button.setEnabled(not (key == "radial" and target is not None and target.is_round_face))
         n = len(self._names)
         self.objects_button.setText(
             "Click objects to add or remove…" if self._role == "objects"
-            else f"●  {n} object{'s' if n != 1 else ''}  ·  Add or remove")
+            else f"{n} object{'s' if n != 1 else ''}  ·  Add or remove")
+        self.objects_button.setIcon(icon("box", self._palette.text_muted, 16))
+        self.target_button.setIcon(icon("plane", self._palette.text_muted, 16))
         self.objects_button.setChecked(self._role == "objects")
+        self.plate_button.setChecked(self._plate)
+        self.plate_button.setVisible(target is None)
         if self._role == "target":
             self.target_button.setText("Click the face to arrange on…")
+        elif self._plate:
+            self.target_button.setText("Build plate  ·  Pick a face instead")
         elif target is not None:
             kind = "round face" if target.is_round_face else "flat face"
-            self.target_button.setText(f"◆  {target.body}: {kind}  ·  Pick another")
+            self.target_button.setText(f"{target.body}: {kind}  ·  Pick another")
         else:
-            self.target_button.setText("◆  Pick the target face")
+            self.target_button.setText("Pick the target face")
         self.target_button.setChecked(self._role == "target")
 
         self.row_box.setVisible(row)
@@ -628,10 +648,12 @@ class ArrangePanel(_SelectionTool):
 
     def _axes(self):
         """U, V and normal of the target, for turning a drag into face terms."""
+        from ...kernel.arrange import face_axes, plate_face
+
+        if self._plate:
+            return face_axes(plate_face())
         if self._target is None:
             return None
-        from ...kernel.arrange import face_axes
-
         return face_axes(self._target.shape)
 
     def _inputs(self) -> dict:
@@ -681,8 +703,9 @@ class ArrangePanel(_SelectionTool):
                 inputs["contact_faces"] = contacts
         if axes is not None:
             u, v, n = axes
+            target = {"target": "plate"} if self._plate else {"target_face": self._target_ref}
             inputs.update({
-                "target_face": self._target_ref,
+                **target,
                 "move_x": _dot(self._offset, u), "move_y": _dot(self._offset, v),
                 "move_normal": _dot(self._offset, n), "frame_mode": "reference",
             })
@@ -708,8 +731,8 @@ class ArrangePanel(_SelectionTool):
         if len(self._names) < self._required():
             need = self._required()
             return f"Select at least {need} object{'s' if need != 1 else ''} to arrange."
-        if self.pattern != "row" and self._target_ref is None:
-            return "Click the face to arrange the objects on."
+        if self.pattern != "row" and self._target_ref is None and not self._plate:
+            return "Click the face to arrange the objects on, or use the build plate."
         return ""
 
     # -- preview ---------------------------------------------------------
@@ -791,7 +814,7 @@ class ArrangePanel(_SelectionTool):
                     summary += f"\n• and {len(problems) - 2} more"
         self._fits = fits
         colour = palette.text if fits else palette.danger
-        self.summary.setStyleSheet(f"color:{colour}; font-size:12px;")
+        self.summary.setStyleSheet(f"color:{colour}; font-size:{METRICS.font_size_ui}px;")
         self.summary.setText(summary)
         # A wrapped label under-reports its height to the layout; say it.
         margins = self.root.contentsMargins()

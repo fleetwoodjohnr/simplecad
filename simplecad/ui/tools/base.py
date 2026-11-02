@@ -12,7 +12,7 @@ import itertools
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractScrollArea, QFrame, QHBoxLayout, QLabel, QScrollArea,
+    QAbstractScrollArea, QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
@@ -22,6 +22,48 @@ from ..widgets.controls import (
     FloatingCard, GhostButton, IconButton, LabeledField, PrimaryButton,
     SectionLabel, ValueField,
 )
+
+
+class ToolTabs(QWidget):
+    """A segmented strip that switches between sibling tools on one selection.
+
+    Used by Align & Arrange, whose three jobs -- line objects up, put one on
+    another, lay several out -- are separate panels with their own previews
+    and commits. The strip makes them one place to go without merging them.
+    """
+
+    def __init__(self, window, tabs, current: str, parent=None) -> None:
+        from PySide6.QtWidgets import QButtonGroup, QToolButton
+
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.buttons = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for index, (key, label) in enumerate(tabs):
+            button = QToolButton(self)
+            button.setObjectName("Segment")
+            button.setText(label.replace("&", "&&"))
+            button.setCheckable(True)
+            button.setChecked(key == current)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setMinimumHeight(METRICS.control_height)
+            radius = METRICS.radius_sm
+            left = f"{radius}px" if index == 0 else "0px"
+            right = f"{radius}px" if index == len(tabs) - 1 else "0px"
+            button.setStyleSheet(
+                f"QToolButton#Segment {{ border-top-left-radius:{left};"
+                f"border-bottom-left-radius:{left}; border-top-right-radius:{right};"
+                f"border-bottom-right-radius:{right}; }}"
+            )
+            if key != current:
+                button.clicked.connect(lambda _=False, k=key: window.activate_tool(k))
+            group.addButton(button)
+            layout.addWidget(button)
+            self.buttons[key] = button
 
 
 class ToolPanel(FloatingCard):
@@ -63,7 +105,7 @@ class ToolPanel(FloatingCard):
         self.subtitle = QLabel("")
         self.subtitle.setWordWrap(True)
         self.subtitle.setStyleSheet(
-            f"color:{palette.text_muted}; font-size:12px;"
+            f"color:{palette.text_muted}; font-size:{METRICS.font_size_ui}px;"
         )
         self.root.addWidget(self.subtitle)
 
@@ -88,7 +130,7 @@ class ToolPanel(FloatingCard):
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
-        self.status.setStyleSheet(f"color:{palette.warning}; font-size:12px;")
+        self.status.setStyleSheet(f"color:{palette.warning}; font-size:{METRICS.font_size_ui}px;")
         self.status.hide()
         self.root.addWidget(self.status)
 
@@ -125,6 +167,21 @@ class ToolPanel(FloatingCard):
         self.fields[key] = field
         return field
 
+    def _choices(self, options, changed, columns=3) -> tuple[QWidget, dict]:
+        """A segmented row of checkable buttons, the house pattern for a choice."""
+        host = QWidget()
+        grid = QGridLayout(host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(METRICS.space(1))
+        buttons = {}
+        for index, (key, label) in enumerate(options):
+            button = GhostButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda _=False, k=key: changed(k))
+            grid.addWidget(button, index // columns, index % columns)
+            buttons[key] = button
+        return host, buttons
+
     def add_section(self, text: str, into=None) -> None:
         (into or self.body).addWidget(SectionLabel(text, self._palette))
 
@@ -153,8 +210,13 @@ class ToolPanel(FloatingCard):
         self.window_.stage._layout_overlays()
 
     def set_subtitle(self, text: str) -> None:
+        changed = text != self.subtitle.text()
         self.subtitle.setText(text)
         self.subtitle.setVisible(bool(text))
+        if changed and self.isVisible():
+            # A longer description wraps onto more lines: re-budget the body.
+            self.fit_to_height(max(460, self.window_.stage.height() - METRICS.space(8)))
+            self.adjustSize()
 
     def relayout(self) -> None:
         """Resize to fit whatever the panel is now showing."""
@@ -165,9 +227,13 @@ class ToolPanel(FloatingCard):
     def fit_to_height(self, maximum: int) -> None:
         """Keep panel actions visible; scroll only a long tool's controls."""
         maximum = max(360, int(maximum))
+        # Measure with the stylesheet's fonts and padding, not Qt's defaults.
+        self.ensurePolished()
+        self.subtitle.ensurePolished()
         self.body_host.adjustSize()
         margins = self.root.contentsMargins()
         chrome = margins.top() + margins.bottom()
+        inner = self.contentsRect().width() - margins.left() - margins.right()
         visible_items = []
         for index in range(self.root.count()):
             item = self.root.itemAt(index)
@@ -176,15 +242,35 @@ class ToolPanel(FloatingCard):
                 continue
             if widget is not None and widget.isHidden():
                 continue
-            height = item.sizeHint().height()
+            # A wrapped label's plain hint is its height on one long line; at
+            # the panel's real width it is several lines taller, and the
+            # difference was squeezed out of the controls above the buttons.
+            if widget is not None and widget.hasHeightForWidth():
+                height = widget.heightForWidth(inner)
+            else:
+                height = item.sizeHint().height()
             if height > 0:
                 visible_items.append(height)
         chrome += sum(visible_items)
         chrome += self.root.spacing() * max(0, len(visible_items))
-        content = max(40, self.body_host.sizeHint().height())
+        # A few pixels of allowance: hints measured before the stylesheet
+        # polishes every control run short, and the last row was clipped
+        # under the Cancel / Done buttons.
+        content = max(40, self.body_host.sizeHint().height()) + METRICS.space(2)
         available = max(120, maximum - chrome)
-        self.body_scroll.setFixedHeight(min(content, available))
+        body = min(content, available)
+        self.body_scroll.setFixedHeight(body)
         self.setMaximumHeight(maximum)
+        # Set the height from that budget rather than leaving it to the
+        # layout's hint, which counts a wrapped subtitle as one line: the panel
+        # came out short and the Cancel / Done row overlapped the last control.
+        self.setFixedHeight(min(maximum, chrome + body))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # Polished now, so measure again with the real control heights.
+        self.fit_to_height(max(460, self.window_.stage.height() - METRICS.space(8)))
+        self.adjustSize()
 
     # -- lifecycle -------------------------------------------------------
     def build(self) -> None:
