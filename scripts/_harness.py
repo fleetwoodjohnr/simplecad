@@ -11,7 +11,9 @@ import sys
 import tempfile
 
 # OCCT in the cadquery-ocp wheel is a GLX build, so Qt must speak X11.
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+if sys.platform.startswith("linux"):
+    # OCCT needs GLX there; Windows and macOS use their own platform plugin.
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 # Scripted runs must never stop on the recovery dialog.
 os.environ.setdefault("SIMPLECAD_NO_RECOVERY", "1")
 os.environ.pop("QT_XCB_GL_INTEGRATION", None)
