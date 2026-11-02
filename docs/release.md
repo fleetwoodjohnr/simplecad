@@ -44,9 +44,12 @@
       (installer) and macOS (arm64 and x86_64 DMGs); appimagetool and nfpm are
       pinned and checksum-checked
    4. **installs and runs every package**:
-      - the AppImage
-      - the .deb on Ubuntu
-      - the .rpm on Fedora, with the desktop entry and AppStream validated
+      - the AppImage, on Ubuntu 22.04 and Fedora 44
+      - the .deb on Ubuntu 22.04 and 24.04
+      - the .rpm on Fedora 44, with the desktop entry and AppStream validated
+      - each Linux package also opens its real window under Xvfb for 30 s
+        (`scripts/window_smoke.sh`); `--self-test` is headless and cannot
+        catch a build whose window fails to start
       - the Windows installer, silently
       - the DMG: mounted, the app run from it
    5. checks the exact file list, writes and signs `SHA256SUMS` (failing if the

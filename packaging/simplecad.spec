@@ -36,6 +36,14 @@ analysis = Analysis(
               "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
               "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQml"],
 )
+if sys.platform.startswith("linux"):
+    # Use the system's C++ runtime, never the build machine's. The system's Mesa
+    # GL driver needs a newer libstdc++ than Ubuntu 22.04's; a bundled one is
+    # found first, the driver fails to load and Qt aborts with "Could not
+    # initialize GLX" (Fedora 44). The packages depend on the system's instead.
+    analysis.binaries = [entry for entry in analysis.binaries
+                         if not os.path.basename(entry[0]).startswith(("libstdc++.so",
+                                                                       "libgcc_s.so"))]
 pyz = PYZ(analysis.pure)
 icon = {"win32": os.path.join(ICONS, "simplecad.ico"),
         "darwin": os.path.join(ICONS, "simplecad.icns")}.get(sys.platform)

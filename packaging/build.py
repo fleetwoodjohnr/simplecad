@@ -134,6 +134,20 @@ def appimage() -> None:
         env={**os.environ, "ARCH": platform.machine()})
 
 
+#: What the bundle loads from the system rather than carrying (found with ldd
+#: in a bare Fedora 44): the C++ runtime, GL through libglvnd, and the xcb
+#: libraries Qt's xcb plugin needs. Debian/Ubuntu names; sonames for rpm.
+SYSTEM_LIBRARIES = {
+    "deb": ["libstdc++6", "libgcc-s1", "libgl1", "libegl1", "libxcb1", "libxcb-shape0",
+            "libxcb-util1", "libxcb-image0", "libxcb-icccm4", "libxcb-cursor0",
+            "libxcb-keysyms1", "libxcb-render-util0"],
+    "rpm": [f"{so}()(64bit)" for so in (
+        "libstdc++.so.6", "libgcc_s.so.1", "libGL.so.1", "libEGL.so.1", "libxcb.so.1",
+        "libxcb-shape.so.0", "libxcb-util.so.1", "libxcb-image.so.0", "libxcb-icccm.so.4",
+        "libxcb-cursor.so.0", "libxcb-keysyms.so.1", "libxcb-render-util.so.0")],
+}
+
+
 def linux_package(kind: str) -> None:
     """A .deb or .rpm through nfpm, installing under /opt/simplecad."""
     stage = os.path.join(BUILD, f"pkg-{kind}")
@@ -152,7 +166,8 @@ maintainer: SimpleCAD <noreply@github.com>
 description: Parametric CAD for mechanical design and 3D printing
 homepage: https://github.com/fleetwoodjohnr/simplecad
 license: Proprietary
-contents:
+depends:
+""" + "".join(f'  - "{name}"\n' for name in SYSTEM_LIBRARIES[kind]) + f"""contents:
   - src: {stage}/simplecad
     dst: /opt/simplecad
     type: tree

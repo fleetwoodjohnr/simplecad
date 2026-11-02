@@ -2,7 +2,7 @@
 
 | Platform | Package | Built by | Verified here |
 |---|---|---|---|
-| Linux x86_64 | AppImage, .deb, .rpm, Flatpak tarball (wrapping the bundle) | `packaging/build.py bundle appimage deb rpm flatpak-tarball` on ubuntu-22.04 | The bundle is built and `--self-test`ed locally; the window starts from the bundle under Xvfb. In CI the AppImage is run, the .deb installed on Ubuntu and run, and the .rpm installed on Fedora 44 and run, with its desktop entry and AppStream data validated |
+| Linux x86_64 | AppImage, .deb, .rpm, Flatpak tarball (wrapping the bundle) | `packaging/build.py bundle appimage deb rpm flatpak-tarball` on ubuntu-22.04 | The bundle is built and `--self-test`ed locally; the window starts from the bundle under Xvfb. In CI each package is installed and self-tested, then opens its real window under Xvfb for 30 s (`scripts/window_smoke.sh`): the AppImage and .deb on Ubuntu 22.04, the .deb on Ubuntu 24.04, the .rpm and the AppImage on Fedora 44, whose desktop entry and AppStream data are also validated |
 | Windows x64 | Inno Setup installer with uninstaller and `.scad3` association | `build.py bundle windows` on windows-2025 (Inno Setup 6.7.1) | CI only: installed silently and the installed program run with `--self-test` |
 | macOS arm64 and x86_64 | `.app` in a `.dmg` with an Applications link | `build.py bundle macos` on macos-15 / macos-15-intel | CI only: the DMG mounted, the app copied out and run with `--self-test` |
 
@@ -20,6 +20,21 @@ local `flatpak-builder` install.
   into deb, rpm, the AppImage and the Flatpak.
 - `tests/test_packaging_assets.py` checks the icon sizes, the metainfo and the
   release notes.
+
+## What a Linux package takes from the system
+
+The bundle is built on Ubuntu 22.04 and carries its own Qt, Python and OCCT,
+but **not** the C++ runtime (`libstdc++`, `libgcc_s`). The system's Mesa GL
+driver needs the system's newer C++ runtime, and a bundled older one is found
+first: the driver fails to load and Qt aborts with "Could not initialize GLX"
+(v0.3.0's first build, on Fedora 44). The bundle's own code needs at most
+`GLIBCXX_3.4.29`, which every distribution with glibc 2.35 or later has.
+
+The .deb and .rpm declare what the bundle loads from the system:
+`SYSTEM_LIBRARIES` in `packaging/build.py`, found with `ldd` in a bare
+Fedora 44 (the C++ runtime, GL through libglvnd, and the xcb libraries Qt's
+xcb plugin needs). The AppImage relies on the same libraries being installed,
+as every desktop has them.
 
 ## Portability changes made to the code
 

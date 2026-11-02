@@ -127,24 +127,45 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -euxo pipefail
+          # --self-test runs headless; window_smoke.sh opens the real window
+          # (QT_QPA_PLATFORM unset), which is where a build missing GL fails.
+          smoke="${GITHUB_WORKSPACE}/scripts/window_smoke.sh"
+          chmod +x "${smoke}"
           cd dist/release
           chmod +x SimpleCAD-*-linux-x86_64.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./SimpleCAD-*-linux-x86_64.AppImage --self-test
-          sudo apt-get install -y ./SimpleCAD-*-linux-x86_64.deb
+          sudo apt-get install -y ./SimpleCAD-*-linux-x86_64.deb xvfb
           /usr/bin/simplecad --self-test
           test -s /usr/share/icons/hicolor/48x48/apps/simplecad.png
           test -s /usr/share/icons/hicolor/scalable/apps/simplecad.svg
           test -s /usr/share/metainfo/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml
+          env -u QT_QPA_PLATFORM "${smoke}" deb-ubuntu-22.04 /usr/bin/simplecad
+          env -u QT_QPA_PLATFORM APPIMAGE_EXTRACT_AND_RUN=1 "${smoke}" appimage-ubuntu-22.04 \
+            ./SimpleCAD-*-linux-x86_64.AppImage
           sudo apt-get remove -y simplecad
-          # A current Fedora: the .rpm, and validators that know today's keys.
-          docker run --rm -e QT_QPA_PLATFORM=offscreen -v "$PWD:/pkgs:ro" fedora:44 bash -euxc '
-            dnf install -y -q mesa-libGL mesa-libEGL libxkbcommon fontconfig glib2 dbus-libs \
-              desktop-file-utils appstream
+          # Current distributions, whose Mesa needs a newer C++ runtime than the
+          # build machine's: the .rpm (with validators that know today's keys)
+          # and the AppImage on Fedora, the .deb on Ubuntu 24.04.
+          docker run --rm -e QT_QPA_PLATFORM=offscreen -e LANG=C.UTF-8 -v "$PWD:/pkgs:ro" \
+            -v "${smoke}:/smoke.sh:ro" fedora:44 bash -euxc '
+            dnf install -y -q mesa-libGL mesa-libEGL mesa-dri-drivers libxkbcommon fontconfig \
+              glib2 dbus-libs xorg-x11-server-Xvfb xorg-x11-xauth desktop-file-utils appstream
             dnf install -y -q /pkgs/SimpleCAD-*-linux-x86_64.rpm
             /usr/bin/simplecad --self-test
+            env -u QT_QPA_PLATFORM /smoke.sh rpm-fedora-44 /usr/bin/simplecad
+            cp /pkgs/SimpleCAD-*-linux-x86_64.AppImage /tmp/SimpleCAD.AppImage
+            env -u QT_QPA_PLATFORM APPIMAGE_EXTRACT_AND_RUN=1 /smoke.sh appimage-fedora-44 \
+              /tmp/SimpleCAD.AppImage
             desktop-file-validate /usr/share/applications/simplecad.desktop
             appstreamcli validate --no-net \
               /usr/share/metainfo/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml'
+          docker run --rm -e QT_QPA_PLATFORM=offscreen -e LANG=C.UTF-8 \
+            -e DEBIAN_FRONTEND=noninteractive -v "$PWD:/pkgs:ro" -v "${smoke}:/smoke.sh:ro" \
+            ubuntu:24.04 bash -euxc '
+            apt-get update -q
+            apt-get install -y -q /pkgs/SimpleCAD-*-linux-x86_64.deb xvfb xauth libgl1-mesa-dri
+            /usr/bin/simplecad --self-test
+            env -u QT_QPA_PLATFORM /smoke.sh deb-ubuntu-24.04 /usr/bin/simplecad'
       - name: Install and run the Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
