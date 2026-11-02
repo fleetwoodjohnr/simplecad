@@ -49,8 +49,8 @@
 
 - **Signing**: macOS builds are not notarised, and Windows builds are not
   Authenticode-signed; both need paid certificates. Users see Gatekeeper
-  ("right-click → Open" the first time) and SmartScreen ("More info → Run
-  anyway") respectively.
+  (System Settings → Privacy & Security → "Open Anyway" the first time) and
+  SmartScreen ("More info → Run anyway") respectively.
 - **Testing**: the Windows and macOS 3D viewport has not been run by anyone
   yet. CI proves those builds start, compute and self-test headless, not that
   the viewport draws.

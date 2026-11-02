@@ -76,14 +76,57 @@ project-local virtual environment.
 
 ## Install and run
 
-**Packaged:** download the AppImage, .deb, .rpm, Windows installer or macOS DMG
-from the [releases](https://github.com/fleetwoodjohnr/simplecad/releases). The
-macOS and Windows builds are not code-signed by Apple or Microsoft yet: the
-first launch needs right-click → Open (macOS) or More info → Run anyway
-(Windows). Updates are signed by the project either way. Cutting a release:
-[docs/release.md](docs/release.md).
+### Install from a release
 
-**From source:**
+Download the file for your system from the
+[latest release](https://github.com/fleetwoodjohnr/simplecad/releases/latest)
+(`<version>` below is the release number, e.g. `0.2.0`). All builds are 64-bit
+x86, plus Apple silicon on macOS.
+
+| System | File | Install |
+|---|---|---|
+| **Linux, any distribution** (glibc 2.35+: Ubuntu 22.04, Debian 12, Fedora 36 or newer) | `SimpleCAD-<version>-linux-x86_64.AppImage` | `chmod +x SimpleCAD-*.AppImage` then run it. Nothing is installed; it updates itself |
+| **Debian, Ubuntu, Mint** | `SimpleCAD-<version>-linux-x86_64.deb` | `sudo apt install ./SimpleCAD-*.deb` |
+| **Fedora, RHEL, openSUSE** | `SimpleCAD-<version>-linux-x86_64.rpm` | `sudo dnf install ./SimpleCAD-*.rpm` (openSUSE: `sudo zypper install ./SimpleCAD-*.rpm`) |
+| **Windows 10 / 11** | `SimpleCAD-<version>-windows-x86_64-setup.exe` | Run it. It installs for your user only and needs no administrator |
+| **macOS 13+, Apple silicon** | `SimpleCAD-<version>-macos-arm64.dmg` | Open it and drag SimpleCAD to Applications |
+| **macOS 13+, Intel** | `SimpleCAD-<version>-macos-x86_64.dmg` | Open it and drag SimpleCAD to Applications |
+
+The .deb and .rpm put SimpleCAD in `/opt/simplecad` and `simplecad` on your
+`PATH`, with a menu entry. Updates come through your package manager.
+
+**First launch on Windows and macOS.** Neither build is code-signed by
+Microsoft or Apple yet:
+- **Windows:** SmartScreen says it protected your PC. Choose **More info → Run
+  anyway**.
+- **macOS:** the first open is refused. Go to **System Settings → Privacy &
+  Security** and choose **Open Anyway**. Right-click → Open no longer does this
+  on macOS 15. You can also clear the flag in a terminal:
+  `xattr -dr com.apple.quarantine /Applications/SimpleCAD.app`.
+
+Updates are signed by the project either way (see *Updates* above).
+
+**Flatpak.** The release carries `simplecad-bundle-x86_64.tar.gz` for a local
+Flatpak build:
+
+```bash
+git clone https://github.com/fleetwoodjohnr/simplecad && cd simplecad
+mkdir -p build && cp ~/Downloads/simplecad-bundle-x86_64.tar.gz build/
+flatpak-builder --user --install --install-deps-from=flathub build-flatpak \
+    packaging/flatpak/io.github.fleetwoodjohnr.SimpleCAD.yml
+flatpak run io.github.fleetwoodjohnr.SimpleCAD
+```
+
+**Checking a download (optional).** `SHA256SUMS` in the release lists every
+file's checksum. Run this in the folder you downloaded to:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing     # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Cutting a release: [docs/release.md](docs/release.md).
+
+### From source
 
 ```bash
 ./scripts/setup.sh     # creates .venv and installs the kernel + Qt bindings
