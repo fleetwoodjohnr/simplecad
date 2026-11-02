@@ -52,5 +52,5 @@ if sys.platform == "darwin":
         bundle, name="SimpleCAD.app", icon=icon,
         bundle_identifier="io.github.fleetwoodjohnr.SimpleCAD",
         info_plist={"CFBundleShortVersionString": __version__, "CFBundleVersion": __version__,
-                    "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "11.0"},
+                    "NSHighResolutionCapable": True, "LSMinimumSystemVersion": "13.0"},
     )

@@ -470,6 +470,13 @@ def _positions(document):
             (f"Part{i}" for i in range(5))}
 
 
+def _assert_same_positions(actual, expected):
+    # pytest >= 9.2 refuses approx() on a dict of tuples; compare each corner.
+    assert actual.keys() == expected.keys()
+    for name, low in expected.items():
+        assert actual[name] == pytest.approx(low)
+
+
 def test_the_feature_rebuilds_and_survives_save_and_reopen(tmp_path):
     from simplecad.core.project import load, save
 
@@ -502,10 +509,10 @@ def test_undo_redo_and_editing_are_single_steps():
 
     builder.invalidate(history.undo())
     assert builder.rebuild().ok
-    assert _positions(document) == pytest.approx(before)
+    _assert_same_positions(_positions(document), before)
     builder.invalidate(history.redo())
     assert builder.rebuild().ok
-    assert _positions(document) == pytest.approx(grid)
+    _assert_same_positions(_positions(document), grid)
 
     # Edit: the same feature, new settings, one undoable step.
     feature = next(f for f in document.features if f.type_name == "arrange")
@@ -519,7 +526,7 @@ def test_undo_redo_and_editing_are_single_steps():
     assert len({round(low[1], 6) for low in row.values()}) == 1
     builder.invalidate(history.undo())
     assert builder.rebuild().ok
-    assert _positions(document) == pytest.approx(grid)
+    _assert_same_positions(_positions(document), grid)
 
 
 def test_an_upstream_change_that_no_longer_fits_still_builds_and_says_so():

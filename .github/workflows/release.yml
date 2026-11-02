@@ -23,15 +23,15 @@ jobs:
             steps: bundle appimage deb rpm flatpak-tarball
           - os: windows-latest
             steps: bundle windows
-          - os: macos-14            # Apple silicon
+          - os: macos-15            # Apple silicon
             steps: bundle macos
-          - os: macos-13            # Intel
+          - os: macos-15-intel      # Intel
             steps: bundle macos
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: The tag matches the version in the code
@@ -57,7 +57,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           APPIMAGE_EXTRACT_AND_RUN: "1"   # appimagetool without FUSE
         run: python packaging/build.py ${{ matrix.steps }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.os }}
           path: |
@@ -71,12 +71,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Collect, checksum and sign
