@@ -1,4 +1,6 @@
 -r requirements.txt
-pytest>=8.0
-pytest-qt>=4.4
-ruff>=0.6
+# Exact versions: an unpinned pytest (8 -> 9.2) once broke a release build.
+pytest==9.2.0
+pytest-qt==4.5.0
+ruff==0.17.3
+pip-audit==2.10.1
