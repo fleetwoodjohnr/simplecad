@@ -24,6 +24,8 @@ modules:
       - sed 's|SIMPLECAD_LAUNCHER|simplecad|; s|^Icon=simplecad|Icon=io.github.fleetwoodjohnr.SimpleCAD|' simplecad.desktop > io.github.fleetwoodjohnr.SimpleCAD.desktop
       - install -Dm644 io.github.fleetwoodjohnr.SimpleCAD.desktop /app/share/applications/io.github.fleetwoodjohnr.SimpleCAD.desktop
       - install -Dm644 simplecad.svg /app/share/icons/hicolor/scalable/apps/io.github.fleetwoodjohnr.SimpleCAD.svg
+      - sed 's|<icon type="stock">simplecad</icon>|<icon type="stock">io.github.fleetwoodjohnr.SimpleCAD</icon>|; s|simplecad.desktop|io.github.fleetwoodjohnr.SimpleCAD.desktop|' io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml > metainfo.xml
+      - install -Dm644 metainfo.xml /app/share/metainfo/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml
     sources:
       - type: archive
         path: ../../build/simplecad-bundle-x86_64.tar.gz
@@ -32,3 +34,5 @@ modules:
         path: ../../simplecad.desktop
       - type: file
         path: ../../simplecad/assets/simplecad.svg
+      - type: file
+        path: ../io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml

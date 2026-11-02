@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what software centres and the AppImage show. -->
+<component type="desktop-application">
+  <id>io.github.fleetwoodjohnr.SimpleCAD</id>
+  <name>SimpleCAD</name>
+  <summary>Parametric CAD for mechanical design and 3D printing</summary>
+  <developer id="io.github.fleetwoodjohnr">
+    <name>SimpleCAD</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>
+      SimpleCAD makes functional parts for 3D printing: shapes without
+      sketches, push and pull faces, move and rotate with a constrained gizmo,
+      align, stack and arrange objects, printable threads, joints and hinges,
+      and export to 3MF, STEP and STL.
+    </p>
+  </description>
+  <launchable type="desktop-id">simplecad.desktop</launchable>
+  <icon type="stock">simplecad</icon>
+  <url type="homepage">https://github.com/fleetwoodjohnr/simplecad</url>
+  <categories>
+    <category>Graphics</category>
+    <category>3DGraphics</category>
+    <category>Engineering</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.3.0" date="2026-11-02"/>
+    <release version="0.2.0" date="2026-11-01"/>
+  </releases>
+</component>

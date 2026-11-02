@@ -1,3 +1,6 @@
 # Building the installable packages (packaging/build.py).
 -r requirements.txt
-pyinstaller>=6.16
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+# Multi-size .ico and .icns from the SVG (Qt writes only one size).
+pillow==12.3.0

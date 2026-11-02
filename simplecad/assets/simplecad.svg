@@ -1,44 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <defs>
-    <linearGradient id="badge" x1="18" y1="12" x2="110" y2="118" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#18233D"/>
-      <stop offset="0.52" stop-color="#0D1427"/>
-      <stop offset="1" stop-color="#080C18"/>
-    </linearGradient>
-    <linearGradient id="upper" x1="28" y1="29" x2="92" y2="66" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#66E3FF"/>
-      <stop offset="0.48" stop-color="#3D8BFD"/>
-      <stop offset="1" stop-color="#4967F2"/>
-    </linearGradient>
-    <linearGradient id="lower" x1="36" y1="59" x2="91" y2="101" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2F76DE"/>
-      <stop offset="0.55" stop-color="#635BFF"/>
-      <stop offset="1" stop-color="#9B63FF"/>
-    </linearGradient>
-    <linearGradient id="fold" x1="47" y1="48" x2="81" y2="72" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#A5F3FF"/>
-      <stop offset="1" stop-color="#4CC9FF"/>
-    </linearGradient>
-    <filter id="shadow" x="12" y="14" width="104" height="104" filterUnits="userSpaceOnUse">
-      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#02040B" flood-opacity="0.72"/>
-    </filter>
-    <filter id="glow" x="34" y="36" width="60" height="48" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="5"/>
-    </filter>
-  </defs>
-
-  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#badge)"/>
-  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="29.25"
-        fill="none" stroke="#8FAEFF" stroke-opacity="0.16" stroke-width="1.5"/>
-
-  <path d="M43 58 64 45.5 85 58 64 71Z" fill="#3FBFFF" opacity="0.22" filter="url(#glow)"/>
-  <g filter="url(#shadow)">
-    <path d="M24 45.5 57.5 25.5Q64 21.5 70.5 25.5L104 45.5 84 58 64 46 44 58 24 46Z"
-          fill="url(#upper)"/>
-    <path d="M24 70 44 58 64 70 84 58 104 70 70.5 102.5Q64 106.5 57.5 102.5L24 82.5Z"
-          fill="url(#lower)"/>
-    <path d="M44 58 64 46 84 58 64 70Z" fill="url(#fold)"/>
-    <path d="M24 45.5 57.5 25.5Q64 21.5 70.5 25.5L104 45.5"
-          fill="none" stroke="#D6FAFF" stroke-opacity="0.42" stroke-width="1.2" stroke-linecap="round"/>
-  </g>
+  <!-- SimpleCAD: an isometric cube in the Graphite accent on a graphite tile.
+       Flat shapes only (no filters or blurs): Qt's SVG renderer ignores
+       filters, and the mark has to read at 16 px in a taskbar. -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#17181B"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1.5"/>
+  <!-- left and right faces in deeper ambers, the top face lit -->
+  <path d="M27 45 64 66 64 108 27 87Z" fill="#E0962A"/>
+  <path d="M64 66 101 45 101 87 64 108Z" fill="#B06A12"/>
+  <path d="M64 24 101 45 64 66 27 45Z" fill="#F7BC5E"/>
+  <!-- crisp edges between the faces -->
+  <path d="M27 45 64 66 101 45M64 66V108" fill="none" stroke="#17181B"
+        stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

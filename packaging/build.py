@@ -28,6 +28,7 @@ DIST = os.path.join(ROOT, "dist")
 RELEASE = os.path.join(DIST, "release")
 BUNDLE = os.path.join(DIST, "SimpleCAD")
 APP_ID = "io.github.fleetwoodjohnr.SimpleCAD"
+METAINFO = os.path.join(ROOT, "packaging", f"{APP_ID}.metainfo.xml")
 
 
 def version() -> str:
@@ -61,8 +62,15 @@ def desktop_entry(executable: str) -> str:
 
 
 # -- steps ------------------------------------------------------------------
+#: Every size the platforms ask for. Windows picks 16-256 out of one .ico,
+#: macOS 16-1024 out of one .icns, Linux takes the PNGs and the SVG.
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
 def icons() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PIL import Image
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication, QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
@@ -71,17 +79,26 @@ def icons() -> None:
     folder = os.path.join(BUILD, "icons")
     os.makedirs(folder, exist_ok=True)
     renderer = QSvgRenderer(os.path.join(ROOT, "simplecad", "assets", "simplecad.svg"))
-    images = {}
-    for size in (16, 32, 48, 64, 128, 256, 512):
+    if not renderer.isValid():
+        sys.exit("simplecad.svg could not be read")
+    for size in ICON_SIZES:
         image = QImage(size, size, QImage.Format_ARGB32)
         image.fill(Qt.transparent)
         painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         renderer.render(painter)
         painter.end()
-        image.save(os.path.join(folder, f"simplecad-{size}.png"))
-        images[size] = image
-    images[256].save(os.path.join(folder, "simplecad.ico"))
-    images[512].save(os.path.join(folder, "simplecad.icns"))
+        path = os.path.join(folder, f"simplecad-{size}.png")
+        if not image.save(path):
+            sys.exit(f"could not write {path}")
+    # Qt writes a one-image .ico and .icns; Pillow writes every size into
+    # one file, which is what keeps the icon sharp in a taskbar and a Dock.
+    largest = Image.open(os.path.join(folder, "simplecad-1024.png"))
+    largest.save(os.path.join(folder, "simplecad.ico"), sizes=[(s, s) for s in ICO_SIZES])
+    largest.save(os.path.join(folder, "simplecad.icns"))
+    for name in ("simplecad.ico", "simplecad.icns"):
+        if os.path.getsize(os.path.join(folder, name)) < 1024:
+            sys.exit(f"{name} came out empty")
     print("icons ->", folder)
 
 
@@ -108,6 +125,9 @@ def appimage() -> None:
         handle.write(desktop_entry("simplecad"))
     shutil.copy(os.path.join(BUILD, "icons", "simplecad-256.png"),
                 os.path.join(appdir, "simplecad.png"))
+    metainfo = os.path.join(appdir, "usr", "share", "metainfo")
+    os.makedirs(metainfo, exist_ok=True)
+    shutil.copy(METAINFO, metainfo)
     os.makedirs(RELEASE, exist_ok=True)
     out = os.path.join(RELEASE, f"SimpleCAD-{version()}-linux-{arch()}.AppImage")
     run(tool("appimagetool", "APPIMAGETOOL"), "--no-appstream", appdir, out,
@@ -141,11 +161,13 @@ contents:
     type: symlink
   - src: {stage}/simplecad.desktop
     dst: /usr/share/applications/simplecad.desktop
-  - src: {BUILD}/icons/simplecad-256.png
-    dst: /usr/share/icons/hicolor/256x256/apps/simplecad.png
   - src: {ROOT}/simplecad/assets/simplecad.svg
     dst: /usr/share/icons/hicolor/scalable/apps/simplecad.svg
-""")
+  - src: {METAINFO}
+    dst: /usr/share/metainfo/{APP_ID}.metainfo.xml
+""" + "".join(f"""  - src: {BUILD}/icons/simplecad-{size}.png
+    dst: /usr/share/icons/hicolor/{size}x{size}/apps/simplecad.png
+""" for size in (16, 24, 32, 48, 64, 128, 256, 512)))
     os.makedirs(RELEASE, exist_ok=True)
     out = os.path.join(RELEASE, f"SimpleCAD-{version()}-linux-{arch()}.{kind}")
     run(tool("nfpm"), "package", "--config", config, "--packager", kind, "--target", out)
@@ -162,8 +184,15 @@ def windows() -> None:
 def macos() -> None:
     os.makedirs(RELEASE, exist_ok=True)
     out = os.path.join(RELEASE, f"SimpleCAD-{version()}-macos-{arch()}.dmg")
-    run(tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder",
-        os.path.join(DIST, "SimpleCAD.app"), "-ov", "-format", "UDZO", out)
+    # The app beside a link to /Applications: the usual drag-to-install window.
+    stage = os.path.join(BUILD, "dmg")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    shutil.copytree(os.path.join(DIST, "SimpleCAD.app"), os.path.join(stage, "SimpleCAD.app"),
+                    symlinks=True)
+    os.symlink("/Applications", os.path.join(stage, "Applications"))
+    run(tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder", stage,
+        "-ov", "-format", "UDZO", out)
 
 
 def flatpak_tarball() -> None:
