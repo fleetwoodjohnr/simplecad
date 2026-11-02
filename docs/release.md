@@ -24,12 +24,17 @@
      notes and what the in-app updater shows
    - add a `<release>` line to
      `packaging/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml`
-2. Merge to `main`, push it, and wait for CI to pass.
-3. Tag that commit with an **annotated** tag and push the tag:
+2. Prove the release pipeline on the branch first, without tagging:
+   `gh workflow run release.yml --ref <branch>` (or Actions → Release → Run
+   workflow). It builds, installs and runs every package and signs the set,
+   but creates no release. A tag is never moved once pushed, so this is the
+   time to find out.
+3. Merge to `main`, push it, and wait for CI to pass.
+4. Tag that commit with an **annotated** tag and push the tag:
    ```sh
    git tag -a v0.3.0 -m "SimpleCAD 0.3.0" && git push origin v0.3.0
    ```
-4. `release.yml` then:
+5. `release.yml` then:
    1. **preflight**: refuses a lightweight tag, a tag that differs from
       `__version__`, a commit that is not on `main`, or a missing CHANGELOG
       section
@@ -49,7 +54,7 @@
       `sha256sum -c`
    6. refuses to touch an existing release, then uploads everything to a
       **draft** with the CHANGELOG notes
-5. Read the draft and **Publish**. Installed copies see it on their next
+6. Read the draft and **Publish**. Installed copies see it on their next
    check.
 
 ## Building locally (Linux)
