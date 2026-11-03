@@ -72,3 +72,13 @@ def test_this_version_has_release_notes():
                            capture_output=True, text=True, check=True).stdout
     assert len(notes.strip()) > 200
     assert not notes.startswith("## "), "the heading itself is not part of the notes"
+
+
+def test_notes_carry_a_version_that_was_never_released():
+    import runpy
+
+    section = runpy.run_path(str(ROOT / "scripts" / "release_notes.py"))["section"]
+    text = ("## 1.1 (today)\n\nFix.\n\n## 1.0 (today, not released)\n\nBig.\n\n"
+            "## 0.9\n\nOld.\n")
+    assert section(text, "1.1") == "Fix.\n\n## 1.0 (today, not released)\n\nBig."
+    assert section(text, "0.9") == "Old."

@@ -1,6 +1,6 @@
 [project]
 name = "simplecad"
-version = "0.3.0"
+version = "0.3.1"
 description = "Modern parametric CAD for Fedora, built for functional 3D printing"
 requires-python = ">=3.12"
 

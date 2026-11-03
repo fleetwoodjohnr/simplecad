@@ -3,7 +3,24 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
-## 0.3.0 (2026-11-02)
+## 0.3.1 (2026-11-02)
+
+The first published 0.3 release. 0.3.0 was tagged but never released, because
+its Linux packages could not open a window on current distributions. 0.3.1 is
+0.3.0 with that fixed, so everything listed under 0.3.0 is new in it too.
+
+### Fixed
+
+- **Linux: the window opens on current distributions.** The AppImage, .deb and
+  .rpm carried an older C++ runtime than the system's graphics driver needs, so
+  on Fedora 44 SimpleCAD stopped at start with "Could not initialize GLX". They
+  now use the system's. 0.2.0 had the same problem.
+- **The .deb and .rpm declare what they need from the system**, so installing
+  one also installs the few X11 libraries a minimal system may lack.
+- **Release checks open the real window** of every Linux package, on Ubuntu
+  22.04 and 24.04 and on Fedora 44, rather than only running it headless.
+
+## 0.3.0 (2026-11-02, not released)
 
 A new look, easier moving and rotating, one place to align, stack and arrange,
 a new icon, and installers that are installed and run before they are released.

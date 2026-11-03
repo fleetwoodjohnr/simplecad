@@ -24,7 +24,15 @@ def section(text: str, version: str) -> str:
         return ""
     rest = text[match.end():]
     following = re.search(r"^## ", rest, re.MULTILINE)
-    return (rest[:following.start()] if following else rest).strip()
+    body = (rest[:following.start()] if following else rest).strip()
+    # A version tagged but never released had no notes anyone saw: carry it
+    # into the next release's, so nothing new in it goes unannounced.
+    if following:
+        heading = rest[following.start():].splitlines()[0]
+        if "not released" in heading:
+            older = heading.removeprefix("## ").split()[0]
+            body += f"\n\n{heading}\n\n{section(text, older)}"
+    return body
 
 
 def main(argv: list[str]) -> int:
