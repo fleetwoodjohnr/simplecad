@@ -44,3 +44,31 @@ def test_clicking_the_bar_leaves_keyboard_focus_where_it_was(monkeypatch):
         assert bar.overflow.focusPolicy() == Qt.TabFocus
     finally:
         bar.deleteLater()
+
+
+def test_overflow_menu_opens_upward_inside_the_window(monkeypatch):
+    # The bar sits on the window's bottom edge. Its "..." menu used to drop
+    # *down* from the button, so all but its first rows ran off the bottom.
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    app = QApplication.instance() or QApplication([])
+    stage = QWidget()
+    stage.resize(900, 600)
+    bar = ContextBar(DARK, stage)
+    stage.show()
+    actions = [(f"a{i}", f"Action {i}", "move") for i in range(10)]
+    bar.show_actions("1 body", actions, max_width=420)
+    bar.move(stage.width() - bar.width(), stage.height() - bar.height())
+    app.processEvents()
+    try:
+        assert bar.overflow.isVisible()
+        size = QSize(240, 300)
+        menu = QRect(bar._overflow_position(size), size)
+        window = QRect(stage.mapToGlobal(QPoint(0, 0)), stage.size())
+        button_top = bar.overflow.mapToGlobal(QPoint(0, 0)).y()
+        assert menu.bottom() < button_top
+        assert window.left() <= menu.left() and menu.right() <= window.right()
+    finally:
+        stage.deleteLater()
+        app.sendPostedEvents(None, QEvent.DeferredDelete)

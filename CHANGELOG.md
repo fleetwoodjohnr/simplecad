@@ -25,6 +25,8 @@ updater shows (`scripts/release_notes.py`).
   pieces behind.
 - **Engraved text cuts into the face.** With OCCT 7.9.3 an engraved label
   could leave the face untouched; on 8.0.1 it removes the material it should.
+- **The "⋯" menu on the action bar opens upward**, inside the window. It used
+  to drop off the bottom of the screen and show only its first rows.
 
 ## 0.3.1 (2026-11-02)
 

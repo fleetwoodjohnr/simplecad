@@ -23,7 +23,7 @@ which is visibly there.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
 )
@@ -275,5 +275,19 @@ class ContextBar(FloatingCard):
             action.triggered.connect(
                 lambda _=False, k=key: self.action_triggered.emit(k)
             )
-        menu.exec(self.overflow.mapToGlobal(self.overflow.rect().topLeft()))
+        menu.exec(self._overflow_position(menu.sizeHint()))
         menu.deleteLater()
+
+    def _overflow_position(self, size: QSize) -> QPoint:
+        """Where the overflow menu's top-left goes: above the button, inside the window.
+
+        The bar sits on the window's bottom edge, so a menu dropped *down* from
+        the button ran off the bottom and showed only its first rows. It opens
+        upward instead, and slides left rather than past the window's right edge.
+        """
+        anchor = self.overflow.mapToGlobal(QPoint(0, 0))
+        window = self.window()
+        left = window.mapToGlobal(QPoint(0, 0)).x()
+        right = left + window.width()
+        x = max(left, min(anchor.x(), right - size.width()))
+        return QPoint(x, anchor.y() - size.height())
