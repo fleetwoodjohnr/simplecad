@@ -1,0 +1,247 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-elev: var(--elev);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-workspace: var(--workspace);
+  --color-danger: var(--danger);
+  --color-danger-strong: var(--danger-strong);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+}
+
+:root {
+  /* SimpleCAD's amber (simplecad/ui/theme.py). Dark ink on it: white on amber fails contrast. */
+  --accent: #e8a33a;
+  --accent-fg: #1b1c1e;
+  --bg: #f7f7f8;
+  --panel: #ffffff;
+  --panel-2: #fbfbfc;
+  --elev: #ffffff;
+  --border: #e8e8ec;
+  --border-strong: #d6d6dc;
+  --text: #17171c;
+  --text-2: #55555f;
+  --text-3: #696973; /* ≥4.5:1 on every light surface */
+  --hover: rgb(20 20 40 / 0.045);
+  --active: rgb(20 20 40 / 0.08);
+  --accent-soft: color-mix(in oklab, var(--accent) 13%, transparent);
+  /* accent-colored text: ≥4.5:1 on panels and on --accent-soft */
+  --accent-ink: color-mix(in oklab, var(--accent) 80%, black);
+  --workspace: #eeeef1;
+  --danger: #c42f3d; /* text and icons: ≥5:1 on light surfaces */
+  --danger-strong: #c42f3d; /* behind white text: 5.5:1 */
+  --success: #2f9e6b;
+  --warn: #c98a12;
+  --shadow-pop: 0 0 0 1px rgb(0 0 0 / 0.05), 0 8px 24px -4px rgb(0 0 0 / 0.14), 0 2px 6px rgb(0 0 0 / 0.06);
+  color-scheme: light;
+}
+
+.dark {
+  --accent: #f2a93b;
+  --accent-fg: #1a1206;
+  --bg: #121214;
+  --panel: #18181b;
+  --panel-2: #1c1c20;
+  --elev: #222226;
+  --border: #2a2a2f;
+  --border-strong: #3a3a40;
+  --text: #ececf0;
+  --text-2: #a7a7b1;
+  --text-3: #8a8a94; /* ≥4.5:1 on every dark surface */
+  --danger: #f27a83; /* text and icons: ≥5.9:1 on dark surfaces */
+  --hover: rgb(255 255 255 / 0.055);
+  --active: rgb(255 255 255 / 0.09);
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, transparent);
+  --accent-ink: color-mix(in oklab, var(--accent) 60%, white);
+  --workspace: #0d0d0f;
+  --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.07), 0 12px 32px -6px rgb(0 0 0 / 0.6);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--text-3) 45%, transparent);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--text-3) 70%, transparent);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+
+/* ================= charts =================
+   Chart colors: read by src/renderer/app/chartTheme.ts. Categorical palette checked for 3:1 contrast against the
+   panel in both themes; series are also told apart by shape and dash where it matters (non-color encodings). */
+:root {
+  /* Field pills on the shelves: dimensions blue, measures green (≥5:1 with their text). */
+  --pill-dim: #2f6fde;
+  --pill-measure: #127a5a;
+  --pill-text: #ffffff;
+  --chart-1: #2f6fde;
+  --chart-2: #e8662a;
+  --chart-3: #1b9e77;
+  --chart-4: #c23f8c;
+  --chart-5: #7a46c9;
+  --chart-6: #b8860b;
+  --chart-7: #2697a6;
+  --chart-8: #d1414b;
+  --chart-grid: #ececf0;
+  --chart-axis: #d6d6dc;
+  --chart-text: #55555f;
+  --chart-seq-lo: #fde7d8;
+  --chart-seq-hi: #9a3412;
+}
+.dark {
+  --pill-dim: #6b9bf0;
+  --pill-measure: #3cc49b;
+  --pill-text: #0d0d0f;
+  --chart-1: #6b9bf0;
+  --chart-2: #f58a47;
+  --chart-3: #3cc49b;
+  --chart-4: #e06aae;
+  --chart-5: #a07ce6;
+  --chart-6: #e0b43a;
+  --chart-7: #4cc0cf;
+  --chart-8: #f0707a;
+  --chart-grid: #2a2a2f;
+  --chart-axis: #3a3a40;
+  --chart-text: #a7a7b1;
+  --chart-seq-lo: #3a2216;
+  --chart-seq-hi: #ffb27d;
+}
+
+.select-text {
+  user-select: text;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ================= printing ================= */
+@media print {
+  body > #root { display: none !important; }
+  body { overflow: visible !important; background: white !important; }
+  html.dark .print-host { background: var(--bg); }
+}
+.print-host { display: none; }
+@media print {
+  .print-host { display: block; }
+}
+
+/* ================= motion ================= */
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+  }
+}
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.pop-in {
+  animation: popIn 130ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.fade-in {
+  animation: fadeIn 160ms ease-out;
+}
+.dialog-in {
+  animation: dialogIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.slide-up {
+  animation: slideUp 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Radix keeps a closing element mounted until its animation ends. With no animation it unmounts at once. */
+:is(.pop-in, .fade-in, .dialog-in)[data-state='closed'] {
+  animation: none;
+}
+
+/* WCAG 2.5.8 target size: rows of checkboxes and radio buttons are at least 24px apart. */
+label:has(> input[type='checkbox']),
+label:has(> input[type='radio']) {
+  min-height: 24px;
+}

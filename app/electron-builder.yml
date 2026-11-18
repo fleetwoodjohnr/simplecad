@@ -1,0 +1,13 @@
+appId: io.github.fleetwoodjohnr.SimpleCAD
+productName: SimpleCAD
+directories:
+  output: release
+files:
+  - out/**
+  - native/*.node
+asarUnpack:
+  - native/*.node
+npmRebuild: false
+linux:
+  executableName: simplecad
+  category: Graphics

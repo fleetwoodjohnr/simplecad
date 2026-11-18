@@ -1,0 +1,53 @@
+name: Rust preview
+
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'engine/**'
+      - 'simplecad/update_key.pub'
+      - '.github/workflows/rust-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: '1.99.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+      - run: cargo fmt --all --check
+        working-directory: engine
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        working-directory: engine
+      - run: cargo test --locked --workspace
+        working-directory: engine
+      - run: npm ci
+        working-directory: app
+      - run: npm run typecheck
+        working-directory: app
+      - run: npm test
+        working-directory: app
+      - run: npm run dist
+        working-directory: app
+      - name: Packaged Linux window and geometry
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
