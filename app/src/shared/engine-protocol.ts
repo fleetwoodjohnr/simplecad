@@ -9,6 +9,7 @@ export interface MeshData {
 
 export interface FaceInfo {
   center: [number, number, number]
+  anchor: [number, number, number]
   normal: [number, number, number]
   area: number
 }

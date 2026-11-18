@@ -87,6 +87,13 @@ fn outer_pull_then_inner_push_lengthens_an_enclosure_with_a_recessed_vent() {
             .unwrap();
         shape.push_pull(face, distance).unwrap()
     };
+    let wall = original
+        .faces()
+        .into_iter()
+        .find(|face| face.axis == 1 && !face.positive && face.plane == 76.)
+        .unwrap();
+    let [x, y, z] = wall.anchor;
+    assert!(original.contains([x, y + 0.25, z]));
     let pulled = go(&original, true, 80., 50.75);
     let enclosure = go(&pulled, false, 76., -49.75);
     assert_eq!(enclosure.solid_count(), 1);

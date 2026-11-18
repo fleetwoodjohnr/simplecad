@@ -56,6 +56,8 @@ export function Viewport(props: Props) {
     const grid = new GridHelper(200, 40, 0x888895, 0x474751)
     grid.rotation.x = Math.PI / 2
     grid.position.z = -0.02
+    grid.material.transparent = true
+    grid.material.opacity = 0.45
     scene.add(grid)
 
     const body = new Mesh(new BufferGeometry(), new MeshStandardMaterial({
@@ -85,7 +87,7 @@ export function Viewport(props: Props) {
         const face = selected === undefined ? undefined : shape?.faces[selected]
         button.hidden = !face || !canPull
         if (!face) return
-        const start = new Vector3(...face.center)
+        const start = new Vector3(...face.anchor)
         const normal = new Vector3(...face.normal)
         const position = toScreen(start.clone())
         const direction = toScreen(start.add(normal)).sub(position)

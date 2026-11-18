@@ -11,6 +11,7 @@ pub struct Face {
     pub positive: bool,
     pub plane: f64,
     pub center: [f64; 3],
+    pub anchor: [f64; 3],
     pub area: f64,
     pub(crate) patches: Vec<Point>,
 }
@@ -65,12 +66,15 @@ impl Solid {
                         }
                     }
                 }
+                let center = center.map(|value| value / area);
+                let anchor = self.face_anchor(&group, axis, center);
                 faces.push(Face {
                     axis,
                     positive,
                     plane: self.planes[axis][plane_index],
                     patches: group,
-                    center: center.map(|value| value / area),
+                    center,
+                    anchor,
                     area,
                 });
             }
@@ -167,6 +171,29 @@ impl Solid {
             }
         }
         Ok(())
+    }
+
+    // A face centroid can be in a hole. Place the handle on solid face area.
+    fn face_anchor(&self, patches: &[Point], axis: usize, center: [f64; 3]) -> [f64; 3] {
+        let (u, v) = lateral_axes(axis);
+        let mut best = center;
+        let mut nearest = f64::INFINITY;
+        for &patch in patches {
+            let [low, _, high, _] = self.corners(patch, axis).map(|corner| self.point(corner));
+            if [u, v]
+                .into_iter()
+                .all(|i| low[i] < center[i] && center[i] < high[i])
+            {
+                return center;
+            }
+            let middle: [f64; 3] = std::array::from_fn(|i| (low[i] + high[i]) * 0.5);
+            let distance = (middle[u] - center[u]).powi(2) + (middle[v] - center[v]).powi(2);
+            if distance < nearest {
+                best = middle;
+                nearest = distance;
+            }
+        }
+        best
     }
 
     fn point(&self, point: Point) -> [f64; 3] {

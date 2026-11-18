@@ -10,6 +10,7 @@ pub struct Shape {
 #[napi(object)]
 pub struct FaceInfo {
     pub center: Vec<f64>,
+    pub anchor: Vec<f64>,
     pub normal: Vec<f64>,
     pub area: f64,
 }
@@ -66,6 +67,7 @@ impl Shape {
                     normal[face.axis] = if face.positive { 1. } else { -1. };
                     FaceInfo {
                         center: face.center.into(),
+                        anchor: face.anchor.into(),
                         normal,
                         area: face.area,
                     }
