@@ -9,7 +9,7 @@ from ..core.errors import check_done, guard
 
 def boolean_builder(kind, first, second):
     """Configure before building, without modifying cached operand topology."""
-    from OCP.TopTools import TopTools_ListOfShape
+    from simplecad.kernel.occt_compat import TopTools_ListOfShape
 
     arguments, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
     arguments.Append(first)

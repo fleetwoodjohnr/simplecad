@@ -33,7 +33,7 @@ def inspect_edge_finish(document, body_name: str, pick_state: dict) -> dict:
     reference = SubShapeRef.from_dict(pick_state)
     selected = resolve(reference, body.shape)
     targets = ([selected] if reference.kind == "face" else
-               _faces_at_edge(body.shape, TopoDS.Edge_s(selected)))
+               _faces_at_edge(body.shape, TopoDS.Edge(selected)))
     if not targets:
         raise CadError("Select a fillet or chamfer face or one of its boundary edges.")
 

@@ -95,7 +95,7 @@ def main() -> int:
             REPORT["undo_available"] = window.history.can_undo
             REPORT["ghost_cleared"] = getattr(viewport, "_ghost", None) is None
 
-            from OCP.AIS import AIS_ListOfInteractive
+            from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
             displayed = AIS_ListOfInteractive()
             viewport.context.DisplayedObjects(displayed)

@@ -12,6 +12,10 @@ from pathlib import Path
 import tempfile
 
 
+#: Deliberately *not* bumped for OCCT 8.0: results cached by 7.9 are valid
+#: B-Rep that 8.0 reads, and a bump makes every saved project recompute from
+#: its recipe -- which an import whose file has since moved cannot do, so the
+#: whole model behind it stops being editable (UPS Atlas did exactly that).
 CACHE_VERSION = "simplecad-feature-cache-2-occt-7.9"
 DECODED_BUDGET = 512 * 1024 * 1024
 BLOB_BUDGET = 64 * 1024 * 1024

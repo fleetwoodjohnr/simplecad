@@ -78,7 +78,7 @@ def main() -> int:
             chosen = None
             explorer = TopExp_Explorer(shape, TopAbs_EDGE)
             while explorer.More():
-                edge = TopoDS.Edge_s(explorer.Current())
+                edge = TopoDS.Edge(explorer.Current())
                 from simplecad.kernel.edge_frame import edge_midpoint
 
                 mid = edge_midpoint(edge)

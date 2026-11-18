@@ -356,7 +356,7 @@ class TransformGizmo(QObject):
             if len(presentations) == 1:
                 manipulator.Attach(presentations[0])
             else:
-                from OCP.AIS import AIS_ManipulatorObjectSequence
+                from simplecad.kernel.occt_compat import AIS_ManipulatorObjectSequence
 
                 sequence = AIS_ManipulatorObjectSequence()
                 for item in presentations:

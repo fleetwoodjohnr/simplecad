@@ -75,13 +75,13 @@ def hinge_frame(body_a, edge, body_b, flip: bool = False) -> HingeFrame:
     from OCP.GeomAbs import GeomAbs_Line
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
     from OCP.TopoDS import TopoDS
 
     from .detect import analyse_plane
     from .occ import bounding_box
 
-    edge = TopoDS.Edge_s(edge)
+    edge = TopoDS.Edge(edge)
     curve = BRepAdaptor_Curve(edge)
     if curve.GetType() != GeomAbs_Line:
         raise CadError("A hinge runs along a straight edge; this one is curved.",
@@ -100,7 +100,7 @@ def hinge_frame(body_a, edge, body_b, flip: bool = False) -> HingeFrame:
         raise CadError("That edge is not on the part it was picked from.")
     planes = []
     for face in ancestors.FindFromIndex(index):
-        info = analyse_plane(TopoDS.Face_s(face))
+        info = analyse_plane(TopoDS.Face(face))
         if info is not None:
             planes.append(tuple(info.normal))
     unique = []

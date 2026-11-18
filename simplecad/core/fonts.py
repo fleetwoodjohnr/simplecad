@@ -166,7 +166,7 @@ def modeling_families(generic: str) -> tuple[str, ...]:
 def available_families() -> list[str]:
     """Family names currently in OCCT's database (diagnostics)."""
     from OCP.Font import Font_FontMgr
-    from OCP.TColStd import TColStd_SequenceOfHAsciiString
+    from simplecad.kernel.occt_compat import TColStd_SequenceOfHAsciiString
 
     init_fonts()
     seq = TColStd_SequenceOfHAsciiString()

@@ -114,7 +114,7 @@ class ExtrudeFeature(_FromSketch):
                 )
                 from OCP.TopoDS import TopoDS
 
-                face = TopoDS.Face_s(face)
+                face = TopoDS.Face(face)
             direction = gp_Vec(*normal) * distance
             solid = built_shape(BRepPrimAPI_MakePrism(face, direction), "extrude")
             return self._emit(unify(solid))

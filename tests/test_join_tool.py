@@ -19,7 +19,7 @@ from simplecad.ui.viewport.occt_view import SelectionMode, _Nav
 def _solid_count(shape):
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedMapOfShape
 
     solids = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)

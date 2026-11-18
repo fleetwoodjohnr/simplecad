@@ -74,7 +74,7 @@ def build_section_replacement(
         v=v,
     ).transform
     seated = transformed(replacement, placement)
-    seated_face = TopoDS.Face_s(transformed(replacement_face, placement))
+    seated_face = TopoDS.Face(transformed(replacement_face, placement))
 
     normal = target_info.normal
     _, exterior = _projected_bounds(seated, normal, target_info.center)

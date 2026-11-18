@@ -263,10 +263,10 @@ class CylindricalMapping:
         rings = []
         wires = TopExp_Explorer(self.face, TopAbs_WIRE)
         while wires.More():
-            explorer = BRepTools_WireExplorer(TopoDS.Wire_s(wires.Current()), self.face)
+            explorer = BRepTools_WireExplorer(TopoDS.Wire(wires.Current()), self.face)
             points = []
             while explorer.More():
-                edge = TopoDS.Edge_s(explorer.Current())
+                edge = TopoDS.Edge(explorer.Current())
                 curve = BRepAdaptor_Curve2d(edge, self.face)
                 first, last = curve.FirstParameter(), curve.LastParameter()
                 count = max(2, math.ceil(abs(last - first) * self.radius / 0.35))
@@ -303,7 +303,7 @@ def mapping_for_face(face):
     from .detect import analyse_cylinder, analyse_plane
     from OCP.TopoDS import TopoDS
 
-    face = TopoDS.Face_s(face)
+    face = TopoDS.Face(face)
 
     if analyse_plane(face) is not None:
         return PlanarMapping(face)
@@ -597,7 +597,7 @@ def _wrapped_piece_solid(polygon: Polygon, mapping: CylindricalMapping, outer: f
     if sewn.IsNull():
         raise CadError("A wrapped texture element could not be closed.")
     try:
-        shell = TopoDS.Shell_s(sewn)
+        shell = TopoDS.Shell(sewn)
     except Exception as exc:
         raise CadError("A wrapped texture element did not form a shell.") from exc
     maker = BRepBuilderAPI_MakeSolid(shell)

@@ -15,11 +15,20 @@ every geometric operation is testable headless.
 
 ## Geometry kernel
 
-OCCT 7.9.3 through the `cadquery-ocp` 7.9.3.1.1 wheel (`OCP.*`). The wheel bundles its own
+OCCT 8.0.1 through the `cadquery-ocp` 8.0.1.1.0 wheel (`OCP.*`). The wheel bundles its own
 OCCT shared libraries. **Never link or load the system `opencascade` libraries alongside it** —
 two copies of OCCT's memory manager and transient type registry in one process is an ABI
 hazard. The system `opencascade-devel` headers are installed on this machine for source
 reference only.
+
+OCCT 8 renamed what the bindings call its collections (`TopTools_IndexedMapOfShape` is now
+`collections.IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher`) and made `TopoDS` a namespace
+(`TopoDS.Face`, not `TopoDS.Face_s`). `kernel/occt_compat.py` is the one place that maps the old
+collection names, so the rest of the code keeps the names OCCT's own documentation uses. The
+upgrade from 7.9.3 was made for a crash: `ShapeUpgrade_UnifySameDomain` segfaulted on a valid
+push/pull result, which no `try` can catch. `CACHE_VERSION` was deliberately left at its 7.9
+value: cached results are valid B-Rep either way, and invalidating them makes every saved
+project rebuild from its recipe -- which an import whose source file has moved cannot do.
 
 ## Viewport — RESOLVED: OCCT renders into a `QOpenGLWidget` FBO
 

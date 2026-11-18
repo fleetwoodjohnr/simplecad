@@ -56,7 +56,7 @@ def _as_face(shape):
 
     if shape is None or shape.IsNull() or shape.ShapeType() != TopAbs_FACE:
         return None
-    return TopoDS.Face_s(shape)
+    return TopoDS.Face(shape)
 
 
 def face_surface_type(face) -> str:

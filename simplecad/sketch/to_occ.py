@@ -89,7 +89,7 @@ def _spline_edges(sketch, entity) -> list:
     """A B-spline interpolating the control points, in order."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
     from OCP.GeomAPI import GeomAPI_PointsToBSpline
-    from OCP.TColgp import TColgp_Array1OfPnt
+    from simplecad.kernel.occt_compat import TColgp_Array1OfPnt
 
     coordinates = [sketch.points[pid] for pid in entity.points if pid in sketch.points]
     if len(coordinates) < 2:
@@ -124,7 +124,7 @@ def wires(sketch) -> list:
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopAbs import TopAbs_WIRE
     from OCP.TopoDS import TopoDS
-    from OCP.TopTools import TopTools_HSequenceOfShape
+    from simplecad.kernel.occt_compat import TopTools_HSequenceOfShape
 
     edges = []
     for entity in sketch.profile_entities():
@@ -144,7 +144,7 @@ def wires(sketch) -> list:
 
         found = []
         for index in range(1, closed.Length() + 1):
-            wire = TopoDS.Wire_s(closed.Value(index))
+            wire = TopoDS.Wire(closed.Value(index))
             if is_closed(wire):
                 found.append(wire)
         return found
@@ -224,7 +224,7 @@ def faces(sketch) -> list:
 def _reversed_wire(wire):
     from OCP.TopoDS import TopoDS
 
-    return TopoDS.Wire_s(wire.Reversed())
+    return TopoDS.Wire(wire.Reversed())
 
 
 def _face_area(builder) -> float:

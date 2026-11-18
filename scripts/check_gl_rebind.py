@@ -47,7 +47,7 @@ def displayed_count(viewport) -> int:
     The ViewCube and the grid are excluded: they are rebuilt by ``_init_occt``
     itself, so counting them would report success while every body was gone.
     """
-    from OCP.AIS import AIS_ListOfInteractive
+    from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
     if viewport.context is None:
         return 0

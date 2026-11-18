@@ -218,7 +218,7 @@ class VentCutFeature(Feature):
                 "Select the flat face to vent.",
                 suggestion="Pick the wall the fan blows through.",
             )
-        face = TopoDS.Face_s(resolved)
+        face = TopoDS.Face(resolved)
         info = analyse_plane(face)
         if info is None:
             raise CadError(

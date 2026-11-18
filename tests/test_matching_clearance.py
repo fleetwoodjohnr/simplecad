@@ -76,7 +76,7 @@ def assert_clearance(shape, pair):
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.TopAbs import TopAbs_IN, TopAbs_SOLID
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedMapOfShape
     from OCP.gp import gp_Pnt
 
     assert is_valid(shape)

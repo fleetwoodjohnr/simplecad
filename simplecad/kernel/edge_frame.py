@@ -41,7 +41,7 @@ def edge_midpoint(edge):
 
     # Located OCCT picks arrive as TopoDS_Shape even when their ShapeType is
     # EDGE. The adaptor requires the derived binding type.
-    curve = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+    curve = BRepAdaptor_Curve(TopoDS.Edge(edge))
     middle = (curve.FirstParameter() + curve.LastParameter()) / 2.0
     point = curve.Value(middle)
     return (point.X(), point.Y(), point.Z())
@@ -78,7 +78,7 @@ def adjacent_faces(body, edge) -> list:
     """The faces of *body* that meet at *edge*."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
 
     mapping = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(body, TopAbs_EDGE, TopAbs_FACE, mapping)
@@ -101,7 +101,7 @@ def edges_at_vertex(body, vertex) -> list:
     """
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
 
     mapping = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(body, TopAbs_VERTEX, TopAbs_EDGE, mapping)
@@ -131,7 +131,7 @@ def outward_direction(body, edge, at=None):
     at = at or edge_midpoint(edge)
     total = (0.0, 0.0, 0.0)
     for face in adjacent_faces(body, edge):
-        normal = face_normal_at(TopoDS.Face_s(face), at)
+        normal = face_normal_at(TopoDS.Face(face), at)
         if normal is not None:
             total = tuple(total[i] + normal[i] for i in range(3))
     direction = _normalise(total)
@@ -154,6 +154,6 @@ def edge_drag_frame(body, edge):
     """``(anchor, direction, max_radius)`` for a handle on *edge*."""
     from OCP.TopoDS import TopoDS
 
-    edge = TopoDS.Edge_s(edge)
+    edge = TopoDS.Edge(edge)
     anchor = edge_midpoint(edge)
     return (anchor, outward_direction(body, edge, anchor), max_radius(body))

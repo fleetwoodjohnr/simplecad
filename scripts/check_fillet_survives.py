@@ -87,7 +87,7 @@ def main() -> int:
 
             shape = window.document.bodies["Block"].shape
             explorer = TopExp_Explorer(shape, TopAbs_EDGE)
-            edge = TopoDS.Edge_s(explorer.Current())
+            edge = TopoDS.Edge(explorer.Current())
             window.selection.picks = [
                 Picked(body="Block", kind="edge", shape=edge,
                        presentation=window._presentations.get("Block"))

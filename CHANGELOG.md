@@ -3,6 +3,18 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## Unreleased
+
+### Fixed
+
+- **Pushing and pulling no longer fails on a busy part.** Pushing the inner
+  wall of a hollowed box with holes and a vent in it crashed the geometry
+  engine inside OCCT 7.9.3's face merging, on a result that was itself valid.
+  SimpleCAD now runs on **OCCT 8.0.1**, which merges the same shape cleanly.
+  Every saved project opens and rebuilds exactly as before.
+- **Engraved text cuts into the face.** With OCCT 7.9.3 an engraved label
+  could leave the face untouched; on 8.0.1 it removes the material it should.
+
 ## 0.3.1 (2026-11-02)
 
 The first published 0.3 release. 0.3.0 was tagged but never released, because

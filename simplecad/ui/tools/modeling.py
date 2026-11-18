@@ -3403,7 +3403,7 @@ class _EdgeTool(_SelectionTool):
         from OCP.TopoDS import TopoDS
 
         expanded: list = [
-            Picked(p.body, "edge", TopoDS.Edge_s(p.shape), p.presentation)
+            Picked(p.body, "edge", TopoDS.Edge(p.shape), p.presentation)
             for p in self.selection.edges()
         ]
         for pick in self.selection.picks:
@@ -3413,12 +3413,12 @@ class _EdgeTool(_SelectionTool):
             if body is None or body.shape is None:
                 continue
             try:
-                found = edges_at_vertex(body.shape, TopoDS.Vertex_s(pick.shape))
+                found = edges_at_vertex(body.shape, TopoDS.Vertex(pick.shape))
             except Exception:  # noqa: BLE001 - a stray vertex simply expands to nothing
                 continue
             expanded.extend(
                 Picked(
-                    body=pick.body, kind="edge", shape=TopoDS.Edge_s(edge),
+                    body=pick.body, kind="edge", shape=TopoDS.Edge(edge),
                     presentation=pick.presentation,
                 )
                 for edge in found

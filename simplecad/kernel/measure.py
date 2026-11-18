@@ -68,7 +68,7 @@ def _edge_readings(edge) -> list[Reading]:
     BRepGProp.LinearProperties_s(edge, props)
     readings = [Reading("Length", props.Mass(), _fmt(props.Mass()), primary=True)]
 
-    adaptor = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+    adaptor = BRepAdaptor_Curve(TopoDS.Edge(edge))
     kind = adaptor.GetType()
     if kind == GeomAbs_Circle:
         circle = adaptor.Circle()
@@ -152,7 +152,7 @@ def _vertex_readings(vertex) -> list[Reading]:
     from OCP.BRep import BRep_Tool
     from OCP.TopoDS import TopoDS
 
-    point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vertex))
+    point = BRep_Tool.Pnt_s(TopoDS.Vertex(vertex))
     return [
         Reading("Position", 0.0, _point(point.X(), point.Y(), point.Z()), primary=True)
     ]
@@ -192,7 +192,7 @@ def _angle_between(first, second) -> float | None:
         from OCP.TopoDS import TopoDS
 
         try:
-            adaptor = BRepAdaptor_Curve(TopoDS.Edge_s(shape))
+            adaptor = BRepAdaptor_Curve(TopoDS.Edge(shape))
             if adaptor.GetType() == GeomAbs_Line:
                 line = adaptor.Line().Direction()
                 return (line.X(), line.Y(), line.Z())
@@ -254,7 +254,7 @@ def _centre_of(shape):
             from OCP.BRep import BRep_Tool
             from OCP.TopoDS import TopoDS
 
-            point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(shape))
+            point = BRep_Tool.Pnt_s(TopoDS.Vertex(shape))
             return (point.X(), point.Y(), point.Z())
         else:
             BRepGProp.VolumeProperties_s(shape, props)

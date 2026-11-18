@@ -100,11 +100,11 @@ def dump(path: str) -> dict:
     return stages
 
 
-def _run(tree: str, path: str) -> dict:
+def _run(tree: str, path: str, python: str = sys.executable) -> dict:
     env = dict(os.environ, PYTHONPATH=tree, PYTHONDONTWRITEBYTECODE="1",
                QT_QPA_PLATFORM="offscreen")
     result = subprocess.run(
-        [sys.executable, os.path.abspath(__file__), "--dump", path],
+        [python, os.path.abspath(__file__), "--dump", path],
         cwd=tree, env=env, capture_output=True, text=True, timeout=3600,
     )
     if result.returncode != 0:
@@ -115,6 +115,8 @@ def _run(tree: str, path: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--old", help="checkout of the version to compare against")
+    parser.add_argument("--old-python", default=sys.executable,
+                        help="interpreter for --old, e.g. a venv with the previous OCCT")
     parser.add_argument("--dump", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="+")
     args = parser.parse_args()
@@ -125,7 +127,7 @@ def main() -> int:
         parser.error("--old is required")
     same = True
     for path in args.files:
-        old, new = _run(os.path.abspath(args.old), path), _run(ROOT, path)
+        old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))
                        if old.get(stage) != new.get(stage)]
         name = os.path.basename(path)

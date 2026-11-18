@@ -26,7 +26,7 @@ def _top_back_edge(shape):
     from OCP.TopoDS import TopoDS
 
     for edge in sub_shapes(shape, "edge"):
-        curve = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+        curve = BRepAdaptor_Curve(TopoDS.Edge(edge))
         middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0)
         if abs(middle.Y() - 50.0) < 1e-6 and abs(middle.Z() - 30.0) < 1e-6:
             return edge
@@ -200,7 +200,7 @@ def test_a_hinge_joins_the_two_halves_of_a_split_part():
     left = document.body("Left").shape
 
     def middle(edge):
-        curve = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+        curve = BRepAdaptor_Curve(TopoDS.Edge(edge))
         return curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0)
 
     # The top edge of Left's cut face, running along Y at x = 40, z = 10.

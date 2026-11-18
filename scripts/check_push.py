@@ -103,7 +103,7 @@ def main() -> int:
             REPORT["readout_hidden"] = not readout.isVisible()
             REPORT["transparency_restored"] = window._drag_transparent is None
 
-            from OCP.AIS import AIS_ListOfInteractive
+            from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
             displayed = AIS_ListOfInteractive()
             viewport.context.DisplayedObjects(displayed)

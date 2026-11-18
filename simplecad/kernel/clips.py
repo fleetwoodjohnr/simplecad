@@ -321,7 +321,7 @@ def _face_polygon(face):
 
     from .operations import _face_profile
 
-    return _face_profile(TopoDS.Face_s(face), 0.035)
+    return _face_profile(TopoDS.Face(face), 0.035)
 
 
 def _footprint(point, frame, spec: ClipSpec, rotation_degrees: float):

@@ -98,7 +98,7 @@ def _open_wires(sketch) -> list:
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
     from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
     from OCP.TopoDS import TopoDS
-    from OCP.TopTools import TopTools_HSequenceOfShape
+    from simplecad.kernel.occt_compat import TopTools_HSequenceOfShape
 
     from ..sketch.to_occ import entity_edges
 
@@ -114,7 +114,7 @@ def _open_wires(sketch) -> list:
     open_chains = TopTools_HSequenceOfShape()
     ShapeAnalysis_FreeBounds.ConnectEdgesToWires_s(sequence, 1e-6, False, closed)
     if closed.Length():
-        return [TopoDS.Wire_s(closed.Value(1))]
+        return [TopoDS.Wire(closed.Value(1))]
     builder = BRepBuilderAPI_MakeWire()
     for edge in edges:
         builder.Add(edge)
@@ -125,7 +125,7 @@ def _outer_wire(face):
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS
 
-    return TopoDS.Wire_s(BRepTools.OuterWire_s(TopoDS.Face_s(face)))
+    return TopoDS.Wire(BRepTools.OuterWire_s(TopoDS.Face(face)))
 
 
 @register("loft")
@@ -197,7 +197,7 @@ class DraftFeature(_BodyOperation):
             plane = gp_Pln(gp_Pnt(*origin), gp_Dir(*pull))
             for face in faces:
                 builder.Add(
-                    TopoDS.Face_s(face), gp_Dir(*pull), math.radians(angle), plane
+                    TopoDS.Face(face), gp_Dir(*pull), math.radians(angle), plane
                 )
             builder.Build()
             if not builder.IsDone():

@@ -191,7 +191,7 @@ class _FlatTarget:
 
         from .operations import _face_profile
 
-        self.face = face = TopoDS.Face_s(face)
+        self.face = face = TopoDS.Face(face)
         self.frame = reference_frame(face)
         profile, (origin, px, py) = _face_profile(face, 0.035)
         u, v = self.frame.x_axis, self.frame.y_axis
@@ -220,7 +220,7 @@ class _RoundTarget:
 
         from .face_texture import CylindricalMapping
 
-        self.mapping = m = CylindricalMapping(TopoDS.Face_s(face))
+        self.mapping = m = CylindricalMapping(TopoDS.Face(face))
         self.period = m.period
         self.radius = m.radius
         self.internal = bool(m.info.internal)
@@ -386,7 +386,7 @@ def _edge_line(edge, target):
     from OCP.TopoDS import TopoDS
     from shapely.geometry import LineString
 
-    curve = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+    curve = BRepAdaptor_Curve(TopoDS.Edge(edge))
     sampler = GCPnts_QuasiUniformDeflection(curve, 0.02)
     if sampler.IsDone() and sampler.NbPoints() >= 2:
         points = [sampler.Value(i) for i in range(1, sampler.NbPoints() + 1)]

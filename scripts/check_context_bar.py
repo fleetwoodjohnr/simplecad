@@ -79,7 +79,7 @@ def main() -> int:
                 explorer = TopExp_Explorer(shape, enum)
                 while explorer.More():
                     found = explorer.Current()
-                    if kind != "face" or analyse_plane(TopoDS.Face_s(found)):
+                    if kind != "face" or analyse_plane(TopoDS.Face(found)):
                         return found
                     explorer.Next()
                 return None

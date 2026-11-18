@@ -71,7 +71,7 @@ def test_dots_cost_a_handful_of_faces_each(mode):
     assert result["error"] is None, result["error"]
     shape = result["shape"]
     assert is_valid(shape)
-    kinds = Counter(BRepAdaptor_Surface(TopoDS.Face_s(face)).GetType().name
+    kinds = Counter(BRepAdaptor_Surface(TopoDS.Face(face)).GetType().name
                     for face in sub_shapes(shape, "face"))
     # Every whole dot is one exact cylindrical wall (it used to be 48 flat
     # facets); only dots clipped by a clearance keep a polygon outline.

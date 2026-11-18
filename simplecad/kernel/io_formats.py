@@ -381,7 +381,7 @@ def _step_with_names(path: str) -> list[ImportedBody]:
     from OCP.STEPCAFControl import STEPCAFControl_Reader
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDataStd import TDataStd_Name
-    from OCP.TDF import TDF_LabelSequence
+    from simplecad.kernel.occt_compat import TDF_LabelSequence
     from OCP.TDocStd import TDocStd_Document
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
@@ -870,7 +870,7 @@ def _sewn_from_mesh(mesh: Mesh) -> tuple[object, str]:
     explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
     shells = []
     while explorer.More():
-        shells.append(TopoDS.Shell_s(explorer.Current()))
+        shells.append(TopoDS.Shell(explorer.Current()))
         explorer.Next()
     if not shells:
         return (sewn, "This mesh has no surface SimpleCAD could rebuild.")
@@ -1301,7 +1301,7 @@ def import_gltf(path: str) -> list[ImportedBody]:
     from OCP.Message import Message_ProgressRange
     from OCP.RWGltf import RWGltf_CafReader
     from OCP.TCollection import TCollection_ExtendedString
-    from OCP.TDF import TDF_LabelSequence
+    from simplecad.kernel.occt_compat import TDF_LabelSequence
     from OCP.TDocStd import TDocStd_Document
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 

@@ -2130,7 +2130,7 @@ class MainWindow(QMainWindow):
 
         try:
             direction = gp_Vec(*pick.info.normal) * distance
-            return BRepPrimAPI_MakePrism(TopoDS.Face_s(pick.shape), direction).Shape()
+            return BRepPrimAPI_MakePrism(TopoDS.Face(pick.shape), direction).Shape()
         except Exception:  # noqa: BLE001 - a preview is never worth failing over
             return None
 

@@ -57,7 +57,7 @@ def _solids(shape) -> list:
     found = []
     explorer = TopExp_Explorer(shape, TopAbs_SOLID)
     while explorer.More():
-        found.append(TopoDS.Solid_s(explorer.Current()))
+        found.append(TopoDS.Solid(explorer.Current()))
         explorer.Next()
     return found
 
@@ -87,7 +87,7 @@ def split_solid(body, point, normal):
     to treat as an error rather than as an empty body.
     """
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
-    from OCP.TopTools import TopTools_ListOfShape
+    from simplecad.kernel.occt_compat import TopTools_ListOfShape
 
     normal = _unit(normal)
     with guard("split"):

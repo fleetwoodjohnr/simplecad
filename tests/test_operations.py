@@ -518,7 +518,7 @@ def test_countersink_adds_a_conical_mouth(doc):
     shape = doc.bodies["Plate"].shape
     cones = [
         f for f in sub_shapes(shape, "face")
-        if BRepAdaptor_Surface(TopoDS.Face_s(f)).GetType() == GeomAbs_Cone
+        if BRepAdaptor_Surface(TopoDS.Face(f)).GetType() == GeomAbs_Cone
     ]
     assert len(cones) == 1
     assert is_valid(shape)

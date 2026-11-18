@@ -305,7 +305,7 @@ def test_tapered_standards_create_conical_thread_faces():
     )
     cones = []
     for face in sub_shapes(solid, "face"):
-        surface = BRepAdaptor_Surface(TopoDS.Face_s(face))
+        surface = BRepAdaptor_Surface(TopoDS.Face(face))
         if surface.GetType() == GeomAbs_Cone:
             cones.append(surface.Cone())
 

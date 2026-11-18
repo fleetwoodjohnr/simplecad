@@ -71,7 +71,7 @@ def main() -> int:
         edge = next(e for e in sub_shapes(box, "edge") if (lambda c: abs(
             c.Value((c.FirstParameter() + c.LastParameter()) / 2).Y() - 50) < 1e-6 and abs(
             c.Value((c.FirstParameter() + c.LastParameter()) / 2).Z() - 30) < 1e-6)(
-            BRepAdaptor_Curve(TopoDS.Edge_s(e))))
+            BRepAdaptor_Curve(TopoDS.Edge(e))))
         lid = document.body("Lid").shape
         window.selection.picks = [
             Picked("Box", "edge", edge, window._presentations.get("Box")),

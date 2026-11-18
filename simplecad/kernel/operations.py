@@ -24,13 +24,13 @@ from .occ import (
 def _cast_faces(shapes) -> list:
     from OCP.TopoDS import TopoDS
 
-    return [TopoDS.Face_s(s) for s in shapes]
+    return [TopoDS.Face(s) for s in shapes]
 
 
 def _cast_edges(shapes) -> list:
     from OCP.TopoDS import TopoDS
 
-    return [TopoDS.Edge_s(s) for s in shapes]
+    return [TopoDS.Edge(s) for s in shapes]
 
 
 def _depth_along(shape, direction) -> float:
@@ -112,7 +112,7 @@ def _face_profile(face, deflection: float):
     rings = []
     explorer = TopExp_Explorer(face, TopAbs_WIRE)
     while explorer.More():
-        wire = TopoDS.Wire_s(explorer.Current())
+        wire = TopoDS.Wire(explorer.Current())
         ordered = BRepTools_WireExplorer(wire, face)
         points = []
         while ordered.More():
@@ -166,7 +166,7 @@ def _prism_depth(body, opening, inward) -> float:
     levels = []
     explorer = TopExp_Explorer(body, TopAbs_VERTEX)
     while explorer.More():
-        point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(explorer.Current()))
+        point = BRep_Tool.Pnt_s(TopoDS.Vertex(explorer.Current()))
         offset = (
             point.X() - info.center[0],
             point.Y() - info.center[1],
@@ -347,7 +347,7 @@ def _faces_at_edge(shape, edge):
     found = []
     for face in sub_shapes(shape, "face"):
         if any(candidate.IsSame(edge) for candidate in sub_shapes(face, "edge")):
-            found.append(TopoDS.Face_s(face))
+            found.append(TopoDS.Face(face))
     return found
 
 
@@ -401,7 +401,7 @@ class EdgeFinishFeature(_BodyOperation):
             resolved = []
             for index in range(position, end):
                 spec = specs[index]
-                edge = TopoDS.Edge_s(resolve(spec["edge"], shape))
+                edge = TopoDS.Edge(resolve(spec["edge"], shape))
                 resolved.append((index, edge))
                 if kind == "fillet":
                     radius = number(spec.get("radius"), 2.0)
@@ -418,7 +418,7 @@ class EdgeFinishFeature(_BodyOperation):
                     continue
                 side = spec.get("side")
                 faces = list(_faces_at_edge(shape, edge))
-                face = (TopoDS.Face_s(resolve(side, shape)) if side is not None else
+                face = (TopoDS.Face(resolve(side, shape)) if side is not None else
                         next(iter(faces), None))
                 if face is None:
                     raise CadError("The chamfer's reference face is missing.")
@@ -426,7 +426,7 @@ class EdgeFinishFeature(_BodyOperation):
                     # Measure the first distance on the other face instead.
                     other = [f for f in faces if not f.IsSame(face)]
                     if other:
-                        face = TopoDS.Face_s(other[0])
+                        face = TopoDS.Face(other[0])
                 if mode == "two_distances":
                     second = number(spec.get("distance2"), distance)
                     if second <= 0:
@@ -457,7 +457,7 @@ class ShellFeature(_BodyOperation):
 
     def execute(self, ctx: BuildContext) -> dict:
         from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
-        from OCP.TopTools import TopTools_ListOfShape
+        from simplecad.kernel.occt_compat import TopTools_ListOfShape
 
         body = ctx.shape(self, "body")
         thickness = ctx.value(self, "thickness", 2.0)
@@ -565,7 +565,7 @@ class PushPullFeature(_BodyOperation):
 
             direction = gp_Vec(*info.normal) * distance
             prism = built_shape(
-                BRepPrimAPI_MakePrism(TopoDS.Face_s(face), direction), "pull"
+                BRepPrimAPI_MakePrism(TopoDS.Face(face), direction), "pull"
             )
             if distance > 0:
                 result = built_shape(boolean_builder(BRepAlgoAPI_Fuse, body, prism), "pull")
@@ -945,7 +945,7 @@ def _join_solids(shape) -> list:
     """Return the distinct solids in a boolean result, not its tree items."""
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedMapOfShape
 
     mapping = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_SOLID, mapping)
@@ -1084,7 +1084,7 @@ class BooleanFeature(Feature):
         tools = {tool: ctx.named_shape(tool) for tool in tool_names}
         with guard(operation):
             def combine(fuzzy: float = 0.0):
-                from OCP.TopTools import TopTools_ListOfShape
+                from simplecad.kernel.occt_compat import TopTools_ListOfShape
 
                 if operation in {"join", "cut"}:
                     arguments = TopTools_ListOfShape()

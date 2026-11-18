@@ -162,7 +162,7 @@ def dump_ui_state(window=None) -> None:
         context = getattr(viewport, "context", None)
         if context is not None:
             try:
-                from OCP.AIS import AIS_ListOfInteractive
+                from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
                 displayed = AIS_ListOfInteractive()
                 context.DisplayedObjects(displayed)

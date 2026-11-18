@@ -182,7 +182,7 @@ def _vertices(shape) -> list[SnapPoint]:
     from OCP.TopAbs import TopAbs_EDGE
     edge_explorer = TopExp_Explorer(shape, TopAbs_EDGE)
     while edge_explorer.More():
-        edge = TopoDS.Edge_s(edge_explorer.Current())
+        edge = TopoDS.Edge(edge_explorer.Current())
         direction = _linear_direction(edge)
         if direction is not None:
             from OCP.BRepAdaptor import BRepAdaptor_Curve
@@ -197,7 +197,7 @@ def _vertices(shape) -> list[SnapPoint]:
     found, seen = [], set()
     explorer = TopExp_Explorer(shape, TopAbs_VERTEX)
     while explorer.More():
-        pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(explorer.Current()))
+        pnt = BRep_Tool.Pnt_s(TopoDS.Vertex(explorer.Current()))
         key = tuple(round(v, 6) for v in _point(pnt))
         if key not in seen:
             seen.add(key)
@@ -243,7 +243,7 @@ def _edges_of(shape) -> list[SnapPoint]:
     found, seen = [], set()
     explorer = TopExp_Explorer(shape, TopAbs_EDGE)
     while explorer.More():
-        for snap in _edge_points(TopoDS.Edge_s(explorer.Current())):
+        for snap in _edge_points(TopoDS.Edge(explorer.Current())):
             key = (snap.kind,) + tuple(round(v, 6) for v in snap.position)
             if key not in seen:
                 seen.add(key)
@@ -263,7 +263,7 @@ def _face_points(shape) -> list[SnapPoint]:
     found: list[SnapPoint] = []
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
-        face = TopoDS.Face_s(explorer.Current())
+        face = TopoDS.Face(explorer.Current())
         plane = analyse_plane(face)
         if plane is not None:
             found.append(SnapPoint(plane.center, "face", axis=tuple(plane.normal)))
@@ -286,7 +286,7 @@ def _edge_face_map(parent):
     """Edge -> the faces using it, for *parent*, built at most once per body."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
 
     key = parent.TShape()
     found = _ANCESTORS.get(key)
@@ -397,7 +397,7 @@ def snap_points(shape, parent=None) -> list[SnapPoint]:
     if shape.ShapeType() == TopAbs_VERTEX:
         from OCP.BRep import BRep_Tool
 
-        pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(shape))
+        pnt = BRep_Tool.Pnt_s(TopoDS.Vertex(shape))
         return [SnapPoint(_point(pnt), "vertex")]
 
     if _count(shape, TopAbs_FACE, MAX_FACES_FOR_SNAPS + 1) > MAX_FACES_FOR_SNAPS:
@@ -409,7 +409,7 @@ def snap_points(shape, parent=None) -> list[SnapPoint]:
     if parent is not None and shape.ShapeType() == TopAbs_FACE:
         try:
             seen = {(s.kind,) + tuple(round(v, 6) for v in s.position) for s in found}
-            for neighbour in _neighbours_of(TopoDS.Face_s(shape), parent):
+            for neighbour in _neighbours_of(TopoDS.Face(shape), parent):
                 for snap in _vertices(neighbour) + _edges_of(neighbour):
                     key = (snap.kind,) + tuple(round(v, 6) for v in snap.position)
                     if key not in seen:
@@ -496,7 +496,7 @@ def _edge_hit(shape, origin, direction):
     best = None
     for shape_edge in edges:
         try:
-            edge = TopoDS.Edge_s(shape_edge)
+            edge = TopoDS.Edge(shape_edge)
             adaptor = BRepAdaptor_Curve(edge)
             first, last = adaptor.FirstParameter(), adaptor.LastParameter()
             curve = BRep_Tool.Curve_s(edge, 0.0, 0.0)

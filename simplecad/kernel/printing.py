@@ -151,7 +151,7 @@ def _free_edges(shape) -> int:
     """Edges belonging to only one face: holes in the surface."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
 
     mapping = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, mapping)
@@ -162,7 +162,7 @@ def _free_edges(shape) -> int:
             from OCP.BRep import BRep_Tool
             from OCP.TopoDS import TopoDS
 
-            edge = TopoDS.Edge_s(mapping.FindKey(index))
+            edge = TopoDS.Edge(mapping.FindKey(index))
             if not BRep_Tool.Degenerated_s(edge):
                 loose += 1
     return loose
@@ -174,7 +174,7 @@ def check_disconnected(shape) -> Finding:
 
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedMapOfShape
 
     mapping = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_SOLID, mapping)

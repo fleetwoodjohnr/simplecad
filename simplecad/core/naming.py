@@ -48,7 +48,7 @@ def sub_shapes(shape, kind: str) -> list:
     The order is deliberately treated as a hint only -- see the module docstring.
     """
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedMapOfShape
 
     mapping = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, _kind_enum(kind), mapping)
@@ -257,7 +257,7 @@ def _adjacent_faces(edge, parent) -> list[str]:
     """Summaries of the faces meeting at *edge*, for disambiguation."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
 
     mapping = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(parent, TopAbs_EDGE, TopAbs_FACE, mapping)
@@ -388,19 +388,19 @@ def as_face(shape):
     """Downcast to ``TopoDS_Face``. OCCT's adaptors will not accept a bare shape."""
     from OCP.TopoDS import TopoDS
 
-    return TopoDS.Face_s(shape)
+    return TopoDS.Face(shape)
 
 
 def as_edge(shape):
     from OCP.TopoDS import TopoDS
 
-    return TopoDS.Edge_s(shape)
+    return TopoDS.Edge(shape)
 
 
 def as_vertex(shape):
     from OCP.TopoDS import TopoDS
 
-    return TopoDS.Vertex_s(shape)
+    return TopoDS.Vertex(shape)
 
 
 def shape_kind(shape) -> str:

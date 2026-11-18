@@ -546,7 +546,9 @@ class OcctViewport(QOpenGLWidget):
         excluded. A grid reaching out to 500 mm would otherwise drag every
         default orbit pivot back toward the world origin.
         """
-        from OCP.AIS import AIS_ListOfInteractive, AIS_Shape
+        from OCP.AIS import AIS_Shape
+
+        from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
         from .camera import bbox_center
 
@@ -765,7 +767,7 @@ class OcctViewport(QOpenGLWidget):
         self._selection_modes = modes
         if self._context is None:
             return
-        from OCP.AIS import AIS_ListOfInteractive
+        from simplecad.kernel.occt_compat import AIS_ListOfInteractive
 
         displayed = AIS_ListOfInteractive()
         self._context.DisplayedObjects(displayed)
@@ -1355,8 +1357,8 @@ class OcctViewport(QOpenGLWidget):
             Graphic3d_TMF_TriedronPers,
             Graphic3d_TransformPers,
             Graphic3d_TOSM_FRAGMENT,
-            Graphic3d_Vec2i,
         )
+        from simplecad.kernel.occt_compat import Graphic3d_Vec2i
         from OCP.OpenGl import OpenGl_GraphicDriver
         from OCP.V3d import V3d_Viewer
 

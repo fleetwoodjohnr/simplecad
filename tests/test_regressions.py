@@ -389,7 +389,7 @@ def test_a_corner_expands_to_three_edges_not_six():
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     explorer = TopExp_Explorer(box, TopAbs_VERTEX)
-    corner = TopoDS.Vertex_s(explorer.Current())
+    corner = TopoDS.Vertex(explorer.Current())
     assert len(edges_at_vertex(box, corner)) == 3
 
 
@@ -427,7 +427,7 @@ def test_the_ancestor_map_is_reused_between_calls():
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     explorer = TopExp_Explorer(box, TopAbs_FACE)
-    face = TopoDS.Face_s(explorer.Current())
+    face = TopoDS.Face(explorer.Current())
 
     snapping.clear_caches()
     first = snapping.snap_points(face, parent=box)
@@ -485,7 +485,7 @@ def test_a_single_face_of_a_heavy_body_keeps_its_named_snaps():
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     explorer = TopExp_Explorer(box, TopAbs_FACE)
-    face = TopoDS.Face_s(explorer.Current())
+    face = TopoDS.Face(explorer.Current())
 
     limit = snapping.FULL_SNAP_FACES
     try:
@@ -511,7 +511,7 @@ def test_the_ray_fallback_lets_go_of_an_expensive_body():
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     explorer = TopExp_Explorer(box, TopAbs_EDGE)
-    edge = TopoDS.Edge_s(explorer.Current())
+    edge = TopoDS.Edge(explorer.Current())
     # An edge has no surface of its own, so the only way to a "surface" snap
     # here is through the parent.
     ray = ((5.0, 5.0, 100.0), (0.0, 0.0, -1.0))

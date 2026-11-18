@@ -75,16 +75,16 @@ def _label(text: str, height: float, depth: float):
     """
     try:
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
-        from OCP.Font import Font_BRepTextBuilder, Font_FontMgr, Font_FontAspect_Regular
+        from OCP.Font import Font_FontMgr, Font_FontAspect_Regular
         from OCP.gp import gp_Ax3, gp_Pnt, gp_Vec
-        from OCP.NCollection import NCollection_Utf8String
-        from OCP.StdPrs import StdPrs_BRepFont
+        from OCP.NCollection import NCollection_String
+        from OCP.StdPrs import StdPrs_BRepFont, StdPrs_BRepTextBuilder
 
         font = StdPrs_BRepFont()
         if not font.Init("sans-serif", Font_FontAspect_Regular, height):
             return None
-        builder = Font_BRepTextBuilder()
-        shape = builder.Perform(font, NCollection_Utf8String(text))
+        builder = StdPrs_BRepTextBuilder()
+        shape = builder.Perform(font, NCollection_String(text))
         return shape if shape is not None and not shape.IsNull() else None
     except Exception:  # noqa: BLE001 - labels are optional
         return None

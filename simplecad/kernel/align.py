@@ -458,7 +458,7 @@ def planar_frame(face) -> PlanarFrame:
             "Placement needs a flat target face.",
             suggestion="Select a planar face on the receiving object.",
         )
-    face = TopoDS.Face_s(face)
+    face = TopoDS.Face(face)
     plane = BRepAdaptor_Surface(face).Plane()
     position = plane.Position()
     x_dir = position.XDirection()

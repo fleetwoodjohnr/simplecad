@@ -1,6 +1,7 @@
-# Geometry kernel: OCCT 7.9.3 via the CadQuery OCP bindings.
+# Geometry kernel: OCCT 8.0.1 via the CadQuery OCP bindings. 7.9.3 segfaulted in
+# ShapeUpgrade_UnifySameDomain on valid push/pull results (see CHANGELOG 0.3.2).
 # Pinned to the exact build verified against this Fedora 44 / Python 3.14 environment.
-cadquery-ocp==7.9.3.1.1
+cadquery-ocp==8.0.1.1.0
 # Qt 6 bindings for the shell, viewport host and all UI.
 PySide6==6.11.1
 # Sketch constraint solver (Levenberg-Marquardt) and linear algebra.

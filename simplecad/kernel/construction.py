@@ -315,7 +315,7 @@ def _edge_axis(edge):
     from OCP.GeomAbs import GeomAbs_Line
     from OCP.TopoDS import TopoDS
 
-    adaptor = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
+    adaptor = BRepAdaptor_Curve(TopoDS.Edge(edge))
     if adaptor.GetType() != GeomAbs_Line:
         raise CadError(
             "That edge is curved.",
@@ -333,7 +333,7 @@ def _vertex_position(vertex):
     from OCP.BRep import BRep_Tool
     from OCP.TopoDS import TopoDS
 
-    point = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vertex))
+    point = BRep_Tool.Pnt_s(TopoDS.Vertex(vertex))
     return (point.X(), point.Y(), point.Z())
 
 
