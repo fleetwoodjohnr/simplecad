@@ -794,6 +794,11 @@ class MainWindow(QMainWindow):
         #: Root items to select when the outstanding paste rebuild completes.
         self._select_after_rebuild: list[str] = []
         self._select_after_rebuild_revision = 0
+        #: (feature id, label, request revision) of a step just added, until its
+        #: rebuild answers -- so a step that fails can be taken back.
+        self._new_step = None
+        #: Why a step was taken back, kept over the rebuild the retraction asks for.
+        self._held_hint = None
         self._geometry_recovery_revision = 0
         #: Arrow presses inside one 250 ms burst share these latched camera axes
         #: and become one feature/history operation.
@@ -1374,6 +1379,39 @@ class MainWindow(QMainWindow):
         self.document.add_feature(feature)
         self.mark_dirty()
         self.rebuild()
+        self._await_new_step(feature, feature.label)
+
+    def _await_new_step(self, feature, label: str) -> None:
+        self._new_step = (feature.id, label, self.geometry.latest_revision)
+
+    def _retract_failed_step(self, failures=None, revision: int = 0) -> str | None:
+        """Take back a step that failed as it was made, rather than build on it.
+
+        Kept, a failed step becomes its body's newest producer, so every later
+        edit of that body fails behind it ("An earlier feature failed") until
+        the user finds it and undoes it -- which is what made pushing and
+        pulling on one box "keep failing". *failures* is a rebuild report's
+        map; None means the geometry engine died before answering. Returns the
+        hint to show when a step was taken back.
+        """
+        if self._new_step is None:
+            return None
+        feature_id, label, sent = self._new_step
+        if failures is not None:
+            if revision < sent:
+                return None  # an older request; the one with this step is to come
+            reason = failures.get(feature_id)
+        else:
+            reason = "The geometry engine stopped while building it."
+        self._new_step = None
+        if reason is None:
+            return None
+        stale = self.history.retract(feature_id)
+        if stale is None:
+            return None
+        self.invalidate(stale)
+        self.rebuild()
+        return f"{label} failed: {reason} Nothing was changed."
 
     def rebuild(self, force: bool = False) -> None:
         """Rebuild the model and bring the view up to date.
@@ -1452,11 +1490,15 @@ class MainWindow(QMainWindow):
             self._select_pasted_items()
         report = message.get("report", {})
         warnings = report.get("warnings") or []
-        self.set_hint(warnings[-1] if warnings else report.get("summary", ""))
+        retracted = self._retract_failed_step(report.get("failures") or {},
+                                              message.get("revision", 0))
+        held, self._held_hint = self._held_hint, retracted
+        self.set_hint(retracted or held
+                      or (warnings[-1] if warnings else report.get("summary", "")))
 
     def _on_geometry_failed(self, error: str) -> None:
         self._cancel_nudge()
-        self.set_hint(error)
+        self.set_hint(self._retract_failed_step() or error)
         if self.geometry.available:
             if self.geometry.busy:
                 # A restarted worker is already receiving the latest document.
@@ -1830,10 +1872,13 @@ class MainWindow(QMainWindow):
             label = "Nudge objects"
 
         self.history.record(label)
-        if state["kind"] == "face" or not self.document.fold_translation(state["bodies"], offset):
+        added = state["kind"] == "face" or not self.document.fold_translation(state["bodies"], offset)
+        if added:
             self.document.add_feature(feature)
         self.mark_dirty()
         self.rebuild()
+        if added:
+            self._await_new_step(feature, label)
 
     def _refresh_rebuilt_model(self, ok: bool) -> None:
         # Replacing AIS presentations emits selection changes too. Those are

@@ -198,6 +198,20 @@ class History:
     def redo(self):
         return self._move(self._redo, self._undo)
 
+    def retract(self, feature_id: str):
+        """Undo the newest step if it is the one that added *feature_id*, with no redo.
+
+        For a step that failed as it was made: undoing it is the fix, and
+        redoing it would only bring the failure back. Returns the stale feature
+        IDs like ``undo``, or None when the newest step is some other edit.
+        """
+        self._finish_pending()
+        if not self._undo or f'"{feature_id}"' not in self._undo[-1].patch_json:
+            return None
+        stale = self.undo()
+        self._redo.pop()
+        return stale
+
     def _inverse_patch(self, patch):
         """Read only the entities named by a patch, not the whole document."""
         document = self.document

@@ -285,6 +285,7 @@ def test_failed_sync_rebuilds_once_without_retry_loop():
     window = SimpleNamespace(
         geometry=geometry, _geometry_recovery_revision=0,
         _cancel_nudge=lambda: None, set_hint=lambda _text: None,
+        _retract_failed_step=lambda: None,  # no new step was waiting
     )
 
     def rebuild(*, force):

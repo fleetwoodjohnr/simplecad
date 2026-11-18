@@ -16,6 +16,11 @@ updater shows (`scripts/release_notes.py`).
   boss on the face now moves with the face, and through-holes stay through.
   Before, pushing a wall with a recessed vent left a solid pillar the full
   depth of the push behind the vent.
+- **A step that fails is not kept.** A Pull (or any new step) that failed used
+  to stay in the history as the body's newest step, so every later push or
+  pull on that body failed behind it with "An earlier feature failed". It is
+  now taken back at once, nothing is left to redo, and the hint says why:
+  "Pull failed: … Nothing was changed."
 - **A push that would cut a part in two says so** instead of leaving loose
   pieces behind.
 - **Engraved text cuts into the face.** With OCCT 7.9.3 an engraved label
