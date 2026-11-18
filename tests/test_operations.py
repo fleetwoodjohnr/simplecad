@@ -746,3 +746,113 @@ def test_resizing_to_nothing_is_refused(doc):
     build(doc)
     resize(doc, "Post", outer_round_face(doc.bodies["Post"].shape), feature.id, -5.0)
     assert not Rebuilder(doc).rebuild().ok
+
+
+# -- push/pull of a face with things on it ---------------------------------
+def _solid(shape_builder):
+    """Add an arbitrary OCCT solid to a fresh document as an embedded import."""
+    from simplecad.core.geometry_service import serialise_shape
+    from simplecad.kernel.importing import EmbeddedImportFeature
+
+    document = Document("Ops")
+    sha = document.add_asset(serialise_shape(shape_builder()))
+    feature = document.add_feature(
+        EmbeddedImportFeature(inputs={"asset": sha}, outputs=["Part"]))
+    build(document)
+    return document, feature
+
+
+def _box(x0, y0, z0, x1, y1, z1):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), gp_Pnt(x1, y1, z1)).Shape()
+
+
+def _cylinder(x, y, radius, z0, z1):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, z0), gp_Dir(0, 0, 1)), radius, z1 - z0).Shape()
+
+
+def _material(shape, *corners):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    return volume(BRepAlgoAPI_Common(shape, _box(*corners)).Shape())
+
+
+def _wall_with_features():
+    """A 60 x 60 x 20 plate whose top face carries one of everything.
+
+    A through-hole (r 3), a 16 x 16 recess 2 deep with its own through-hole
+    (r 2) in its floor, and an 8 x 8 boss 5 tall standing on the face.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+
+    part = _box(0, 0, 0, 60, 60, 20)
+    for tool in (_cylinder(10, 10, 3, -1, 21), _box(30, 30, 18, 46, 46, 21), _cylinder(38, 38, 2, -1, 19)):
+        part = BRepAlgoAPI_Cut(part, tool).Shape()
+    return BRepAlgoAPI_Fuse(part, _box(8, 40, 20, 16, 48, 25)).Shape()
+
+
+@pytest.mark.parametrize("distance", [-6.0, 6.0])
+def test_push_pull_takes_a_recess_and_a_boss_with_the_face(distance):
+    """The recess and boss move with the face; both holes stay through.
+
+    A prism of the face alone left the material behind the recess standing as
+    a pillar the full depth of the push, and the boss stranded where it was.
+    """
+    document, feature = _solid(_wall_with_features)
+    before = document.bodies["Part"].shape
+    face = max((f for f in sub_shapes(before, "face")
+                if fingerprint(f, "face").direction
+                and fingerprint(f, "face").direction[2] > 0.99
+                and fingerprint(f, "face").center[2] == pytest.approx(20.0)),
+               key=lambda f: fingerprint(f, "face").measure)
+    document.add_feature(PushPullFeature(
+        inputs={"body": BodyRef("Part"), "face": make_ref(before, face, feature.id, body="Part"),
+                "distance": distance},
+        outputs=["Part"],
+    ))
+    build(document)
+    after = document.bodies["Part"].shape
+    top = 20.0 + distance
+
+    assert is_valid(after)
+    # Every column under the face grows or shrinks by the distance, except the
+    # two through-holes, which stay empty.
+    assert volume(after) == pytest.approx(
+        volume(before) + distance * (60 * 60 - 13 * math.pi), rel=1e-6)
+    # The recess is still 2 deep, now below the moved face; material under it.
+    assert _material(after, 31, 31, top - 1.9, 35, 35, top - 0.1) == pytest.approx(0, abs=1e-6)
+    assert _material(after, 31, 31, top - 3.9, 35, 35, top - 2.1) == pytest.approx(4 * 4 * 1.8)
+    # The boss stands on the moved face, 5 tall.
+    assert bounding_box(after)[1][2] == pytest.approx(top + 5)
+    assert _material(after, 9, 41, top + 0.1, 15, 47, top + 4.9) == pytest.approx(6 * 6 * 4.8)
+    # Both holes still go all the way through.
+    assert _material(after, 9.5, 9.5, -1, 10.5, 10.5, 30) == pytest.approx(0, abs=1e-6)
+    assert _material(after, 37.5, 37.5, -1, 38.5, 38.5, top - 2.1) == pytest.approx(0, abs=1e-6)
+
+
+def test_push_pull_refuses_to_cut_a_part_in_two():
+    """Pushing a thin bridge past its thickness used to leave loose pieces silently."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    def dumbbell():
+        ends = BRepAlgoAPI_Fuse(_box(0, 0, 0, 10, 10, 20), _box(30, 0, 0, 40, 10, 20)).Shape()
+        return BRepAlgoAPI_Fuse(ends, _box(10, 0, 0, 30, 10, 4)).Shape()
+
+    document, feature = _solid(dumbbell)
+    shape = document.bodies["Part"].shape
+    bar_top = next(f for f in sub_shapes(shape, "face")
+                   if fingerprint(f, "face").center[2] == pytest.approx(4.0)
+                   and fingerprint(f, "face").direction[2] > 0.99)
+    document.add_feature(PushPullFeature(
+        inputs={"body": BodyRef("Part"), "face": make_ref(shape, bar_top, feature.id, body="Part"),
+                "distance": -5.0},
+        outputs=["Part"],
+    ))
+    report = Rebuilder(document).rebuild()
+    assert not report.ok
+    assert "2 pieces" in report.summary()

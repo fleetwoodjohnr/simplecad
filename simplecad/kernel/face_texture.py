@@ -7,7 +7,7 @@ clearances do not change when the exact preview arrives.
 
 from __future__ import annotations
 
-from .occ import boolean_builder
+from .occ import boolean_builder, solid_count
 
 import math
 from dataclasses import dataclass
@@ -182,18 +182,6 @@ def _polygons(shape):
     if hasattr(shape, "geoms"):
         return [polygon for part in shape.geoms for polygon in _polygons(part)]
     return []
-
-
-def _solid_count(shape) -> int:
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-
-    count = 0
-    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-    while explorer.More():
-        count += 1
-        explorer.Next()
-    return count
 
 
 @dataclass
@@ -791,8 +779,8 @@ class FaceTextureFeature(Feature):
             # and may stall for minutes; the boolean result is already valid.
             if planar and not previewing:
                 result = unify(result)
-        solids_before = _solid_count(body)
-        solids_after = _solid_count(result)
+        solids_before = solid_count(body)
+        solids_after = solid_count(result)
         if (
             (not previewing and not is_valid(result))
             or solids_after == 0

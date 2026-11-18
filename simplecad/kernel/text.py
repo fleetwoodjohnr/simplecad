@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .occ import boolean_builder
+from .occ import boolean_builder, solid_count
 
 import math
 
@@ -123,18 +123,6 @@ def _rendered_text(text: str, family: str, height: float):
     )
 
 
-def _solid_count(shape) -> int:
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-
-    count = 0
-    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-    while explorer.More():
-        count += 1
-        explorer.Next()
-    return count
-
-
 @register("text")
 class TextFeature(Feature):
     """Fuse or cut font outlines on a durable planar-face reference."""
@@ -219,7 +207,7 @@ class TextFeature(Feature):
         ]
 
         original_volume = volume(body)
-        original_solids = _solid_count(body)
+        original_solids = solid_count(body)
         result = body
         direction_scale = (
             depth + OVERLAP if mode == "raised" else -(depth + OVERLAP)
@@ -265,7 +253,7 @@ class TextFeature(Feature):
                 result = built_shape(boolean(result, tool), "text")
             result = unify(result)
 
-        if not is_valid(result) or _solid_count(result) == 0:
+        if not is_valid(result) or solid_count(result) == 0:
             raise CadError(
                 "The text operation did not leave a valid solid.",
                 suggestion="Reduce its size or depth, or move it farther onto the face.",
@@ -277,7 +265,7 @@ class TextFeature(Feature):
                     "The raised text does not overlap the selected face.",
                     suggestion="Move it onto the face or reduce its size.",
                 )
-            if _solid_count(result) > original_solids:
+            if solid_count(result) > original_solids:
                 raise CadError(
                     "Some raised letters are detached from the body.",
                     suggestion="Move the text onto the face or reduce its size.",

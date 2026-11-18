@@ -12,6 +12,12 @@ updater shows (`scripts/release_notes.py`).
   engine inside OCCT 7.9.3's face merging, on a result that was itself valid.
   SimpleCAD now runs on **OCCT 8.0.1**, which merges the same shape cleanly.
   Every saved project opens and rebuilds exactly as before.
+- **A push or pull takes what is on the face with it.** A recess or a raised
+  boss on the face now moves with the face, and through-holes stay through.
+  Before, pushing a wall with a recessed vent left a solid pillar the full
+  depth of the push behind the vent.
+- **A push that would cut a part in two says so** instead of leaving loose
+  pieces behind.
 - **Engraved text cuts into the face.** With OCCT 7.9.3 an engraved label
   could leave the face untouched; on 8.0.1 it removes the material it should.
 

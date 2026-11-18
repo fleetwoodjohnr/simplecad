@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .occ import boolean_builder
+from .occ import boolean_builder, solid_count
 
 from ..core.document import BodyRef, BuildContext, Feature, register
 from ..core.errors import CadError
@@ -10,18 +10,6 @@ from ..core.units import Dimension
 from .align import _dot, _projected_bounds, _scale, solve, translation
 from .occ import built_shape, is_valid, transformed, unify, volume
 from .operations import _face_profile, _wire_from_coords
-
-
-def _solid_count(shape) -> int:
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-
-    count = 0
-    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-    while explorer.More():
-        count += 1
-        explorer.Next()
-    return count
 
 
 def build_section_replacement(
@@ -109,7 +97,7 @@ def build_section_replacement(
     remaining = built_shape(boolean_builder(BRepAlgoAPI_Cut, target, cutter), "section replacement cut")
     result = unify(built_shape(boolean_builder(BRepAlgoAPI_Fuse, remaining, placed), "section replacement"))
 
-    if not is_valid(result) or _solid_count(result) != 1:
+    if not is_valid(result) or solid_count(result) != 1:
         raise CadError(
             "The replacement does not make one valid connected body.",
             suggestion="Reduce the boundary or setback, or move the replacement farther onto the face.",

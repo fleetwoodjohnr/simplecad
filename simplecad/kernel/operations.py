@@ -16,8 +16,8 @@ from ..core.document import BodyRef, BuildContext, Feature, register
 from ..core.errors import CadError, guard
 from ..core.units import Dimension
 from .occ import (
-    axis_transform, bounding_box, built_shape, is_valid, make_transform,
-    transformed, unify, volume,
+    axis_transform, bounding_box, built_shape, compound, is_valid, make_transform,
+    solid_count, transformed, unify, volume,
 )
 
 
@@ -522,6 +522,176 @@ class ShellFeature(_BodyOperation):
 # ----------------------------------------------------------------------
 # Direct modelling
 # ----------------------------------------------------------------------
+#: How far below the deepest blind floor a carrying push/pull cuts the face's
+#: column: clear of the floor face itself, and well inside any printable wall.
+SECTION_CLEARANCE = 0.01
+#: Smaller than this along the normal is not a recess or a boss. Bounding boxes
+#: are padded by the shape's tolerance, about 0.01 mm after a few booleans, and
+#: that padding alone must not send a plain face down the carrying path.
+FEATURE_TOLERANCE = 0.05
+
+
+def _offset(point, origin, normal) -> float:
+    """Signed distance of *point* from the plane through *origin* along *normal*."""
+    return sum((point[i] - origin[i]) * normal[i] for i in range(3))
+
+
+def _span(shape, origin, normal) -> tuple[float, float]:
+    """The offsets *shape* covers along *normal*, from its bounding box."""
+    low, high = bounding_box(shape)
+    offsets = [
+        _offset((x, y, z), origin, normal)
+        for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])
+    ]
+    return min(offsets), max(offsets)
+
+
+def _planar_face(wire, normal):
+    """A face on *wire* facing along *normal*: a prism of a reversed face is inside out."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.TopoDS import TopoDS
+
+    from .detect import analyse_plane
+
+    face = BRepBuilderAPI_MakeFace(TopoDS.Wire(wire), True).Face()
+    plane = analyse_plane(face)
+    if plane is not None and sum(a * b for a, b in zip(plane.normal, normal)) < 0:
+        face = TopoDS.Face(face.Reversed())
+    return face
+
+
+def _column(face, normal, low: float, high: float):
+    """The solid *face* sweeps between offsets *low* and *high* along *normal*."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    prism = built_shape(BRepPrimAPI_MakePrism(face, gp_Vec(*normal) * (high - low)), "pull")
+    return transformed(prism, make_transform(translate=tuple(c * low for c in normal)))
+
+
+def _face_features(body, face, info, tol: float = FEATURE_TOLERANCE) -> tuple[float, float]:
+    """The deepest blind floor and the tallest boss among *face*'s inner loops.
+
+    Both are 0 when every loop is a through-hole, which a plain prism of the
+    face already handles. Each loop is followed from its walls across every
+    face that is not parallel to *face* -- booleans leave walls split into
+    slivers, so one step is not enough -- until a parallel face ends it: one
+    facing the same way is a floor below the face (a recess) or a top above it
+    (a boss); one facing the other way is the far side, so the hole goes
+    through. A blind hole with no flat floor (a drill point) counts by its depth.
+    """
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_WIRE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+
+    from simplecad.kernel.occt_compat import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from .detect import analyse_plane
+
+    def explore(shape, kind):
+        found, explorer = [], TopExp_Explorer(shape, kind)
+        while explorer.More():
+            found.append(explorer.Current())
+            explorer.Next()
+        return found
+
+    outer = BRepTools.OuterWire_s(face)
+    loops = [wire for wire in explore(face, TopAbs_WIRE) if not wire.IsSame(outer)]
+    if not loops:
+        return 0.0, 0.0
+    adjacency = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(body, TopAbs_EDGE, TopAbs_FACE, adjacency)
+    origin, normal = info.center, info.normal
+
+    pocket = boss = 0.0
+    for wire in loops:
+        seen = [face]
+        frontier = [wall for edge in explore(wire, TopAbs_EDGE)
+                    for wall in adjacency.FindFromKey(edge) if not wall.IsSame(face)]
+        low = high = 0.0
+        through = False
+        while frontier and len(seen) < 500:  # ponytail: a cap, not a proof the walk is local
+            current = frontier.pop()
+            if any(current.IsSame(other) for other in seen):
+                continue
+            seen.append(current)
+            plane = analyse_plane(current)
+            facing = sum(a * b for a, b in zip(plane.normal, normal)) if plane else 0.0
+            if abs(facing) > 0.999:  # a floor, a top or the far side: the walk stops
+                offset = _offset(plane.center, origin, normal)
+                if facing < 0:
+                    through = True
+                else:
+                    low, high = min(low, offset), max(high, offset)
+                continue
+            span = _span(current, origin, normal)
+            low, high = min(low, span[0]), max(high, span[1])
+            frontier += [neighbour for edge in explore(current, TopAbs_EDGE)
+                         for neighbour in adjacency.FindFromKey(edge)]
+        if high > tol:
+            boss = max(boss, high)
+        elif not through and -low > tol:
+            pocket = max(pocket, -low)
+    return pocket, boss
+
+
+def _carry_push_pull(body, face, info, distance: float, pocket: float, boss: float):
+    """Move *face* by *distance* and take its recesses and bosses with it.
+
+    Works on the column over the face's outline. The column is cut just below
+    the deepest recess floor: everything above the cut (the recesses, the
+    bosses, the face's own skin) moves by *distance*, and everything below it
+    stays, losing a slab (push) or gaining one drawn from the material's own
+    cross-section at the cut (pull). Through-holes, including those in a recess
+    floor, therefore stay through. Outside the column nothing changes.
+
+    ponytail: a boss that reaches across to other material (a rib between two
+    walls) is moved whole; such a face needs Move, not Pull.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.gp import gp_Vec
+
+    from .detect import analyse_plane
+
+    def run(kind, first, second):
+        return built_shape(boolean_builder(kind, first, second), "pull")
+
+    normal = info.normal
+    outline = _planar_face(BRepTools.OuterWire_s(face), normal)
+    cut = -(pocket + SECTION_CLEARANCE) if pocket else 0.0
+    top = boss + 1.0 if boss else SECTION_CLEARANCE
+    deep = -(_depth_along(body, normal) + 1.0)
+
+    rest = run(BRepAlgoAPI_Cut, body, _column(outline, normal, deep, top))
+    lower = run(BRepAlgoAPI_Common, body, _column(outline, normal, deep, cut))
+    upper = run(BRepAlgoAPI_Common, body, _column(outline, normal, cut, top))
+    parts = [transformed(upper, make_transform(translate=tuple(c * distance for c in normal)))]
+    if distance < 0:
+        lower = run(BRepAlgoAPI_Cut, lower, _column(outline, normal, cut + distance, cut))
+    else:
+        thin = run(BRepAlgoAPI_Common, body, _column(outline, normal, cut - SECTION_CLEARANCE, cut))
+        section = []
+        explorer = TopExp_Explorer(thin, TopAbs_FACE)
+        while explorer.More():
+            plane = analyse_plane(explorer.Current())
+            if (plane is not None
+                    and abs(_offset(plane.center, info.center, normal) - cut) < 1e-6
+                    and sum(a * b for a, b in zip(plane.normal, normal)) > 0.999):
+                section.append(explorer.Current())
+            explorer.Next()
+        if section:
+            parts.append(built_shape(
+                BRepPrimAPI_MakePrism(compound(section), gp_Vec(*normal) * distance), "pull"))
+    result = run(BRepAlgoAPI_Fuse, rest, lower)
+    for part in parts:
+        result = run(BRepAlgoAPI_Fuse, result, part)
+    return result
+
+
 @register("push_pull")
 class PushPullFeature(_BodyOperation):
     """Move a planar face along its normal, adding or removing material."""
@@ -529,7 +699,6 @@ class PushPullFeature(_BodyOperation):
     label = "Pull"
 
     def execute(self, ctx: BuildContext) -> dict:
-        from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeDraft
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
         from OCP.gp import gp_Vec
@@ -563,14 +732,19 @@ class PushPullFeature(_BodyOperation):
         with guard("pull"):
             from OCP.TopoDS import TopoDS
 
-            direction = gp_Vec(*info.normal) * distance
-            prism = built_shape(
-                BRepPrimAPI_MakePrism(TopoDS.Face(face), direction), "pull"
-            )
-            if distance > 0:
-                result = built_shape(boolean_builder(BRepAlgoAPI_Fuse, body, prism), "pull")
+            face = TopoDS.Face(face)
+            pocket, boss = _face_features(body, face, info)
+            if pocket or boss:
+                # A prism of the face itself would leave the material behind a
+                # recess standing as a pillar, and a boss stranded.
+                result = _carry_push_pull(body, face, info, distance, pocket, boss)
             else:
-                result = built_shape(boolean_builder(BRepAlgoAPI_Cut, body, prism), "pull")
+                direction = gp_Vec(*info.normal) * distance
+                prism = built_shape(
+                    BRepPrimAPI_MakePrism(face, direction), "pull"
+                )
+                kind = BRepAlgoAPI_Fuse if distance > 0 else BRepAlgoAPI_Cut
+                result = built_shape(boolean_builder(kind, body, prism), "pull")
             # A boolean can report success and still hand back a shape with no
             # solid in it. Emitting that leaves a body that looks present in the
             # tree and is not there in the model.
@@ -578,6 +752,15 @@ class PushPullFeature(_BodyOperation):
                 raise CadError(
                     "That push would leave nothing behind.",
                     suggestion="Push in less far, or delete the body instead.",
+                )
+            # Pushing past a wall's thickness used to leave what stood on it
+            # floating as loose pieces, with no word said.
+            pieces = solid_count(result)
+            if pieces > solid_count(body):
+                raise CadError(
+                    f"That would cut the part into {pieces} pieces.",
+                    suggestion="Push in less far: the wall is thinner than that here."
+                    if distance < 0 else "Pull a shorter distance.",
                 )
             # Merge the seam the boolean leaves between coplanar faces.
             return self._emit(unify(result))

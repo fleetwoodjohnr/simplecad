@@ -149,6 +149,18 @@ def bounding_box(shape, optimal: bool = True):
     return ((low.X(), low.Y(), low.Z()), (high.X(), high.Y(), high.Z()))
 
 
+def solid_count(shape) -> int:
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    count = 0
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    while explorer.More():
+        count += 1
+        explorer.Next()
+    return count
+
+
 def compound(shapes):
     """Bundle shapes for display without fusing or changing their identity."""
     from OCP.BRep import BRep_Builder
