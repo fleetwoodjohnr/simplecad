@@ -1,0 +1,104 @@
+{
+ "application": "SimpleCAD",
+ "assets": [],
+ "bodies": [
+  {
+   "color": null,
+   "id": "bba3f2ba465a5d609c3d8e0851e36e7f",
+   "metadata": {},
+   "name": "Box",
+   "producer": "f1613a5f23559477a931b14dcc25be801",
+   "visible": true
+  }
+ ],
+ "cache": {
+  "entries": {
+   "89ab0ae4e8b0db28476fd8a187374f6d9c2697c4b1d45727d602fb61aac2c981": {
+    "feature_id": "f1613a5f23559477a931b14dcc25be801",
+    "message": "",
+    "outputs": {
+     "bba3f2ba465a5d609c3d8e0851e36e7f": {
+      "kind": "brep",
+      "sha256": "9b65e72ac84a545bdb7f95864f1e498e34f1b4fe9618655d33187498f65735dd"
+     }
+    },
+    "version": "simplecad-feature-cache-2-occt-7.9"
+   }
+  },
+  "version": "simplecad-feature-cache-2-occt-7.9"
+ },
+ "counters": {
+  "Box": 2
+ },
+ "diagnostics": {
+  "f1613a5f23559477a931b14dcc25be801": {
+   "message": "",
+   "state": "ok"
+  }
+ },
+ "features": [
+  {
+   "bindings": {},
+   "dropped": [],
+   "id": "f1613a5f23559477a931b14dcc25be801",
+   "inputs": {
+    "depth": "30 mm",
+    "height": "20 mm",
+    "width": "40 mm"
+   },
+   "name": "Box",
+   "output_ids": {
+    "Box": "bba3f2ba465a5d609c3d8e0851e36e7f"
+   },
+   "outputs": [
+    "Box"
+   ],
+   "suppressed": false,
+   "type": "box"
+  }
+ ],
+ "format": 4,
+ "geometry": {
+  "bba3f2ba465a5d609c3d8e0851e36e7f": {
+   "current": true,
+   "feature_id": "f1613a5f23559477a931b14dcc25be801",
+   "sha256": "9b65e72ac84a545bdb7f95864f1e498e34f1b4fe9618655d33187498f65735dd",
+   "signature": "89ab0ae4e8b0db28476fd8a187374f6d9c2697c4b1d45727d602fb61aac2c981"
+  }
+ },
+ "groups": [],
+ "history": {
+  "limit": 100,
+  "redo": [],
+  "undo": [
+   {
+    "cache_keys": [],
+    "label": "Box",
+    "patch": {
+     "collections": {
+      "bodies": {
+       "order": [],
+       "remove": [
+        "bba3f2ba465a5d609c3d8e0851e36e7f"
+       ],
+       "set": {}
+      },
+      "features": {
+       "order": [],
+       "remove": [
+        "f1613a5f23559477a931b14dcc25be801"
+       ],
+       "set": {}
+      }
+     },
+     "values": {}
+    }
+   }
+  ],
+  "version": 1
+ },
+ "metadata": {},
+ "parameters": [],
+ "retired_ids": [],
+ "title": "Untitled"
+}

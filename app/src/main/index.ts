@@ -5,7 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
-import { openProjectFile, saveProjectFile } from './project-files'
+import { forgetProjectFile, openProjectFile, saveProjectFile } from './project-files'
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
@@ -80,6 +80,7 @@ function handle<A extends unknown[], R>(channel: string, fn: (e: IpcMainInvokeEv
 function registerIpc() {
   handle('project:open', () => mainWindow ? openProjectFile(mainWindow) : undefined)
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
+  handle('project:new', () => forgetProjectFile())
   handle('project:discard', async () => {
     if (!mainWindow) return false
     const { response } = await dialog.showMessageBox(mainWindow, {

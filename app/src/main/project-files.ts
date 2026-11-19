@@ -28,6 +28,10 @@ export async function openProjectFile(window: BrowserWindow) {
   }
 }
 
+export function forgetProjectFile() {
+  current = undefined
+}
+
 /** Save to the session's file, or ask where (`saveAs`, or no file yet). Returns the file's name, or nothing if cancelled. */
 export async function saveProjectFile(window: BrowserWindow, data: unknown, saveAs: unknown) {
   if (!(data instanceof Uint8Array) || !data.byteLength || data.byteLength > MAX_PROJECT_BYTES) {

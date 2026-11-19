@@ -244,6 +244,26 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
     })
 }
 
+/// A new project holding one box, as the Python app's Shape panel makes it.
+#[napi]
+pub fn new_project() -> Result<OpenedProject> {
+    let shape = ffi::make_box(40.0, 30.0, 20.0).map_err(reason)?;
+    let brep = ffi::write_brep(&shape).map_err(reason)?;
+    let model = scad::document::Model::new_box(brep).map_err(Error::from_reason)?;
+    Ok(OpenedProject {
+        bodies: vec![OpenedBody {
+            name: "Box".into(),
+            visible: true,
+            shape: Some(Shape { inner: shape }),
+        }],
+        notes: vec![],
+        project: Some(Project {
+            model,
+            original: Arc::new(Vec::new()),
+        }),
+    })
+}
+
 /// Crashes the engine process for real, so the isolation can be drilled.
 #[napi]
 pub fn crash() {

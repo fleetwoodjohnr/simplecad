@@ -250,7 +250,7 @@ impl Model {
             .latest()
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
-        let id = format!("f{}", uuid::Uuid::new_v4().simple());
+        let id = new_feature_id();
         let name = self.unique_name("Pull");
         let feature = json!({
             "id": id, "type": "push_pull", "name": name,
@@ -279,8 +279,52 @@ impl Model {
             }
         }
 
+        self.record(&id, "Pull", &object, brep, before)?;
+        Ok(id)
+    }
+
+    /// A new project holding one box, as the Shape panel makes it (`ShapePanel.commit`
+    /// then `MainWindow.add_feature`); `brep` is the box, 40 × 30 × 20 at the origin.
+    pub fn new_box(brep: Vec<u8>) -> Result<Self, String> {
+        Self::new_box_as(&new_feature_id(), brep)
+    }
+
+    fn new_box_as(id: &str, brep: Vec<u8>) -> Result<Self, String> {
+        let mut model = Self::new(json!({
+            "title": "Untitled", "counters": {}, "retired_ids": [], "parameters": [], "features": [],
+            "bodies": [], "groups": [], "metadata": {}, "assets": [],
+        }));
+        // Named before the undo snapshot, as the panel does.
+        let name = model.unique_name("Box");
+        let before = model.document();
+        let object = crate::graph::output_id(id, &name);
+        let payload = model.payload.as_object_mut().unwrap();
+        payload["features"].as_array_mut().unwrap().push(json!({
+            "id": id, "type": "box", "name": name,
+            "inputs": { "width": "40 mm", "depth": "30 mm", "height": "20 mm" },
+            "outputs": [name], "output_ids": { &name: object }, "bindings": {},
+            "suppressed": false, "dropped": [],
+        }));
+        payload["bodies"].as_array_mut().unwrap().push(json!({
+            "id": object, "name": name, "visible": true, "color": null, "producer": id, "metadata": {},
+        }));
+        model.record(id, "Box", &object, brep, before)?;
+        Ok(model)
+    }
+
+    /// A step just added, `id` writing `object` as `brep`: its cached result,
+    /// current geometry and diagnostics, and its undo step back to `before`
+    /// (`History.record`, then `_finish_pending` at save).
+    fn record(
+        &mut self,
+        id: &str,
+        label: &str,
+        object: &str,
+        brep: Vec<u8>,
+        before: Value,
+    ) -> Result<(), String> {
         let signature = signatures(&self.payload)
-            .and_then(|s| s.get(&id).cloned())
+            .and_then(|s| s.get(id).cloned())
             .ok_or("This project's steps could not be fingerprinted.")?;
         let sha = format!("{:x}", Sha256::digest(&brep));
         let payload = self.payload.as_object_mut().unwrap();
@@ -288,16 +332,15 @@ impl Model {
             .entry("cache")
             .or_insert_with(|| json!({ "version": CACHE_VERSION, "entries": {} }));
         cache["entries"][&signature] = json!({
-            "feature_id": id, "outputs": { &object: { "kind": "brep", "sha256": sha } },
+            "feature_id": id, "outputs": { object: { "kind": "brep", "sha256": sha } },
             "message": "", "version": CACHE_VERSION,
         });
-        payload.entry("geometry").or_insert_with(|| json!({}))[&object] =
+        payload.entry("geometry").or_insert_with(|| json!({}))[object] =
             json!({ "sha256": sha, "feature_id": id, "signature": signature, "current": true });
-        payload.entry("diagnostics").or_insert_with(|| json!({}))[&id] =
+        payload.entry("diagnostics").or_insert_with(|| json!({}))[id] =
             json!({ "state": "ok", "message": "" });
         self.blobs.insert(sha, brep);
 
-        // `History.record` then `_finish_pending`: undo is the patch back to before.
         let patch = make_patch(&self.document(), &before);
         let history = self
             .payload
@@ -313,16 +356,28 @@ impl Model {
             .entry("undo")
             .or_insert_with(|| json!([]))
             .as_array_mut()
-            .ok_or("bad history")?
-            .push(json!({ "label": "Pull", "patch": patch, "cache_keys": [] }));
+            .ok_or("This project's history could not be read.")?
+            .push(json!({ "label": label, "patch": patch, "cache_keys": [] }));
         history.insert("redo".into(), json!([]));
-        Ok(id)
+        Ok(())
     }
 
     /// The `.scad3` for this model: every entry of `original` kept (geometry,
-    /// assets, thumbnail), the new blobs added, `model.json` replaced.
+    /// assets, thumbnail), the new blobs added, `model.json` replaced. An empty
+    /// `original` is a project never saved.
     pub fn save(&self, original: &[u8]) -> Result<Vec<u8>, String> {
         let damaged = |e: &dyn std::fmt::Display| format!("The project could not be written: {e}");
+        // A project never saved has no file to carry entries over from.
+        let empty;
+        let original = if original.is_empty() {
+            empty = zip::ZipWriter::new(Cursor::new(Vec::new()))
+                .finish()
+                .map_err(|e| damaged(&e))?
+                .into_inner();
+            &empty
+        } else {
+            original
+        };
         let mut source = zip::ZipArchive::new(Cursor::new(original)).map_err(|e| damaged(&e))?;
         let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
@@ -355,6 +410,11 @@ impl Model {
         }
         Ok(out.finish().map_err(|e| damaged(&e))?.into_inner())
     }
+}
+
+/// `Feature.__init__`'s id for a new step.
+fn new_feature_id() -> String {
+    format!("f{}", uuid::Uuid::new_v4().simple())
 }
 
 /// `changes.make_patch`: what turns `source` into `target`, entity by entity.
@@ -452,4 +512,47 @@ pub fn make_patch(source: &Value, target: &Value) -> Value {
         }
     }
     patch
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `scripts/engine_oracles.py` `new_box`: what the Python app saves for a
+    /// new project with one box. Only the box's B-Rep, written by each app's
+    /// own OCCT, may differ.
+    #[test]
+    fn a_new_box_is_the_python_apps() {
+        let python: Value =
+            serde_json::from_str(include_str!("../tests/data/new_box.json")).unwrap();
+        let id = python["features"][0]["id"].as_str().unwrap();
+        let model = Model::new_box_as(id, b"the box".to_vec()).unwrap();
+        let saved = model.save(&[]).unwrap();
+        let mut rust: Value = serde_json::from_slice(
+            &zip::ZipArchive::new(Cursor::new(saved))
+                .unwrap()
+                .by_name("model.json")
+                .unwrap()
+                .bytes()
+                .collect::<Result<Vec<u8>, _>>()
+                .unwrap(),
+        )
+        .unwrap();
+        let sha = format!("{:x}", Sha256::digest(b"the box"));
+        let python_sha = python["geometry"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()["sha256"]
+            .clone();
+        let text = serde_json::to_string(&rust)
+            .unwrap()
+            .replace(&sha, python_sha.as_str().unwrap());
+        rust = serde_json::from_str(&text).unwrap();
+        let mut expected = python.clone();
+        // The undo depth is the user's preference in the Python app.
+        expected["history"].as_object_mut().unwrap().remove("limit");
+        assert_eq!(rust, expected);
+    }
 }

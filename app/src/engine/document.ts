@@ -5,7 +5,6 @@ export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 
 
 export interface Shape {
   display(): PartDisplay
-  pushPull(face: number, distance: number): Shape
 }
 
 /** A body at one point in the history. `shape` is null when the file had no readable geometry for it. */
@@ -16,9 +15,9 @@ export interface Project {
   save(): Uint8Array
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
-export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project | null }
+export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
 /** One point in the history. */
-interface State { bodies: Body[]; project: Project | null }
+interface State { bodies: Body[]; project: Project }
 
 /** The shown bodies' meshes as one, faces numbered body by body, so the viewport and the edits see one model. */
 export function combine(parts: { body: number; display: PartDisplay }[]): DisplayShape {
@@ -85,11 +84,10 @@ export class EngineDocument {
   }
 
   model(): ModelResult {
-    const { bodies, project } = this.states[this.cursor]
+    const { bodies } = this.states[this.cursor]
     return {
       shape: this.show(bodies),
       bodies: bodies.map((b, i): BodyInfo => ({ name: b.name, visible: this.visible[i], empty: !b.shape })),
-      saveable: !!project,
       unsaved: this.cursor !== this.saved,
       revision: this.revision,
       checkpoint: this.checkpoint(),
@@ -134,9 +132,7 @@ export class EngineDocument {
   /** The `.scad3` of the shown point of the history. Nothing counts as saved until `markSaved`. */
   save(revision: number): Uint8Array {
     this.checkRevision(revision)
-    const { project } = this.states[this.cursor]
-    if (!project) throw new Error('Only projects opened from a SimpleCAD 0.4 file can be saved in this preview.')
-    return project.save()
+    return this.states[this.cursor].project.save()
   }
 
   /** The file from `save` was written: the shown point of the history is the saved one. */
@@ -221,7 +217,7 @@ export class EngineDocument {
   private pushPull({ bodies, project }: State, { body, face, distance }: Step): State {
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
-    const next = project ? project.pushPull(bodies[body].name, shape, face, distance) : { project: null, shape: shape.pushPull(face, distance) }
+    const next = project.pushPull(bodies[body].name, shape, face, distance)
     return { bodies: bodies.map((b, i) => i === body ? { name: b.name, shape: next.shape } : b), project: next.project }
   }
 

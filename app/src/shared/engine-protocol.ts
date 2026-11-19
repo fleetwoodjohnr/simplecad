@@ -52,7 +52,6 @@ export interface ModelResult {
   shape: DisplayShape
   bodies: BodyInfo[]
   /** This session can be saved: it came from a format 2–4 project. */
-  saveable: boolean
   /** The shown point of the history is not the one last saved. */
   unsaved: boolean
   revision: number

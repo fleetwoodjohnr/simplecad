@@ -8,25 +8,21 @@ interface PortLike {
   close(): void
 }
 
+type AddonProject = { bodies: { name: string; visible: boolean; shape: Shape | null }[]; notes: string[]; project: Project }
 interface Addon {
-  openProject(data: Buffer): { bodies: { name: string; visible: boolean; shape: Shape | null }[]; notes: string[]; project: Project | null }
+  newProject(): AddonProject
+  openProject(data: Buffer): AddonProject
   crash(): void
-  Shape: { makeBox(dx: number, dy: number, dz: number): Shape }
 }
 
 const parent = (process as unknown as { parentPort: PortLike }).parentPort
 const addon = require(process.env.SIMPLECAD_ENGINE_ADDON!) as Addon
 const buffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-const document = new EngineDocument(
-  () => ({ bodies: [{ name: 'Box', shape: addon.Shape.makeBox(30, 20, 10) }], visible: [true], notes: [], project: null }),
-  (data) => {
-    const { bodies, notes, project } = addon.openProject(buffer(data))
-    return {
-      bodies: bodies.map(({ name, shape }) => ({ name, shape: shape ?? null })),
-      visible: bodies.map((b) => b.visible), notes, project: project ?? null
-    }
-  }
-)
+const opened = ({ bodies, notes, project }: AddonProject) => ({
+  bodies: bodies.map(({ name, shape }) => ({ name, shape: shape ?? null })),
+  visible: bodies.map((b) => b.visible), notes, project
+})
+const document = new EngineDocument(() => opened(addon.newProject()), (data) => opened(addon.openProject(buffer(data))))
 let port: PortLike | null = null
 
 function onRenderer(channel: PortLike, data: unknown) {

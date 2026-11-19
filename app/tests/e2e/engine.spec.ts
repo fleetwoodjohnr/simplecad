@@ -5,25 +5,25 @@ import { expect, launch, test } from './helpers'
 test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/Engine ready · 6000 mm³/)
+  await expect(status).toHaveText(/Engine ready · 24000 mm³/)
   await expect(page.locator('canvas')).toBeVisible()
   const mainModules = await app.evaluate(() => Object.keys(process.getBuiltinModule('node:module')!.createRequire(process.cwd() + '/package.json').cache).filter((m) => m.endsWith('.node')))
   expect(mainModules).toEqual([])
 
-  await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
   const distance = page.getByLabel('Pull distance')
   await distance.fill('-25')
   await distance.press('Enter')
   await expect(page.getByRole('alert')).toContainText('straight through this body')
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
 
   await distance.fill('-3')
   await distance.press('Enter')
-  await expect(status).toHaveText(/4200 mm³/)
+  await expect(status).toHaveText(/20400 mm³/)
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
   await page.getByRole('button', { name: 'Redo', exact: true }).click()
-  await expect(status).toHaveText(/4200 mm³/)
+  await expect(status).toHaveText(/20400 mm³/)
 })
 
 test('the more actions menu fits above its trigger and Escape restores focus', async () => {
@@ -33,7 +33,7 @@ test('the more actions menu fits above its trigger and Escape restores focus', a
     window.setSize(960, 600)
     window.webContents.setZoomFactor(2)
   })
-  await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
   const trigger = page.getByRole('button', { name: 'More actions' })
   await trigger.press('Enter')
   const menu = page.getByRole('menu')
@@ -52,11 +52,11 @@ test('the window restores accepted edits after the geometry worker exits', async
   const { page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
   const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/Engine ready/)
-  await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
   const distance = page.getByLabel('Pull distance')
   await distance.fill('-2')
   await distance.press('Enter')
-  await expect(status).toHaveText(/4800 mm³/)
+  await expect(status).toHaveText(/21600 mm³/)
 
   const crashed = page.evaluate(() =>
     (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().then(
@@ -66,9 +66,9 @@ test('the window restores accepted edits after the geometry worker exits', async
   )
   expect(await crashed).toMatch(/restarted/)
   await expect(page.getByTestId('engine-connections')).toHaveText('2')
-  await expect(status).toHaveText(/Engine ready · 4800 mm³/)
+  await expect(status).toHaveText(/Engine ready · 21600 mm³/)
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
 })
 
 const fixture = path.join(__dirname, 'fixtures', 'features.scad3')
@@ -83,7 +83,7 @@ async function offerFixture(app: ElectronApplication) {
 test('opens a .scad3 project and pulls a face with its recess and boss, through a real engine crash', async () => {
   const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
   const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
   await offerFixture(app)
   await page.getByRole('button', { name: 'File', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Open project' }).click()
@@ -125,7 +125,7 @@ test('opens a .scad3 project and pulls a face with its recess and boss, through 
 test('saves a pull into the project and reopens it', async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
   // A copy in the test profile: the committed fixture is never written.
   const copy = await app.evaluate(async ({ app: electron }, source) => {
     const fs = process.getBuiltinModule('node:fs')
@@ -154,16 +154,38 @@ test('saves a pull into the project and reopens it', async () => {
   // Saved, so a new model starts without asking; reopening the file reads the pull back from it.
   await file.click()
   await page.getByRole('menuitem', { name: 'New box' }).click()
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
   await file.click()
   await page.getByRole('menuitem', { name: 'Open project' }).click()
   await expect(status).toHaveText(/92371.27 mm³/)
+
+  // A new model saves to a new file, asked for, never over the one open before it.
+  await file.click()
+  await page.getByRole('menuitem', { name: 'New box' }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+  const fresh = await app.evaluate(({ app: electron, dialog }) => {
+    const target = `${electron.getPath('userData')}/new-box.scad3`
+    dialog.showSaveDialog = async () => ({ filePath: target, canceled: false })
+    return target
+  })
+  await file.click()
+  await page.getByRole('menuitem', { name: /^Save(?! As)/ }).click()
+  await expect(page.getByText('new-box.scad3', { exact: true })).toBeVisible()
+  await file.click()
+  await page.getByRole('menuitem', { name: 'Open project' }).click()
+  await expect(status).toHaveText(/92371.27 mm³/)
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+  }, fresh)
+  await file.click()
+  await page.getByRole('menuitem', { name: 'Open project' }).click()
+  await expect(status).toHaveText(/Engine ready · 24000 mm³/)
 })
 
 test('the viewport picks a face and the drag handle commits a pull', async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/24000 mm³/)
   const viewport = page.locator('canvas')
   await expect(viewport).toHaveAttribute('aria-busy', 'false')
   const canvas = await viewport.boundingBox()
@@ -172,7 +194,7 @@ test('the viewport picks a face and the drag handle commits a pull', async () =>
   await expect(viewport).toHaveAttribute('data-hover-ms', /\d/)
   await page.mouse.click(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height / 2)
   await expect(page.getByLabel('Planar face')).not.toHaveValue('')
-  await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
   const handle = page.getByRole('button', { name: 'Drag face along its normal' })
   await expect(handle).toBeVisible()
   const target = (await handle.boundingBox())!
@@ -183,12 +205,12 @@ test('the viewport picks a face and the drag handle commits a pull', async () =>
   await page.mouse.move(x, y - 24, { steps: 6 })
   await page.mouse.up()
   await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveCount(1)
-  await expect(status).not.toHaveText(/6000 mm³/)
+  await expect(status).not.toHaveText(/24000 mm³/)
 })
 
 test('command search executes the same command as the File menu', async () => {
   const { app, page } = await launch()
-  await expect(page.getByTestId('engine-status')).toHaveText(/6000 mm³/)
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
   await offerFixture(app)
   await page.getByRole('button', { name: 'Command search' }).click()
   const search = page.getByLabel('Search commands')

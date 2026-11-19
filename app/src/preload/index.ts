@@ -10,6 +10,7 @@ const api: SimpleCadApi = {
   openProject: () => ipcRenderer.invoke('project:open'),
   saveProject: (data, saveAs) => ipcRenderer.invoke('project:save', data, saveAs),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),
+  newFile: () => ipcRenderer.invoke('project:new'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),

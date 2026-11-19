@@ -29,7 +29,7 @@ class FakeShape implements Shape {
 class FakeProject implements Project {
   constructor(readonly steps: string[] = []) {}
   pushPull(body: string, shape: Shape, face: number, distance: number) {
-    return { project: new FakeProject([...this.steps, `${body} ${face} ${distance}`]), shape: shape.pushPull(face, distance) }
+    return { project: new FakeProject([...this.steps, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
   }
   save() {
     return new TextEncoder().encode(this.steps.join(';'))
@@ -52,7 +52,7 @@ describe('combine', () => {
 })
 
 describe('EngineDocument', () => {
-  const box = () => ({ bodies: [{ name: 'Box', shape: new FakeShape(6000, 6) }], visible: [true], notes: [], project: null })
+  const box = () => ({ bodies: [{ name: 'Box', shape: new FakeShape(6000, 6) }], visible: [true], notes: [], project: new FakeProject(['new']) })
   // A, then a hidden C, then B; and one body the file had no geometry for.
   const opened = () => ({
     bodies: [{ name: 'A', shape: new FakeShape(10, 2) }, { name: 'C', shape: new FakeShape(100, 1) },
@@ -107,10 +107,9 @@ describe('EngineDocument', () => {
 
   it('saves the shown point of the history, with every step on the way to it', () => {
     const doc = new EngineDocument(box, opened)
-    expect(doc.model().saveable).toBe(false)
-    expect(() => doc.save(doc.model().revision)).toThrow('can be saved')
-    let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
-    expect(model.saveable).toBe(true)
+    let model = doc.apply({ face: 1, distance: 3 }, doc.model().revision)
+    expect(new TextDecoder().decode(doc.save(model.revision))).toBe('new;Box 1 3')
+    model = doc.open(new Uint8Array(1), 'Atlas.scad3', model.revision)
     expect(model.unsaved).toBe(false)
     model = doc.apply({ face: 3, distance: 2 }, model.revision)
     model = doc.apply({ face: 0, distance: -1 }, model.revision)

@@ -135,6 +135,8 @@ export function App() {
     if (revision === undefined) return
     mutate(async () => {
       if (dirty && !await window.simplecad.confirmDiscard()) return
+      // Save must not write the new model over the file open until now.
+      await window.simplecad.newFile()
       const next = await resetModel(revision)
       setFileName('Untitled')
       return next
@@ -174,8 +176,8 @@ export function App() {
   const ready = !!model && !busy
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
-    save: { enabled: ready && !!model?.saveable, run: () => save(false) },
-    saveAs: { enabled: ready && !!model?.saveable, run: () => save(true) },
+    save: { enabled: ready, run: () => save(false) },
+    saveAs: { enabled: ready, run: () => save(true) },
     open: { enabled: ready, run: open },
     undo: { enabled: canUndo, run: () => history('undo') },
     redo: { enabled: canRedo, run: () => history('redo') },

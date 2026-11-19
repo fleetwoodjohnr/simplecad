@@ -15,6 +15,8 @@ compact, each with the signatures the Python app computes for it.
 engine/scad/tests/data/normalised.json: each corpus document, and a copy cut
 back to format 1 (no ids, bindings or counters), with what ``Document.from_dict``
 then ``to_dict`` make of it and the signatures of the result.
+engine/scad/tests/data/new_box.json: the model.json of a new project with one
+box, made as the Shape panel makes it (``ShapePanel.commit``).
 """
 
 from __future__ import annotations
@@ -177,10 +179,40 @@ def normalised():
     print(f"normalised.json: {len(cases)} documents")
 
 
+def new_box():
+    import tempfile
+
+    from simplecad.core.document import Document
+    from simplecad.core.history import History
+    from simplecad.core.project import save
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.core.units import Dimension, format_quantity
+    from simplecad.kernel.primitives import BoxFeature
+
+    document = Document("Untitled")
+    history = History(document, limit=100)
+    inputs = {key: format_quantity(value, Dimension.LENGTH)
+              for key, value in (("width", 40.0), ("depth", 30.0), ("height", 20.0))}
+    feature = BoxFeature(inputs=inputs)
+    feature.name = document.unique_name("Box")
+    feature.outputs = [feature.name]
+    history.record(feature.label)
+    document.add_feature(feature)
+    Rebuilder(document).rebuild()
+    with tempfile.TemporaryDirectory() as scratch:
+        path = save(document, os.path.join(scratch, "new.scad3"))
+        model = json.loads(zipfile.ZipFile(path).read("model.json"))
+    with open(os.path.join(DATA, "new_box.json"), "w", encoding="utf-8") as handle:
+        json.dump(model, handle, indent=1, sort_keys=True)
+        handle.write("\n")
+    print("new_box.json written")
+
+
 def main() -> int:
     import simplecad.kernel  # noqa: F401 - registers every feature type
     corpus()
     normalised()
+    new_box()
     write("dependencies.json", project_texts(sys.argv[1:]) | EDGE_CASES)
     write("dependencies_fuzz.json", fuzz())
     with open(os.path.join(DATA, "pyjson.json"), "w", encoding="utf-8") as handle:
