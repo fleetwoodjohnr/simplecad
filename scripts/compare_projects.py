@@ -74,8 +74,12 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     document, _cached = load(path)
     stages["loaded"] = _signature(document)
     if loaded_only:
+        from simplecad.core.naming import fingerprint, sub_shapes
         from simplecad.core.result_store import signatures
         stages["signatures"] = signatures(document)
+        stages["fingerprints"] = {
+            name: [fingerprint(face, "face").to_dict() for face in sub_shapes(body.shape, "face")]
+            for name, body in document.bodies.items() if body.shape is not None}
         return stages
 
     rebuilder = Rebuilder(document)

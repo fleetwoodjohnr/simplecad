@@ -42,6 +42,23 @@ pub mod ffi {
         pub area: f64,
     }
 
+    /// A face as the Python app's topological naming describes it
+    /// (`naming._face_fingerprint`): what survives small edits.
+    #[derive(Debug, Default, Clone)]
+    pub struct FaceFingerprint {
+        /// plane, cylinder, cone, sphere, torus, bezier, bspline or surface.
+        pub geometry: String,
+        /// Area, mm².
+        pub measure: f64,
+        pub center: [f64; 3],
+        /// The surface axis, outward for the face's orientation (planes:
+        /// without the left-handed correction `faces` applies, as Python does).
+        pub has_direction: bool,
+        pub direction: [f64; 3],
+        pub has_radius: bool,
+        pub radius: f64,
+    }
+
     unsafe extern "C++" {
         include!("shim.hpp");
 
@@ -68,6 +85,8 @@ pub mod ffi {
         /// The optimal bounding box: min x, y, z then max x, y, z.
         fn bounds(shape: &Shape) -> Result<Vec<f64>>;
         fn faces(shape: &Shape) -> Result<Vec<FaceData>>;
+        /// Face `face` (a `faces` index) as the naming fingerprints it.
+        fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
         /// Move planar face `face` (a `faces` index) `distance` mm along its
         /// outward normal, taking its recesses and bosses with it. The same
         /// operation, and the same messages, as the Python engine's

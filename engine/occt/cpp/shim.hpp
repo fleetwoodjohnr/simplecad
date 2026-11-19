@@ -34,6 +34,7 @@ namespace simplecad {
 
 struct MeshBuffers;
 struct FaceData;
+struct FaceFingerprint;
 
 class Shape {
 public:
@@ -53,6 +54,7 @@ uint32_t face_occurrences(const Shape &shape);
 bool is_valid(const Shape &shape);
 rust::Vec<double> bounds(const Shape &shape);
 rust::Vec<FaceData> faces(const Shape &shape);
+FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
 std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t face, double distance);
 MeshBuffers mesh(const Shape &shape, double deflection, double angle);
 void crash();

@@ -44,6 +44,10 @@
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
@@ -397,6 +401,65 @@ rust::Vec<FaceData> faces(const Shape &shape) {
       data.area = props.Mass();
     }
     out.push_back(data);
+  }
+  return out;
+}
+
+FaceFingerprint face_fingerprint(const Shape &shape, uint32_t index) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  if (index >= static_cast<uint32_t>(map.Extent())) {
+    throw std::runtime_error("There is no such face.");
+  }
+  const TopoDS_Face face = TopoDS::Face(map.FindKey(static_cast<int>(index) + 1));
+  FaceFingerprint out{};
+  GProp_GProps props;
+  BRepGProp::SurfaceProperties(face, props);
+  const gp_Pnt c = props.CentreOfMass();
+  out.center = {c.X(), c.Y(), c.Z()};
+  out.measure = props.Mass();
+  BRepAdaptor_Surface adaptor(face);
+  const GeomAbs_SurfaceType type = adaptor.GetType();
+  const bool reversed = face.Orientation() == TopAbs_REVERSED;
+  const auto set_direction = [&](const gp_Dir &d) {
+    out.has_direction = true;
+    const double sign = reversed ? -1.0 : 1.0;
+    out.direction = {sign * d.X(), sign * d.Y(), sign * d.Z()};
+  };
+  const auto set_radius = [&](double r) {
+    out.has_radius = true;
+    out.radius = r;
+  };
+  switch (type) {
+  case GeomAbs_Plane: out.geometry = "plane"; break;
+  case GeomAbs_Cylinder: out.geometry = "cylinder"; break;
+  case GeomAbs_Cone: out.geometry = "cone"; break;
+  case GeomAbs_Sphere: out.geometry = "sphere"; break;
+  case GeomAbs_Torus: out.geometry = "torus"; break;
+  case GeomAbs_BezierSurface: out.geometry = "bezier"; break;
+  case GeomAbs_BSplineSurface: out.geometry = "bspline"; break;
+  default: out.geometry = "surface"; break;
+  }
+  // Degenerate surfaces still get a fingerprint; as in Python, what was read before a failure stays.
+  try {
+    if (type == GeomAbs_Plane) {
+      set_direction(adaptor.Plane().Axis().Direction());
+    } else if (type == GeomAbs_Cylinder) {
+      const gp_Cylinder cylinder = adaptor.Cylinder();
+      set_direction(cylinder.Axis().Direction());
+      set_radius(cylinder.Radius());
+    } else if (type == GeomAbs_Cone) {
+      const gp_Cone cone = adaptor.Cone();
+      set_direction(cone.Axis().Direction());
+      set_radius(cone.RefRadius());
+    } else if (type == GeomAbs_Sphere) {
+      set_radius(adaptor.Sphere().Radius());
+    } else if (type == GeomAbs_Torus) {
+      const gp_Torus torus = adaptor.Torus();
+      set_direction(torus.Axis().Direction());
+      set_radius(torus.MajorRadius());
+    }
+  } catch (const Standard_Failure &) {
   }
   return out;
 }

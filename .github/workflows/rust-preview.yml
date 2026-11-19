@@ -104,13 +104,6 @@ jobs:
                 test -f "$lib/$dll"
               done ;;
           esac
-      - name: Packaged Linux window and geometry
-        if: runner.os == 'Linux'
-        working-directory: app
-        run: |
-          # Mesa's software OpenGL (llvmpipe): the runner has no GPU, and WebGL needs a GL driver.
-          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2 libgbm1 libgl1-mesa-dri libegl1 libgles2
-          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
       - name: The Linux app, for the upgrade drills
         if: runner.os == 'Linux'
         working-directory: app
@@ -122,3 +115,31 @@ jobs:
           name: simplecad-linux-unpacked
           path: app/linux-unpacked.tar.gz
           retention-days: 14
+
+  # The Linux app is built on 22.04 (oldest glibc) and driven on 24.04, whose
+  # runner image has the GL stack Chromium needs for WebGL under Xvfb; 22.04's
+  # does not. It also proves a 22.04 build runs on a newer system.
+  linux-window:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: simplecad-linux-unpacked
+          path: app
+      - name: Packaged Linux window and geometry
+        working-directory: app
+        run: |
+          mkdir -p release && tar -xzf linux-unpacked.tar.gz -C release
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
