@@ -87,6 +87,25 @@ def test_no_network_is_a_message_not_a_crash():
         updates.latest_release(fetch=offline)
 
 
+def test_updates_trust_the_system_certificates_where_openssl_looks_elsewhere(monkeypatch, tmp_path):
+    """The Linux packages carry Ubuntu's OpenSSL, which looks only in /usr/lib/ssl.
+
+    On Fedora that found no certificates, so every check failed with
+    CERTIFICATE_VERIFY_FAILED and a 0.3.1 install could never update itself.
+    """
+    import os
+    import ssl
+
+    bundle = next((path for path in updates.SYSTEM_CA_FILES if os.path.isfile(path)), None)
+    if bundle is None:
+        pytest.skip("this system keeps no certificate bundle file (Windows uses its store)")
+    nowhere = str(tmp_path / "missing.pem")
+    monkeypatch.setenv("SSL_CERT_FILE", nowhere)
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path / "missing"))
+    assert ssl.create_default_context().get_ca_certs() == []
+    assert updates.tls_context((nowhere, bundle)).get_ca_certs()
+
+
 # -- which file -------------------------------------------------------------
 def test_each_install_gets_its_own_package():
     assert updates.asset_name("1.2.3", "appimage", "x86_64") == "SimpleCAD-1.2.3-linux-x86_64.AppImage"

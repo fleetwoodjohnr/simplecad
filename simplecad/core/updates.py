@@ -41,6 +41,17 @@ KEY_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
                         "update_key.pub")
 #: Background checks happen at most this often.
 CHECK_INTERVAL_S = 24 * 3600
+#: Where operating systems keep their trusted certificates, most common first.
+#: The Linux packages carry the OpenSSL of the Ubuntu machine that built them,
+#: which looks only in Ubuntu's /usr/lib/ssl, so on Fedora and others every
+#: HTTPS request failed with CERTIFICATE_VERIFY_FAILED until one was loaded.
+SYSTEM_CA_FILES = (
+    "/etc/ssl/certs/ca-certificates.crt",                 # Debian, Ubuntu, Arch, Flatpak
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # Fedora, RHEL
+    "/etc/pki/tls/certs/ca-bundle.crt",                   # older Fedora, RHEL
+    "/etc/ssl/ca-bundle.pem",                             # openSUSE
+    "/etc/ssl/cert.pem",                                  # Alpine, macOS
+)
 
 
 class UpdateError(Exception):
@@ -81,12 +92,28 @@ def is_newer(candidate: str, current: str | None = None) -> bool:
 
 
 # -- finding out ------------------------------------------------------------
-def _fetch_json(url: str, timeout: float = 15.0):
+def tls_context(ca_files=SYSTEM_CA_FILES):
+    """Python's default HTTPS checks, trusting the system's certificates too."""
+    import ssl
+
+    context = ssl.create_default_context()
+    for path in ca_files:
+        if os.path.isfile(path):
+            context.load_verify_locations(cafile=path)
+            break
+    return context
+
+
+def _open(url: str, timeout: float, headers: dict | None = None):
+    """Every request the updater makes: GitHub only, certificates checked."""
     from urllib.request import Request, urlopen
 
-    request = Request(url, headers={"Accept": "application/vnd.github+json",
-                                    "User-Agent": f"SimpleCAD/{current_version()}"})
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https URL
+    request = Request(url, headers={"User-Agent": f"SimpleCAD/{current_version()}", **(headers or {})})
+    return urlopen(request, timeout=timeout, context=tls_context())  # noqa: S310 - GitHub URLs
+
+
+def _fetch_json(url: str, timeout: float = 15.0):
+    with _open(url, timeout, {"Accept": "application/vnd.github+json"}) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -215,20 +242,14 @@ def sha256_of(path: str) -> str:
 
 # -- getting it -------------------------------------------------------------
 def _fetch_bytes(url: str, timeout: float = 30.0) -> bytes:
-    from urllib.request import Request, urlopen
-
-    request = Request(url, headers={"User-Agent": f"SimpleCAD/{current_version()}"})
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - GitHub release URL
+    with _open(url, timeout) as response:
         return response.read()
 
 
 def _download(url: str, destination: str, progress=None, timeout: float = 60.0) -> None:
-    from urllib.request import Request, urlopen
-
-    request = Request(url, headers={"User-Agent": f"SimpleCAD/{current_version()}"})
     partial = destination + ".part"
     try:
-        with urlopen(request, timeout=timeout) as response, open(partial, "wb") as out:  # noqa: S310
+        with _open(url, timeout) as response, open(partial, "wb") as out:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0
             while True:
