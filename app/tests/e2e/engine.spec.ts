@@ -122,6 +122,44 @@ test('opens a .scad3 project and pulls a face with its recess and boss, through 
   await expect(status).toHaveText(/92371.27 mm³/)
 })
 
+test('saves a pull into the project and reopens it', async () => {
+  const { app, page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/6000 mm³/)
+  // A copy in the test profile: the committed fixture is never written.
+  const copy = await app.evaluate(async ({ app: electron }, source) => {
+    const fs = process.getBuiltinModule('node:fs')
+    const target = `${electron.getPath('userData')}/features-copy.scad3`
+    fs.copyFileSync(source, target)
+    return target
+  }, fixture)
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+  }, copy)
+  const file = page.getByRole('button', { name: 'File', exact: true })
+  await file.click()
+  await page.getByRole('menuitem', { name: 'Open project' }).click()
+  await expect(status).toHaveText(/71016.32 mm³/)
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 3251.73 mm²' })
+  const distance = page.getByLabel('Pull distance')
+  await distance.fill('6')
+  await distance.press('Enter')
+  await expect(status).toHaveText(/92371.27 mm³/)
+  await expect(page.getByText('features-copy.scad3 •')).toBeVisible()
+
+  await file.click()
+  await page.getByRole('menuitem', { name: /^Save(?! As)/ }).click()
+  await expect(page.getByText('features-copy.scad3', { exact: true })).toBeVisible()
+
+  // Saved, so a new model starts without asking; reopening the file reads the pull back from it.
+  await file.click()
+  await page.getByRole('menuitem', { name: 'New box' }).click()
+  await expect(status).toHaveText(/6000 mm³/)
+  await file.click()
+  await page.getByRole('menuitem', { name: 'Open project' }).click()
+  await expect(status).toHaveText(/92371.27 mm³/)
+})
+
 test('the viewport picks a face and the drag handle commits a pull', async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')

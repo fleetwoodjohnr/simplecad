@@ -4,6 +4,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use occt::ffi;
+use std::sync::Arc;
 
 /// Chord deflection (mm) and angle (radians) the Python app meshes with.
 const DEFLECTION: f64 = 0.05;
@@ -133,12 +134,87 @@ pub struct OpenedBody {
 pub struct OpenedProject {
     pub bodies: Vec<OpenedBody>,
     pub notes: Vec<String>,
+    /// What saving edits; `None` for files that can't be saved here yet (format 1).
+    pub project: Option<Project>,
+}
+
+/// A project at one point of the session: its model, and the file it came from,
+/// whose geometry and assets every save carries over.
+#[napi]
+pub struct Project {
+    model: scad::document::Model,
+    original: Arc<Vec<u8>>,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct Pulled {
+    pub project: Project,
+    pub shape: Shape,
+}
+
+/// A distance as the Pull tool stores it: the number as typed (`50.75`, `5`).
+fn expression(distance: f64) -> String {
+    format!("{distance}")
+}
+
+#[napi]
+impl Project {
+    /// Push/pull face `face` of `shape` (the body `body` as shown) by `distance`
+    /// mm: the new shape, and this project with the step recorded as the Pull tool would.
+    #[napi]
+    pub fn push_pull(
+        &self,
+        body: String,
+        shape: &Shape,
+        face: u32,
+        distance: f64,
+    ) -> Result<Pulled> {
+        let f = ffi::face_fingerprint(&shape.inner, face).map_err(reason)?;
+        let pulled = ffi::push_pull(&shape.inner, face, distance).map_err(reason)?;
+        let fingerprint = serde_json::json!({
+            "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
+            "direction": if f.has_direction { serde_json::json!(f.direction) } else { serde_json::Value::Null },
+            "radius": if f.has_radius { serde_json::json!(f.radius) } else { serde_json::Value::Null },
+            "neighbours": [],
+        });
+        let mut model = self.model.clone();
+        let reference = model.face_ref(&body, face, fingerprint);
+        let brep = ffi::write_brep(&pulled).map_err(reason)?;
+        model
+            .push_pull(&body, reference, &expression(distance), brep)
+            .map_err(Error::from_reason)?;
+        Ok(Pulled {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            shape: Shape { inner: pulled },
+        })
+    }
+
+    /// The `.scad3` of this point of the session.
+    #[napi]
+    pub fn save(&self) -> Result<Buffer> {
+        self.model
+            .save(&self.original)
+            .map(Buffer::from)
+            .map_err(Error::from_reason)
+    }
 }
 
 /// Every body of a `.scad3`, shown or hidden, as the Python app loads it.
 #[napi]
 pub fn open_project(data: Buffer) -> Result<OpenedProject> {
     let project = scad::project::read(&data).map_err(Error::from_reason)?;
+    let format = project
+        .model
+        .get("format")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(1);
+    let saveable = (format >= 2).then(|| Project {
+        model: scad::document::Model::new(project.model.clone()),
+        original: Arc::new(data.to_vec()),
+    });
     let mut notes = project.notes;
     let bodies = project
         .bodies
@@ -166,7 +242,11 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
             }
         })
         .collect();
-    Ok(OpenedProject { bodies, notes })
+    Ok(OpenedProject {
+        bodies,
+        notes,
+        project: saveable,
+    })
 }
 
 /// Crashes the engine process for real, so the isolation can be drilled.

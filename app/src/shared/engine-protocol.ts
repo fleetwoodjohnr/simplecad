@@ -44,11 +44,17 @@ export interface Checkpoint {
   cursor: number
   /** Bodies the user has hidden or shown since opening: index and shown. */
   shown: [number, boolean][]
+  /** The history point last saved; -1 when it is no longer in the history. */
+  saved: number
 }
 
 export interface ModelResult {
   shape: DisplayShape
   bodies: BodyInfo[]
+  /** This session can be saved: it came from a format 2–4 project. */
+  saveable: boolean
+  /** The shown point of the history is not the one last saved. */
+  unsaved: boolean
   revision: number
   checkpoint: Checkpoint
   /** What opening the file could not read. */
@@ -62,11 +68,12 @@ export type RendererCommand =
   | { op: 'open'; data: Uint8Array; name: string; revision: number }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
+  | { op: 'save' | 'saved'; revision: number }
   | { op: 'undo' | 'redo'; revision: number }
 
 export type RendererRequest = RendererCommand & { id: number }
 export type EngineResponse =
-  | { id: number; ok: true; result: ModelResult | DisplayShape }
+  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array }
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
@@ -108,7 +115,8 @@ export function isCheckpoint(value: unknown): value is Checkpoint {
   return isSource(model.source) && Array.isArray(model.edits) && model.edits.length <= MAX_EDITS &&
     model.edits.every(isStep) && isIndex(model.cursor) && model.cursor <= model.edits.length &&
     Array.isArray(model.shown) && model.shown.length <= MAX_BODIES &&
-    model.shown.every((s) => Array.isArray(s) && s.length === 2 && isIndex(s[0]) && s[0] < MAX_BODIES && typeof s[1] === 'boolean')
+    model.shown.every((s) => Array.isArray(s) && s.length === 2 && isIndex(s[0]) && s[0] < MAX_BODIES && typeof s[1] === 'boolean') &&
+    Number.isSafeInteger(model.saved) && model.saved! >= -1 && model.saved! <= model.edits.length
 }
 
 export function checkRendererRequest(data: unknown): RendererRequest {
@@ -117,7 +125,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
   if (m.op === 'model' || m.op === 'crash' ||
       (m.op === 'restore' && isCheckpoint(m.checkpoint) && (m.data === undefined || isData(m.data))) ||
       (isIndex(m.revision) && (
-        m.op === 'undo' || m.op === 'redo' || m.op === 'reset' ||
+        m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
         (m.op === 'open' && isData(m.data) && isName(m.name)) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m))

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, FaceInfo, ModelResult } from '@/shared/engine-protocol'
-import { applyPull, onEngineConnected, openProject, openSession, previewPull, resetModel, showBody, stepHistory } from '../state/engine'
+import { applyPull, markSaved, onEngineConnected, openProject, openSession, previewPull, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -124,8 +124,7 @@ export function App() {
     if (revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
-  // Nothing is saved yet in this build, so any edit is unsaved.
-  const dirty = !!model && model.checkpoint.edits.length > 0
+  const dirty = !!model && model.unsaved
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = false }
@@ -154,6 +153,16 @@ export function App() {
     }, true)
   }
 
+  // Marked saved only once the file is written: a cancelled dialog or a failed write leaves the work unsaved.
+  const save = (saveAs: boolean) => {
+    if (revision === undefined) return
+    mutate(async () => {
+      const name = await window.simplecad.saveProject(await saveModel(revision), saveAs)
+      if (!name) return
+      setFileName(name)
+      return markSaved(revision)
+    })
+  }
   const toggleBody = (body: number, visible: boolean) => {
     if (revision !== undefined) mutate(() => showBody(revision, body, visible))
   }
@@ -165,6 +174,8 @@ export function App() {
   const ready = !!model && !busy
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
+    save: { enabled: ready && !!model?.saveable, run: () => save(false) },
+    saveAs: { enabled: ready && !!model?.saveable, run: () => save(true) },
     open: { enabled: ready, run: open },
     undo: { enabled: canUndo, run: () => history('undo') },
     redo: { enabled: canRedo, run: () => history('redo') },
@@ -183,7 +194,7 @@ export function App() {
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
-      for (const id of ['newBox', 'open', 'undo', 'redo', 'fit'] as const) {
+      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit'] as const) {
         if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit'].includes(id))) continue
         if (!matchesShortcut(event, commands[id].shortcut)) continue
         event.preventDefault()
@@ -203,12 +214,11 @@ export function App() {
           <Menu>
             <MenuTrigger asChild><Btn variant="primary" size="sm">File</Btn></MenuTrigger>
             <MenuContent>
-              {(['newBox', 'open', 'updates'] as CommandId[]).map((id) => {
+              {(['newBox', 'open', 'save', 'saveAs', 'updates'] as CommandId[]).map((id) => {
                 const command = commands[id]
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
               })}
-              <MenuItem disabled>Save (not in this preview yet)</MenuItem>
             </MenuContent>
           </Menu>
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>

@@ -10,8 +10,15 @@ export interface Shape {
 
 /** A body at one point in the history. `shape` is null when the file had no readable geometry for it. */
 export interface Body { name: string; shape: Shape | null }
-/** A project as opened: its bodies, which are shown, and what could not be read. */
-export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[] }
+/** The saved project at one point in the history (the addon's `Project`). */
+export interface Project {
+  pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
+  save(): Uint8Array
+}
+/** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
+export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project | null }
+/** One point in the history. */
+interface State { bodies: Body[]; project: Project | null }
 
 /** The shown bodies' meshes as one, faces numbered body by body, so the viewport and the edits see one model. */
 export function combine(parts: { body: number; display: PartDisplay }[]): DisplayShape {
@@ -52,8 +59,10 @@ export function combine(parts: { body: number; display: PartDisplay }[]): Displa
 
 export class EngineDocument {
   private source: Source = { kind: 'box' }
-  /** The bodies after each step: `states[0]` as opened, `states[cursor]` is shown. */
-  private states: Body[][]
+  /** Each point of the history: `states[0]` as opened, `states[cursor]` is shown. */
+  private states: State[]
+  /** The history point last saved, so the window knows what is unsaved. */
+  private saved = 0
   private edits: Step[] = []
   private cursor = 0
   private revision = 0
@@ -61,7 +70,7 @@ export class EngineDocument {
   // Which bodies are shown: a view setting, outside the edit history. `opened` is as the file had it.
   private visible: boolean[]
   private opened: boolean[]
-  private previewResult?: { step: Step; bodies: Body[] }
+  private previewResult?: { step: Step; state: State }
   // A shape never changes, so its mesh is made once: undo, redo, previews and showing a body re-mesh only what changed.
   private displays = new WeakMap<Shape, PartDisplay>()
 
@@ -70,16 +79,18 @@ export class EngineDocument {
     private read: (data: Uint8Array) => Opened
   ) {
     const box = newBox()
-    this.states = [box.bodies]
+    this.states = [{ bodies: box.bodies, project: box.project }]
     this.visible = [...box.visible]
     this.opened = [...box.visible]
   }
 
   model(): ModelResult {
-    const bodies = this.states[this.cursor]
+    const { bodies, project } = this.states[this.cursor]
     return {
       shape: this.show(bodies),
       bodies: bodies.map((b, i): BodyInfo => ({ name: b.name, visible: this.visible[i], empty: !b.shape })),
+      saveable: !!project,
+      unsaved: this.cursor !== this.saved,
       revision: this.revision,
       checkpoint: this.checkpoint(),
       notes: this.notes
@@ -97,9 +108,9 @@ export class EngineDocument {
     if (checkpoint.source.kind === 'file' && !data) throw new Error('Open the project again to keep editing it.')
     const opened = checkpoint.source.kind === 'box' ? this.newBox() : this.read(data!)
     for (const [body, shown] of checkpoint.shown) if (body < opened.visible.length) opened.visible[body] = shown
-    const states = [opened.bodies]
+    const states: State[] = [{ bodies: opened.bodies, project: opened.project }]
     for (const step of checkpoint.edits) states.push(this.pushPull(states[states.length - 1], step))
-    return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states)
+    return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved)
   }
 
   open(data: Uint8Array, name: string, revision: number): ModelResult {
@@ -117,7 +128,23 @@ export class EngineDocument {
 
   preview(edit: PullEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
-    return this.show(this.prepare(this.resolve(edit)))
+    return this.show(this.prepare(this.resolve(edit)).bodies)
+  }
+
+  /** The `.scad3` of the shown point of the history. Nothing counts as saved until `markSaved`. */
+  save(revision: number): Uint8Array {
+    this.checkRevision(revision)
+    const { project } = this.states[this.cursor]
+    if (!project) throw new Error('Only projects opened from a SimpleCAD 0.4 file can be saved in this preview.')
+    return project.save()
+  }
+
+  /** The file from `save` was written: the shown point of the history is the saved one. */
+  markSaved(revision: number): ModelResult {
+    this.checkRevision(revision)
+    this.saved = this.cursor
+    this.advance()
+    return this.model()
   }
 
   apply(edit: PullEdit, revision: number): ModelResult {
@@ -125,9 +152,11 @@ export class EngineDocument {
     if (edit.distance === 0) return this.model()
     if (this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
     const step = this.resolve(edit)
-    const bodies = this.prepare(step)
+    const state = this.prepare(step)
     this.edits = [...this.edits.slice(0, this.cursor), step]
-    this.states = [...this.states.slice(0, this.cursor + 1), bodies]
+    this.states = [...this.states.slice(0, this.cursor + 1), state]
+    // The saved point is gone from the history once a new step replaces what followed it.
+    if (this.saved > this.cursor) this.saved = -1
     this.cursor++
     this.advance()
     return this.model()
@@ -145,12 +174,14 @@ export class EngineDocument {
 
   private checkpoint(): Checkpoint {
     const shown = this.visible.flatMap((v, i): [number, boolean][] => v === this.opened[i] ? [] : [[i, v]])
-    return { source: this.source, edits: this.edits, cursor: this.cursor, shown }
+    return { source: this.source, edits: this.edits, cursor: this.cursor, shown, saved: this.saved }
   }
 
-  private install(source: Source, opened: Opened, edits: Step[], cursor: number, states = [opened.bodies]): ModelResult {
+  private install(source: Source, opened: Opened, edits: Step[], cursor: number,
+    states: State[] = [{ bodies: opened.bodies, project: opened.project }], saved = 0): ModelResult {
     this.source = source
     this.states = states
+    this.saved = saved
     this.edits = edits
     this.cursor = cursor
     this.visible = [...opened.visible]
@@ -178,7 +209,7 @@ export class EngineDocument {
   /** Which body a face of the shown model belongs to, and its number within that body. */
   private resolve({ face, distance }: PullEdit): Step {
     let local = face
-    for (const { body, shape } of this.shown(this.states[this.cursor])) {
+    for (const { body, shape } of this.shown(this.states[this.cursor].bodies)) {
       const count = this.display(shape).faces.length
       if (local < count) return { body, face: local, distance }
       local -= count
@@ -186,10 +217,12 @@ export class EngineDocument {
     throw new Error('Select a face of the model.')
   }
 
-  private pushPull(bodies: Body[], { body, face, distance }: Step): Body[] {
+  /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
+  private pushPull({ bodies, project }: State, { body, face, distance }: Step): State {
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
-    return bodies.map((b, i) => i === body ? { name: b.name, shape: shape.pushPull(face, distance) } : b)
+    const next = project ? project.pushPull(bodies[body].name, shape, face, distance) : { project: null, shape: shape.pushPull(face, distance) }
+    return { bodies: bodies.map((b, i) => i === body ? { name: b.name, shape: next.shape } : b), project: next.project }
   }
 
   private advance() {
@@ -201,11 +234,11 @@ export class EngineDocument {
     if (revision !== this.revision) throw new Error('The model changed. Select the face again.')
   }
 
-  private prepare(step: Step): Body[] {
+  private prepare(step: Step): State {
     const cached = this.previewResult?.step
-    if (cached?.body === step.body && cached.face === step.face && cached.distance === step.distance) return this.previewResult!.bodies
-    const bodies = this.pushPull(this.states[this.cursor], step)
-    this.previewResult = { step, bodies }
-    return bodies
+    if (cached?.body === step.body && cached.face === step.face && cached.distance === step.distance) return this.previewResult!.state
+    const state = this.pushPull(this.states[this.cursor], step)
+    this.previewResult = { step, state }
+    return state
   }
 }

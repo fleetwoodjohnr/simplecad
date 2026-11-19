@@ -29,6 +29,8 @@ export function formatShortcut(s: string | undefined): string {
 export const commands = {
   newBox: { label: 'New box', shortcut: 'Mod-N' },
   open: { label: 'Open project', shortcut: 'Mod-O' },
+  save: { label: 'Save', shortcut: 'Mod-S' },
+  saveAs: { label: 'Save As', shortcut: 'Mod-Shift-S' },
   undo: { label: 'Undo', shortcut: 'Mod-Z' },
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },

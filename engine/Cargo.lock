@@ -569,6 +569,7 @@ dependencies = [
  "napi-derive",
  "occt",
  "scad",
+ "serde_json",
 ]
 
 [[package]]

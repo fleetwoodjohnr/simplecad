@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { combine, EngineDocument, type PartDisplay, type Shape } from '@/engine/document'
+import { combine, EngineDocument, type PartDisplay, type Project, type Shape } from '@/engine/document'
 
 /** A stand-in for an OCCT shape: `faces` one-triangle faces; a pull adds `distance` to the volume of that body. */
 class FakeShape implements Shape {
@@ -25,6 +25,17 @@ class FakeShape implements Shape {
   }
 }
 
+/** Stands in for the addon's Project: remembers the steps it was given. */
+class FakeProject implements Project {
+  constructor(readonly steps: string[] = []) {}
+  pushPull(body: string, shape: Shape, face: number, distance: number) {
+    return { project: new FakeProject([...this.steps, `${body} ${face} ${distance}`]), shape: shape.pushPull(face, distance) }
+  }
+  save() {
+    return new TextEncoder().encode(this.steps.join(';'))
+  }
+}
+
 describe('combine', () => {
   it('numbers faces, vertices and edges body by body', () => {
     const shown = combine([
@@ -41,13 +52,14 @@ describe('combine', () => {
 })
 
 describe('EngineDocument', () => {
-  const box = () => ({ bodies: [{ name: 'Box', shape: new FakeShape(6000, 6) }], visible: [true], notes: [] })
+  const box = () => ({ bodies: [{ name: 'Box', shape: new FakeShape(6000, 6) }], visible: [true], notes: [], project: null })
   // A, then a hidden C, then B; and one body the file had no geometry for.
   const opened = () => ({
     bodies: [{ name: 'A', shape: new FakeShape(10, 2) }, { name: 'C', shape: new FakeShape(100, 1) },
       { name: 'B', shape: new FakeShape(5, 3) }, { name: 'Empty', shape: null }],
     visible: [true, false, true, true],
-    notes: ['"Empty" could not be read from this file.']
+    notes: ['"Empty" could not be read from this file.'],
+    project: new FakeProject()
   })
 
   it('numbers faces across the shown bodies only, and undoes and redoes', () => {
@@ -91,5 +103,25 @@ describe('EngineDocument', () => {
     // A hidden, B pulled 2: only B's 7 is shown.
     expect(restored.shape.volume).toBe(7)
     expect(restored.bodies[0].visible).toBe(false)
+  })
+
+  it('saves the shown point of the history, with every step on the way to it', () => {
+    const doc = new EngineDocument(box, opened)
+    expect(doc.model().saveable).toBe(false)
+    expect(() => doc.save(doc.model().revision)).toThrow('can be saved')
+    let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
+    expect(model.saveable).toBe(true)
+    expect(model.unsaved).toBe(false)
+    model = doc.apply({ face: 3, distance: 2 }, model.revision)
+    model = doc.apply({ face: 0, distance: -1 }, model.revision)
+    expect(model.unsaved).toBe(true)
+    model = doc.step(-1, model.revision)
+    expect(new TextDecoder().decode(doc.save(model.revision))).toBe('B 1 2')
+    // Handing over the file is not saving it: the window says when it was written.
+    expect(doc.model().unsaved).toBe(true)
+    model = doc.markSaved(model.revision)
+    expect(model.unsaved).toBe(false)
+    model = doc.step(1, model.revision)
+    expect(model.unsaved).toBe(true)
   })
 })
