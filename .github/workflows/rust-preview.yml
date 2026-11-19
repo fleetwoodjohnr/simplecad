@@ -108,7 +108,8 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: app
         run: |
-          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2 libgbm1
+          # Mesa's software OpenGL (llvmpipe): the runner has no GPU, and WebGL needs a GL driver.
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2 libgbm1 libgl1-mesa-dri libegl1 libgles2
           SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
       - name: The Linux app, for the upgrade drills
         if: runner.os == 'Linux'
