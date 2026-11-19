@@ -40,7 +40,7 @@ jobs:
 
       - name: OCCT from the cache
         id: occt
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: occt-install
           key: occt-8.0.1-${{ matrix.os }}-${{ hashFiles('engine/occt/build-occt.sh') }}
@@ -58,7 +58,17 @@ jobs:
           CMAKE_GENERATOR: Ninja
           JOBS: '4'
         run: engine/occt/build-occt.sh "$OCCT_DIR" "$RUNNER_TEMP/occt-build"
+      # Saved at once, not at the end of the job: a later failing step must not throw away an hour of compiling.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.occt.outputs.cache-hit != 'true'
+        with:
+          path: occt-install
+          key: ${{ steps.occt.outputs.cache-primary-key }}
 
+      - name: MSVC's linker, not Git's (Windows)
+        if: runner.os == 'Windows'
+        # Git Bash puts its coreutils link.exe ahead of MSVC's on PATH, and rustc ran it.
+        run: mv /usr/bin/link.exe /usr/bin/link-coreutils.exe
       - run: cargo fmt --all --check
         working-directory: engine
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
