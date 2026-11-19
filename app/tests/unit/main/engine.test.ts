@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { combine, EngineDocument, type PartDisplay, type Shape } from '@/engine/document'
-import { bodyEntries, legacyEntry } from '@/engine/project'
 
 /** A stand-in for an OCCT shape: `faces` one-triangle faces; a pull adds `distance` to the volume of that body. */
 class FakeShape implements Shape {
@@ -29,30 +28,40 @@ class FakeShape implements Shape {
 describe('combine', () => {
   it('numbers faces, vertices and edges body by body', () => {
     const shown = combine([
-      { name: 'A', display: new FakeShape(10, 2).display() },
-      { name: 'B', display: new FakeShape(5, 3).display() }
+      { body: 0, display: new FakeShape(10, 2).display() },
+      { body: 2, display: new FakeShape(5, 3).display() }
     ])
-    expect(shown.bodies).toEqual(['A', 'B'])
     expect(shown.volume).toBe(15)
-    expect(shown.faces.map((f) => f.body)).toEqual([0, 0, 1, 1, 1])
+    expect(shown.faces.map((f) => f.body)).toEqual([0, 0, 2, 2, 2])
     expect(Array.from(shown.faceTriStart)).toEqual([0, 1, 2, 3, 4, 5])
-    // B's first triangle points at B's first vertex, after A's 6.
+    // The second body's first triangle points at its first vertex, after the first body's 6.
     expect(Array.from(shown.indices.subarray(6, 9))).toEqual([6, 7, 8])
     expect(Array.from(shown.edgeStart)).toEqual([0, 2, 4])
   })
 })
 
 describe('EngineDocument', () => {
-  const bodies = () => [{ name: 'A', shape: new FakeShape(10, 2) }, { name: 'B', shape: new FakeShape(5, 3) }]
-  const opened = () => ({ bodies: bodies(), notes: ['1 hidden body is not shown.'] })
+  const box = () => ({ bodies: [{ name: 'Box', shape: new FakeShape(6000, 6) }], visible: [true], notes: [] })
+  // A, then a hidden C, then B; and one body the file had no geometry for.
+  const opened = () => ({
+    bodies: [{ name: 'A', shape: new FakeShape(10, 2) }, { name: 'C', shape: new FakeShape(100, 1) },
+      { name: 'B', shape: new FakeShape(5, 3) }, { name: 'Empty', shape: null }],
+    visible: [true, false, true, true],
+    notes: ['"Empty" could not be read from this file.']
+  })
 
-  it('sends a face number to the body that owns it, and undoes and redoes', () => {
-    const doc = new EngineDocument(bodies, opened)
+  it('numbers faces across the shown bodies only, and undoes and redoes', () => {
+    const doc = new EngineDocument(box, opened)
     let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
-    expect(model.notes).toEqual(['1 hidden body is not shown.'])
+    expect(model.bodies).toEqual([
+      { name: 'A', visible: true, empty: false }, { name: 'C', visible: false, empty: false },
+      { name: 'B', visible: true, empty: false }, { name: 'Empty', visible: true, empty: true }])
+    expect(model.shape.volume).toBe(15)
+    expect(model.notes).toHaveLength(1)
+    // Face 3 of the shown model is B's second face.
     model = doc.apply({ face: 3, distance: 2 }, model.revision)
     expect(model.shape.volume).toBe(17)
-    expect(model.checkpoint).toEqual({ source: { kind: 'file', name: 'Atlas.scad3' }, edits: [{ face: 3, distance: 2 }], cursor: 1 })
+    expect(model.checkpoint.edits).toEqual([{ body: 2, face: 1, distance: 2 }])
     model = doc.step(-1, model.revision)
     expect(model.shape.volume).toBe(15)
     model = doc.step(1, model.revision)
@@ -61,37 +70,26 @@ describe('EngineDocument', () => {
     expect(() => doc.apply({ face: 0, distance: 1 }, model.revision - 1)).toThrow('The model changed')
   })
 
-  it('replays a checkpoint after a restart, and needs the file for one that came from a file', () => {
-    const checkpoint = { source: { kind: 'file' as const, name: 'Atlas.scad3' }, edits: [{ face: 0, distance: 1 }, { face: 2, distance: 4 }], cursor: 1 }
-    expect(() => new EngineDocument(bodies, opened).restore(checkpoint)).toThrow('Open the project again')
-    const model = new EngineDocument(bodies, opened).restore(checkpoint, new Uint8Array(1))
-    expect(model.shape.volume).toBe(16)
-    expect(model.checkpoint.edits).toHaveLength(2)
-  })
-})
-
-describe('.scad3 entries', () => {
-  const sha = 'a'.repeat(64)
-
-  it('reads shown bodies from geometry/<sha>.brep and says what it leaves out', () => {
-    const { entries, notes } = bodyEntries({
-      format: 4,
-      bodies: [{ id: '1', name: 'Box', visible: true }, { id: '2', name: 'Hexagon', visible: false }, { id: '3', name: 'Lid' }],
-      geometry: { 1: { sha256: sha }, 2: { sha256: sha } }
-    })
-    expect(entries).toEqual([{ name: 'Box', entry: `geometry/${sha}.brep`, sha }])
-    expect(notes).toEqual(['1 hidden body is not shown.', '"Lid" has no saved geometry; open it in SimpleCAD 0.4 to rebuild it.'])
+  it('shows a hidden body without touching the history, and renumbers the faces', () => {
+    const doc = new EngineDocument(box, opened)
+    let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
+    model = doc.setVisible(1, true, model.revision)
+    expect(model.shape.volume).toBe(115)
+    expect(model.shape.faces.map((f) => f.body)).toEqual([0, 0, 1, 2, 2, 2])
+    expect(model.checkpoint.edits).toEqual([])
+    expect(model.checkpoint.shown).toEqual([[1, true]])
   })
 
-  it('reads a format 1 file by body name, as the Python app names the entries', () => {
-    expect(legacyEntry('Lid / top')).toBe('bodies/Lid___top.brep')
-    expect(legacyEntry('')).toBe('bodies/body.brep')
-    const { entries, notes } = bodyEntries({ bodies: [{ name: 'a b' }, { name: 'a_b' }, { name: 'c' }] })
-    expect(entries).toEqual([{ name: 'c', entry: 'bodies/c.brep' }])
-    expect(notes).toHaveLength(2)
-  })
-
-  it('refuses a newer format', () => {
-    expect(() => bodyEntries({ format: 5, bodies: [] })).toThrow('newer SimpleCAD')
+  it('replays a checkpoint after a restart, whatever has been shown or hidden since', () => {
+    const doc = new EngineDocument(box, opened)
+    let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
+    model = doc.apply({ face: 3, distance: 2 }, model.revision)
+    model = doc.setVisible(0, false, model.revision)
+    const checkpoint = model.checkpoint
+    expect(() => new EngineDocument(box, opened).restore(checkpoint)).toThrow('Open the project again')
+    const restored = new EngineDocument(box, opened).restore(checkpoint, new Uint8Array(1))
+    // A hidden, B pulled 2: only B's 7 is shown.
+    expect(restored.shape.volume).toBe(7)
+    expect(restored.bodies[0].visible).toBe(false)
   })
 })

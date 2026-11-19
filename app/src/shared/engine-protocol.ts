@@ -14,32 +14,44 @@ export interface FaceInfo {
   anchor: [number, number, number]
   normal: [number, number, number]
   area: number
-  /** Index into `DisplayShape.bodies`. */
+  /** Index into `ModelResult.bodies`. */
   body: number
 }
 
-/** Every shown body as one mesh; faces are numbered across all of them, body by body. */
+/** Every shown body as one mesh; faces are numbered across them, body by body. */
 export interface DisplayShape extends MeshData {
   volume: number
   faces: FaceInfo[]
-  bodies: string[]
+}
+
+export interface BodyInfo {
+  name: string
+  visible: boolean
+  /** The file has no readable geometry for it. */
+  empty: boolean
 }
 
 /** Where the session's model came from: a new box, or a `.scad3` file (the window keeps its bytes). */
 export type Source = { kind: 'box' } | { kind: 'file'; name: string }
+/** A push/pull as the window asks for it: a face as the viewport numbers it. */
 export interface PullEdit { face: number; distance: number }
+/** A push/pull as the history keeps it: the body, and the face as that body numbers it, so showing or hiding bodies doesn't change it. */
+export interface Step { body: number; face: number; distance: number }
 
 export interface Checkpoint {
   source: Source
-  edits: PullEdit[]
+  edits: Step[]
   cursor: number
+  /** Bodies the user has hidden or shown since opening: index and shown. */
+  shown: [number, boolean][]
 }
 
 export interface ModelResult {
   shape: DisplayShape
+  bodies: BodyInfo[]
   revision: number
   checkpoint: Checkpoint
-  /** What opening the file left out, such as hidden bodies. */
+  /** What opening the file could not read. */
   notes: string[]
 }
 
@@ -49,6 +61,7 @@ export type RendererCommand =
   | { op: 'restore'; checkpoint: Checkpoint; data?: Uint8Array }
   | { op: 'open'; data: Uint8Array; name: string; revision: number }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
+  | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'undo' | 'redo'; revision: number }
 
 export type RendererRequest = RendererCommand & { id: number }
@@ -57,6 +70,7 @@ export type EngineResponse =
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
+export const MAX_BODIES = 10_000
 export const MAX_PROJECT_BYTES = 256 * 1024 * 1024
 
 function isIndex(value: unknown): value is number {
@@ -84,11 +98,17 @@ function isEdit(value: unknown): value is PullEdit {
     typeof edit.distance === 'number' && Number.isFinite(edit.distance) && Math.abs(edit.distance) <= 1e9
 }
 
+function isStep(value: unknown): value is Step {
+  return isEdit(value) && isIndex((value as Partial<Step>).body) && (value as Step).body < MAX_BODIES
+}
+
 export function isCheckpoint(value: unknown): value is Checkpoint {
   if (!value || typeof value !== 'object') return false
   const model = value as Partial<Checkpoint>
   return isSource(model.source) && Array.isArray(model.edits) && model.edits.length <= MAX_EDITS &&
-    model.edits.every(isEdit) && isIndex(model.cursor) && model.cursor <= model.edits.length
+    model.edits.every(isStep) && isIndex(model.cursor) && model.cursor <= model.edits.length &&
+    Array.isArray(model.shown) && model.shown.length <= MAX_BODIES &&
+    model.shown.every((s) => Array.isArray(s) && s.length === 2 && isIndex(s[0]) && s[0] < MAX_BODIES && typeof s[1] === 'boolean')
 }
 
 export function checkRendererRequest(data: unknown): RendererRequest {
@@ -99,6 +119,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
       (isIndex(m.revision) && (
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' ||
         (m.op === 'open' && isData(m.data) && isName(m.name)) ||
+        (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')

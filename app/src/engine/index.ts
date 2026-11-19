@@ -1,6 +1,5 @@
 import { checkRendererRequest, type EngineResponse } from '../shared/engine-protocol'
 import { EngineDocument, type Shape } from './document'
-import { readProject } from './project'
 
 interface PortLike {
   on(ev: 'message', cb: (e: { data: unknown; ports: PortLike[] }) => void): void
@@ -10,19 +9,19 @@ interface PortLike {
 }
 
 interface Addon {
-  readArchive(data: Buffer, names: string[]): (Buffer | null)[]
+  openProject(data: Buffer): { bodies: { name: string; visible: boolean; shape: Shape | null }[]; notes: string[] }
   crash(): void
-  Shape: { makeBox(dx: number, dy: number, dz: number): Shape; fromBrep(data: Buffer): Shape }
+  Shape: { makeBox(dx: number, dy: number, dz: number): Shape }
 }
 
 const parent = (process as unknown as { parentPort: PortLike }).parentPort
 const addon = require(process.env.SIMPLECAD_ENGINE_ADDON!) as Addon
 const buffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength)
 const document = new EngineDocument(
-  () => [{ name: 'Box', shape: addon.Shape.makeBox(30, 20, 10) }],
+  () => ({ bodies: [{ name: 'Box', shape: addon.Shape.makeBox(30, 20, 10) }], visible: [true], notes: [] }),
   (data) => {
-    const { bodies, notes } = readProject(addon, buffer(data))
-    return { bodies: bodies.map(({ name, brep }) => ({ name, shape: addon.Shape.fromBrep(brep) })), notes }
+    const { bodies, notes } = addon.openProject(buffer(data))
+    return { bodies: bodies.map(({ name, shape }) => ({ name, shape: shape ?? null })), visible: bodies.map((b) => b.visible), notes }
   }
 )
 let port: PortLike | null = null
@@ -40,6 +39,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'open': result = document.open(req.data, req.name, req.revision); break
       case 'preview': result = document.preview(req, req.revision); break
       case 'apply': result = document.apply(req, req.revision); break
+      case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'undo': result = document.step(-1, req.revision); break
       case 'redo': result = document.step(1, req.revision); break
       case 'crash':

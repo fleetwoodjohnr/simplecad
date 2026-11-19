@@ -13,6 +13,9 @@ both source trees in their own process, never writing the file itself:
 and compares each body's volume, bounding box and face count.
 
     .venv/bin/python scripts/compare_projects.py --old /path/to/old/checkout ~/Desktop/**/*.scad3
+
+``--rust engine/target/release/scad`` holds the Rust engine against this tree
+instead, for the stages it has ported so far (``scad dump`` reports them).
 """
 
 from __future__ import annotations
@@ -51,7 +54,16 @@ def _signature(document) -> dict:
     return found
 
 
-def dump(path: str) -> dict:
+def _rounded(stage: dict) -> dict:
+    """The Rust engine's raw numbers, rounded as ``_signature`` rounds Python's."""
+    return {name: None if body is None else {
+        "volume": round(abs(body["volume"]), 3),
+        "box": [round(v, 3) for v in body["box"]],
+        "faces": body["faces"],
+    } for name, body in stage.items()}
+
+
+def dump(path: str, loaded_only: bool = False) -> dict:
     """Run inside one tree: every stage's bodies, as JSON-able data."""
     import simplecad.kernel  # noqa: F401 - registers every feature type
     from simplecad.core.history import History
@@ -61,6 +73,8 @@ def dump(path: str) -> dict:
     stages = {}
     document, _cached = load(path)
     stages["loaded"] = _signature(document)
+    if loaded_only:
+        return stages
 
     rebuilder = Rebuilder(document)
     rebuilder.adopt_baseline()
@@ -100,11 +114,11 @@ def dump(path: str) -> dict:
     return stages
 
 
-def _run(tree: str, path: str, python: str = sys.executable) -> dict:
+def _run(tree: str, path: str, python: str = sys.executable, flag: str = "--dump") -> dict:
     env = dict(os.environ, PYTHONPATH=tree, PYTHONDONTWRITEBYTECODE="1",
                QT_QPA_PLATFORM="offscreen")
     result = subprocess.run(
-        [python, os.path.abspath(__file__), "--dump", path],
+        [python, os.path.abspath(__file__), flag, path],
         cwd=tree, env=env, capture_output=True, text=True, timeout=3600,
     )
     if result.returncode != 0:
@@ -117,17 +131,28 @@ def main() -> int:
     parser.add_argument("--old", help="checkout of the version to compare against")
     parser.add_argument("--old-python", default=sys.executable,
                         help="interpreter for --old, e.g. a venv with the previous OCCT")
+    parser.add_argument("--rust", help="the Rust engine's scad tool, compared against this tree")
     parser.add_argument("--dump", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--dump-loaded", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="+")
     args = parser.parse_args()
-    if args.dump:
-        print(json.dumps(dump(args.files[0])))
+    if args.dump or args.dump_loaded:
+        print(json.dumps(dump(args.files[0], loaded_only=args.dump_loaded)))
         return 0
-    if not args.old:
-        parser.error("--old is required")
+    if not args.old and not args.rust:
+        parser.error("--old or --rust is required")
     same = True
     for path in args.files:
-        old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
+        if args.rust:
+            result = subprocess.run([args.rust, "dump", path], capture_output=True, text=True,
+                                    timeout=3600)
+            new = ({stage: _rounded(bodies) for stage, bodies in
+                    json.loads(result.stdout).items()} if result.returncode == 0
+                   else {"error": result.stderr.strip().splitlines()[-1:] or ["failed"]})
+            # Only the stages the Rust engine has ported so far.
+            old = _run(ROOT, path, flag="--dump-loaded")
+        else:
+            old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))
                        if old.get(stage) != new.get(stage)]
         name = os.path.basename(path)

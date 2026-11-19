@@ -41,6 +41,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
@@ -354,6 +355,14 @@ std::string mm(double value) {
 
 uint32_t solid_count(const Shape &shape) { return count_solids(shape.shape); }
 
+uint32_t face_occurrences(const Shape &shape) {
+  uint32_t count = 0;
+  for (TopExp_Explorer e(shape.shape, TopAbs_FACE); e.More(); e.Next()) {
+    ++count;
+  }
+  return count;
+}
+
 bool is_valid(const Shape &shape) { return BRepCheck_Analyzer(shape.shape).IsValid(); }
 
 rust::Vec<double> bounds(const Shape &shape) {
@@ -484,6 +493,15 @@ rust::Vec<uint8_t> write_brep(const Shape &shape) {
     bytes.push_back(static_cast<uint8_t>(c));
   }
   return bytes;
+}
+
+std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> m) {
+  if (m.size() != 12) {
+    throw std::runtime_error("a placement needs 12 numbers");
+  }
+  gp_Trsf trsf;
+  trsf.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+  return owned(shape.shape.Located(TopLoc_Location(trsf)), "placing a shape");
 }
 
 double volume(const Shape &shape) {

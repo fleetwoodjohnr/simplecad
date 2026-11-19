@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, Ellipsis, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
-import type { DisplayShape, FaceInfo, ModelResult } from '@/shared/engine-protocol'
-import { applyPull, onEngineConnected, openProject, openSession, previewPull, resetModel, stepHistory } from '../state/engine'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
+import type { BodyInfo, DisplayShape, FaceInfo, ModelResult } from '@/shared/engine-protocol'
+import { applyPull, onEngineConnected, openProject, openSession, previewPull, resetModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -33,10 +33,11 @@ function useTheme(): [boolean, () => void] {
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
 
-function faceLabel(face: FaceInfo, bodies: string[]) {
+function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
   const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
   const side = !face.planar ? 'Curved' : axis < 0 ? 'Slanted' : labels[axis][Number(face.normal[axis] > 0)]
-  return `${bodies.length > 1 ? `${bodies[face.body]} · ` : ''}${side} · ${format.format(face.area)} mm²`
+  const several = bodies.filter((b) => b.visible && !b.empty).length > 1
+  return `${several ? `${bodies[face.body].name} · ` : ''}${side} · ${format.format(face.area)} mm²`
 }
 
 export function App() {
@@ -153,6 +154,9 @@ export function App() {
     }, true)
   }
 
+  const toggleBody = (body: number, visible: boolean) => {
+    if (revision !== undefined) mutate(() => showBody(revision, body, visible))
+  }
   const history = (direction: 'undo' | 'redo') => {
     if (revision !== undefined) mutate(() => stepHistory(revision, direction))
   }
@@ -228,18 +232,24 @@ export function App() {
           />
           <aside aria-label="Model inspector" className="flex w-56 shrink-0 flex-col gap-3 border-l border-border bg-panel p-3">
             <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
-            {model?.shape.bodies.map((name, index) => (
-              <div key={index} className="flex items-center gap-2 rounded-md bg-hover px-2 py-1.5">
-                <Box className="size-4 shrink-0 text-text-2" />
-                <span className="truncate">{name}</span>
-              </div>
-            ))}
+            <ul aria-label="Bodies" className="grid gap-1">
+              {model?.bodies.map((body, index) => (
+                <li key={index} className={`flex items-center gap-2 rounded-md px-2 py-1 ${body.visible ? 'bg-hover' : 'text-text-3'}`}>
+                  <Box className="size-4 shrink-0 text-text-2" />
+                  <span className="min-w-0 flex-1 truncate" title={body.empty ? 'No saved geometry' : undefined}>{body.name}</span>
+                  <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
+                    disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
+                    {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+                  </IconBtn>
+                </li>
+              ))}
+            </ul>
             <label className="grid gap-1 text-xs text-text-2">
               Planar face
               <select value={selected ?? ''} disabled={!ready} className={`${inputCls} w-full`}
                 onChange={(e) => select(e.target.value === '' ? undefined : Number(e.target.value))}>
                 <option value="">Select a face</option>
-                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.shape.bodies)}</option>)}
+                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies)}</option>)}
               </select>
             </label>
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>

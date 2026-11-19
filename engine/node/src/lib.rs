@@ -1,10 +1,9 @@
 //! SimpleCAD's geometry engine as a Node addon: OCCT shapes through the `occt`
-//! shim, and the `.scad3` archive entries the engine reads them from.
+//! shim, and `.scad3` projects through the `scad` core.
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use occt::ffi;
-use std::io::{Cursor, Read};
 
 /// Chord deflection (mm) and angle (radians) the Python app meshes with.
 const DEFLECTION: f64 = 0.05;
@@ -84,12 +83,6 @@ impl Shape {
         wrap(ffi::make_box(dx, dy, dz))
     }
 
-    /// A shape from OCCT's text B-Rep, as `.scad3` files store bodies.
-    #[napi(factory)]
-    pub fn from_brep(data: Buffer) -> Result<Self> {
-        wrap(ffi::read_brep(&data))
-    }
-
     #[napi]
     pub fn push_pull(&self, face: u32, distance: f64) -> Result<Shape> {
         wrap(ffi::push_pull(&self.inner, face, distance))
@@ -128,22 +121,52 @@ impl Shape {
     }
 }
 
-/// The named entries of a zip archive; `null` for one that is missing or
-/// damaged, which the caller skips, as the Python app does.
+#[napi(object, object_from_js = false)]
+pub struct OpenedBody {
+    pub name: String,
+    pub visible: bool,
+    /// `None` when the file holds no readable geometry for this body.
+    pub shape: Option<Shape>,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct OpenedProject {
+    pub bodies: Vec<OpenedBody>,
+    pub notes: Vec<String>,
+}
+
+/// Every body of a `.scad3`, shown or hidden, as the Python app loads it.
 #[napi]
-pub fn read_archive(data: Buffer, names: Vec<String>) -> Result<Vec<Option<Buffer>>> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(&data[..])).map_err(|_| {
-        Error::from_reason("This is not a SimpleCAD project, or the file is damaged.")
-    })?;
-    Ok(names
-        .iter()
-        .map(|name| {
-            let mut entry = archive.by_name(name).ok()?;
-            let mut bytes = Vec::with_capacity(entry.size().min(1 << 30) as usize);
-            entry.read_to_end(&mut bytes).ok()?;
-            Some(bytes.into())
+pub fn open_project(data: Buffer) -> Result<OpenedProject> {
+    let project = scad::project::read(&data).map_err(Error::from_reason)?;
+    let mut notes = project.notes;
+    let bodies = project
+        .bodies
+        .into_iter()
+        .map(|body| {
+            let shape = body.brep.and_then(|brep| {
+                let shape = ffi::read_brep(&brep).and_then(|shape| match &body.location {
+                    Some(matrix) => ffi::located(&shape, matrix),
+                    None => Ok(shape),
+                });
+                shape
+                    .map_err(|_| {
+                        notes.push(format!(
+                            "\"{}\" could not be read from this file.",
+                            body.name
+                        ))
+                    })
+                    .ok()
+                    .map(|inner| Shape { inner })
+            });
+            OpenedBody {
+                name: body.name,
+                visible: body.visible,
+                shape,
+            }
         })
-        .collect())
+        .collect();
+    Ok(OpenedProject { bodies, notes })
 }
 
 /// Crashes the engine process for real, so the isolation can be drilled.

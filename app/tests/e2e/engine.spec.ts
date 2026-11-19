@@ -88,8 +88,9 @@ test('opens a .scad3 project and pulls a face with its recess and boss, through 
   await page.getByRole('button', { name: 'File', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Open project' }).click()
   await expect(status).toHaveText(/Engine ready · 71016.32 mm³/)
-  await expect(page.getByText('1 hidden body is not shown.')).toBeVisible()
-  await expect(page.getByRole('complementary', { name: 'Model inspector' })).toContainText('Plate')
+  const bodies = page.getByRole('list', { name: 'Bodies' })
+  await expect(bodies).toContainText('Plate')
+  await expect(bodies).toContainText('Spare')
   await expect(page.getByText('features.scad3', { exact: true })).toBeVisible()
 
   await page.getByLabel('Planar face').selectOption({ label: 'Top · 3251.73 mm²' })
@@ -110,6 +111,15 @@ test('opens a .scad3 project and pulls a face with its recess and boss, through 
   await expect(status).toHaveText(/Engine ready · 92371.27 mm³/)
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(/71016.32 mm³/)
+
+  // The hidden 10 mm box: shown, it adds its volume and its faces, named by body; the history is untouched.
+  await page.getByRole('button', { name: 'Show Spare' }).click()
+  await expect(status).toHaveText(/72016.32 mm³/)
+  await expect(page.getByLabel('Planar face').locator('option', { hasText: 'Spare · Top · 100 mm²' })).toHaveCount(1)
+  await page.getByRole('button', { name: 'Redo', exact: true }).click()
+  await expect(status).toHaveText(/93371.27 mm³/)
+  await page.getByRole('button', { name: 'Hide Spare' }).click()
+  await expect(status).toHaveText(/92371.27 mm³/)
 })
 
 test('the viewport picks a face and the drag handle commits a pull', async () => {

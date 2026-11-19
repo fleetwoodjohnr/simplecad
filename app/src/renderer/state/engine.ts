@@ -77,6 +77,8 @@ export const openProject = (revision: number, data: Uint8Array, name: string) =>
   })
 export const previewPull = (revision: number, edit: PullEdit) => send<DisplayShape>({ op: 'preview', revision, ...edit })
 export const applyPull = (revision: number, edit: PullEdit) => send<ModelResult>({ op: 'apply', revision, ...edit }).then(accept)
+export const showBody = (revision: number, body: number, visible: boolean) =>
+  send<ModelResult>({ op: 'show', revision, body, visible }).then(accept)
 export const resetModel = (revision: number) => send<ModelResult>({ op: 'reset', revision }).then((result) => {
   source = undefined
   return accept(result)

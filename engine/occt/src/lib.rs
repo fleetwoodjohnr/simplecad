@@ -55,8 +55,14 @@ pub mod ffi {
         /// OCCT's text B-Rep format, as `.scad3` files store it.
         fn read_brep(bytes: &[u8]) -> Result<UniquePtr<Shape>>;
         fn write_brep(shape: &Shape) -> Result<Vec<u8>>;
+        /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
+        /// the Python app places a cached "located" output).
+        fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;
         fn volume(shape: &Shape) -> f64;
         fn solid_count(shape: &Shape) -> u32;
+        /// Faces as `TopExp_Explorer` visits them, a face used twice counted
+        /// twice: how the Python app's project comparison counts.
+        fn face_occurrences(shape: &Shape) -> u32;
         /// `BRepCheck_Analyzer`'s verdict.
         fn is_valid(shape: &Shape) -> Result<bool>;
         /// The optimal bounding box: min x, y, z then max x, y, z.
