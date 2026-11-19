@@ -19,9 +19,14 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # The first run on each OS compiles OCCT (about an hour); later runs restore it from the cache.
+    timeout-minutes: 120
     env:
       RUSTUP_TOOLCHAIN: '1.99.0'
+      OCCT_DIR: ${{ github.workspace }}/occt-install
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -30,12 +35,38 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+
+      - name: OCCT from the cache
+        id: occt
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: occt-install
+          key: occt-8.0.1-${{ matrix.os }}-${{ hashFiles('engine/occt/build-occt.sh') }}
+      - name: Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+      - name: Build OCCT 8.0.1
+        if: steps.occt.outputs.cache-hit != 'true'
+        env:
+          CMAKE_GENERATOR: Ninja
+          JOBS: '4'
+        run: engine/occt/build-occt.sh "$OCCT_DIR" "$RUNNER_TEMP/occt-build"
+
       - run: cargo fmt --all --check
         working-directory: engine
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
         working-directory: engine
-      - run: cargo test --locked --workspace
+      - name: cargo test
         working-directory: engine
+        run: |
+          # Windows finds the OCCT DLLs on PATH; Linux and macOS through the test binaries' rpath.
+          [ "$RUNNER_OS" != Windows ] || export PATH="$OCCT_DIR/bin:$PATH"
+          cargo test --locked --workspace
       - run: npm ci
         working-directory: app
       - run: npm run typecheck
@@ -44,10 +75,26 @@ jobs:
         working-directory: app
       - run: npm run dist
         working-directory: app
+      - name: The packaged addon finds every library beside itself
+        working-directory: app
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              lib=release/linux-unpacked/resources/app.asar.unpacked/native
+              ! ldd "$lib/scad_engine.node" | grep 'not found'
+              ! ldd "$lib/scad_engine.node" | grep -F "$OCCT_DIR" ;;
+            macOS)
+              lib=$(ls -d release/mac*/SimpleCAD.app/Contents/Resources/app.asar.unpacked/native)
+              ! otool -L "$lib/scad_engine.node" | grep -F "$OCCT_DIR" ;;
+            Windows)
+              lib=release/win-unpacked/resources/app.asar.unpacked/native
+              for dll in $(dumpbin //dependents "$lib/scad_engine.node" | grep -oE 'TK[A-Za-z0-9]+\.dll'); do
+                test -f "$lib/$dll"
+              done ;;
+          esac
       - name: Packaged Linux window and geometry
         if: runner.os == 'Linux'
         working-directory: app
         run: |
-          sudo apt-get update
           sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1
           SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
