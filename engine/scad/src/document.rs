@@ -63,18 +63,7 @@ impl Model {
             return model;
         }
         let latest = model.latest();
-        let adopted = project
-            .bodies
-            .iter()
-            .all(|b| b.brep.is_some() && latest.contains_key(&b.name));
-        let signatures = if adopted {
-            signatures(&model.payload)
-        } else {
-            None
-        }
-        .unwrap_or_default();
-        let mut outputs: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
-        let payload = model.payload.as_object_mut().unwrap();
+        let signatures = model.adopt_baseline(&project.bodies).unwrap_or_default();
         let mut geometry = Map::new();
         for body in &project.bodies {
             let (Some(brep), Some((feature, object))) = (&body.brep, latest.get(&body.name)) else {
@@ -87,40 +76,13 @@ impl Model {
                 json!({ "sha256": sha, "feature_id": feature,
                 "signature": signature, "current": signature.is_some() }),
             );
-            outputs
-                .entry(feature.clone())
-                .or_default()
-                .insert(object.clone(), json!({ "kind": "brep", "sha256": sha }));
             model.blobs.insert(sha, brep.clone());
         }
-        let mut entries = Map::new();
-        for feature in payload
-            .get("features")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let id = feature["id"].as_str().unwrap_or("");
-            let (Some(signature), Some(found)) = (signatures.get(id), outputs.get(id)) else {
-                continue;
-            };
-            // A partial multi-output result must not pass for the whole step.
-            let dropped = &feature["dropped"];
-            let wanted: Vec<&str> = feature["outputs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|n| !dropped.as_array().is_some_and(|d| d.contains(n)))
-                .filter_map(|n| feature["output_ids"].get(n.as_str()?)?.as_str())
-                .collect();
-            if wanted.len() == found.len() && wanted.iter().all(|o| found.contains_key(*o)) {
-                entries.insert(
-                    signature.clone(),
-                    json!({ "feature_id": id, "outputs": found,
-                    "message": "", "version": CACHE_VERSION }),
-                );
-            }
-        }
+        let payload = model.payload.as_object_mut().unwrap();
+        // Saved results only where the bodies were adopted, as the Python app's load.
+        payload
+            .entry("cache")
+            .or_insert_with(|| json!({ "version": CACHE_VERSION, "entries": {} }));
         let diagnostics: Map<String, Value> = payload
             .get("features")
             .and_then(Value::as_array)
@@ -133,10 +95,6 @@ impl Model {
                 ))
             })
             .collect();
-        payload.insert(
-            "cache".into(),
-            json!({ "version": CACHE_VERSION, "entries": entries }),
-        );
         payload.insert("geometry".into(), Value::Object(geometry));
         payload.insert("diagnostics".into(), Value::Object(diagnostics));
         model
@@ -219,6 +177,73 @@ impl Model {
             }
         }
         latest
+    }
+
+    /// `Rebuilder.adopt_baseline`: when every body was read and has a producer,
+    /// each step whose outputs are all bodies gets them as its saved result
+    /// (one already saved is kept). Returns the signatures, or `None` when not adopted.
+    pub fn adopt_baseline(
+        &mut self,
+        bodies: &[crate::project::SavedBody],
+    ) -> Option<BTreeMap<String, String>> {
+        let latest = self.latest();
+        if bodies.is_empty()
+            || !bodies
+                .iter()
+                .all(|b| b.brep.is_some() && latest.contains_key(&b.name))
+        {
+            return None;
+        }
+        let signatures = signatures(&self.payload)?;
+        let mut outputs: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+        for body in bodies {
+            let (Some(brep), Some((feature, object))) = (&body.brep, latest.get(&body.name)) else {
+                continue;
+            };
+            let sha = format!("{:x}", Sha256::digest(brep));
+            let output = match &body.location {
+                Some(matrix) => {
+                    json!({ "kind": "located", "sha256": sha, "location": matrix.to_vec() })
+                }
+                None => json!({ "kind": "brep", "sha256": sha }),
+            };
+            outputs
+                .entry(feature.clone())
+                .or_default()
+                .insert(object.clone(), output);
+            self.blobs.insert(sha, brep.clone());
+        }
+        let features = self.list("features");
+        let payload = self.payload.as_object_mut().unwrap();
+        let cache = payload
+            .entry("cache")
+            .or_insert_with(|| json!({ "version": CACHE_VERSION, "entries": {} }));
+        if !cache["entries"].is_object() {
+            cache["entries"] = json!({});
+        }
+        let entries = cache["entries"].as_object_mut().unwrap();
+        for feature in &features {
+            let id = feature["id"].as_str().unwrap_or("");
+            let (Some(signature), Some(found)) = (signatures.get(id), outputs.get(id)) else {
+                continue;
+            };
+            // A partial multi-output result must not pass for the whole step.
+            let dropped = &feature["dropped"];
+            let wanted: Vec<&str> = feature["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|n| !dropped.as_array().is_some_and(|d| d.contains(n)))
+                .filter_map(|n| feature["output_ids"].get(n.as_str()?)?.as_str())
+                .collect();
+            if wanted.len() == found.len()
+                && wanted.iter().all(|o| found.contains_key(*o))
+                && !entries.contains_key(signature)
+            {
+                entries.insert(signature.clone(), json!({ "feature_id": id, "outputs": found, "message": "", "version": CACHE_VERSION }));
+            }
+        }
+        Some(signatures)
     }
 
     /// Every step's name, type and state as last built, in order.

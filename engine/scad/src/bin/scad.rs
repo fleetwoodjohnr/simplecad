@@ -126,6 +126,85 @@ fn save(args: &[String]) -> Result<(), String> {
     std::fs::write(output, model.save(&original)?).map_err(|e| e.to_string())
 }
 
+/// `scad rebuild <file> [--from-recipe]`: the bodies after the Python app's rebuild
+/// stages: `cached_rebuild` (its results adopted, saved ones used) or, from the
+/// recipe, `recipe_rebuild` (every step run). With the step types that had to run
+/// and are not ported yet, whose bodies then keep what they had.
+fn rebuild(args: &[String]) -> Result<(), String> {
+    let (path, recipe) = match args {
+        [path] => (path, false),
+        [path, flag] if flag == "--from-recipe" => (path, true),
+        _ => return Err("usage: scad rebuild <file.scad3> [--from-recipe]".into()),
+    };
+    let original = std::fs::read(path).map_err(|e| e.to_string())?;
+    let project = scad::project::read(&original)?;
+    let mut model = scad::document::Model::open(&project);
+    let ids: std::collections::HashMap<String, String> = model.payload["bodies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| {
+            Some((
+                b["name"].as_str()?.to_string(),
+                b["id"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let mut shown = std::collections::HashMap::new();
+    let mut stale = std::collections::BTreeSet::new();
+    if recipe {
+        stale = model.payload["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["id"].as_str().map(String::from))
+            .collect();
+    } else {
+        model.adopt_baseline(&project.bodies);
+        for body in &project.bodies {
+            let (Some(brep), Some(id)) = (&body.brep, ids.get(&body.name)) else {
+                continue;
+            };
+            let mut shape = occt::read_brep(brep).map_err(|e| e.what().to_string())?;
+            if let Some(m) = &body.location {
+                shape = occt::located(&shape, m).map_err(|e| e.what().to_string())?;
+            }
+            shown.insert(id.clone(), std::rc::Rc::new(shape));
+        }
+    }
+    let report = scad::rebuild::rebuild(&mut model, &original, &shown, &stale)?;
+    let mut bodies = Map::new();
+    for body in &report.bodies {
+        let value = match &body.shape {
+            Some(shape) => json!({
+                "volume": occt::volume(shape).abs(),
+                "box": occt::bounds(shape).map_err(|e| e.what().to_string())?,
+                "faces": occt::face_occurrences(shape),
+            }),
+            None => Value::Null,
+        };
+        bodies.insert(body.name.clone(), value);
+    }
+    let unported: std::collections::BTreeSet<&str> = report
+        .failures
+        .iter()
+        .filter(|(_, message)| message.contains("cannot build it yet"))
+        .filter_map(|(fid, _)| {
+            model.payload["features"]
+                .as_array()?
+                .iter()
+                .find(|f| f["id"] == json!(fid))?["type"]
+                .as_str()
+        })
+        .collect();
+    let stage = if recipe { "recipe" } else { "cached" };
+    println!(
+        "{}",
+        json!({ format!("{stage}_rebuild"): bodies, format!("{stage}_failed"): report.failures.len(), "unported": unported })
+    );
+    Ok(())
+}
+
 type Command = fn(&[String]) -> Result<(), String>;
 
 fn main() {
@@ -133,6 +212,7 @@ fn main() {
     let command: Option<Command> = match args.get(1).map(String::as_str) {
         Some("pull") => Some(pull),
         Some("save") => Some(save),
+        Some("rebuild") => Some(rebuild),
         _ => None,
     };
     if let Some(command) = command {
@@ -144,7 +224,7 @@ fn main() {
     }
     let [_, command, path] = args.as_slice() else {
         eprintln!(
-            "usage: scad dump <file.scad3> | scad pull <in.scad3> <body> <face> <distance> <out.scad3> | scad save <in.scad3> <out.scad3>"
+            "usage: scad dump <file.scad3> | scad pull <in.scad3> <body> <face> <distance> <out.scad3> | scad save <in.scad3> <out.scad3> | scad rebuild <file.scad3> [--from-recipe]"
         );
         std::process::exit(2);
     };

@@ -76,14 +76,14 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     stages = {}
     document, _cached = load(path)
     stages["loaded"] = _signature(document)
+    from simplecad.core.naming import fingerprint, sub_shapes
+    from simplecad.core.result_store import signatures
+    stages["signatures"] = signatures(document)
+    stages["fingerprints"] = {
+        name: [fingerprint(face, "face").to_dict() for face in sub_shapes(body.shape, "face")]
+        for name, body in document.bodies.items() if body.shape is not None}
+    stages["document"] = document.to_dict()
     if loaded_only:
-        from simplecad.core.naming import fingerprint, sub_shapes
-        from simplecad.core.result_store import signatures
-        stages["signatures"] = signatures(document)
-        stages["fingerprints"] = {
-            name: [fingerprint(face, "face").to_dict() for face in sub_shapes(body.shape, "face")]
-            for name, body in document.bodies.items() if body.shape is not None}
-        stages["document"] = document.to_dict()
         return stages
 
     rebuilder = Rebuilder(document)
@@ -219,6 +219,8 @@ def main() -> int:
     parser.add_argument("--old-python", default=sys.executable,
                         help="interpreter for --old, e.g. a venv with the previous OCCT")
     parser.add_argument("--rust", help="the Rust engine's scad tool, compared against this tree")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="with --rust, also compare the rebuild stages (slow: this tree rebuilds every file)")
     parser.add_argument("--dump", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dump-loaded", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reopen", action="store_true", help=argparse.SUPPRESS)
@@ -245,8 +247,23 @@ def main() -> int:
             new = ({stage: _rounded(value) if stage == "loaded" else value for stage, value in
                     json.loads(result.stdout).items()} if result.returncode == 0
                    else {"error": result.stderr.strip().splitlines()[-1:] or ["failed"]})
+            if args.rebuild and "error" not in new:
+                for extra in ([], ["--from-recipe"]):
+                    result = subprocess.run([args.rust, "rebuild", path, *extra], capture_output=True, text=True,
+                                            timeout=3600)
+                    if result.returncode:
+                        new["error"] = result.stderr.strip().splitlines()[-1:] or ["failed"]
+                        break
+                    stages = json.loads(result.stdout)
+                    unported = stages.pop("unported")
+                    if unported:
+                        # Its bodies keep what they had; nothing to hold against this tree yet.
+                        print(f"NOTE       {os.path.basename(path)}: {next(iter(stages))} needs {', '.join(unported)}, "
+                              "not ported yet")
+                        continue
+                    new.update({k: _rounded(v) if isinstance(v, dict) else v for k, v in stages.items()})
             # Only the stages the Rust engine reports for this file.
-            old = _run(ROOT, path, flag="--dump-loaded")
+            old = _run(ROOT, path, flag="--dump" if args.rebuild else "--dump-loaded")
             old = {stage: value for stage, value in old.items() if stage in new or stage == "error"}
             if "error" not in new:
                 problems = _rust_saves(args.rust, path, new)
