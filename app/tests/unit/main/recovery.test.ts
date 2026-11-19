@@ -6,11 +6,11 @@ import { describeAge, leftovers, recoveryDir, sessionFile } from '@/main/recover
 
 describe('recovery', () => {
   it('uses SimpleCAD 0.4 recovery folder on each system', () => {
-    expect(recoveryDir({}, 'linux', '/home/a')).toBe('/home/a/.local/share/simplecad/recovery')
-    expect(recoveryDir({ XDG_DATA_HOME: '/data' }, 'linux', '/home/a')).toBe('/data/simplecad/recovery')
+    expect(recoveryDir({}, 'linux', '/home/a')).toBe(path.join('/home/a', '.local', 'share', 'simplecad', 'recovery'))
+    expect(recoveryDir({ XDG_DATA_HOME: '/data' }, 'linux', '/home/a')).toBe(path.join('/data', 'simplecad', 'recovery'))
     expect(recoveryDir({ APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, 'win32', 'C:\\Users\\a')).toBe(
       path.join('C:\\Users\\a\\AppData\\Roaming', 'SimpleCAD', 'recovery'))
-    expect(recoveryDir({}, 'darwin', '/Users/a')).toBe('/Users/a/Library/Application Support/SimpleCAD/recovery')
+    expect(recoveryDir({}, 'darwin', '/Users/a')).toBe(path.join('/Users/a', 'Library', 'Application Support', 'SimpleCAD', 'recovery'))
   })
 
   it('offers other sessions\' work, newest first, never its own', async () => {

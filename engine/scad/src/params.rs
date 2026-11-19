@@ -20,33 +20,6 @@ const BUILTINS: &[&str] = &[
     "ceil", "round", "hypot", "log", "exp", "pi", "e", "tau",
 ];
 
-/// `units.py`'s length and angle unit names, for `known_unit`.
-const UNITS: &[&str] = &[
-    "mm",
-    "millimeter",
-    "millimetre",
-    "cm",
-    "centimeter",
-    "centimetre",
-    "m",
-    "meter",
-    "metre",
-    "in",
-    "inch",
-    "\"",
-    "ft",
-    "foot",
-    "thou",
-    "mil",
-    "deg",
-    "degree",
-    "degrees",
-    "°",
-    "rad",
-    "radian",
-    "radians",
-];
-
 /// The parameter names `expression` uses; empty for text that is not an expression.
 pub fn dependencies(expression: &str) -> BTreeSet<String> {
     if !expression.chars().any(|c| c.is_alphabetic() || c == '_') {
@@ -73,13 +46,60 @@ pub fn dependencies(expression: &str) -> BTreeSet<String> {
     names
 }
 
-fn known_unit(unit: &str) -> bool {
-    !unit.is_empty() && (UNITS.contains(&unit) || UNITS.contains(&unit.to_lowercase().as_str()))
+/// `units.unit_factor`: what `unit` converts by into mm or degrees. With `within`,
+/// only that dimension's units; without, the unit's own (`known_unit`).
+pub(crate) fn unit_factor(unit: &str, within: Option<crate::evaluate::Dimension>) -> Option<f64> {
+    use crate::evaluate::Dimension;
+    const LENGTH: &[(&str, f64)] = &[
+        ("mm", 1.0),
+        ("millimeter", 1.0),
+        ("millimetre", 1.0),
+        ("cm", 10.0),
+        ("centimeter", 10.0),
+        ("centimetre", 10.0),
+        ("m", 1000.0),
+        ("meter", 1000.0),
+        ("metre", 1000.0),
+        ("in", 25.4),
+        ("inch", 25.4),
+        ("\"", 25.4),
+        ("ft", 304.8),
+        ("foot", 304.8),
+        ("thou", 0.0254),
+        ("mil", 0.0254),
+    ];
+    const RADIAN: f64 = 180.0 / std::f64::consts::PI;
+    const ANGLE: &[(&str, f64)] = &[
+        ("deg", 1.0),
+        ("degree", 1.0),
+        ("degrees", 1.0),
+        ("°", 1.0),
+        ("rad", RADIAN),
+        ("radian", RADIAN),
+        ("radians", RADIAN),
+    ];
+    if unit.is_empty() {
+        return None;
+    }
+    let lowered = unit.to_lowercase();
+    let find =
+        |table: &[(&str, f64)], key: &str| table.iter().find(|(u, _)| *u == key).map(|(_, f)| *f);
+    let key = if unit == "°" { unit } else { lowered.as_str() };
+    match within {
+        Some(Dimension::Length) => find(LENGTH, key),
+        Some(Dimension::Angle) => find(ANGLE, key),
+        Some(Dimension::Scalar) => None,
+        None if find(LENGTH, &lowered).is_some() || find(LENGTH, unit).is_some() => {
+            find(LENGTH, key)
+        }
+        None if find(ANGLE, &lowered).is_some() || find(ANGLE, unit).is_some() => find(ANGLE, key),
+        None => None,
+    }
 }
 
-/// `_tokenize_units`: a number followed by a known unit becomes `(number * factor)`.
-/// The factor is irrelevant to which names an expression uses.
-fn tokenize_units(text: &str) -> String {
+/// `_tokenize_units`: a number followed by a known unit becomes `(number * factor)`,
+/// the factor that unit's own dimension gives it, written as Python's `repr`.
+pub(crate) fn tokenize_units(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let digit = |i: usize| chars.get(i).is_some_and(|c| c.is_ascii_digit());
     let (n, mut i, mut out) = (chars.len(), 0, String::new());
@@ -112,8 +132,11 @@ fn tokenize_units(text: &str) -> String {
                 gap += 1;
             }
             let unit: String = chars[unit_start..gap].iter().collect();
-            if known_unit(&unit) {
-                out.push_str(&format!("({number} * 1.0)"));
+            if let Some(factor) = unit_factor(&unit, None) {
+                out.push_str(&format!(
+                    "({number} * {})",
+                    crate::pyjson::float_repr(factor)
+                ));
                 i = gap;
             } else {
                 out.push_str(&number);
@@ -127,12 +150,14 @@ fn tokenize_units(text: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Token {
+pub(crate) enum Token {
     Name(String),
     Keyword(&'static str),
-    Number,
-    /// A string literal: no names. Adjacent strings join; a number does not.
-    Literal,
+    /// A number literal, as written.
+    Number(String),
+    /// A string literal as written, prefix and quotes included: no names.
+    /// Adjacent strings join; a number does not.
+    Literal(String),
     /// An f-string: the names its replacement fields use.
     FString(Vec<String>),
     Op(&'static str),
@@ -162,7 +187,7 @@ fn ident_continue(c: char) -> bool {
 
 /// Python's tokenizer, as far as an `eval` of one expression needs it; `None` is a
 /// `SyntaxError`.
-fn lex(text: &str) -> Option<Vec<Token>> {
+pub(crate) fn lex(text: &str) -> Option<Vec<Token>> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut tokens = Vec::new();
@@ -207,8 +232,9 @@ fn lex(text: &str) -> Option<Vec<Token>> {
             _ if c.is_ascii_digit()
                 || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())) =>
             {
+                let start = i;
                 i = number(&chars, i)?;
-                tokens.push(Token::Number);
+                tokens.push(Token::Number(chars[start..i].iter().collect()));
             }
             _ if ident_start(c) => {
                 let start = i;
@@ -219,8 +245,8 @@ fn lex(text: &str) -> Option<Vec<Token>> {
                 if i < n && (chars[i] == '\'' || chars[i] == '"') && string_prefix(&word).is_some()
                 {
                     let (end, token) = string(&chars, i, string_prefix(&word)?)?;
+                    tokens.push(literal(token, &chars[start..end]));
                     i = end;
-                    tokens.push(token);
                 } else if let Some(k) = KEYWORDS.iter().find(|k| **k == word) {
                     tokens.push(Token::Keyword(k));
                 } else {
@@ -229,8 +255,8 @@ fn lex(text: &str) -> Option<Vec<Token>> {
             }
             '\'' | '"' => {
                 let (end, token) = string(&chars, i, Prefix::default())?;
+                tokens.push(literal(token, &chars[i..end]));
                 i = end;
-                tokens.push(token);
             }
             _ => {
                 let rest: String = chars[i..n.min(i + 3)].iter().collect();
@@ -246,6 +272,14 @@ fn lex(text: &str) -> Option<Vec<Token>> {
         }
     }
     (depth == 0).then_some(tokens)
+}
+
+/// A string token with the text it was read from.
+fn literal(token: Token, text: &[char]) -> Token {
+    match token {
+        Token::Literal(_) => Token::Literal(text.iter().collect()),
+        other => other,
+    }
 }
 
 /// The end of the number literal starting at `i`, Python's rules: underscores
@@ -384,7 +418,7 @@ fn string(chars: &[char], i: usize, prefix: Prefix) -> Option<(usize, Token)> {
     if prefix.format {
         return Some((j, Token::FString(fstring_names(&body)?)));
     }
-    Some((j, Token::Literal))
+    Some((j, Token::Literal(String::new())))
 }
 
 /// Whether the escape after a backslash is complete: `\x` needs 2 hex digits,
@@ -459,6 +493,16 @@ fn fstring_names(body: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// Whether Python's parser takes `tokens` as one expression (eval mode).
+pub(crate) fn parses(tokens: Vec<Token>) -> bool {
+    let mut parser = Parser {
+        tokens,
+        at: 0,
+        names: Vec::new(),
+    };
+    parser.expressions().is_some() && parser.at == parser.tokens.len()
+}
+
 /// Python's expression grammar (eval mode), recording every `Name` it reads.
 struct Parser {
     tokens: Vec<Token>,
@@ -506,7 +550,7 @@ impl Parser {
     /// Something that may begin an expression: keeps `a,` and `a,)` apart from `a, b`.
     fn starts_expression(&self) -> bool {
         match self.peek() {
-            Some(Token::Name(_) | Token::Number | Token::Literal | Token::FString(_)) => true,
+            Some(Token::Name(_) | Token::Number(_) | Token::Literal(_) | Token::FString(_)) => true,
             Some(Token::Keyword(k)) => {
                 ["None", "True", "False", "not", "lambda", "await"].contains(k)
             }
@@ -802,14 +846,14 @@ impl Parser {
                 self.names.push(name);
                 Some(())
             }
-            Token::Keyword("None" | "True" | "False") | Token::Number => {
+            Token::Keyword("None" | "True" | "False") | Token::Number(_) => {
                 self.at += 1;
                 Some(())
             }
-            Token::Literal | Token::FString(_) => {
+            Token::Literal(_) | Token::FString(_) => {
                 // Adjacent strings join into one; bytes may not join text, which
                 // is left alone here (no project holds such an input).
-                while let Some(Token::Literal | Token::FString(_)) = self.peek().cloned() {
+                while let Some(Token::Literal(_) | Token::FString(_)) = self.peek().cloned() {
                     if let Some(Token::FString(names)) = self.peek().cloned() {
                         self.names.extend(names);
                     }

@@ -17,6 +17,12 @@ back to format 1 (no ids, bindings or counters), with what ``Document.from_dict`
 then ``to_dict`` make of it and the signatures of the result.
 engine/scad/tests/data/new_box.json: the model.json of a new project with one
 box, made as the Shape panel makes it (``ShapePanel.commit``).
+engine/scad/tests/data/evaluate.json: expressions with the names they may use,
+evaluated as ``params.evaluate`` does in each dimension: the value, or the
+error's type and text. The given projects' inputs with their parameters, edge
+cases, and seeded random arithmetic.
+engine/scad/tests/data/parameters.json: parameter sets resolved as
+``ParameterSet`` resolves them: each value, or its error.
 engine/scad/tests/data/pulls_undone.json: that box with its top pulled 5 mm
 then -3 mm, the second pull undone, as saved: the history with its redo step.
 """
@@ -227,6 +233,108 @@ def new_box(pulls=(), undo=0, out="new_box.json"):
     print(out, "written")
 
 
+EVAL_EDGE_CASES = [
+    "40 mm", "-5 mm", "+-5", "--5", "5 MM", "5 deg", "10°", '0.5"', "2 in + 3 mm", "1e3", "1E-3 m", "5.", ".5",
+    "0005", "00", "01", "1_000", "1_000 mm", "0x1F", "0o17", "0b101", "5j", "1.5J", "1e3j", "e", "E", "pi", "tau",
+    "inf", "nan", "1inf", "5e", "5em", "1e400", "-1e400", "1e-400", "10**400", "10.0**400", "2**0.5", "(-8)**(1/3)",
+    "0**-1", "0.0**-1", "1/0", "1//0", "1%0", "7//2", "-7//2", "7//-2", "-7.5//2", "7%3", "-7%3", "7%-3", "-0.0%5",
+    "0%-5", "5.5%-2.25", "1e308*10", "-0", "-0.0", "0*-1", "2**-1074", "x + 1", "x*2 - y/3", "-x", "+x", "~x",
+    "not x", "x and y", "x or y", "x if y else z", "x < y", "x @ y", "x << 1", "x & 1", "x | y", "x ^ y", "x >> 1",
+    "lambda: 1", "(1, 2)", "1, 2", "[1]", "{1}", "{1: 2}", "x[0]", "x.y", "f(x)", "sin(30)", "cos(60 deg)",
+    "tan(45)", "asin(0.5)", "acos(2)", "atan(1)", "atan2(1, 1)", "atan2(1)", "sqrt(2)", "sqrt(-1)", "abs(-3)",
+    "abs()", "min(3, 1, 2)", "min()", "min(1)", "max(1, 2)", "floor(2.5)", "floor(-2.5)", "ceil(2.1)", "round(2.5)",
+    "round(3.5)", "round(-2.5)", "round(2.5, 1)", "hypot(3, 4)", "hypot()", "hypot(1, 2, 3)", "log(10)", "log(8, 2)",
+    "log(0)", "log(-1)", "exp(1)", "exp(1000)", "floor(1e400)", "floor(nan)", "sin(x=1)", "sin(*x)", "sin(1, 2)",
+    "sin()", "sqrt(x for x in y)", "'a'", "'a' 'b'", '"it\'s"', "b'A'", "f'{x}'", "True", "None", "...", "x := 1",
+    "(x := 1)", "await x", "", "   ", "5 mm 4", "1.2.3", ".", "-", "x +", "(", "()", "w / 2 + 3 mm", "hole + 0.4 mm",
+    "2(3)", "sin", "x(1)", "sin(1)(2)", "(sin)(1)", "-2**2", "2**-1", "2**3**2", "(1)", "((x))", "1 - -1", "3 % 2 ** 2",
+    "45°", "2 rad", "1 radian + 1 deg", "100 thou", "1 ft", "1 m", "x mm", "2 * pi * x", "round(1e300)",
+    "round(nan)", "round(inf)", "abs(1, 2)", "max(nan, 1)", "max(1, nan)", "1e16 + 1", "0.1 + 0.2",
+]
+
+
+def _eval_case(text, names):
+    from simplecad.core.params import ExpressionError, evaluate
+    from simplecad.core.units import Dimension
+
+    out = []
+    for dimension in Dimension:
+        try:
+            value = evaluate(text, dict(names), dimension)
+            out.append({"value": repr(value)})
+        except ExpressionError as exc:
+            out.append({"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - recorded as Python raises it
+            out.append({"raised": type(exc).__name__, "error": str(exc)})
+    return out
+
+
+def _random_expression(rng, depth=0):
+    if depth > 3 or rng.random() < 0.3:
+        return rng.choice(["x", "y", "z", "1", "2.5", "0", "3 mm", "10 deg", "0.5 in", "1e3", ".5", "pi", "7"])
+    kind = rng.random()
+    if kind < 0.55:
+        op = rng.choice(["+", "-", "*", "/", "//", "%", "**"])
+        return f"({_random_expression(rng, depth + 1)} {op} {_random_expression(rng, depth + 1)})"
+    if kind < 0.7:
+        return f"-{_random_expression(rng, depth + 1)}"
+    func = rng.choice(["sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sqrt", "abs", "min", "max", "floor",
+                       "ceil", "round", "hypot", "log", "exp"])
+    count = rng.choice([1, 1, 1, 2, 2, 3])
+    return f"{func}({', '.join(_random_expression(rng, depth + 1) for _ in range(count))})"
+
+
+PARAMETER_SETS = [
+    [{"name": "w", "expression": "40 mm"}, {"name": "h", "expression": "w / 2"}, {"name": "a", "expression": "30",
+     "dimension": "angle"}, {"name": "n", "expression": "3", "dimension": "scalar"}],
+    [{"name": "b", "expression": "a + 1"}, {"name": "a", "expression": "2"}, {"name": "c", "expression": "b * a"}],
+    [{"name": "x", "expression": "y"}, {"name": "y", "expression": "x"}, {"name": "z", "expression": "1"}],
+    [{"name": "p", "expression": "q + 1"}, {"name": "r", "expression": "1/0"}, {"name": "s", "expression": "r + 1"},
+     {"name": "t", "expression": "10 deg", "dimension": "length"}, {"name": "u", "expression": "1 mm", "dimension": "angle"}],
+    [{"name": "d", "expression": "1"}, {"name": "d", "expression": "2"}, {"name": "e2", "expression": "d * 10"}],
+]
+
+
+def parameter_sets(paths):
+    from simplecad.core.params import ParameterSet
+
+    sets = list(PARAMETER_SETS)
+    for path in paths:
+        sets.append(json.loads(zipfile.ZipFile(path).read("model.json")).get("parameters", []))
+    cases = []
+    for parameters in sets:
+        resolved = ParameterSet.from_list(parameters)
+        cases.append([parameters, {k: repr(v) for k, v in resolved.values.items()}, resolved.errors])
+    with open(os.path.join(DATA, "parameters.json"), "w", encoding="utf-8") as handle:
+        json.dump(cases, handle, indent=0, ensure_ascii=False)
+        handle.write("\n")
+    print(f"parameters.json: {len(cases)} parameter sets")
+
+
+def evaluations(paths, seed=20261119):
+    from simplecad.core.params import ParameterSet
+
+    cases = []
+    for path in paths:
+        model = json.loads(zipfile.ZipFile(path).read("model.json"))
+        values = ParameterSet.from_list(model.get("parameters", [])).values
+        texts = {v for f in model.get("features", []) for v in f.get("inputs", {}).values() if isinstance(v, str)}
+        texts |= {p.get("expression", "") for p in model.get("parameters", [])}
+        cases += [[text, values, _eval_case(text, values)] for text in sorted(texts)]
+    names = {"x": 3.0, "y": -2.5, "z": 0.0}
+    cases += [[text, names, _eval_case(text, names)] for text in EVAL_EDGE_CASES]
+    rng = random.Random(seed)
+    for _ in range(3000):
+        values = {"x": rng.uniform(-100, 100), "y": rng.choice([0.0, -1.0, 2.0, rng.uniform(-1, 1)]),
+                  "z": rng.uniform(0, 1e6)}
+        text = _random_expression(rng)
+        cases.append([text, values, _eval_case(text, values)])
+    with open(os.path.join(DATA, "evaluate.json"), "w", encoding="utf-8") as handle:
+        json.dump(cases, handle, indent=0, ensure_ascii=False)
+        handle.write("\n")
+    print(f"evaluate.json: {len(cases)} expressions")
+
+
 def main() -> int:
     import simplecad.kernel  # noqa: F401 - registers every feature type
     corpus()
@@ -234,6 +342,8 @@ def main() -> int:
     new_box()
     new_box(pulls=("5", "-3"), undo=1, out="pulls_undone.json")
     write("dependencies.json", project_texts(sys.argv[1:]) | EDGE_CASES)
+    evaluations(sys.argv[1:])
+    parameter_sets(sys.argv[1:])
     write("dependencies_fuzz.json", fuzz())
     with open(os.path.join(DATA, "pyjson.json"), "w", encoding="utf-8") as handle:
         json.dump(json_cases(), handle, indent=0)
