@@ -1,3 +1,5 @@
+import type { ElectronApplication } from '@playwright/test'
+import path from 'node:path'
 import { expect, launch, test } from './helpers'
 
 test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
@@ -12,7 +14,7 @@ test('pushes a face in the native worker, rejects an invalid push, and undoes an
   const distance = page.getByLabel('Pull distance')
   await distance.fill('-25')
   await distance.press('Enter')
-  await expect(page.getByRole('alert')).toContainText('through this wall')
+  await expect(page.getByRole('alert')).toContainText('straight through this body')
   await expect(status).toHaveText(/6000 mm³/)
 
   await distance.fill('-3')
@@ -69,31 +71,45 @@ test('the window restores accepted edits after the geometry worker exits', async
   await expect(status).toHaveText(/6000 mm³/)
 })
 
-test('saves and reopens a native project with editable history', async () => {
-  const { app, page } = await launch()
-  await app.evaluate(({ app: electronApp, dialog }) => {
-    const filePath = `${electronApp.getPath('userData')}/saved.scad3`
-    dialog.showSaveDialog = async () => ({ filePath, canceled: false })
-    dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
-  })
-  await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })
-  const distance = page.getByLabel('Pull distance')
-  await distance.fill('-3')
-  await distance.press('Enter')
-  const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/4200 mm³/)
+const fixture = path.join(__dirname, 'fixtures', 'features.scad3')
 
-  await page.getByRole('button', { name: 'File', exact: true }).click()
-  await page.getByRole('menuitem', { name: 'Save As' }).click()
-  await expect(page.getByText('saved.scad3', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'File', exact: true }).click()
-  await page.getByRole('menuitem', { name: 'New box' }).click()
+/** Answer the next Open dialog with the fixture, a plate with a hole, a recess and a boss, and a hidden box. */
+async function offerFixture(app: ElectronApplication) {
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+  }, fixture)
+}
+
+test('opens a .scad3 project and pulls a face with its recess and boss, through a real engine crash', async () => {
+  const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+  const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/6000 mm³/)
+  await offerFixture(app)
   await page.getByRole('button', { name: 'File', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Open project' }).click()
-  await expect(status).toHaveText(/4200 mm³/)
+  await expect(status).toHaveText(/Engine ready · 71016.32 mm³/)
+  await expect(page.getByText('1 hidden body is not shown.')).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Model inspector' })).toContainText('Plate')
+  await expect(page.getByText('features.scad3', { exact: true })).toBeVisible()
+
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 3251.73 mm²' })
+  const distance = page.getByLabel('Pull distance')
+  await distance.fill('6')
+  await distance.press('Enter')
+  // Every column under the face grows 6 mm except the two through-holes.
+  await expect(status).toHaveText(/92371.27 mm³/)
+
+  const crashed = page.evaluate(() =>
+    (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().then(
+      () => 'answered',
+      (e: Error) => e.message
+    )
+  )
+  expect(await crashed).toMatch(/restarted/)
+  await expect(page.getByTestId('engine-connections')).toHaveText('2')
+  await expect(status).toHaveText(/Engine ready · 92371.27 mm³/)
   await page.getByRole('button', { name: 'Undo', exact: true }).click()
-  await expect(status).toHaveText(/6000 mm³/)
+  await expect(status).toHaveText(/71016.32 mm³/)
 })
 
 test('the viewport picks a face and the drag handle commits a pull', async () => {
@@ -120,31 +136,13 @@ test('the viewport picks a face and the drag handle commits a pull', async () =>
 })
 
 test('command search executes the same command as the File menu', async () => {
-  const { page } = await launch()
+  const { app, page } = await launch()
   await expect(page.getByTestId('engine-status')).toHaveText(/6000 mm³/)
+  await offerFixture(app)
   await page.getByRole('button', { name: 'Command search' }).click()
   const search = page.getByLabel('Search commands')
-  await search.fill('recessed wall')
+  await search.fill('open project')
   await search.press('Enter')
   await expect(page.getByRole('dialog', { name: 'Command search' })).toHaveCount(0)
-  await expect(page.getByRole('complementary', { name: 'Model inspector' })).toContainText('Recessed wall')
-})
-
-test('the recessed enclosure supports the same two wall offsets as Atlas', async () => {
-  const { page } = await launch()
-  const status = page.getByTestId('engine-status')
-  await expect(status).toHaveText(/6000 mm³/)
-  await page.getByRole('button', { name: 'File', exact: true }).click()
-  await page.getByRole('menuitem', { name: 'Open recessed wall example' }).click()
-  await expect(status).toHaveText(/114328 mm³/)
-  const plane = page.getByLabel('Planar face')
-  const distance = page.getByLabel('Pull distance')
-  await plane.selectOption({ label: 'Back · 6568 mm²' })
-  await distance.fill('50.75')
-  await distance.press('Enter')
-  await expect(status).toHaveText(/447654 mm³/)
-  await plane.selectOption({ label: 'Front · 4540 mm²' })
-  await distance.fill('-49.75')
-  await distance.press('Enter')
-  await expect(status).toHaveText(/165074 mm³/)
+  await expect(page.getByRole('complementary', { name: 'Model inspector' })).toContainText('Plate')
 })

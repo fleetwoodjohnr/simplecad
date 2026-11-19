@@ -5,7 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
-import { openProjectFile, saveProjectFile } from './project-files'
+import { openProjectFile } from './project-files'
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
@@ -79,11 +79,10 @@ function handle<A extends unknown[], R>(channel: string, fn: (e: IpcMainInvokeEv
 
 function registerIpc() {
   handle('project:open', () => mainWindow ? openProjectFile(mainWindow) : undefined)
-  handle('project:save', (_event, data: unknown, name: unknown) => mainWindow ? saveProjectFile(mainWindow, data, name) : undefined)
   handle('project:discard', async () => {
     if (!mainWindow) return false
     const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'warning', message: 'Discard unsaved changes?', detail: 'Use Save As to keep this model.',
+      type: 'warning', message: 'Discard unsaved changes?', detail: 'This build cannot save yet; edits are kept only while it is open.',
       buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0
     })
     return response === 1

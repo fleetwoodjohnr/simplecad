@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box, Ellipsis, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
-import type { DisplayShape, FaceInfo, ModelResult, Starter } from '@/shared/engine-protocol'
-import { applyPull, onEngineConnected, openProject, openSession, previewPull, resetModel, saveProject, stepHistory } from '../state/engine'
+import type { DisplayShape, FaceInfo, ModelResult } from '@/shared/engine-protocol'
+import { applyPull, onEngineConnected, openProject, openSession, previewPull, resetModel, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -33,16 +33,16 @@ function useTheme(): [boolean, () => void] {
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
 
-function faceLabel(face: FaceInfo) {
-  const axis = face.normal.findIndex((n) => n !== 0)
-  return `${labels[axis][Number(face.normal[axis] > 0)]} · ${format.format(face.area)} mm²`
+function faceLabel(face: FaceInfo, bodies: string[]) {
+  const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
+  const side = !face.planar ? 'Curved' : axis < 0 ? 'Slanted' : labels[axis][Number(face.normal[axis] > 0)]
+  return `${bodies.length > 1 ? `${bodies[face.body]} · ` : ''}${side} · ${format.format(face.area)} mm²`
 }
 
 export function App() {
   const [dark, toggle] = useTheme()
   const [model, setModel] = useState<ModelResult>()
-  const [fileName, setFileName] = useState('Untitled.scad3')
-  const [saved, setSaved] = useState('')
+  const [fileName, setFileName] = useState('Untitled')
   const [preview, setPreview] = useState<DisplayShape>()
   const [selected, setSelected] = useState<number>()
   const [distance, setDistance] = useState('')
@@ -123,20 +123,20 @@ export function App() {
     if (revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
-  const dirty = !!model && (saved ? JSON.stringify(model.checkpoint) !== saved : model.checkpoint.edits.length > 0)
+  // Nothing is saved yet in this build, so any edit is unsaved.
+  const dirty = !!model && model.checkpoint.edits.length > 0
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = false }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
-  const start = (starter: Starter) => {
+  const start = () => {
     if (revision === undefined) return
     mutate(async () => {
       if (dirty && !await window.simplecad.confirmDiscard()) return
-      const next = await resetModel(revision, starter)
-      setFileName('Untitled.scad3')
-      setSaved('')
+      const next = await resetModel(revision)
+      setFileName('Untitled')
       return next
     }, true)
   }
@@ -147,23 +147,12 @@ export function App() {
       if (dirty && !await window.simplecad.confirmDiscard()) return
       const file = await window.simplecad.openProject()
       if (!file) return
-      const next = await openProject(revision, file.data)
+      const next = await openProject(revision, file.data, file.name)
       setFileName(file.name)
-      setSaved(JSON.stringify(next.checkpoint))
       return next
     }, true)
   }
 
-  const save = () => {
-    if (revision === undefined || !model) return
-    mutate(async () => {
-      const data = await saveProject(revision)
-      const name = await window.simplecad.saveProject(data, fileName)
-      if (!name) return
-      setFileName(name)
-      setSaved(JSON.stringify(model.checkpoint))
-    })
-  }
   const history = (direction: 'undo' | 'redo') => {
     if (revision !== undefined) mutate(() => stepHistory(revision, direction))
   }
@@ -171,14 +160,12 @@ export function App() {
   const canRedo = !!model && model.checkpoint.cursor < model.checkpoint.edits.length && !busy
   const ready = !!model && !busy
   const actions: CommandActions = {
-    newBox: { enabled: ready, run: () => start('box') },
+    newBox: { enabled: ready, run: start },
     open: { enabled: ready, run: open },
-    save: { enabled: ready, run: save },
     undo: { enabled: canUndo, run: () => history('undo') },
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
-    example: { enabled: ready, run: () => start('recessed-wall') },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
   }
 
@@ -192,7 +179,7 @@ export function App() {
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
-      for (const id of ['newBox', 'open', 'save', 'undo', 'redo', 'fit'] as const) {
+      for (const id of ['newBox', 'open', 'undo', 'redo', 'fit'] as const) {
         if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit'].includes(id))) continue
         if (!matchesShortcut(event, commands[id].shortcut)) continue
         event.preventDefault()
@@ -212,11 +199,12 @@ export function App() {
           <Menu>
             <MenuTrigger asChild><Btn variant="primary" size="sm">File</Btn></MenuTrigger>
             <MenuContent>
-              {(['newBox', 'open', 'save', 'example', 'updates'] as CommandId[]).map((id) => {
+              {(['newBox', 'open', 'updates'] as CommandId[]).map((id) => {
                 const command = commands[id]
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
               })}
+              <MenuItem disabled>Save (not in this preview yet)</MenuItem>
             </MenuContent>
           </Menu>
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
@@ -230,7 +218,7 @@ export function App() {
         <div className="flex min-h-0 flex-1">
           <Viewport
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
-            canPull={ready && selected !== undefined} onSelect={(face) => { if (ready) select(face) }}
+            canPull={ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => { if (ready) select(face) }}
             onDrag={(next, commit) => {
               setDistance(String(next))
               if (commit) pull(next)
@@ -240,16 +228,18 @@ export function App() {
           />
           <aside aria-label="Model inspector" className="flex w-56 shrink-0 flex-col gap-3 border-l border-border bg-panel p-3">
             <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
-            {model && <div className="flex items-center gap-2 rounded-md bg-hover px-2 py-1.5">
-              <Box className="size-4 text-text-2" />
-              {model.checkpoint.starter === 'box' ? 'Box' : 'Recessed wall'}
-            </div>}
+            {model?.shape.bodies.map((name, index) => (
+              <div key={index} className="flex items-center gap-2 rounded-md bg-hover px-2 py-1.5">
+                <Box className="size-4 shrink-0 text-text-2" />
+                <span className="truncate">{name}</span>
+              </div>
+            ))}
             <label className="grid gap-1 text-xs text-text-2">
               Planar face
               <select value={selected ?? ''} disabled={!ready} className={`${inputCls} w-full`}
                 onChange={(e) => select(e.target.value === '' ? undefined : Number(e.target.value))}>
                 <option value="">Select a face</option>
-                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face)}</option>)}
+                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.shape.bodies)}</option>)}
               </select>
             </label>
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
@@ -267,6 +257,7 @@ export function App() {
             <span data-testid="engine-status" role="status">
               {model ? `Engine ready · ${format.format(model.shape.volume)} mm³` : 'Starting the geometry engine…'}
             </span>
+            {model?.notes.map((note) => <div key={note}>{note}</div>)}
             {error && <div className="text-danger" role="alert">{error}</div>}
             <span data-testid="engine-connections" className="sr-only">{connections}</span>
           </div>
@@ -275,7 +266,7 @@ export function App() {
               disabled={selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={!ready || selected === undefined || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={!ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>

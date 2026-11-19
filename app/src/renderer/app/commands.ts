@@ -29,12 +29,10 @@ export function formatShortcut(s: string | undefined): string {
 export const commands = {
   newBox: { label: 'New box', shortcut: 'Mod-N' },
   open: { label: 'Open project', shortcut: 'Mod-O' },
-  save: { label: 'Save As', shortcut: 'Mod-S' },
   undo: { label: 'Undo', shortcut: 'Mod-Z' },
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
-  example: { label: 'Open recessed wall example' },
   updates: { label: 'Check for updates' }
 } satisfies Record<string, { label: string; shortcut?: string }>
 

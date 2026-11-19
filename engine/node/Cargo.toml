@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi6"] }
 napi-derive = "3"
-scad_kernel = { path = "../kernel" }
+occt = { path = "../occt" }
+zip = { version = "9.7.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [build-dependencies]
 napi-build = "2"

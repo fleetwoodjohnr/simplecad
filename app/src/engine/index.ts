@@ -1,5 +1,6 @@
-import { checkRendererRequest, isCheckpoint, type EngineResponse } from '../shared/engine-protocol'
+import { checkRendererRequest, type EngineResponse } from '../shared/engine-protocol'
 import { EngineDocument, type Shape } from './document'
+import { readProject } from './project'
 
 interface PortLike {
   on(ev: 'message', cb: (e: { data: unknown; ports: PortLike[] }) => void): void
@@ -9,16 +10,21 @@ interface PortLike {
 }
 
 interface Addon {
-  readProject(data: Buffer): string
-  writeProject(model: string): Buffer
-  Shape: { makeBox(dx: number, dy: number, dz: number): Shape; recessedWallExample(): Shape }
+  readArchive(data: Buffer, names: string[]): (Buffer | null)[]
+  crash(): void
+  Shape: { makeBox(dx: number, dy: number, dz: number): Shape; fromBrep(data: Buffer): Shape }
 }
 
 const parent = (process as unknown as { parentPort: PortLike }).parentPort
 const addon = require(process.env.SIMPLECAD_ENGINE_ADDON!) as Addon
-const document = new EngineDocument((starter) => starter === 'box'
-  ? addon.Shape.makeBox(30, 20, 10)
-  : addon.Shape.recessedWallExample())
+const buffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+const document = new EngineDocument(
+  () => [{ name: 'Box', shape: addon.Shape.makeBox(30, 20, 10) }],
+  (data) => {
+    const { bodies, notes } = readProject(addon, buffer(data))
+    return { bodies: bodies.map(({ name, brep }) => ({ name, shape: addon.Shape.fromBrep(brep) })), notes }
+  }
+)
 let port: PortLike | null = null
 
 function onRenderer(channel: PortLike, data: unknown) {
@@ -29,30 +35,19 @@ function onRenderer(channel: PortLike, data: unknown) {
     let result
     switch (req.op) {
       case 'model': result = document.model(); break
-      case 'reset': result = document.reset(req.starter, req.revision); break
-      case 'restore': result = document.restore(req.checkpoint); break
-      case 'open': {
-        const data = JSON.parse(addon.readProject(Buffer.from(req.data.buffer, req.data.byteOffset, req.data.byteLength)))
-        if (!data || data.format !== 5 || data.kernel !== 'rectilinear-v1' || !isCheckpoint(data.checkpoint)) {
-          throw new Error('This build can open only projects saved by the native Rust preview.')
-        }
-        result = document.open(data.checkpoint, req.revision)
-        break
-      }
-      case 'save':
-        result = addon.writeProject(JSON.stringify({
-          format: 5, kernel: 'rectilinear-v1', checkpoint: document.save(req.revision)
-        }))
-        break
+      case 'reset': result = document.reset(req.revision); break
+      case 'restore': result = document.restore(req.checkpoint, req.data); break
+      case 'open': result = document.open(req.data, req.name, req.revision); break
       case 'preview': result = document.preview(req, req.revision); break
       case 'apply': result = document.apply(req, req.revision); break
       case 'undo': result = document.step(-1, req.revision); break
       case 'redo': result = document.step(1, req.revision); break
       case 'crash':
         if (process.env.SIMPLECAD_ENGINE_DRILL !== '1') throw new Error('Not available')
-        process.exit(1)
+        // A real segfault inside the OCCT shim, not an orderly exit.
+        addon.crash()
     }
-    channel.postMessage({ id, ok: true, result })
+    channel.postMessage({ id, ok: true, result: result! })
   } catch (err) {
     channel.postMessage({ id, ok: false, error: (err as Error).message })
   }

@@ -4,9 +4,9 @@ directories:
   output: release
 files:
   - out/**
-  - native/*.node
+  - native/**
 asarUnpack:
-  - native/*.node
+  - native/**
 npmRebuild: false
 linux:
   executableName: simplecad

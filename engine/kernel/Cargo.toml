@@ -1,8 +1,0 @@
-[package]
-name = "scad_kernel"
-edition.workspace = true
-version.workspace = true
-publish.workspace = true
-
-[dependencies]
-zip = { version = "9.7.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -8,7 +8,6 @@ ipcRenderer.on('engine:port', (e) => window.postMessage('simplecad:engine-port',
 const api: SimpleCadApi = {
   platform: process.platform,
   openProject: () => ipcRenderer.invoke('project:open'),
-  saveProject: (data, name) => ipcRenderer.invoke('project:save', data, name),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
