@@ -129,6 +129,9 @@ test('the viewport picks a face and the drag handle commits a pull', async () =>
   const viewport = page.locator('canvas')
   await expect(viewport).toHaveAttribute('aria-busy', 'false')
   const canvas = await viewport.boundingBox()
+  // Hovering picks the face under the pointer, once a frame.
+  await page.mouse.move(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height / 2)
+  await expect(viewport).toHaveAttribute('data-hover-ms', /\d/)
   await page.mouse.click(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height / 2)
   await expect(page.getByLabel('Planar face')).not.toHaveValue('')
   await page.getByLabel('Planar face').selectOption({ label: 'Top · 600 mm²' })

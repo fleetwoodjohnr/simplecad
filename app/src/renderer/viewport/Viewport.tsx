@@ -64,8 +64,13 @@ export function Viewport(props: Props) {
       color: 0x9aa1ab, roughness: 0.7, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
     }))
     const highlight = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: 0xe8a33a, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }))
+    const hover = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe8a33a, transparent: true, opacity: 0.35, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    hover.frustumCulled = false
     const edges = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x292b30 }))
-    scene.add(body, highlight, edges)
+    scene.add(body, highlight, hover, edges)
+    let hovered: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
     let animation = 0
@@ -101,10 +106,29 @@ export function Viewport(props: Props) {
     }
     controls.addEventListener('change', draw)
 
+    /** Light up face `face` of the displayed shape under the pointer; undefined clears it. */
+    const showHover = (face?: number) => {
+      const { shape, selected } = current.current
+      if (face === selected || !shape || displayed !== shape) face = undefined
+      if (face === hovered) return
+      hovered = face
+      hover.visible = face !== undefined
+      if (face !== undefined) {
+        hover.geometry.setAttribute('position', body.geometry.getAttribute('position'))
+        hover.geometry.setIndex(body.geometry.index)
+        hover.geometry.setDrawRange(shape!.faceTriStart[face] * 3, (shape!.faceTriStart[face + 1] - shape!.faceTriStart[face]) * 3)
+      }
+      draw()
+    }
+
     sync.current = () => {
       const { shape, shown, selected, showEdges } = current.current
       const next = shown ?? shape
       if (displayed !== next) {
+        hovered = undefined
+        hover.visible = false
+        hover.geometry.dispose()
+        hover.geometry = new BufferGeometry()
         body.geometry.dispose()
         edges.geometry.dispose()
         body.geometry = next ? surfaceGeometry(next) : new BufferGeometry()
@@ -146,20 +170,43 @@ export function Viewport(props: Props) {
     const ray = new Raycaster()
     const down = new Vector2()
     const press = (e: PointerEvent) => down.set(e.clientX, e.clientY)
-    const pick = (e: PointerEvent) => {
+    /** The model face under a window point, or undefined. */
+    const faceAt = (x: number, y: number) => {
       const shape = current.current.shape
-      if (!shape || displayed !== shape || e.button !== 0 || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4) return
+      if (!shape || displayed !== shape) return
       const rect = canvas.getBoundingClientRect()
       camera.updateMatrixWorld()
-      ray.setFromCamera(new Vector2(
-        (e.clientX - rect.left) / rect.width * 2 - 1,
-        1 - (e.clientY - rect.top) / rect.height * 2
-      ), camera)
+      ray.setFromCamera(new Vector2((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2), camera)
       const hit = ray.intersectObject(body)[0]?.faceIndex
-      current.current.onSelect(hit == null ? undefined : faceAtTriangle(shape.faceTriStart, hit))
+      return hit == null ? undefined : faceAtTriangle(shape.faceTriStart, hit)
+    }
+    const pick = (e: PointerEvent) => {
+      if (e.button !== 0 || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 || current.current.shape !== displayed) return
+      current.current.onSelect(faceAt(e.clientX, e.clientY))
+    }
+    // Hover: at most one pick per frame, and none while a button is held (orbiting).
+    let pointer: { x: number; y: number } | null = null
+    let hoverFrame = 0
+    const move = (e: PointerEvent) => {
+      pointer = e.buttons ? null : { x: e.clientX, y: e.clientY }
+      if (!pointer) return showHover(undefined)
+      hoverFrame ||= requestAnimationFrame(() => {
+        hoverFrame = 0
+        if (!pointer) return
+        const started = performance.now()
+        showHover(faceAt(pointer.x, pointer.y))
+        // What one hover costs, for the performance check.
+        canvas.dataset.hoverMs = (performance.now() - started).toFixed(2)
+      })
+    }
+    const leave = () => {
+      pointer = null
+      showHover(undefined)
     }
     canvas.addEventListener('pointerdown', press)
     canvas.addEventListener('pointerup', pick)
+    canvas.addEventListener('pointermove', move)
+    canvas.addEventListener('pointerleave', leave)
     sync.current()
     return () => {
       observer.disconnect()
@@ -167,7 +214,10 @@ export function Viewport(props: Props) {
       controls.dispose()
       canvas.removeEventListener('pointerdown', press)
       canvas.removeEventListener('pointerup', pick)
-      for (const object of [body, edges, highlight, grid]) {
+      canvas.removeEventListener('pointermove', move)
+      canvas.removeEventListener('pointerleave', leave)
+      cancelAnimationFrame(hoverFrame)
+      for (const object of [body, edges, highlight, hover, grid]) {
         object.geometry.dispose()
         object.material.dispose()
       }
