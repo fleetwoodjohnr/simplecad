@@ -3,9 +3,11 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
-## 0.4.2 (2026-11-18)
+## 0.4.3 (2026-11-19)
 
-Closing SimpleCAD works the first time, and never loses unsaved work.
+Closing SimpleCAD works the first time, and never loses unsaved work. (0.4.2
+was tagged but never released: its automated checks stopped on the new
+question below. 0.4.3 is 0.4.2 with the checks fixed.)
 
 ### Fixed
 
