@@ -70,8 +70,8 @@ function accept(result: ModelResult): ModelResult {
 export const openSession = (restore: boolean) => send<ModelResult>(restore && checkpoint
   ? { op: 'restore', checkpoint, data: checkpoint.source.kind === 'file' ? source : undefined }
   : { op: 'model' }).then(accept)
-export const openProject = (revision: number, data: Uint8Array, name: string) =>
-  send<ModelResult>({ op: 'open', revision, data, name }).then((result) => {
+export const openProject = (revision: number, data: Uint8Array, name: string, recovered = false) =>
+  send<ModelResult>({ op: 'open', revision, data, name, recovered }).then((result) => {
     source = data
     return accept(result)
   })

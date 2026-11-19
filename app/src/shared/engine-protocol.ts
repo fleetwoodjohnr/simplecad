@@ -75,7 +75,8 @@ export type RendererCommand =
   | { op: 'model' | 'crash' }
   | { op: 'reset'; revision: number }
   | { op: 'restore'; checkpoint: Checkpoint; data?: Uint8Array }
-  | { op: 'open'; data: Uint8Array; name: string; revision: number }
+  /** `recovered`: work from a session that crashed, opened as unsaved. */
+  | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
@@ -136,7 +137,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
       (m.op === 'restore' && isCheckpoint(m.checkpoint) && (m.data === undefined || isData(m.data))) ||
       (isIndex(m.revision) && (
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
-        (m.op === 'open' && isData(m.data) && isName(m.name)) ||
+        (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m))
       ))) return m as RendererRequest

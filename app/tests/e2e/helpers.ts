@@ -36,7 +36,8 @@ export async function launch(opts: { env?: Record<string, string> } = {}): Promi
   const packaged = process.env.SCAD_PACKAGED
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged, args: [] } : { args: ['.'] }),
-    env: { ...process.env, ...opts.env, SIMPLECAD_USER_DATA: userData }
+    // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
+    env: { ...process.env, SIMPLECAD_RECOVERY_DIR: mkdtempSync(path.join(tmpdir(), 'scad-recovery-')), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))

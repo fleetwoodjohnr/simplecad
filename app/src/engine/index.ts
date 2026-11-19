@@ -1,3 +1,5 @@
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import { checkRendererRequest, type EngineResponse } from '../shared/engine-protocol'
 import { EngineDocument, type Project, type Shape } from './document'
 
@@ -35,7 +37,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'model': result = document.model(); break
       case 'reset': result = document.reset(req.revision); break
       case 'restore': result = document.restore(req.checkpoint, req.data); break
-      case 'open': result = document.open(req.data, req.name, req.revision); break
+      case 'open': result = document.open(req.data, req.name, req.revision, req.recovered); break
       case 'preview': result = document.preview(req, req.revision); break
       case 'apply': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
@@ -53,6 +55,21 @@ function onRenderer(channel: PortLike, data: unknown) {
     channel.postMessage({ id, ok: false, error: (err as Error).message })
   }
 }
+
+// Unsaved work goes to this session's recovery file every so often, beside the requests: written whole and
+// moved into place, so a crash mid-write leaves the last one. Saved work needs none.
+const autosaveFile = process.env.SIMPLECAD_AUTOSAVE_FILE
+function autosave(file: string) {
+  try {
+    if (!document.unsaved) return rmSync(file, { force: true })
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(`${file}.part`, document.snapshot())
+    renameSync(`${file}.part`, file)
+  } catch {
+    // Autosave must never interrupt the work it protects.
+  }
+}
+if (autosaveFile) setInterval(() => autosave(autosaveFile), Number(process.env.SIMPLECAD_AUTOSAVE_SECONDS) * 1000 || 90_000)
 
 parent.on('message', (e) => {
   const m = e.data as { type?: string }

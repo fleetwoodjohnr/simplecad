@@ -54,6 +54,10 @@ export function App() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  /** How long ago a crashed session left unsaved work, while that is on offer. */
+  const [recovery, setRecovery] = useState<string>()
+  /** Set once the close is allowed, so the unsaved-work guard lets it through. */
+  const closing = useRef(false)
   const busyRef = useRef(false)
   const historyList = useRef<HTMLOListElement>(null)
   const connection = useRef(0)
@@ -135,7 +139,11 @@ export function App() {
   }, [stepCount])
   useEffect(() => {
     if (!dirty) return
-    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = false }
+    const guard = (event: BeforeUnloadEvent) => {
+      if (closing.current) return
+      event.preventDefault()
+      event.returnValue = false
+    }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
@@ -164,14 +172,41 @@ export function App() {
   }
 
   // Marked saved only once the file is written: a cancelled dialog or a failed write leaves the work unsaved.
-  const save = (saveAs: boolean) => {
+  const save = (saveAs: boolean, close = false) => {
     if (revision === undefined) return
     mutate(async () => {
       const name = await window.simplecad.saveProject(await saveModel(revision), saveAs)
       if (!name) return
       setFileName(name)
-      return markSaved(revision)
+      const next = await markSaved(revision)
+      if (close) {
+        closing.current = true
+        void window.simplecad.windowClose()
+      }
+      return next
     })
+  }
+  const saveRef = useRef(save)
+  saveRef.current = save
+  useEffect(() => window.simplecad.onSaveAndClose(() => saveRef.current(false, true)), [])
+
+  // Offered once, beside the work rather than in front of it (SimpleCAD 0.4's recovery_bar.py says why).
+  useEffect(() => { void window.simplecad.pendingRecovery().then(setRecovery) }, [])
+  const recover = () => {
+    if (revision === undefined) return
+    setRecovery(undefined)
+    mutate(async () => {
+      if (dirty && !await window.simplecad.confirmDiscard()) return
+      const work = await window.simplecad.recoverWork()
+      if (!work) return
+      const next = await openProject(revision, work.data, work.name, true)
+      setFileName('Recovered work')
+      return next
+    }, true)
+  }
+  const discardRecovery = () => {
+    setRecovery(undefined)
+    void window.simplecad.discardRecovery()
   }
   const toggleBody = (body: number, visible: boolean) => {
     if (revision !== undefined) mutate(() => showBody(revision, body, visible))
@@ -239,6 +274,13 @@ export function App() {
             <IconBtn label="Command search" shortcut="Mod-K" onClick={() => setSearchOpen(true)}><Search className="size-4" /></IconBtn>
           </div>
         </div>
+        {recovery && (
+          <section aria-label="Unsaved work from last time" className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-3 py-1.5 text-xs">
+            <span className="min-w-0 flex-1">SimpleCAD closed unexpectedly. There is unsaved work from {recovery}.</span>
+            <Btn variant="primary" size="sm" disabled={!ready} onClick={recover}>Recover</Btn>
+            <Btn size="sm" onClick={discardRecovery}>Discard</Btn>
+          </section>
+        )}
         <div className="flex min-h-0 flex-1">
           <Viewport
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
@@ -252,7 +294,7 @@ export function App() {
           />
           <aside aria-label="Model inspector" className="flex w-56 shrink-0 flex-col gap-3 border-l border-border bg-panel p-3">
             <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
-            <ul aria-label="Bodies" className="grid gap-1">
+            <ul aria-label="Bodies" className="grid max-h-[40%] min-h-16 shrink-0 auto-rows-min gap-1 overflow-auto">
               {model?.bodies.map((body, index) => (
                 <li key={index} className={`flex items-center gap-2 rounded-md px-2 py-1 ${body.visible ? 'bg-hover' : 'text-text-3'}`}>
                   <Box className="size-4 shrink-0 text-text-2" />
@@ -273,7 +315,7 @@ export function App() {
               </select>
             </label>
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <ol ref={historyList} aria-label="Model history" className="min-h-0 overflow-auto text-xs">
+            <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
               {model?.steps.map((step, index) => (
                 <li key={index} className={`flex justify-between gap-2 px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
                   <span className="truncate">{step.name}</span>

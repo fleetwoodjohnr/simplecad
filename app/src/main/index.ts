@@ -6,6 +6,7 @@ import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
 import { forgetProjectFile, openProjectFile, saveProjectFile } from './project-files'
+import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
@@ -15,7 +16,14 @@ let mainWindow: BrowserWindow | null = null
 const addon = app.isPackaged
   ? path.join(process.resourcesPath, 'app.asar.unpacked', 'native', 'scad_engine.node')
   : path.join(app.getAppPath(), 'native', 'scad_engine.node')
-const engine = new EngineHost(addon, () => mainWindow?.webContents ?? null)
+const recovery = recoveryDir()
+const autosaveFile = sessionFile(recovery)
+/** Recovery files whose work this session now holds: they go when it ends cleanly. */
+let recovered: string[] = []
+const engine = new EngineHost(addon, () => mainWindow?.webContents ?? null, {
+  SIMPLECAD_AUTOSAVE_FILE: autosaveFile,
+  SIMPLECAD_AUTOSAVE_SECONDS: process.env.SIMPLECAD_AUTOSAVE_SECONDS ?? '90'
+})
 
 function createWindow() {
   const dark = nativeTheme.shouldUseDarkColors
@@ -39,13 +47,16 @@ function createWindow() {
       spellcheck: false
     }
   })
+  // The page holds the close back while there is unsaved work, as SimpleCAD 0.4 does (main_window.closeEvent).
   mainWindow.webContents.on('will-prevent-unload', (event) => {
     if (!mainWindow) return
     const choice = dialog.showMessageBoxSync(mainWindow, {
-      type: 'warning', message: 'Close with unsaved changes?',
-      buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0
+      type: 'warning', message: 'Close SimpleCAD? The model has unsaved changes.',
+      buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2
     })
     if (choice === 1) event.preventDefault()
+    // The page saves, and closes once the file is written; a cancelled or failed save keeps the window.
+    if (choice === 0) mainWindow.webContents.send('app:save-and-close')
   })
   mainWindow.once('ready-to-show', () => mainWindow?.show())
   mainWindow.on('closed', () => {
@@ -81,6 +92,20 @@ function registerIpc() {
   handle('project:open', () => mainWindow ? openProjectFile(mainWindow) : undefined)
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
   handle('project:new', () => forgetProjectFile())
+  handle('recovery:pending', async () => {
+    const [newest] = await leftovers(recovery, autosaveFile)
+    return newest ? describeAge(newest.modified) : undefined
+  })
+  // The newest leftover, opened as unsaved work with no file: Save asks where.
+  handle('recovery:open', async () => {
+    const found = await leftovers(recovery, autosaveFile)
+    if (!found.length) return
+    const data = await readRecovered(found[0].file)
+    forgetProjectFile()
+    recovered = found.map((f) => f.file)
+    return { name: 'Recovered.scad3', data }
+  })
+  handle('recovery:discard', async () => remove((await leftovers(recovery, autosaveFile)).map((f) => f.file)))
   handle('project:discard', async () => {
     if (!mainWindow) return false
     const { response } = await dialog.showMessageBox(mainWindow, {
@@ -138,8 +163,11 @@ if (process.argv.includes('--version')) {
       if (!mainWindow) createWindow()
     })
   })
+  // A clean exit: the engine stopped first, so no autosave lands after its file is removed.
   app.on('window-all-closed', () => {
-    engine.stop()
-    if (!isMac) app.quit()
+    void engine.stop().then(() => remove([autosaveFile, ...recovered])).finally(() => {
+      recovered = []
+      if (!isMac) app.quit()
+    })
   })
 }

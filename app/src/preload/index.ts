@@ -11,6 +11,14 @@ const api: SimpleCadApi = {
   saveProject: (data, saveAs) => ipcRenderer.invoke('project:save', data, saveAs),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),
   newFile: () => ipcRenderer.invoke('project:new'),
+  pendingRecovery: () => ipcRenderer.invoke('recovery:pending'),
+  recoverWork: () => ipcRenderer.invoke('recovery:open'),
+  discardRecovery: () => ipcRenderer.invoke('recovery:discard'),
+  onSaveAndClose: (run) => {
+    const listener = () => run()
+    ipcRenderer.on('app:save-and-close', listener)
+    return () => ipcRenderer.removeListener('app:save-and-close', listener)
+  },
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),

@@ -91,7 +91,7 @@ export class EngineDocument {
     return {
       shape: this.show(bodies),
       bodies: bodies.map((b, i): BodyInfo => ({ name: b.name, visible: this.visible[i], empty: !b.shape })),
-      unsaved: this.cursor !== this.saved,
+      unsaved: this.unsaved,
       revision: this.revision,
       checkpoint: this.checkpoint(),
       steps: this.steps(),
@@ -115,9 +115,10 @@ export class EngineDocument {
     return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved)
   }
 
-  open(data: Uint8Array, name: string, revision: number): ModelResult {
+  /** A recovered file is work never saved: it opens unsaved. */
+  open(data: Uint8Array, name: string, revision: number, recovered = false): ModelResult {
     this.checkRevision(revision)
-    return this.install({ kind: 'file', name }, this.read(data), [], 0)
+    return this.install({ kind: 'file', name }, this.read(data), [], 0, undefined, recovered ? -1 : 0)
   }
 
   setVisible(body: number, visible: boolean, revision: number): ModelResult {
@@ -136,8 +137,17 @@ export class EngineDocument {
   /** The `.scad3` of the shown point of the history, the steps after it kept to redo. Nothing counts as saved until `markSaved`. */
   save(revision: number): Uint8Array {
     this.checkRevision(revision)
+    return this.snapshot()
+  }
+
+  /** What `save` writes, whatever the window last saw: for autosave. */
+  snapshot(): Uint8Array {
     const newest = this.states.length - 1
     return this.states[newest].project.save(newest - this.cursor)
+  }
+
+  get unsaved() {
+    return this.cursor !== this.saved
   }
 
   /** The file from `save` was written: the shown point of the history is the saved one. */

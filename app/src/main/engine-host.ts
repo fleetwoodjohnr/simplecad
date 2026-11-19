@@ -13,6 +13,8 @@ export class EngineHost {
   constructor(
     private addon: string,
     private web: () => WebContents | null,
+    /** More environment for the engine: where it autosaves, and how often. */
+    private env: Record<string, string> = {},
     private log: (level: string, message: string) => void = (l, m) => console[l === 'error' ? 'error' : 'log'](`[engine] ${m}`)
   ) {}
 
@@ -23,7 +25,7 @@ export class EngineHost {
       const child = utilityProcess.fork(path.join(__dirname, 'engine.js'), [], {
         serviceName: 'SimpleCAD geometry engine',
         stdio: 'inherit',
-        env: { ...process.env, SIMPLECAD_ENGINE_ADDON: this.addon }
+        env: { ...process.env, ...this.env, SIMPLECAD_ENGINE_ADDON: this.addon }
       })
       this.child = child
       child.once('spawn', () => resolve())
@@ -57,8 +59,14 @@ export class EngineHost {
     wc.postMessage('engine:port', null, [port2])
   }
 
-  stop() {
+  /** Resolves once the engine has exited, so nothing it was writing lands afterwards. */
+  stop(): Promise<void> {
     this.stopping = true
-    this.child?.kill()
+    const child = this.child
+    if (!child) return Promise.resolve()
+    return new Promise((resolve) => {
+      child.once('exit', () => resolve())
+      child.kill()
+    })
   }
 }
