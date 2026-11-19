@@ -3,6 +3,21 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.4.2 (2026-11-18)
+
+Closing SimpleCAD works the first time, and never loses unsaved work.
+
+### Fixed
+
+- **Clicking × did nothing.** While a project was being autosaved (every 90
+  seconds, a large file on a detailed model), closing the window was refused
+  without a word until the autosave finished. The window now closes at once:
+  an autosave is only a safety copy and is deleted on a clean exit anyway. A
+  save you started yourself is still finished first, and the hint says so.
+- **Closing asks about unsaved changes.** It used to close and discard them.
+  Now it asks Save / Don't Save / Cancel, like New and Open do. If the save
+  fails, the window stays open with the reason.
+
 ## 0.4.1 (2026-11-18)
 
 Checking for updates works on Fedora and other Linux distributions again.
