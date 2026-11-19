@@ -7,6 +7,6 @@ publish.workspace = true
 
 [dependencies]
 occt = { path = "../occt" }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 zip = { version = "9.7.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

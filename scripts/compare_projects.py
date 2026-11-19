@@ -74,6 +74,8 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     document, _cached = load(path)
     stages["loaded"] = _signature(document)
     if loaded_only:
+        from simplecad.core.result_store import signatures
+        stages["signatures"] = signatures(document)
         return stages
 
     rebuilder = Rebuilder(document)
@@ -146,11 +148,12 @@ def main() -> int:
         if args.rust:
             result = subprocess.run([args.rust, "dump", path], capture_output=True, text=True,
                                     timeout=3600)
-            new = ({stage: _rounded(bodies) for stage, bodies in
+            new = ({stage: _rounded(value) if stage == "loaded" else value for stage, value in
                     json.loads(result.stdout).items()} if result.returncode == 0
                    else {"error": result.stderr.strip().splitlines()[-1:] or ["failed"]})
-            # Only the stages the Rust engine has ported so far.
+            # Only the stages the Rust engine reports for this file.
             old = _run(ROOT, path, flag="--dump-loaded")
+            old = {stage: value for stage, value in old.items() if stage in new or stage == "error"}
         else:
             old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))

@@ -39,7 +39,18 @@ fn main() {
                 };
                 loaded.insert(body.name.clone(), value);
             }
-            Ok(json!({ "loaded": loaded }))
+            let mut stages = json!({ "loaded": loaded });
+            // Format 1 files get their output ids on load; those have no saved signatures to match.
+            if project
+                .model
+                .get("format")
+                .and_then(Value::as_i64)
+                .unwrap_or(1)
+                >= 2
+            {
+                stages["signatures"] = json!(scad::signatures::signatures(&project.model));
+            }
+            Ok(stages)
         });
     match result {
         Ok(stages) => println!("{stages}"),
