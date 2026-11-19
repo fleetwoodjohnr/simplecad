@@ -3,6 +3,22 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.4.1 (2026-11-18)
+
+Checking for updates works on Fedora and other Linux distributions again.
+
+### Fixed
+
+- **"Could not reach GitHub … CERTIFICATE_VERIFY_FAILED".** The Linux
+  packages carry the OpenSSL of the Ubuntu machine that builds them, which
+  looks for trusted certificates only where Ubuntu keeps them. On Fedora,
+  openSUSE and others it found none, so every update check and download
+  failed. SimpleCAD now also trusts the system's own certificate bundle.
+  Copies older than 0.4.1 can't update themselves on those systems: install
+  0.4.1 by hand once (or start the old copy with
+  `SSL_CERT_FILE=/etc/ssl/cert.pem simplecad` and update from Settings →
+  Updates), and later updates work from inside the app.
+
 ## 0.4.0 (2026-11-18)
 
 Pushing and pulling faces on a detailed part works again, on a newer geometry
