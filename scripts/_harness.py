@@ -47,6 +47,30 @@ from simplecad.ui.qt_runtime import configure_qt_application  # noqa: E402
 configure_qt_application()
 
 
+def _answer_the_close_prompt() -> None:
+    """Scripted runs must never stop on the unsaved-changes prompt either.
+
+    In Qt 6 ``QApplication.quit()`` closes every window first, and closing a
+    window with unsaved work asks Save / Don't Save / Cancel -- modal, with no
+    one to click. Every check ends with edits made and then quits, so each
+    waited out its whole timeout. Answer that one question as Don't Save; any
+    other question still reaches the script.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    ask = QMessageBox.question
+
+    def question(parent, title, *args, **kwargs):
+        if title == "Close SimpleCAD":
+            return QMessageBox.Discard
+        return ask(parent, title, *args, **kwargs)
+
+    QMessageBox.question = question
+
+
+_answer_the_close_prompt()
+
+
 def grab_composited(widget):
     """Safely capture the top-level widget, including its OpenGL viewport."""
     from PySide6.QtWidgets import QApplication
