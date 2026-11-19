@@ -774,6 +774,9 @@ class MainWindow(QMainWindow):
         self._edit_epoch = 0
         self.geometry.start()
         self._dirty = False
+        #: True once the user has agreed to close; the window then closes as
+        #: soon as a save they started has finished.
+        self._closing = False
         self._session_id = f"{os.getpid()}"
         from .selection import PresentationMap
         self._presentations: dict[str, object] = PresentationMap()
@@ -2481,10 +2484,30 @@ class MainWindow(QMainWindow):
         bar.show()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        """Finish an outstanding atomic save before stopping its worker."""
+        """Ask about unsaved work, finish a save the user started, never wait for an autosave.
+
+        Closing used to wait, silently, for whatever save was running -- on the
+        Atlas box a 99 MB autosave, deleted the moment the window closed -- and
+        closed a window with unsaved changes without a word.
+        """
+        if not self._closing and self._dirty and self.document.features:
+            from PySide6.QtWidgets import QMessageBox
+
+            answer = QMessageBox.question(
+                self, "Close SimpleCAD",
+                "Close SimpleCAD? The model has unsaved changes.",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save,
+            )
+            if answer == QMessageBox.Cancel or (
+                    answer == QMessageBox.Save and not self.save_document()):
+                event.ignore()
+                return
+        self._closing = True
+        self.geometry.drop_autosaves()
         if self.geometry.saving:
             event.ignore()
-            QTimer.singleShot(100, self.close)
+            self.set_hint("Finishing the save, then closing…")
+            QTimer.singleShot(100, self._close_if_still_closing)
             return
         from ..core import autosave
 
@@ -3915,8 +3938,8 @@ class MainWindow(QMainWindow):
         )
 
     # -- project file ---------------------------------------------------
-    def save_document(self, ask: bool = False) -> None:
-        """Save the project, asking for a location the first time."""
+    def save_document(self, ask: bool = False) -> bool:
+        """Save the project, asking for a location the first time. True once the save is under way."""
         from PySide6.QtWidgets import QFileDialog
 
         from ..core.project import EXTENSION
@@ -3929,17 +3952,25 @@ class MainWindow(QMainWindow):
                 f"SimpleCAD project (*{EXTENSION})",
             )
             if not path:
-                return
+                return False
         token = {"epoch": self._edit_epoch, "autosave": False}
         if self.geometry.save(self.document, path, thumbnail=self._thumbnail(), token=token,
                               compact=ui_preference("compact_saves", False)):
             self.set_hint("Saving project…")
-        else:
-            self.set_hint("The geometry engine is unavailable; the project could not be saved. Retry to restart it.")
+            return True
+        self.set_hint("The geometry engine is unavailable; the project could not be saved. Retry to restart it.")
+        return False
+
+    def _close_if_still_closing(self) -> None:
+        # A failed save takes the close back; this timer must not bring it back.
+        if self._closing:
+            self.close()
 
     def _on_project_saved(self, message):
         token = message.get("token") or {}
         if message.get("error"):
+            if not token.get("autosave"):
+                self._closing = False       # keep the window, and the work, on screen
             self.set_hint(f"Could not save: {message['error']}")
             return
         if message.get("generation") != self.geometry._generation:
@@ -3955,6 +3986,8 @@ class MainWindow(QMainWindow):
             self.mark_clean()
         remember_file(path)
         self.set_hint(f"Saved to {path}")
+        if self._closing:
+            QTimer.singleShot(0, self._close_if_still_closing)
 
     def new_project(self) -> None:
         """Start an empty project, asking first if there is unsaved work."""

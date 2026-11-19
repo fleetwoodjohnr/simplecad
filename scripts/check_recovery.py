@@ -98,8 +98,13 @@ def main() -> int:
     REPORT["recovered_bodies"] = sorted(window.document.bodies)
     REPORT["recovered"] = "Base" in window.document.bodies
     REPORT["offer_dismissed"] = bar_of(window) is None
+    # Recovered work is unsaved, so closing asks; answer as a user would.
+    from PySide6.QtWidgets import QMessageBox
+    asked = []
+    QMessageBox.question = lambda *args, **kwargs: (asked.append(args[2]), QMessageBox.Discard)[1]
     window.close()
     settle(300)
+    REPORT["close_asked_about_unsaved_work"] = bool(asked)
 
     # -- 4: Discard clears the leftovers, so it cannot repeat forever -----
     if not os.path.exists(path):       # Recover must not have deleted it
@@ -132,7 +137,7 @@ def main() -> int:
         for key in (
             "offer_shown", "nothing_modal", "window_enabled", "offer_is_overlay",
             "recovered", "offer_dismissed", "kept_file_after_recover",
-            "offered_again", "leftovers_gone",
+            "offered_again", "leftovers_gone", "close_asked_about_unsaved_work",
         )
     )
     print("VERDICT:", "PASS" if ok else "FAIL")

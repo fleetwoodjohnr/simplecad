@@ -340,6 +340,16 @@ class GeometryClient(QObject):
     def saving(self):
         return self._active_save is not None or bool(self._pending_saves)
 
+    def drop_autosaves(self) -> None:
+        """Forget autosaves, queued or running: the window is closing and deletes
+        the recovery file anyway. A save the user asked for stays."""
+        def autosave(request) -> bool:
+            return bool((request.get("token") or {}).get("autosave"))
+
+        self._pending_saves = [r for r in self._pending_saves if not autosave(r)]
+        if self._active_save is not None and autosave(self._active_save):
+            self._active_save = None
+
     def save(self, document, path, *, thumbnail=None, token=None, compact=False):
         """Queue an immutable recipe and history snapshot behind current work."""
         from ..core.geometry_service import SAVE

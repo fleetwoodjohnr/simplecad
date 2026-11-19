@@ -39,12 +39,14 @@ def write(document, session_id: str) -> str | None:
 
 def clear(session_id: str) -> None:
     """Remove this session's recovery file, on a clean exit."""
-    try:
-        path = os.path.join(RECOVERY_DIR, f"session-{session_id}.scad3")
-        if os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    path = os.path.join(RECOVERY_DIR, f"session-{session_id}.scad3")
+    # The .part is what an autosave stopped mid-write by the close leaves behind.
+    for leftover in (path, path + ".part"):
+        try:
+            if os.path.exists(leftover):
+                os.remove(leftover)
+        except OSError:
+            pass
 
 
 def pending() -> list[tuple[str, float]]:
