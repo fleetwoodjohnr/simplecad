@@ -94,6 +94,10 @@ function registerIpc() {
 }
 
 if (process.env.SIMPLECAD_USER_DATA) app.setPath('userData', process.env.SIMPLECAD_USER_DATA)
+// Without a usable GPU (a VM, remote desktop, a CI runner) Chromium now refuses WebGL on its software
+// rasterizer unless told otherwise, and the 3D view stays blank. The "unsafe" is about untrusted web pages
+// reaching that rasterizer; this window shows only the app's own sandboxed pages.
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 
 // The packaging and release checks call these on every build, headless, as they do the Python app.
 if (process.argv.includes('--version')) {

@@ -33,10 +33,12 @@ fn write(value: &Value, out: &mut String) {
             }
             out.push(']');
         }
-        // serde_json's map is ordered by key, which is Python's sort_keys order (code points).
+        // sort_keys: by code point, which is byte order for UTF-8.
         Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
-            for (i, (key, item)) in map.iter().enumerate() {
+            for (i, (key, item)) in entries.into_iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }

@@ -141,5 +141,5 @@ jobs:
         run: |
           mkdir -p release && tar -xzf linux-unpacked.tar.gz -C release
           sudo apt-get update
-          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libgl1-mesa-dri libegl1 libgles2
           SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
