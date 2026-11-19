@@ -21,7 +21,14 @@
 #include <BRepGProp.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeWedge.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
@@ -43,7 +50,10 @@
 #include <TopoDS.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
 #include <gp_Sphere.hxx>
 #include <gp_Torus.hxx>
 #include <gp_Cone.hxx>
@@ -522,6 +532,156 @@ std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t index, double dist
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz) {
   return owned(BRepPrimAPI_MakeBox(dx, dy, dz).Shape(), "box");
+}
+
+// The primitives (`kernel/primitives.py`), each at the origin as OCCT builds it.
+std::unique_ptr<Shape> make_cylinder(double radius, double height) {
+  return owned(BRepPrimAPI_MakeCylinder(radius, height).Shape(), "cylinder");
+}
+
+std::unique_ptr<Shape> make_sphere(double radius) {
+  return owned(BRepPrimAPI_MakeSphere(radius).Shape(), "sphere");
+}
+
+std::unique_ptr<Shape> make_cone(double bottom, double top, double height) {
+  return owned(BRepPrimAPI_MakeCone(bottom, top, height).Shape(), "cone");
+}
+
+std::unique_ptr<Shape> make_torus(double major, double minor) {
+  return owned(BRepPrimAPI_MakeTorus(major, minor).Shape(), "torus");
+}
+
+std::unique_ptr<Shape> make_wedge(double dx, double dy, double dz, double top) {
+  return owned(BRepPrimAPI_MakeWedge(dx, dy, dz, top).Shape(), "wedge");
+}
+
+// A copy of `shape` moved by `trsf`, its geometry transformed (`occ.transformed`).
+TopoDS_Shape transformed_copy(const TopoDS_Shape &shape, const gp_Trsf &trsf) {
+  BRepBuilderAPI_Transform builder(shape, trsf, true);
+  if (!builder.IsDone()) {
+    throw std::runtime_error("The move operation did not succeed on this geometry.");
+  }
+  return builder.Shape();
+}
+
+// `TubeFeature`: a cylinder less a bore three times as long, cut as `boolean_builder` cuts.
+std::unique_ptr<Shape> make_tube(double outer, double inner, double height) {
+  const TopoDS_Shape solid = BRepPrimAPI_MakeCylinder(outer, height).Shape();
+  gp_Trsf down;
+  down.SetTranslation(gp_Vec(0, 0, -height));
+  const TopoDS_Shape bore = transformed_copy(BRepPrimAPI_MakeCylinder(inner, height * 3).Shape(), down);
+  TopTools_ListOfShape arguments, tools;
+  arguments.Append(solid);
+  tools.Append(bore);
+  BRepAlgoAPI_Cut cut;
+  cut.SetArguments(arguments);
+  cut.SetTools(tools);
+  cut.SetNonDestructive(true);
+  cut.SetRunParallel(true);
+  cut.Build();
+  if (!cut.IsDone()) {
+    throw std::runtime_error("The tube operation did not succeed on this geometry.");
+  }
+  return owned(cut.Shape(), "tube");
+}
+
+// `_Primitive._placement` then `_finish`: moved to x y z, turned by rx ry rz
+// degrees about the world axes, as one `gp_Trsf` composed as Python composes it.
+std::unique_ptr<Shape> place(const Shape &shape, rust::Slice<const double> p) {
+  if (p.size() != 6) {
+    throw std::runtime_error("a placement needs x, y, z, rx, ry and rz");
+  }
+  gp_Trsf transform;
+  if (std::abs(p[0]) > 1e-15 || std::abs(p[1]) > 1e-15 || std::abs(p[2]) > 1e-15) {
+    transform.SetTranslation(gp_Vec(p[0], p[1], p[2]));
+  }
+  const gp_Dir axes[3] = {gp_Dir(1, 0, 0), gp_Dir(0, 1, 0), gp_Dir(0, 0, 1)};
+  for (int i = 0; i < 3; ++i) {
+    if (std::abs(p[3 + i]) > 1e-12) {
+      gp_Trsf rotation;
+      rotation.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), axes[i]), p[3 + i] * (M_PI / 180.0));
+      transform = transform.Multiplied(rotation);
+    }
+  }
+  return owned(transformed_copy(shape.shape, transform), "move");
+}
+
+// `make_transform(rotate_axis=axis, rotate_degrees=degrees, origin=pivot)`.
+gp_Trsf turn(const gp_Pnt &pivot, const gp_Dir &axis, double degrees) {
+  gp_Trsf rotation;
+  rotation.SetRotation(gp_Ax1(pivot, axis), degrees * (M_PI / 180.0));
+  return rotation;
+}
+
+// `MoveFeature` (`move_transform`, then `transformed(copy_geometry=False)`).
+// `m`: dx dy dz, rx ry rz (degrees), the pivot, 1 for the "xyz" order, then
+// 1 and an axis and angle for a turn about any axis, or 0.
+std::unique_ptr<Shape> move_shape(const Shape &shape, rust::Slice<const double> m) {
+  if (m.size() != 15) {
+    throw std::runtime_error("a move needs 15 numbers");
+  }
+  gp_Trsf transform;
+  if (std::abs(m[0]) > 1e-15 || std::abs(m[1]) > 1e-15 || std::abs(m[2]) > 1e-15) {
+    transform.SetTranslation(gp_Vec(m[0], m[1], m[2]));
+  }
+  const gp_Pnt pivot(m[6], m[7], m[8]);
+  if (m[10] != 0.0 && std::abs(m[14]) > 1e-12) {
+    transform = transform.Multiplied(turn(pivot, gp_Dir(m[11], m[12], m[13]), m[14]));
+  }
+  const gp_Dir axes[3] = {gp_Dir(1, 0, 0), gp_Dir(0, 1, 0), gp_Dir(0, 0, 1)};
+  for (int step = 0; step < 3; ++step) {
+    const int i = m[9] != 0.0 ? 2 - step : step;
+    if (std::abs(m[3 + i]) > 1e-12) {
+      transform = transform.Multiplied(turn(pivot, axes[i], m[3 + i]));
+    }
+  }
+  BRepBuilderAPI_Transform builder(shape.shape, transform, false);
+  if (!builder.IsDone()) {
+    throw std::runtime_error("The move operation did not succeed on this geometry.");
+  }
+  return owned(builder.Shape(), "move");
+}
+
+// `ShellFeature`'s thick solid, accepted only as `_usable_shell` accepts it.
+// "unusable" when OCCT gives no hollow body.
+std::unique_ptr<Shape> shell(const Shape &shape, rust::Slice<const uint32_t> indices, double thickness) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  TopTools_ListOfShape removed;
+  for (const uint32_t index : indices) {
+    if (index >= static_cast<uint32_t>(map.Extent())) {
+      throw std::runtime_error("Select a face of this body.");
+    }
+    removed.Append(TopoDS::Face(map.FindKey(static_cast<int>(index) + 1)));
+  }
+  TopoDS_Shape result;
+  try {
+    BRepOffsetAPI_MakeThickSolid builder;
+    builder.MakeThickSolidByJoin(shape.shape, removed, -std::abs(thickness), 1.0e-3);
+    builder.Build();
+    if (builder.IsDone()) {
+      result = builder.Shape();
+    }
+  } catch (const Standard_Failure &) {
+  }
+  if (result.IsNull() || !TopExp_Explorer(result, TopAbs_SOLID).More() || !BRepCheck_Analyzer(result).IsValid()) {
+    throw std::runtime_error("unusable");
+  }
+  GProp_GProps before, after;
+  BRepGProp::VolumeProperties(shape.shape, before);
+  BRepGProp::VolumeProperties(result, after);
+  if (before.Mass() - after.Mass() <= std::max(1.0e-7, before.Mass() * 1.0e-8)) {
+    throw std::runtime_error("unusable");
+  }
+  const auto [old_low, old_high] = corners(shape.shape);
+  const auto [new_low, new_high] = corners(result);
+  for (int axis = 1; axis <= 3; ++axis) {
+    if (std::abs(old_low.Coord(axis) - new_low.Coord(axis)) > 1.0e-5 ||
+        std::abs(old_high.Coord(axis) - new_high.Coord(axis)) > 1.0e-5) {
+      throw std::runtime_error("unusable");
+    }
+  }
+  return owned(result, "shell");
 }
 
 std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b) {

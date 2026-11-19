@@ -43,6 +43,15 @@ public:
 };
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
+std::unique_ptr<Shape> make_cylinder(double radius, double height);
+std::unique_ptr<Shape> make_sphere(double radius);
+std::unique_ptr<Shape> make_cone(double bottom, double top, double height);
+std::unique_ptr<Shape> make_torus(double major, double minor);
+std::unique_ptr<Shape> make_wedge(double dx, double dy, double dz, double top);
+std::unique_ptr<Shape> make_tube(double outer, double inner, double height);
+std::unique_ptr<Shape> place(const Shape &shape, rust::Slice<const double> placement);
+std::unique_ptr<Shape> move_shape(const Shape &shape, rust::Slice<const double> move);
+std::unique_ptr<Shape> shell(const Shape &shape, rust::Slice<const uint32_t> faces, double thickness);
 std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> unify(const Shape &shape);
 std::unique_ptr<Shape> read_brep(rust::Slice<const uint8_t> bytes);

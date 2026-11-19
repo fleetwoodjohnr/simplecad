@@ -119,6 +119,30 @@ impl Context<'_> {
         }
     }
 
+    /// `ctx.resolve` of a list of face references: each one's body and index.
+    pub fn faces(&self, key: &str) -> Result<Vec<(Shape, u32)>, StepError> {
+        let refs = match self.input(key) {
+            Some(Value::Array(list)) => list.clone(),
+            Some(one) => vec![one.clone()],
+            None => {
+                return Err(failed(
+                    "This feature has lost the geometry it was built on. Re-select the face or edge for this feature.",
+                ));
+            }
+        };
+        refs.iter()
+            .map(|r| {
+                let reference = r.get("__ref__").ok_or_else(|| failed("This feature has lost the geometry it was built on."))?;
+                let body = reference["body"].as_str().unwrap_or("");
+                let shape = self.bodies.get(body).cloned().ok_or_else(|| {
+                    failed(format!("The body '{body}' this feature needs is not available. It may have been deleted or renamed."))
+                })?;
+                let index = resolve_face(reference, &shape)?;
+                Ok((shape, index))
+            })
+            .collect()
+    }
+
     /// `ctx.resolve` of a face reference: its body, and the face's index there.
     pub fn face(&self, key: &str) -> Result<(Shape, u32), StepError> {
         let reference = self.input(key).and_then(|v| v.get("__ref__")).ok_or_else(|| {
@@ -130,6 +154,19 @@ impl Context<'_> {
         })?;
         let index = resolve_face(reference, &shape)?;
         Ok((shape, index))
+    }
+}
+
+/// A body alias as `str()` of a decoded input gives it.
+fn alias(value: &Value) -> String {
+    match value {
+        Value::Object(map) => map
+            .get("__body__")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -227,6 +264,21 @@ fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
     }
 }
 
+/// The step types `execute` runs.
+pub const PORTED: &[&str] = &[
+    "box",
+    "cylinder",
+    "sphere",
+    "cone",
+    "torus",
+    "tube",
+    "wedge",
+    "push_pull",
+    "move",
+    "move_many",
+    "shell",
+];
+
 /// The steps this build can run, by type; `None` for the others.
 fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, StepError>> {
     let name = || -> Result<String, StepError> {
@@ -250,23 +302,165 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
     };
     let run = || -> Result<BTreeMap<String, Shape>, StepError> {
         match kind {
-            "box" => {
-                let positive = |key: &str, default: f64| -> Result<f64, StepError> {
+            "box" | "cylinder" | "sphere" | "cone" | "torus" | "tube" | "wedge" => {
+                // `_Primitive._positive`: the input, refused unless above zero.
+                let positive = |key: &str, default: f64, what: &str| -> Result<f64, StepError> {
                     let value = ctx.value(key, default, Dimension::Length)?;
                     if value <= 0.0 {
                         return Err(failed(format!(
-                            "The {key} must be greater than zero. Enter a positive {key}."
+                            "The {what} must be greater than zero. Enter a positive {what}."
                         )));
                     }
                     Ok(value)
                 };
-                let (w, d, h) = (
-                    positive("width", 40.0)?,
-                    positive("depth", 30.0)?,
-                    positive("height", 20.0)?,
-                );
-                let shape = occt::make_box(w, d, h).map_err(kernel)?;
+                let value = |key: &str, default: f64| ctx.value(key, default, Dimension::Length);
+                let shape = match kind {
+                    "box" => occt::make_box(positive("width", 40.0, "width")?, positive("depth", 30.0, "depth")?, positive("height", 20.0, "height")?),
+                    "cylinder" => occt::make_cylinder(positive("radius", 12.0, "radius")?, positive("height", 30.0, "height")?),
+                    "sphere" => occt::make_sphere(positive("radius", 15.0, "radius")?),
+                    "cone" => {
+                        let (bottom, top) = (value("bottom_radius", 15.0)?, value("top_radius", 0.0)?);
+                        let height = positive("height", 30.0, "height")?;
+                        if bottom < 0.0 || top < 0.0 || (bottom == 0.0 && top == 0.0) {
+                            return Err(failed("A cone needs at least one radius greater than zero. Set the bottom or top radius above zero."));
+                        }
+                        occt::make_cone(bottom, top, height)
+                    }
+                    "torus" => {
+                        let major = positive("major_radius", 25.0, "ring radius")?;
+                        let minor = positive("minor_radius", 6.0, "tube radius")?;
+                        if minor >= major {
+                            return Err(failed(format!("The tube is too thick for this ring radius. Use a tube radius below {major:.2} mm.")));
+                        }
+                        occt::make_torus(major, minor)
+                    }
+                    "tube" => {
+                        let outer = positive("outer_radius", 15.0, "outer radius")?;
+                        let inner = positive("inner_radius", 10.0, "inner radius")?;
+                        let height = positive("height", 30.0, "height")?;
+                        if inner >= outer {
+                            return Err(failed(format!("The bore is as wide as the tube. Use an inner radius below {outer:.2} mm.")));
+                        }
+                        occt::make_tube(outer, inner, height)
+                    }
+                    _ => {
+                        let (w, d, h) = (positive("width", 40.0, "width")?, positive("depth", 30.0, "depth")?, positive("height", 20.0, "height")?);
+                        occt::make_wedge(w, h, d, value("top_width", 0.0)?.max(0.0))
+                    }
+                }
+                .map_err(kernel)?;
                 Ok(BTreeMap::from([(name()?, Rc::new(placed(shape, ctx)?))]))
+            }
+            "move" => {
+                let body = ctx.shape("body")?;
+                let numbers = |key: &str| -> Option<Vec<f64>> {
+                    ctx.input(key)
+                        .and_then(Value::as_array)
+                        .map(|l| l.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect())
+                };
+                let axis = match ctx.input("axis") {
+                    None | Some(Value::Null) => None,
+                    Some(_) => {
+                        let axis = numbers("axis").unwrap_or_default();
+                        if axis.len() != 3 || axis.iter().map(|v| v * v).sum::<f64>().sqrt() < 1e-9
+                        {
+                            return Err(failed("This rotation has no axis to turn about."));
+                        }
+                        Some(axis)
+                    }
+                };
+                let pivot = match numbers("pivot").filter(|p| !p.is_empty()) {
+                    Some(pivot) => pivot,
+                    None => {
+                        // Turned about the body's own centre.
+                        let b = occt::bounds(&body).map_err(kernel)?;
+                        (0..3).map(|k| (b[k] + b[k + 3]) / 2.0).collect()
+                    }
+                };
+                let mut m = Vec::with_capacity(15);
+                for key in ["dx", "dy", "dz"] {
+                    m.push(ctx.value(key, 0.0, Dimension::Length)?);
+                }
+                for key in ["rx", "ry", "rz"] {
+                    m.push(ctx.value(key, 0.0, Dimension::Angle)?);
+                }
+                m.extend(pivot.iter().take(3));
+                let order = ctx.input("order").map(|o| {
+                    o.as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| o.to_string())
+                });
+                m.push(f64::from(u8::from(order.as_deref() == Some("xyz"))));
+                match axis {
+                    Some(axis) => {
+                        m.push(1.0);
+                        m.extend(axis);
+                        m.push(ctx.value("angle", 0.0, Dimension::Angle)?);
+                    }
+                    None => m.extend([0.0; 5]),
+                }
+                let moved = occt::move_shape(&body, &m).map_err(kernel)?;
+                Ok(BTreeMap::from([(body_name()?, Rc::new(moved))]))
+            }
+            "move_many" => {
+                let names: Vec<String> = ctx
+                    .input("bodies")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(alias)
+                    .collect();
+                if names.is_empty() {
+                    return Err(failed("Move needs at least one body."));
+                }
+                let mut m = Vec::with_capacity(15);
+                for key in ["dx", "dy", "dz"] {
+                    m.push(ctx.value(key, 0.0, Dimension::Length)?);
+                }
+                m.extend([0.0; 12]);
+                let mut out = BTreeMap::new();
+                for name in names {
+                    let shape = ctx.bodies.get(&name).cloned().ok_or_else(|| {
+                        failed(format!("The body '{name}' this feature needs is not available. It may have been deleted. Re-select the body."))
+                    })?;
+                    out.insert(name, Rc::new(occt::move_shape(&shape, &m).map_err(kernel)?));
+                }
+                Ok(out)
+            }
+            "shell" => {
+                let body = ctx.shape("body")?;
+                let thickness = ctx.value("thickness", 2.0, Dimension::Length)?;
+                if thickness <= 0.0 {
+                    return Err(failed("A shell needs a wall thickness greater than zero."));
+                }
+                let faces = ctx.faces("faces")?;
+                if faces.is_empty() {
+                    return Err(failed(
+                        "Select the face or faces to open before shelling. Pick the face that should become the opening.",
+                    ));
+                }
+                let b = occt::bounds(&body).map_err(kernel)?;
+                let limit = (0..3)
+                    .map(|k| b[k + 3] - b[k])
+                    .fold(f64::INFINITY, f64::min)
+                    / 2.0;
+                if thickness >= limit {
+                    return Err(failed(format!(
+                        "A {thickness:.2} mm wall is too thick to hollow this body. Use a wall below {limit:.2} mm."
+                    )));
+                }
+                let indices: Vec<u32> = faces.iter().map(|(_, i)| *i).collect();
+                match occt::shell(&body, &indices, thickness) {
+                    Ok(hollow) => Ok(BTreeMap::from([(body_name()?, Rc::new(hollow))])),
+                    // ponytail: the Python app then hollows a single flat profile by a 2-D
+                    // offset (shapely); that comes with the sketcher's offsets (phase 7).
+                    Err(_) if indices.len() == 1 => Err(failed(
+                        "This shell needs a construction this version cannot build yet. Edit it in SimpleCAD 0.4.",
+                    )),
+                    Err(_) => Err(failed(
+                        "The selected faces did not produce a hollow body. Try opening one flat face or using a thinner wall.",
+                    )),
+                }
             }
             "push_pull" => {
                 let body = ctx.shape("body")?;
@@ -284,49 +478,23 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
             _ => unreachable!(),
         }
     };
-    matches!(kind, "box" | "push_pull").then(run)
+    PORTED.contains(&kind).then(run)
 }
 
-/// A primitive's placement (`_Primitive._placement`): moved to `x y z`, then turned
-/// about X, Y and Z by `rx ry rz` degrees.
+/// A primitive's placement (`_Primitive._placement` then `_finish`): moved to
+/// `x y z`, then turned about X, Y and Z by `rx ry rz` degrees.
 fn placed(
     shape: occt::UniquePtr<occt::Shape>,
     ctx: &Context,
 ) -> Result<occt::UniquePtr<occt::Shape>, StepError> {
-    let length = |k| ctx.value(k, 0.0, Dimension::Length);
-    let angle = |k| ctx.value(k, 0.0, Dimension::Angle);
-    let (x, y, z) = (length("x")?, length("y")?, length("z")?);
-    let mut m = [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]];
-    for (axis, key) in [(0, "rx"), (1, "ry"), (2, "rz")] {
-        let degrees = angle(key)?;
-        if degrees.abs() <= 1e-12 {
-            continue;
-        }
-        let (s, c) = degrees.to_radians().sin_cos();
-        let (i, j) = ((axis + 1) % 3, (axis + 2) % 3);
-        let mut r = [[0.0; 3]; 3];
-        r[axis][axis] = 1.0;
-        (r[i][i], r[i][j], r[j][i], r[j][j]) = (c, -s, s, c);
-        let rotated: Vec<[f64; 4]> = (0..3)
-            .map(|row| {
-                let mut out = [0.0; 4];
-                for (col, slot) in out.iter_mut().enumerate().take(3) {
-                    *slot = (0..3).map(|k| m[row][k] * r[k][col]).sum();
-                }
-                out[3] = m[row][3];
-                out
-            })
-            .collect();
-        m = [rotated[0], rotated[1], rotated[2]];
+    let mut placement = Vec::with_capacity(6);
+    for key in ["x", "y", "z"] {
+        placement.push(ctx.value(key, 0.0, Dimension::Length)?);
     }
-    if m == [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-    ] {
-        return Ok(shape);
+    for key in ["rx", "ry", "rz"] {
+        placement.push(ctx.value(key, 0.0, Dimension::Angle)?);
     }
-    occt::located(&shape, &m.concat()).map_err(kernel)
+    occt::place(&shape, &placement).map_err(kernel)
 }
 
 /// `Feature.consumed_bodies`: bodies a step destroys in making its outputs.

@@ -66,6 +66,23 @@ pub mod ffi {
         type Shape;
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn make_sphere(radius: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cone(bottom: f64, top: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn make_torus(major: f64, minor: f64) -> Result<UniquePtr<Shape>>;
+        fn make_wedge(dx: f64, dy: f64, dz: f64, top: f64) -> Result<UniquePtr<Shape>>;
+        /// A pipe: a cylinder with a concentric bore, cut as the Python app cuts it.
+        fn make_tube(outer: f64, inner: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        /// A primitive's placement: `[x, y, z, rx, ry, rz]`, the turns in degrees
+        /// about the world X, Y and Z axes after the move, geometry copied.
+        fn place(shape: &Shape, placement: &[f64]) -> Result<UniquePtr<Shape>>;
+        /// `MoveFeature`: `[dx, dy, dz, rx, ry, rz, pivot x, y, z, xyz order (1/0),
+        /// has axis (1/0), axis x, y, z, angle]`, turns in degrees, applied as a
+        /// placement (geometry shared), as the Python app moves a body.
+        fn move_shape(shape: &Shape, placement: &[f64]) -> Result<UniquePtr<Shape>>;
+        /// `ShellFeature`'s thick solid with faces `faces` opened, inward by
+        /// `thickness`; the error "unusable" when OCCT gives no hollow body.
+        fn shell(shape: &Shape, faces: &[u32], thickness: f64) -> Result<UniquePtr<Shape>>;
         fn fuse(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         /// Merge the coplanar faces and collinear edges a boolean leaves.
         fn unify(shape: &Shape) -> Result<UniquePtr<Shape>>;
