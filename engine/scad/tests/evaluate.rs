@@ -1,10 +1,26 @@
 //! Expressions evaluate as the Python app evaluates them (`params.evaluate`):
 //! the same value to the bit, or the same error. `scripts/engine_oracles.py`
-//! writes `data/evaluate.json`.
+//! writes `data/evaluate.json`, on Linux: elsewhere the system's maths library
+//! (which Python uses there too) may differ in the last bits of `sin`, `asin`,
+//! `pow`..., so there values agree to a few ulps and messages up to their numbers.
 
 use scad::evaluate::{Dimension, EvalError, evaluate};
 use serde_json::Value;
 use std::collections::HashMap;
+
+const LINUX: bool = cfg!(target_os = "linux");
+
+fn close(a: f64, b: f64) -> bool {
+    a == b || (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+}
+
+fn same_message(rust: &str, python: &str) -> bool {
+    let words = |m: &str| {
+        m.split(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == 'e')
+            .collect::<String>()
+    };
+    rust == python || (!LINUX && words(rust) == words(python))
+}
 
 #[test]
 fn every_expression_has_the_python_apps_value_or_error() {
