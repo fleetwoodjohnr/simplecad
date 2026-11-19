@@ -12,7 +12,8 @@ export interface Body { name: string; shape: Shape | null }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
-  save(): Uint8Array
+  /** The file, with the newest `undone` steps taken back and kept to redo. */
+  save(undone: number): Uint8Array
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
@@ -129,10 +130,11 @@ export class EngineDocument {
     return this.show(this.prepare(this.resolve(edit)).bodies)
   }
 
-  /** The `.scad3` of the shown point of the history. Nothing counts as saved until `markSaved`. */
+  /** The `.scad3` of the shown point of the history, the steps after it kept to redo. Nothing counts as saved until `markSaved`. */
   save(revision: number): Uint8Array {
     this.checkRevision(revision)
-    return this.states[this.cursor].project.save()
+    const newest = this.states.length - 1
+    return this.states[newest].project.save(newest - this.cursor)
   }
 
   /** The file from `save` was written: the shown point of the history is the saved one. */

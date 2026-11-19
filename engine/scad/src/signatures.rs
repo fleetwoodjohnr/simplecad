@@ -80,7 +80,7 @@ fn shape_ref_features(value: &Value, out: &mut Vec<String>) {
 }
 
 /// `DependencyGraph.forward`: the steps a feature reads from.
-fn upstream(feature: &Value, id: &str) -> BTreeSet<String> {
+pub(crate) fn upstream(feature: &Value, id: &str) -> BTreeSet<String> {
     let mut deps: BTreeSet<String> = bindings(feature)
         .into_values()
         .map(|r| r.feature_id)

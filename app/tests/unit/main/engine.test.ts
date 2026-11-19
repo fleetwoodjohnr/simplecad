@@ -31,8 +31,9 @@ class FakeProject implements Project {
   pushPull(body: string, shape: Shape, face: number, distance: number) {
     return { project: new FakeProject([...this.steps, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
   }
-  save() {
-    return new TextEncoder().encode(this.steps.join(';'))
+  save(undone: number) {
+    const kept = this.steps.length - undone
+    return new TextEncoder().encode([...this.steps.slice(0, kept), ...this.steps.slice(kept).map((s) => `redo ${s}`)].join(';'))
   }
 }
 
@@ -115,7 +116,7 @@ describe('EngineDocument', () => {
     model = doc.apply({ face: 0, distance: -1 }, model.revision)
     expect(model.unsaved).toBe(true)
     model = doc.step(-1, model.revision)
-    expect(new TextDecoder().decode(doc.save(model.revision))).toBe('B 1 2')
+    expect(new TextDecoder().decode(doc.save(model.revision))).toBe('B 1 2;redo A 0 -1')
     // Handing over the file is not saving it: the window says when it was written.
     expect(doc.model().unsaved).toBe(true)
     model = doc.markSaved(model.revision)

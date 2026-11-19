@@ -192,10 +192,15 @@ impl Project {
         })
     }
 
-    /// The `.scad3` of this point of the session.
+    /// The `.scad3` of this point of the session with its newest `undone` steps
+    /// taken back: they stay in the file as its redo steps.
     #[napi]
-    pub fn save(&self) -> Result<Buffer> {
-        self.model
+    pub fn save(&self, undone: u32) -> Result<Buffer> {
+        let mut model = self.model.clone();
+        for _ in 0..undone {
+            model.undo().map_err(Error::from_reason)?;
+        }
+        model
             .save(&self.original)
             .map(Buffer::from)
             .map_err(Error::from_reason)

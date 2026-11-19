@@ -38,13 +38,20 @@ fn face_fingerprints(brep: &[u8], location: Option<&[f64; 12]>) -> Result<Value,
         .map(Value::Array)
 }
 
-/// `scad pull <in> <body> <face> <distance> <out>`: one push/pull, saved as the
-/// Pull tool would, for checking that the Python app takes it as its own.
+/// `scad pull <in> <body> <face> <distance>[,<distance>...] <out> [undone]`:
+/// push/pull face `face` of `body` by each distance in turn, saved as the Pull
+/// tool would with the newest `undone` pulls taken back (kept to redo), for
+/// checking that the Python app takes them as its own.
 fn pull(args: &[String]) -> Result<(), String> {
-    let [input, body, face, distance, output] = args else {
-        return Err(
-            "usage: scad pull <in.scad3> <body> <face index> <distance> <out.scad3>".into(),
-        );
+    let (input, body, face, distances, output, undone) = match args {
+        [i, b, f, d, o] => (i, b, f, d, o, "0"),
+        [i, b, f, d, o, u] => (i, b, f, d, o, u.as_str()),
+        _ => {
+            return Err(
+                "usage: scad pull <in.scad3> <body> <face index> <distance>[,<distance>...] <out.scad3> [undone]"
+                    .into(),
+            );
+        }
     };
     let err = |e: occt::Exception| e.what().to_string();
     let original = std::fs::read(input).map_err(|e| e.to_string())?;
@@ -59,26 +66,53 @@ fn pull(args: &[String]) -> Result<(), String> {
     if let Some(m) = &saved.location {
         shape = occt::located(&shape, m).map_err(err)?;
     }
-    let face: u32 = face.parse().map_err(|_| "the face is a number")?;
-    let amount: f64 = distance.parse().map_err(|_| "the distance is a number")?;
-    let f = occt::face_fingerprint(&shape, face).map_err(err)?;
-    let fingerprint = json!({
-        "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
-        "direction": if f.has_direction { json!(f.direction) } else { Value::Null },
-        "radius": if f.has_radius { json!(f.radius) } else { Value::Null },
-        "neighbours": [],
-    });
-    let pulled = occt::push_pull(&shape, face, amount).map_err(err)?;
+    let mut face: u32 = face.parse().map_err(|_| "the face is a number")?;
+    let undone: usize = undone.parse().map_err(|_| "undone is a number")?;
     let mut model = scad::document::Model::open(&project);
-    let reference = model.face_ref(body, face, fingerprint);
-    model.push_pull(
-        body,
-        reference,
-        distance,
-        occt::write_brep(&pulled).map_err(err)?,
-    )?;
+    let mut volumes = Vec::new();
+    for distance in distances.split(',') {
+        let amount: f64 = distance.parse().map_err(|_| "the distance is a number")?;
+        let f = occt::face_fingerprint(&shape, face).map_err(err)?;
+        let fingerprint = json!({
+            "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
+            "direction": if f.has_direction { json!(f.direction) } else { Value::Null },
+            "radius": if f.has_radius { json!(f.radius) } else { Value::Null },
+            "neighbours": [],
+        });
+        shape = occt::push_pull(&shape, face, amount).map_err(err)?;
+        let reference = model.face_ref(body, face, fingerprint);
+        model.push_pull(
+            body,
+            reference,
+            distance,
+            occt::write_brep(&shape).map_err(err)?,
+        )?;
+        volumes.push(occt::volume(&shape));
+        // The pulled face, moved along its normal, in the new shape's numbering.
+        let moved: Vec<f64> = (0..3)
+            .map(|k| f.center[k] + f.direction[k] * amount)
+            .collect();
+        let count = occt::faces(&shape).map_err(err)?.len() as u32;
+        face = (0..count)
+            .filter_map(|i| Some((i, occt::face_fingerprint(&shape, i).ok()?)))
+            .filter(|(_, g)| {
+                g.has_direction && (0..3).all(|k| (g.direction[k] - f.direction[k]).abs() < 1e-9)
+            })
+            .min_by(|(_, a), (_, b)| {
+                let d = |g: &occt::FaceFingerprint| {
+                    (0..3)
+                        .map(|k| (g.center[k] - moved[k]).powi(2))
+                        .sum::<f64>()
+                };
+                d(a).total_cmp(&d(b))
+            })
+            .map_or(face, |(i, _)| i);
+    }
+    for _ in 0..undone {
+        model.undo()?;
+    }
     std::fs::write(output, model.save(&original)?).map_err(|e| e.to_string())?;
-    println!("{}", json!({ "volume": occt::volume(&pulled) }));
+    println!("{}", json!({ "volumes": volumes }));
     Ok(())
 }
 

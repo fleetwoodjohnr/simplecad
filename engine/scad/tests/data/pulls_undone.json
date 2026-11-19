@@ -1,0 +1,319 @@
+{
+ "application": "SimpleCAD",
+ "assets": [],
+ "bodies": [
+  {
+   "color": null,
+   "id": "52d383e581a351f38f42fd3e9bcae657",
+   "metadata": {},
+   "name": "Box",
+   "producer": "fac8b2bbce68a4c33989c5162e01e6818",
+   "visible": true
+  }
+ ],
+ "cache": {
+  "entries": {
+   "1a03c69176d66eff475bb705def2ba35be3598845781a6e25c559ca9ebcde6f8": {
+    "feature_id": "fafdc4710ee294d33b3cf67e8194d0df1",
+    "message": "",
+    "outputs": {
+     "52d383e581a351f38f42fd3e9bcae657": {
+      "kind": "brep",
+      "sha256": "4ecdaba7890df30cdfc0d89342b58aeac4507d4474c332153efd87dfa3f286e0"
+     }
+    },
+    "version": "simplecad-feature-cache-2-occt-7.9"
+   },
+   "92c546e7e75d433648406fc3a5d38410b64a224af4cbd8769ce8c8e80746c2f0": {
+    "feature_id": "fd82f9183e42f4f178c729f7614664dbd",
+    "message": "",
+    "outputs": {
+     "52d383e581a351f38f42fd3e9bcae657": {
+      "kind": "brep",
+      "sha256": "9b65e72ac84a545bdb7f95864f1e498e34f1b4fe9618655d33187498f65735dd"
+     }
+    },
+    "version": "simplecad-feature-cache-2-occt-7.9"
+   },
+   "f614c562398ccbb925d0913fbae276917cf1e32efb198105a1191b1c8cc4982f": {
+    "feature_id": "fac8b2bbce68a4c33989c5162e01e6818",
+    "message": "",
+    "outputs": {
+     "52d383e581a351f38f42fd3e9bcae657": {
+      "kind": "brep",
+      "sha256": "54c25fff85ceabd0840bbbb0f1fbd658e12ddb78ba69a90a3b7f4205b7406a6b"
+     }
+    },
+    "version": "simplecad-feature-cache-2-occt-7.9"
+   }
+  },
+  "version": "simplecad-feature-cache-2-occt-7.9"
+ },
+ "counters": {
+  "Box": 2,
+  "Pull": 2
+ },
+ "diagnostics": {
+  "fac8b2bbce68a4c33989c5162e01e6818": {
+   "message": "",
+   "state": "ok"
+  },
+  "fd82f9183e42f4f178c729f7614664dbd": {
+   "message": "",
+   "state": "ok"
+  }
+ },
+ "features": [
+  {
+   "bindings": {},
+   "dropped": [],
+   "id": "fd82f9183e42f4f178c729f7614664dbd",
+   "inputs": {
+    "depth": "30 mm",
+    "height": "20 mm",
+    "width": "40 mm"
+   },
+   "name": "Box",
+   "output_ids": {
+    "Box": "52d383e581a351f38f42fd3e9bcae657"
+   },
+   "outputs": [
+    "Box"
+   ],
+   "suppressed": false,
+   "type": "box"
+  },
+  {
+   "bindings": {
+    "Box": {
+     "feature_id": "fd82f9183e42f4f178c729f7614664dbd",
+     "object_id": "52d383e581a351f38f42fd3e9bcae657"
+    }
+   },
+   "dropped": [],
+   "id": "fac8b2bbce68a4c33989c5162e01e6818",
+   "inputs": {
+    "body": {
+     "__body__": "Box"
+    },
+    "distance": "5",
+    "face": {
+     "__ref__": {
+      "body": "Box",
+      "body_id": "",
+      "feature_id": "fd82f9183e42f4f178c729f7614664dbd",
+      "fingerprint": {
+       "center": [
+        20.0,
+        14.999999999999996,
+        20.0
+       ],
+       "direction": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "geometry": "plane",
+       "kind": "face",
+       "measure": 1199.9999999999998,
+       "neighbours": [],
+       "radius": null
+      },
+      "index_hint": 5,
+      "kind": "face",
+      "role": ""
+     }
+    }
+   },
+   "name": "Pull",
+   "output_ids": {
+    "Box": "52d383e581a351f38f42fd3e9bcae657"
+   },
+   "outputs": [
+    "Box"
+   ],
+   "suppressed": false,
+   "type": "push_pull"
+  }
+ ],
+ "format": 4,
+ "geometry": {
+  "52d383e581a351f38f42fd3e9bcae657": {
+   "current": true,
+   "feature_id": "fac8b2bbce68a4c33989c5162e01e6818",
+   "sha256": "54c25fff85ceabd0840bbbb0f1fbd658e12ddb78ba69a90a3b7f4205b7406a6b",
+   "signature": "f614c562398ccbb925d0913fbae276917cf1e32efb198105a1191b1c8cc4982f"
+  }
+ },
+ "groups": [],
+ "history": {
+  "limit": 100,
+  "redo": [
+   {
+    "cache_keys": [
+     "1a03c69176d66eff475bb705def2ba35be3598845781a6e25c559ca9ebcde6f8"
+    ],
+    "label": "Pull",
+    "patch": {
+     "collections": {
+      "bodies": {
+       "order": null,
+       "remove": [],
+       "set": {
+        "52d383e581a351f38f42fd3e9bcae657": {
+         "color": null,
+         "id": "52d383e581a351f38f42fd3e9bcae657",
+         "metadata": {},
+         "name": "Box",
+         "producer": "fafdc4710ee294d33b3cf67e8194d0df1",
+         "visible": true
+        }
+       }
+      },
+      "features": {
+       "order": [
+        "fd82f9183e42f4f178c729f7614664dbd",
+        "fac8b2bbce68a4c33989c5162e01e6818",
+        "fafdc4710ee294d33b3cf67e8194d0df1"
+       ],
+       "remove": [],
+       "set": {
+        "fafdc4710ee294d33b3cf67e8194d0df1": {
+         "bindings": {
+          "Box": {
+           "feature_id": "fac8b2bbce68a4c33989c5162e01e6818",
+           "object_id": "52d383e581a351f38f42fd3e9bcae657"
+          }
+         },
+         "dropped": [],
+         "id": "fafdc4710ee294d33b3cf67e8194d0df1",
+         "inputs": {
+          "body": {
+           "__body__": "Box"
+          },
+          "distance": "-3",
+          "face": {
+           "__ref__": {
+            "body": "Box",
+            "body_id": "",
+            "feature_id": "fac8b2bbce68a4c33989c5162e01e6818",
+            "fingerprint": {
+             "center": [
+              20.0,
+              14.999999999999996,
+              25.0
+             ],
+             "direction": [
+              0.0,
+              0.0,
+              1.0
+             ],
+             "geometry": "plane",
+             "kind": "face",
+             "measure": 1199.9999999999998,
+             "neighbours": [],
+             "radius": null
+            },
+            "index_hint": 1,
+            "kind": "face",
+            "role": ""
+           }
+          }
+         },
+         "name": "Pull2",
+         "output_ids": {
+          "Box": "52d383e581a351f38f42fd3e9bcae657"
+         },
+         "outputs": [
+          "Box"
+         ],
+         "suppressed": false,
+         "type": "push_pull"
+        }
+       }
+      }
+     },
+     "keyed": {
+      "counters": {
+       "remove": [],
+       "set": {
+        "Pull": 3
+       }
+      }
+     },
+     "values": {}
+    }
+   }
+  ],
+  "undo": [
+   {
+    "cache_keys": [],
+    "label": "Box",
+    "patch": {
+     "collections": {
+      "bodies": {
+       "order": [],
+       "remove": [
+        "52d383e581a351f38f42fd3e9bcae657"
+       ],
+       "set": {}
+      },
+      "features": {
+       "order": [],
+       "remove": [
+        "fd82f9183e42f4f178c729f7614664dbd"
+       ],
+       "set": {}
+      }
+     },
+     "values": {}
+    }
+   },
+   {
+    "cache_keys": [],
+    "label": "Pull",
+    "patch": {
+     "collections": {
+      "bodies": {
+       "order": null,
+       "remove": [],
+       "set": {
+        "52d383e581a351f38f42fd3e9bcae657": {
+         "color": null,
+         "id": "52d383e581a351f38f42fd3e9bcae657",
+         "metadata": {},
+         "name": "Box",
+         "producer": "fd82f9183e42f4f178c729f7614664dbd",
+         "visible": true
+        }
+       }
+      },
+      "features": {
+       "order": [
+        "fd82f9183e42f4f178c729f7614664dbd"
+       ],
+       "remove": [
+        "fac8b2bbce68a4c33989c5162e01e6818"
+       ],
+       "set": {}
+      }
+     },
+     "keyed": {
+      "counters": {
+       "remove": [
+        "Pull"
+       ],
+       "set": {}
+      }
+     },
+     "values": {}
+    }
+   }
+  ],
+  "version": 1
+ },
+ "metadata": {},
+ "parameters": [],
+ "retired_ids": [],
+ "title": "Untitled"
+}

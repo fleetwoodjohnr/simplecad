@@ -17,6 +17,8 @@ back to format 1 (no ids, bindings or counters), with what ``Document.from_dict`
 then ``to_dict`` make of it and the signatures of the result.
 engine/scad/tests/data/new_box.json: the model.json of a new project with one
 box, made as the Shape panel makes it (``ShapePanel.commit``).
+engine/scad/tests/data/pulls_undone.json: that box with its top pulled 5 mm
+then -3 mm, the second pull undone, as saved: the history with its redo step.
 """
 
 from __future__ import annotations
@@ -179,7 +181,7 @@ def normalised():
     print(f"normalised.json: {len(cases)} documents")
 
 
-def new_box():
+def new_box(pulls=(), undo=0, out="new_box.json"):
     import tempfile
 
     from simplecad.core.document import Document
@@ -198,14 +200,31 @@ def new_box():
     feature.outputs = [feature.name]
     history.record(feature.label)
     document.add_feature(feature)
-    Rebuilder(document).rebuild()
+    rebuilder = Rebuilder(document)
+    rebuilder.rebuild()
+    for distance in pulls:
+        from simplecad.core.document import BodyRef
+        from simplecad.core.naming import fingerprint, make_ref, sub_shapes
+        from simplecad.kernel.operations import PushPullFeature
+
+        shape = document.bodies["Box"].shape
+        top = max(sub_shapes(shape, "face"), key=lambda f: fingerprint(f, "face").center[2])
+        reference = make_ref(shape, top, document.producer_of("Box").id, body="Box")
+        pull = PushPullFeature(inputs={"body": BodyRef("Box"), "face": reference, "distance": distance},
+                               outputs=["Box"])
+        history.record(pull.label)
+        document.add_feature(pull)
+        rebuilder.rebuild()
+    for _ in range(undo):
+        rebuilder.invalidate(history.undo())
+        rebuilder.rebuild()
     with tempfile.TemporaryDirectory() as scratch:
         path = save(document, os.path.join(scratch, "new.scad3"))
         model = json.loads(zipfile.ZipFile(path).read("model.json"))
-    with open(os.path.join(DATA, "new_box.json"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(DATA, out), "w", encoding="utf-8") as handle:
         json.dump(model, handle, indent=1, sort_keys=True)
         handle.write("\n")
-    print("new_box.json written")
+    print(out, "written")
 
 
 def main() -> int:
@@ -213,6 +232,7 @@ def main() -> int:
     corpus()
     normalised()
     new_box()
+    new_box(pulls=("5", "-3"), undo=1, out="pulls_undone.json")
     write("dependencies.json", project_texts(sys.argv[1:]) | EDGE_CASES)
     write("dependencies_fuzz.json", fuzz())
     with open(os.path.join(DATA, "pyjson.json"), "w", encoding="utf-8") as handle:

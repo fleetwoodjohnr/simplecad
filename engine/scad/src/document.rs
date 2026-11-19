@@ -8,7 +8,7 @@ use crate::project::CACHE_VERSION;
 use crate::signatures::signatures;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Cursor, Read, Write};
 
 /// The parts of `model.json` that are the document (`Document.to_dict`); the rest
@@ -245,12 +245,24 @@ impl Model {
         distance: &str,
         brep: Vec<u8>,
     ) -> Result<String, String> {
+        let id = new_feature_id();
+        self.push_pull_as(&id, body, face, distance, brep)?;
+        Ok(id)
+    }
+
+    fn push_pull_as(
+        &mut self,
+        id: &str,
+        body: &str,
+        face: Value,
+        distance: &str,
+        brep: Vec<u8>,
+    ) -> Result<(), String> {
         let before = self.document();
         let (producer, object) = self
             .latest()
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
-        let id = new_feature_id();
         let name = self.unique_name("Pull");
         let feature = json!({
             "id": id, "type": "push_pull", "name": name,
@@ -279,8 +291,295 @@ impl Model {
             }
         }
 
-        self.record(&id, "Pull", &object, brep, before)?;
-        Ok(id)
+        self.record(id, "Pull", &object, brep, before)
+    }
+
+    /// `History.undo` on the saved history: the newest step taken back, and its
+    /// redo step written as the Python app writes it. Each body shows its new
+    /// producer's cached result, as after the Python app's rebuild.
+    pub fn undo(&mut self) -> Result<(), String> {
+        let unreadable = || "This project's history could not be read.".to_string();
+        let action = self.payload["history"]["undo"]
+            .as_array_mut()
+            .and_then(Vec::pop)
+            .ok_or("There is nothing to undo.")?;
+        let patch = &action["patch"];
+        let current = signatures(&self.payload).ok_or_else(unreadable)?;
+        let redo = self.inverse_patch(patch);
+        let old = self.payload.clone();
+        let producers = self.latest();
+        let stale = self.apply_patch(patch);
+        let mut stale_all = dependents(&old, &stale);
+        stale_all.extend(dependents(&self.payload, &stale));
+        let mut cache_keys: Vec<&String> =
+            stale_all.iter().filter_map(|f| current.get(f)).collect();
+        cache_keys.sort();
+        let entry = json!({ "label": action["label"], "patch": redo, "cache_keys": cache_keys });
+        self.payload["history"]
+            .as_object_mut()
+            .ok_or_else(unreadable)?
+            .entry("redo")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(unreadable)?
+            .push(entry);
+        self.show_cached_results(&producers)
+    }
+
+    /// `History._inverse_patch`: what puts back the entities `patch` names, as they are now.
+    fn inverse_patch(&self, patch: &Value) -> Value {
+        let document = self.document();
+        let mut inverse = json!({ "values": {}, "collections": {} });
+        for key in patch["values"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, _)| k)
+        {
+            let value = match key.as_str() {
+                "title" | "counters" | "retired_ids" | "metadata" | "assets" => {
+                    document[key].clone()
+                }
+                _ => Value::Null,
+            };
+            inverse["values"][key] = value;
+        }
+        for (key, change) in patch["sets"].as_object().into_iter().flatten() {
+            let present: HashSet<&str> = match key.as_str() {
+                "retired_ids" => document["retired_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect(),
+                _ => HashSet::new(),
+            };
+            let items = |k: &str| change[k].as_array().cloned().unwrap_or_default();
+            inverse["sets"][key] = json!({
+                "add": items("remove").into_iter().filter(|i| i.as_str().is_some_and(|i| present.contains(i))).collect::<Vec<_>>(),
+                "remove": items("add").into_iter().filter(|i| !i.as_str().is_some_and(|i| present.contains(i))).collect::<Vec<_>>(),
+            });
+        }
+        for (key, change) in patch["keyed"].as_object().into_iter().flatten() {
+            let empty = Map::new();
+            let mapping = document[key].as_object().unwrap_or(&empty);
+            let touched = touched(change);
+            inverse["keyed"][key] = json!({
+                "set": touched.iter().filter_map(|k| Some((k.clone(), mapping.get(k)?.clone()))).collect::<Map<_, _>>(),
+                "remove": touched.iter().filter(|k| !mapping.contains_key(*k)).collect::<Vec<_>>(),
+            });
+        }
+        for (key, change) in patch["collections"].as_object().into_iter().flatten() {
+            let identity = COLLECTIONS
+                .iter()
+                .find(|(c, _)| c == key)
+                .map_or("id", |(_, i)| *i);
+            let items: Vec<(String, Value)> = document[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|item| {
+                    let mut item = item.clone();
+                    // `Group.to_dict`, without the member ids the document adds.
+                    if key == "groups" {
+                        item.as_object_mut().map(|g| g.remove("member_ids"));
+                    }
+                    (item[identity].as_str().unwrap_or("").to_string(), item)
+                })
+                .collect();
+            let touched = touched(change);
+            inverse["collections"][key] = json!({
+                "set": items.iter().filter(|(i, _)| touched.contains(i)).map(|(i, v)| (i.clone(), v.clone())).collect::<Map<_, _>>(),
+                "remove": touched.iter().filter(|t| !items.iter().any(|(i, _)| i == *t)).collect::<Vec<_>>(),
+                "order": if change["order"].is_null() { Value::Null } else { json!(items.iter().map(|(i, _)| i).collect::<Vec<_>>()) },
+            });
+        }
+        inverse
+    }
+
+    /// `History._apply_entity_patch`: the entities `patch` names put in place.
+    /// Returns the steps it added, removed or changed.
+    ///
+    /// ponytail: a parameter change marks nothing stale, so its dependents'
+    /// results are not pinned in the redo step; the Rust app does not edit
+    /// parameters yet, and the Python app rebuilds what is unpinned.
+    fn apply_patch(&mut self, patch: &Value) -> BTreeSet<String> {
+        let mut stale = BTreeSet::new();
+        let collections = &patch["collections"];
+        for (key, identity) in COLLECTIONS {
+            let Some(change) = collections.get(*key).filter(|c| c.is_object()) else {
+                continue;
+            };
+            let list = self.list(key);
+            let existing: Vec<String> = list
+                .iter()
+                .map(|v| v[*identity].as_str().unwrap_or("").to_string())
+                .collect();
+            let mut current: Vec<(String, Value)> = existing.iter().cloned().zip(list).collect();
+            for ident in change["remove"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if let Some(at) = current.iter().position(|(i, _)| i == ident) {
+                    current.remove(at);
+                    if *key == "features" {
+                        stale.insert(ident.to_string());
+                    }
+                }
+            }
+            for (ident, state) in change["set"].as_object().into_iter().flatten() {
+                let at = current.iter().position(|(i, _)| i == ident);
+                let item = match (*key, at) {
+                    ("features" | "parameters", _) => {
+                        if *key == "features" && at.is_none_or(|a| &current[a].1 != state) {
+                            stale.insert(ident.clone());
+                        }
+                        state.clone()
+                    }
+                    // Bodies and groups take the attributes the state names (`Body`, `Group` defaults).
+                    (_, found) => {
+                        let mut item = match found {
+                            Some(a) => current[a].1.clone(),
+                            None if *key == "bodies" => {
+                                json!({ "id": ident, "name": state["name"], "visible": true,
+                                "color": null, "producer": "", "metadata": {} })
+                            }
+                            None => {
+                                json!({ "name": state["name"], "id": ident, "members": [], "visible": true, "expanded": true })
+                            }
+                        };
+                        let attributes: &[&str] = if *key == "bodies" {
+                            &["name", "visible", "color", "producer", "metadata"]
+                        } else {
+                            &["name", "members", "visible", "expanded"]
+                        };
+                        for a in attributes {
+                            if let Some(v) = state.get(*a) {
+                                item[*a] = v.clone();
+                            }
+                        }
+                        if *key == "groups" {
+                            item.as_object_mut().map(|g| g.remove("member_ids"));
+                        }
+                        item
+                    }
+                };
+                match at {
+                    Some(a) => current[a].1 = item,
+                    None => current.push((ident.clone(), item)),
+                }
+            }
+            // An empty order, like none, keeps the order there is.
+            let order: Vec<String> = match change["order"].as_array() {
+                Some(o) if !o.is_empty() => o
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect(),
+                _ => current.iter().map(|(i, _)| i.clone()).collect(),
+            };
+            let mut ordered: Vec<Value> = order
+                .iter()
+                .filter_map(|i| current.iter().find(|(c, _)| c == i).map(|(_, v)| v.clone()))
+                .collect();
+            ordered.extend(
+                current
+                    .iter()
+                    .filter(|(i, _)| !order.contains(i))
+                    .map(|(_, v)| v.clone()),
+            );
+            self.payload[*key] = Value::Array(ordered);
+        }
+        let payload = self.payload.as_object_mut().unwrap();
+        for (key, value) in patch["values"].as_object().into_iter().flatten() {
+            if ["title", "counters", "retired_ids", "metadata"].contains(&key.as_str()) {
+                payload.insert(key.clone(), value.clone());
+            }
+        }
+        if let Some(retired) = patch["sets"].get("retired_ids") {
+            let strings = |v: &Value| -> BTreeSet<String> {
+                v.as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            };
+            let mut set = strings(&payload["retired_ids"]);
+            set.retain(|i| !strings(&retired["remove"]).contains(i));
+            set.extend(strings(&retired["add"]));
+            payload.insert("retired_ids".into(), json!(set));
+        }
+        if let Some(counters) = patch["keyed"].get("counters") {
+            let map = payload.entry("counters").or_insert_with(|| json!({}));
+            if let Some(map) = map.as_object_mut() {
+                for name in counters["remove"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    map.remove(name);
+                }
+                for (k, v) in counters["set"].as_object().into_iter().flatten() {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // `prepare_graph`: body ids and producers, group member ids, as the Python app then holds them.
+        crate::graph::normalise(&mut self.payload);
+        stale
+    }
+
+    /// Each body whose producer is not the one in `before` shown from its new
+    /// producer's cached result, and the diagnostics of the steps there are, as
+    /// saving after a rebuild writes them. Other bodies keep what they had.
+    fn show_cached_results(
+        &mut self,
+        before: &BTreeMap<String, (String, String)>,
+    ) -> Result<(), String> {
+        let current =
+            signatures(&self.payload).ok_or("This project's steps could not be fingerprinted.")?;
+        let mut geometry = Map::new();
+        for (name, (producer, object)) in self.latest() {
+            if !self.list("bodies").iter().any(|b| b["name"] == json!(name)) {
+                continue;
+            }
+            let signature = current.get(&producer).cloned().unwrap_or_default();
+            if before.get(&name) == Some(&(producer.clone(), object.clone())) {
+                if let Some(saved) = self.payload["geometry"].get(&object) {
+                    geometry.insert(object, saved.clone());
+                }
+                continue;
+            }
+            // ponytail: a "located" result (a move) would need its placement
+            // applied to a copy; undo reaches only pulls and new boxes so far.
+            let output = &self.payload["cache"]["entries"][&signature]["outputs"][&object];
+            let Some(sha) = output["sha256"]
+                .as_str()
+                .filter(|_| output["kind"] == "brep")
+            else {
+                return Err(format!(
+                    "\"{name}\" has to be rebuilt to undo this; undo it in SimpleCAD 0.4."
+                ));
+            };
+            geometry.insert(object, json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true }));
+        }
+        let diagnostics: Map<String, Value> = self
+            .list("features")
+            .iter()
+            .filter_map(|f| {
+                let id = f["id"].as_str()?;
+                let saved = self.payload["diagnostics"].get(id).cloned();
+                Some((
+                    id.to_string(),
+                    saved.unwrap_or(json!({ "state": "ok", "message": "" })),
+                ))
+            })
+            .collect();
+        self.payload["geometry"] = Value::Object(geometry);
+        self.payload["diagnostics"] = Value::Object(diagnostics);
+        Ok(())
     }
 
     /// A new project holding one box, as the Shape panel makes it (`ShapePanel.commit`
@@ -412,6 +711,46 @@ impl Model {
     }
 }
 
+/// The ids a patch names, set or removed.
+fn touched(change: &Value) -> BTreeSet<String> {
+    let set = change["set"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, _)| k.clone());
+    let removed = change["remove"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(String::from));
+    set.chain(removed).collect()
+}
+
+/// `DependencyGraph.dependents`: `ids` and every step downstream of them.
+fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut found = ids.clone();
+    let features: Vec<(String, BTreeSet<String>)> = model["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let id = f["id"].as_str()?;
+            Some((id.to_string(), crate::signatures::upstream(f, id)))
+        })
+        .collect();
+    loop {
+        let before = found.len();
+        for (id, upstream) in &features {
+            if upstream.iter().any(|u| found.contains(u)) {
+                found.insert(id.clone());
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
+}
+
 /// `Feature.__init__`'s id for a new step.
 fn new_feature_id() -> String {
     format!("f{}", uuid::Uuid::new_v4().simple())
@@ -518,6 +857,76 @@ pub fn make_patch(source: &Value, target: &Value) -> Value {
 mod tests {
     use super::*;
 
+    fn saved_model(model: &Model) -> Value {
+        let saved = model.save(&[]).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+        let mut text = String::new();
+        archive
+            .by_name("model.json")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// Every `sha256` dropped: each app writes its own B-Rep bytes.
+    fn without_shas(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                map.remove("sha256");
+                map.values_mut().for_each(without_shas);
+            }
+            Value::Array(items) => items.iter_mut().for_each(without_shas),
+            _ => {}
+        }
+    }
+
+    /// `engine_oracles.py`: a new box, its top pulled 5 then -3 mm, the second
+    /// pull undone, saved by the Python app. The history (undo and redo steps
+    /// and the results they pin), geometry and diagnostics must be the same.
+    #[test]
+    fn an_undone_pull_saves_with_its_redo_step_as_the_python_app_does() {
+        let python: Value =
+            serde_json::from_str(include_str!("../tests/data/pulls_undone.json")).unwrap();
+        let undo = python["history"]["undo"].as_array().unwrap();
+        let box_id = undo[0]["patch"]["collections"]["features"]["remove"][0]
+            .as_str()
+            .unwrap();
+        let first = &python["features"][1];
+        let second = python["history"]["redo"][0]["patch"]["collections"]["features"]["set"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        let mut model = Model::new_box_as(box_id, b"box".to_vec()).unwrap();
+        for (pull, brep) in [(first, b"first"), (second, b"other")] {
+            model
+                .push_pull_as(
+                    pull["id"].as_str().unwrap(),
+                    "Box",
+                    pull["inputs"]["face"]["__ref__"].clone(),
+                    pull["inputs"]["distance"].as_str().unwrap(),
+                    brep.to_vec(),
+                )
+                .unwrap();
+        }
+        model.undo().unwrap();
+        let mut rust = saved_model(&model);
+        let mut expected = python.clone();
+        expected["history"].as_object_mut().unwrap().remove("limit");
+        without_shas(&mut rust);
+        without_shas(&mut expected);
+        assert_eq!(rust["history"], expected["history"]);
+        assert_eq!(rust, expected);
+        // The body shows the first pull's result again.
+        let object = first["output_ids"]["Box"].as_str().unwrap();
+        assert_eq!(
+            model.payload["geometry"][object]["sha256"],
+            json!(format!("{:x}", Sha256::digest(b"first")))
+        );
+    }
+
     /// `scripts/engine_oracles.py` `new_box`: what the Python app saves for a
     /// new project with one box. Only the box's B-Rep, written by each app's
     /// own OCCT, may differ.
@@ -527,30 +936,10 @@ mod tests {
             serde_json::from_str(include_str!("../tests/data/new_box.json")).unwrap();
         let id = python["features"][0]["id"].as_str().unwrap();
         let model = Model::new_box_as(id, b"the box".to_vec()).unwrap();
-        let saved = model.save(&[]).unwrap();
-        let mut rust: Value = serde_json::from_slice(
-            &zip::ZipArchive::new(Cursor::new(saved))
-                .unwrap()
-                .by_name("model.json")
-                .unwrap()
-                .bytes()
-                .collect::<Result<Vec<u8>, _>>()
-                .unwrap(),
-        )
-        .unwrap();
-        let sha = format!("{:x}", Sha256::digest(b"the box"));
-        let python_sha = python["geometry"]
-            .as_object()
-            .unwrap()
-            .values()
-            .next()
-            .unwrap()["sha256"]
-            .clone();
-        let text = serde_json::to_string(&rust)
-            .unwrap()
-            .replace(&sha, python_sha.as_str().unwrap());
-        rust = serde_json::from_str(&text).unwrap();
+        let mut rust = saved_model(&model);
         let mut expected = python.clone();
+        without_shas(&mut rust);
+        without_shas(&mut expected);
         // The undo depth is the user's preference in the Python app.
         expected["history"].as_object_mut().unwrap().remove("limit");
         assert_eq!(rust, expected);

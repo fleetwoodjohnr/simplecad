@@ -15,7 +15,10 @@ and compares each body's volume, bounding box and face count.
     .venv/bin/python scripts/compare_projects.py --old /path/to/old/checkout ~/Desktop/**/*.scad3
 
 ``--rust engine/target/release/scad`` holds the Rust engine against this tree
-instead, for the stages it has ported so far (``scad dump`` reports them).
+instead, for the stages it has ported so far (``scad dump`` reports them), and
+checks what Rust saves reopens here: the file saved as is must reopen as this
+tree's own save of it does, and two 1 mm pulls with the second undone must
+reopen cached at the first pull's volume and redo to the second's.
 """
 
 from __future__ import annotations
@@ -121,16 +124,93 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     return stages
 
 
-def _run(tree: str, path: str, python: str = sys.executable, flag: str = "--dump") -> dict:
+def reopen(path: str, redo: bool = False) -> dict:
+    """Run inside one tree: a saved file as reopened, and optionally after one redo."""
+    import simplecad.kernel  # noqa: F401 - registers every feature type
+    from simplecad.core.history import History
+    from simplecad.core.project import load
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.core.result_store import signatures
+
+    document, cached = load(path)
+    found = {"bodies": _signature(document), "cached": cached, "complete": document._cache_complete,
+             "signatures": signatures(document)}
+    if redo:
+        rebuilder = Rebuilder(document)
+        rebuilder.adopt_baseline()
+        found["rebuild_failed"] = len(rebuilder.rebuild().failures)
+        history = History(document)
+        history.reset(document)
+        rebuilder.invalidate(history.redo())
+        report = rebuilder.rebuild()
+        found["redone"] = _signature(document)
+        found["redo_failed"] = len(report.failures)
+    return found
+
+
+def _resaved(path: str, target: str) -> str:
+    """Run inside one tree: *path* saved here to *target*, as Save As does."""
+    import simplecad.kernel  # noqa: F401 - registers every feature type
+    from simplecad.core.project import load, save
+
+    document, _ = load(path)
+    return save(document, target)
+
+
+def _rust_saves(rust: str, path: str, loaded: dict) -> list[str]:
+    """What is wrong with the files Rust saves from *path*, reopened here."""
+    problems = []
+    with tempfile.TemporaryDirectory() as scratch:
+        plain = os.path.join(scratch, "plain.scad3")
+        result = subprocess.run([rust, "save", path, plain], capture_output=True, text=True)
+        if result.returncode:
+            return [f"save: {result.stderr.strip()}"]
+        ours = _run(ROOT, plain, flag="--reopen")
+        python_saved = os.path.join(scratch, "python.scad3")
+        result = _run(ROOT, path, flag="--resave", extra=[python_saved])
+        theirs = result if "error" in result else _run(ROOT, python_saved, flag="--reopen")
+        for key in ("bodies", "cached", "complete", "signatures"):
+            if ours.get(key) != theirs.get(key):
+                problems.append(f"saved as is, {key}: rust {str(ours.get(key))[:200]} python {str(theirs.get(key))[:200]}")
+        # Two 1 mm pulls on the first planar face of the first body Rust shows, the second undone.
+        body = next((name for name, fingerprints in loaded.get("fingerprints", {}).items()
+                     if any(f["geometry"] == "plane" for f in fingerprints)), None)
+        if body is None:
+            return problems
+        face = next(i for i, f in enumerate(loaded["fingerprints"][body]) if f["geometry"] == "plane")
+        pulled = os.path.join(scratch, "pulled.scad3")
+        result = subprocess.run([rust, "pull", path, body, str(face), "1,1", pulled, "1"],
+                                capture_output=True, text=True)
+        if result.returncode:
+            return problems + [f"pull {body} face {face}: {result.stderr.strip()}"]
+        volumes = json.loads(result.stdout)["volumes"]
+        reopened = _run(ROOT, pulled, flag="--reopen-redo")
+        if "error" in reopened:
+            return problems + [f"pulled: {reopened['error']}"]
+        if not (reopened["cached"] and reopened["complete"]) and theirs.get("complete"):
+            problems.append("pulled: not reopened from its cache")
+        got = [reopened["bodies"].get(body, {}).get("volume"), reopened["redone"].get(body, {}).get("volume")]
+        if reopened["rebuild_failed"]:
+            # The file's own recipe fails here before the redo (Spondge Holder's Combine5).
+            print(f"NOTE       {os.path.basename(path)}: redo not checked, {reopened['rebuild_failed']} steps "
+                  "of the reopened file fail to rebuild in this tree before it")
+            got[1] = round(abs(volumes[1]), 3)
+        if got != [round(abs(v), 3) for v in volumes] or reopened["redo_failed"] and not reopened["rebuild_failed"]:
+            problems.append(f"pulled {body} face {face}: rust volumes {volumes}, python reopened then redone {got}")
+    return problems
+
+
+def _run(tree: str, path: str, python: str = sys.executable, flag: str = "--dump", extra=()) -> dict:
     env = dict(os.environ, PYTHONPATH=tree, PYTHONDONTWRITEBYTECODE="1",
                QT_QPA_PLATFORM="offscreen")
     result = subprocess.run(
-        [python, os.path.abspath(__file__), flag, path],
+        [python, os.path.abspath(__file__), flag, path, *extra],
         cwd=tree, env=env, capture_output=True, text=True, timeout=3600,
     )
     if result.returncode != 0:
         return {"error": result.stderr.strip().splitlines()[-1:] or ["failed"]}
     return json.loads(result.stdout.strip().splitlines()[-1])
+
 
 
 def main() -> int:
@@ -141,10 +221,19 @@ def main() -> int:
     parser.add_argument("--rust", help="the Rust engine's scad tool, compared against this tree")
     parser.add_argument("--dump", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dump-loaded", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--reopen", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--reopen-redo", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--resave", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="+")
     args = parser.parse_args()
     if args.dump or args.dump_loaded:
         print(json.dumps(dump(args.files[0], loaded_only=args.dump_loaded)))
+        return 0
+    if args.reopen or args.reopen_redo:
+        print(json.dumps(reopen(args.files[0], redo=args.reopen_redo)))
+        return 0
+    if args.resave:
+        print(json.dumps({"saved": _resaved(*args.files)}))
         return 0
     if not args.old and not args.rust:
         parser.error("--old or --rust is required")
@@ -159,6 +248,9 @@ def main() -> int:
             # Only the stages the Rust engine reports for this file.
             old = _run(ROOT, path, flag="--dump-loaded")
             old = {stage: value for stage, value in old.items() if stage in new or stage == "error"}
+            if "error" not in new:
+                problems = _rust_saves(args.rust, path, new)
+                new["reopened"], old["reopened"] = problems, []
         else:
             old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))
