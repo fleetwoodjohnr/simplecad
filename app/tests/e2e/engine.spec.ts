@@ -146,6 +146,8 @@ test('saves a pull into the project and reopens it', async () => {
   await distance.press('Enter')
   await expect(status).toHaveText(/92371.27 mm³/)
   await expect(page.getByText('features-copy.scad3 •')).toBeVisible()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(steps).toHaveText(['Imported solid', 'Imported solid2', 'Pull'])
 
   await file.click()
   await page.getByRole('menuitem', { name: /^Save(?! As)/ }).click()
@@ -204,7 +206,7 @@ test('the viewport picks a face and the drag handle commits a pull', async () =>
   await page.mouse.down()
   await page.mouse.move(x, y - 24, { steps: 6 })
   await page.mouse.up()
-  await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveCount(1)
+  await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Pull'])
   await expect(status).not.toHaveText(/24000 mm³/)
 })
 

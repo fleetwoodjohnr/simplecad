@@ -146,6 +146,15 @@ pub struct Project {
     original: Arc<Vec<u8>>,
 }
 
+/// A step of the model: its name, type (`push_pull`, `box`...) and state
+/// (`ok`, `suppressed`, `failed`, `needs_attention`) as last built.
+#[napi(object)]
+pub struct Step {
+    pub name: String,
+    pub kind: String,
+    pub state: String,
+}
+
 #[napi(object, object_from_js = false)]
 pub struct Pulled {
     pub project: Project,
@@ -190,6 +199,16 @@ impl Project {
             },
             shape: Shape { inner: pulled },
         })
+    }
+
+    /// Every step of the model, in order, as the History panel lists them.
+    #[napi]
+    pub fn steps(&self) -> Vec<Step> {
+        self.model
+            .steps()
+            .into_iter()
+            .map(|(name, kind, state)| Step { name, kind, state })
+            .collect()
     }
 
     /// The `.scad3` of this point of the session with its newest `undone` steps

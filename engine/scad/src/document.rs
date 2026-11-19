@@ -221,6 +221,21 @@ impl Model {
         latest
     }
 
+    /// Every step's name, type and state as last built, in order.
+    pub fn steps(&self) -> Vec<(String, String, String)> {
+        self.list("features")
+            .iter()
+            .map(|f| {
+                let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+                let id = text(&f["id"]);
+                let state = self.payload["diagnostics"][&id]["state"]
+                    .as_str()
+                    .unwrap_or("ok");
+                (text(&f["name"]), text(&f["type"]), state.to_string())
+            })
+            .collect()
+    }
+
     /// A face reference as `naming.make_ref` writes it, anchored to the body's producing step.
     pub fn face_ref(&self, body: &str, index: u32, fingerprint: Value) -> Value {
         let producer = self

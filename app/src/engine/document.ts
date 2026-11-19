@@ -1,4 +1,4 @@
-import { MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type ModelResult, type PullEdit, type Source, type Step } from '../shared/engine-protocol'
+import { MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type ModelResult, type PullEdit, type Source, type Step, type StepInfo } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -14,6 +14,7 @@ export interface Project {
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
+  steps(): Omit<StepInfo, 'undone'>[]
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
@@ -73,6 +74,7 @@ export class EngineDocument {
   private previewResult?: { step: Step; state: State }
   // A shape never changes, so its mesh is made once: undo, redo, previews and showing a body re-mesh only what changed.
   private displays = new WeakMap<Shape, PartDisplay>()
+  private stepLists = new WeakMap<Project, Omit<StepInfo, 'undone'>[]>()
 
   constructor(
     private newBox: () => Opened,
@@ -92,6 +94,7 @@ export class EngineDocument {
       unsaved: this.cursor !== this.saved,
       revision: this.revision,
       checkpoint: this.checkpoint(),
+      steps: this.steps(),
       notes: this.notes
     }
   }
@@ -187,6 +190,15 @@ export class EngineDocument {
     this.notes = opened.notes
     this.advance()
     return this.model()
+  }
+
+  /** The newest state's steps: each step of this session adds one, so those past the cursor are its undone ones. */
+  private steps(): StepInfo[] {
+    const newest = this.states[this.states.length - 1].project
+    let steps = this.stepLists.get(newest)
+    if (!steps) this.stepLists.set(newest, steps = newest.steps())
+    const shown = steps.length - (this.states.length - 1 - this.cursor)
+    return steps.map((step, i) => ({ ...step, undone: i >= shown }))
   }
 
   private display(shape: Shape): PartDisplay {

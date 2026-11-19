@@ -27,13 +27,16 @@ class FakeShape implements Shape {
 
 /** Stands in for the addon's Project: remembers the steps it was given. */
 class FakeProject implements Project {
-  constructor(readonly steps: string[] = []) {}
+  constructor(readonly made: string[] = []) {}
   pushPull(body: string, shape: Shape, face: number, distance: number) {
-    return { project: new FakeProject([...this.steps, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
+    return { project: new FakeProject([...this.made, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
+  }
+  steps() {
+    return this.made.map((name) => ({ name, kind: 'push_pull', state: 'ok' }))
   }
   save(undone: number) {
-    const kept = this.steps.length - undone
-    return new TextEncoder().encode([...this.steps.slice(0, kept), ...this.steps.slice(kept).map((s) => `redo ${s}`)].join(';'))
+    const kept = this.made.length - undone
+    return new TextEncoder().encode([...this.made.slice(0, kept), ...this.made.slice(kept).map((s) => `redo ${s}`)].join(';'))
   }
 }
 
@@ -116,6 +119,7 @@ describe('EngineDocument', () => {
     model = doc.apply({ face: 0, distance: -1 }, model.revision)
     expect(model.unsaved).toBe(true)
     model = doc.step(-1, model.revision)
+    expect(model.steps.map((s) => [s.name, s.undone])).toEqual([['B 1 2', false], ['A 0 -1', true]])
     expect(new TextDecoder().decode(doc.save(model.revision))).toBe('B 1 2;redo A 0 -1')
     // Handing over the file is not saving it: the window says when it was written.
     expect(doc.model().unsaved).toBe(true)

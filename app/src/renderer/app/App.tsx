@@ -32,6 +32,7 @@ function useTheme(): [boolean, () => void] {
 
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
+const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Failed', needs_attention: 'Needs attention' }
 
 function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
   const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
@@ -54,6 +55,7 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const busyRef = useRef(false)
+  const historyList = useRef<HTMLOListElement>(null)
   const connection = useRef(0)
 
   const updateBusy = (active: boolean) => {
@@ -125,6 +127,12 @@ export function App() {
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
+  // The newest steps are the ones being worked on: keep them in view.
+  const stepCount = model?.steps.length
+  useEffect(() => {
+    const list = historyList.current
+    if (list) list.scrollTop = list.scrollHeight
+  }, [stepCount])
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = false }
@@ -265,10 +273,11 @@ export function App() {
               </select>
             </label>
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <ol aria-label="Model history" className="min-h-0 overflow-auto text-xs">
-              {model?.checkpoint.edits.map((edit, index) => (
-                <li key={index} className={`px-2 py-1.5 ${index >= model.checkpoint.cursor ? 'text-text-3' : ''}`}>
-                  Pull {format.format(edit.distance)} mm
+            <ol ref={historyList} aria-label="Model history" className="min-h-0 overflow-auto text-xs">
+              {model?.steps.map((step, index) => (
+                <li key={index} className={`flex justify-between gap-2 px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
+                  <span className="truncate">{step.name}</span>
+                  {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
                 </li>
               ))}
             </ol>

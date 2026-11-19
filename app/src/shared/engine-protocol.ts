@@ -48,14 +48,25 @@ export interface Checkpoint {
   saved: number
 }
 
+export interface StepInfo {
+  name: string
+  /** The step's type, as the file names it: `push_pull`, `box`… */
+  kind: string
+  /** As last built: `ok`, `suppressed`, `failed` or `needs_attention`. */
+  state: string
+  /** Undone in this session; redo brings it back. */
+  undone: boolean
+}
+
 export interface ModelResult {
   shape: DisplayShape
   bodies: BodyInfo[]
-  /** This session can be saved: it came from a format 2–4 project. */
   /** The shown point of the history is not the one last saved. */
   unsaved: boolean
   revision: number
   checkpoint: Checkpoint
+  /** The model's steps, oldest first, and after them this session's undone ones. */
+  steps: StepInfo[]
   /** What opening the file could not read. */
   notes: string[]
 }
