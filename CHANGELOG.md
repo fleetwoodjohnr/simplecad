@@ -3,7 +3,7 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
-## 0.3.2 (2026-11-18)
+## 0.4.0 (2026-11-18)
 
 Pushing and pulling faces on a detailed part works again, on a newer geometry
 kernel. Every saved project opens and rebuilds exactly as before.
