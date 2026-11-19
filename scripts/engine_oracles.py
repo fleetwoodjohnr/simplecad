@@ -10,6 +10,8 @@ engine/scad/tests/data/dependencies_fuzz.json: the same for seeded random
 expressions, most of them not valid Python.
 engine/scad/tests/data/pyjson.json: values and how ``result_store.digest``
 writes them (``json.dumps`` with sorted keys and no spaces).
+engine/scad/tests/corpus/: the documents tests/test_scenarios.py builds, saved
+compact, each with the signatures the Python app computes for it.
 """
 
 from __future__ import annotations
@@ -87,7 +89,51 @@ def json_cases(seed=20261119):
     return [[v, json.dumps(v, sort_keys=True, separators=(",", ":"))] for v in values]
 
 
+SCENARIOS = ("test_1_cube_slice_duplicate_rotate_align", "test_2_cylinder_halves_move_independently_and_stack",
+             "test_3_fillet_move_edit_duplicate_reopen", "test_4_boolean_then_rotate_duplicate_texture_undo",
+             "test_5_copy_several_delete_one_undo_independent", "test_9_slice_duplicate_and_edit_both_halves_independently",
+             "test_10_mirror_align_and_plate_survive_undo_redo_and_reopen")
+
+
+def corpus():
+    """Run the scenario tests, keep every document they build, and save each one."""
+    import inspect
+    import pathlib
+    import tempfile
+
+    from simplecad.core.project import save
+    from simplecad.core.result_store import signatures
+    from tests import test_scenarios
+
+    built = []
+    original = test_scenarios.Model.__init__
+
+    def remember(self):
+        original(self)
+        built.append(self)
+
+    test_scenarios.Model.__init__ = remember
+    folder = os.path.join(ROOT, "engine", "scad", "tests", "corpus")
+    os.makedirs(folder, exist_ok=True)
+    expected = {}
+    for name in SCENARIOS:
+        built.clear()
+        test = getattr(test_scenarios, name)
+        with tempfile.TemporaryDirectory() as scratch:
+            # The scenarios that reopen a file take pytest's tmp_path.
+            test(*([pathlib.Path(scratch)] if inspect.signature(test).parameters else []))
+        for i, model in enumerate(built):
+            file = f"{name[5:]}-{i}.scad3"
+            save(model.d, os.path.join(folder, file), compact=True)
+            expected[file] = signatures(model.d)
+    with open(os.path.join(folder, "signatures.json"), "w", encoding="utf-8") as handle:
+        json.dump(expected, handle, indent=1, sort_keys=True)
+        handle.write("\n")
+    print(f"corpus: {len(expected)} documents, {sum(len(s) for s in expected.values())} signatures")
+
+
 def main() -> int:
+    corpus()
     write("dependencies.json", project_texts(sys.argv[1:]) | EDGE_CASES)
     write("dependencies_fuzz.json", fuzz())
     with open(os.path.join(DATA, "pyjson.json"), "w", encoding="utf-8") as handle:
