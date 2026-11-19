@@ -8,6 +8,11 @@
     python packaging/build.py windows          Inno Setup installer (needs iscc)
     python packaging/build.py macos            .dmg              (needs hdiutil)
 
+SIMPLECAD_BUNDLE=<folder> packages another build of the app instead of the
+PyInstaller one: the Electron app's unpacked folder (electron-builder --dir),
+installed in the same places so either upgrades the other.
+SIMPLECAD_VERSION overrides the version, for upgrade drills.
+
 Everything lands in dist/release/ named the way the updater looks for it:
 SimpleCAD-<version>-<os>-<arch>.<ext>. See docs/release.md.
 """
@@ -26,7 +31,7 @@ sys.path.insert(0, ROOT)
 BUILD = os.path.join(ROOT, "build")
 DIST = os.path.join(ROOT, "dist")
 RELEASE = os.path.join(DIST, "release")
-BUNDLE = os.path.join(DIST, "SimpleCAD")
+BUNDLE = os.environ.get("SIMPLECAD_BUNDLE") or os.path.join(DIST, "SimpleCAD")
 APP_ID = "io.github.fleetwoodjohnr.SimpleCAD"
 METAINFO = os.path.join(ROOT, "packaging", f"{APP_ID}.metainfo.xml")
 
@@ -34,7 +39,12 @@ METAINFO = os.path.join(ROOT, "packaging", f"{APP_ID}.metainfo.xml")
 def version() -> str:
     from simplecad import __version__
 
-    return __version__
+    return os.environ.get("SIMPLECAD_VERSION") or __version__
+
+
+def electron() -> bool:
+    """True when BUNDLE is the Electron app rather than the PyInstaller one."""
+    return os.path.isfile(os.path.join(BUNDLE, "resources", "app.asar"))
 
 
 def arch() -> str:
@@ -146,6 +156,26 @@ SYSTEM_LIBRARIES = {
         "libxcb-shape.so.0", "libxcb-util.so.1", "libxcb-image.so.0", "libxcb-icccm.so.4",
         "libxcb-cursor.so.0", "libxcb-keysyms.so.1", "libxcb-render-util.so.0")],
 }
+#: The same for the Electron app: its binary's NEEDED entries (readelf -d),
+#: less glibc and the libffmpeg it carries.
+ELECTRON_LIBRARIES = {
+    # Ubuntu 24.04 renamed these with a t64 suffix and left the old names as
+    # virtual packages, which apt may satisfy with the wrong library: for
+    # libasound2 it chose liboss4-salsa-asound2, and the app failed to start.
+    "deb": [f"{name}t64 | {name}" for name in (
+        "libglib2.0-0", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libgtk-3-0",
+        "libasound2", "libatspi2.0-0")] + [
+        "libnss3", "libdbus-1-3", "libcairo2", "libpango-1.0-0", "libx11-6", "libxcomposite1",
+        "libxdamage1", "libxext6", "libxfixes3", "libxrandr2", "libgbm1", "libexpat1", "libxcb1",
+        "libxkbcommon0", "libudev1", "libgcc-s1"],
+    "rpm": [f"{so}()(64bit)" for so in (
+        "libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0", "libnspr4.so", "libnss3.so",
+        "libnssutil3.so", "libsmime3.so", "libatk-1.0.so.0", "libatk-bridge-2.0.so.0",
+        "libcups.so.2", "libdbus-1.so.3", "libcairo.so.2", "libgtk-3.so.0", "libpango-1.0.so.0",
+        "libX11.so.6", "libXcomposite.so.1", "libXdamage.so.1", "libXext.so.6", "libXfixes.so.3",
+        "libXrandr.so.2", "libgbm.so.1", "libexpat.so.1", "libxcb.so.1", "libxkbcommon.so.0",
+        "libudev.so.1", "libasound.so.2", "libatspi.so.0", "libgcc_s.so.1")],
+}
 
 
 def linux_package(kind: str) -> None:
@@ -153,7 +183,9 @@ def linux_package(kind: str) -> None:
     stage = os.path.join(BUILD, f"pkg-{kind}")
     shutil.rmtree(stage, ignore_errors=True)
     shutil.copytree(BUNDLE, os.path.join(stage, "simplecad"), symlinks=True)
-    with open(os.path.join(stage, "simplecad", "install-kind"), "w") as handle:
+    # Where each app's updater looks: beside the binary, or in Electron's resources.
+    marker = os.path.join(stage, "simplecad", *(["resources"] if electron() else []), "install-kind")
+    with open(marker, "w") as handle:
         handle.write(kind + "\n")       # tells the updater to hand updates to the system
     with open(os.path.join(stage, "simplecad.desktop"), "w") as handle:
         handle.write(desktop_entry("/opt/simplecad/simplecad"))
@@ -167,7 +199,7 @@ description: Parametric CAD for mechanical design and 3D printing
 homepage: https://github.com/fleetwoodjohnr/simplecad
 license: Proprietary
 depends:
-""" + "".join(f'  - "{name}"\n' for name in SYSTEM_LIBRARIES[kind]) + f"""contents:
+""" + "".join(f'  - "{name}"\n' for name in (ELECTRON_LIBRARIES if electron() else SYSTEM_LIBRARIES)[kind]) + f"""contents:
   - src: {stage}/simplecad
     dst: /opt/simplecad
     type: tree

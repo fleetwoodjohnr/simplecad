@@ -17,7 +17,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
+        # Linux builds on the oldest supported glibc, as the Python release does:
+        # OCCT built on a newer system needs a newer libm than Ubuntu 22.04 has.
+        os: [ubuntu-22.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
     # The first run on each OS compiles OCCT (about an hour); later runs restore it from the cache.
     timeout-minutes: 120
@@ -96,5 +98,16 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: app
         run: |
-          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2 libgbm1
           SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
+      - name: The Linux app, for the upgrade drills
+        if: runner.os == 'Linux'
+        working-directory: app
+        # A tarball keeps the OCCT version symlinks and the executable bits.
+        run: tar -czf linux-unpacked.tar.gz -C release linux-unpacked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Linux'
+        with:
+          name: simplecad-linux-unpacked
+          path: app/linux-unpacked.tar.gz
+          retention-days: 14

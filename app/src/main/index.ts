@@ -95,7 +95,27 @@ function registerIpc() {
 
 if (process.env.SIMPLECAD_USER_DATA) app.setPath('userData', process.env.SIMPLECAD_USER_DATA)
 
-if (!app.requestSingleInstanceLock()) {
+// The packaging and release checks call these on every build, headless, as they do the Python app.
+if (process.argv.includes('--version')) {
+  console.log(app.getVersion())
+  app.exit(0)
+} else if (process.argv.includes('--self-test')) {
+  try {
+    // A real OCCT round trip through the shipped addon and its libraries: a box, its top pulled 5 mm.
+    type Display = { volume: number; faces: { planar: boolean; normal: number[] }[] }
+    type Shape = { display(): Display; pushPull(face: number, distance: number): Shape }
+    const { Shape } = require(addon) as { Shape: { makeBox(x: number, y: number, z: number): Shape } }
+    const box = Shape.makeBox(10, 10, 10)
+    const top = box.display().faces.findIndex((f) => f.planar && f.normal[2] > 0.99)
+    const volume = box.pushPull(top, 5).display().volume
+    if (Math.abs(volume - 1500) > 1e-6) throw new Error(`a 10 mm cube pulled 5 mm has volume ${volume}`)
+    console.log(`self-test: SimpleCAD ${app.getVersion()} OK`)
+    app.exit(0)
+  } catch (error) {
+    console.error(`self-test failed: ${String(error)}`)
+    app.exit(1)
+  }
+} else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
