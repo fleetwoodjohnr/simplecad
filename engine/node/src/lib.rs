@@ -134,7 +134,7 @@ pub struct OpenedBody {
 pub struct OpenedProject {
     pub bodies: Vec<OpenedBody>,
     pub notes: Vec<String>,
-    /// What saving edits; `None` for files that can't be saved here yet (format 1).
+    /// What saving edits.
     pub project: Option<Project>,
 }
 
@@ -206,13 +206,8 @@ impl Project {
 #[napi]
 pub fn open_project(data: Buffer) -> Result<OpenedProject> {
     let project = scad::project::read(&data).map_err(Error::from_reason)?;
-    let format = project
-        .model
-        .get("format")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(1);
-    let saveable = (format >= 2).then(|| Project {
-        model: scad::document::Model::new(project.model.clone()),
+    let saveable = Some(Project {
+        model: scad::document::Model::open(&project),
         original: Arc::new(data.to_vec()),
     });
     let mut notes = project.notes;

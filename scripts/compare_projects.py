@@ -80,6 +80,7 @@ def dump(path: str, loaded_only: bool = False) -> dict:
         stages["fingerprints"] = {
             name: [fingerprint(face, "face").to_dict() for face in sub_shapes(body.shape, "face")]
             for name, body in document.bodies.items() if body.shape is not None}
+        stages["document"] = document.to_dict()
         return stages
 
     rebuilder = Rebuilder(document)

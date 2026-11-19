@@ -12,6 +12,9 @@ engine/scad/tests/data/pyjson.json: values and how ``result_store.digest``
 writes them (``json.dumps`` with sorted keys and no spaces).
 engine/scad/tests/corpus/: the documents tests/test_scenarios.py builds, saved
 compact, each with the signatures the Python app computes for it.
+engine/scad/tests/data/normalised.json: each corpus document, and a copy cut
+back to format 1 (no ids, bindings or counters), with what ``Document.from_dict``
+then ``to_dict`` make of it and the signatures of the result.
 """
 
 from __future__ import annotations
@@ -132,8 +135,52 @@ def corpus():
     print(f"corpus: {len(expected)} documents, {sum(len(s) for s in expected.values())} signatures")
 
 
+def as_format_1(model):
+    """*model* as a format 1 file has it: no output ids, bindings, ids or counters."""
+    def strip(value):
+        if isinstance(value, dict) and "__ref__" in value:
+            return {"__ref__": {k: v for k, v in value["__ref__"].items() if k != "body_id"}}
+        if isinstance(value, dict) and "__body__" in value:
+            return {"__body__": value["__body__"]}
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    old = {"format": 1, "title": model.get("title", "Untitled"), "parameters": model.get("parameters", []),
+           "metadata": model.get("metadata", {}), "application": "SimpleCAD"}
+    old["features"] = [{k: strip(v) for k, v in f.items() if k not in ("output_ids", "bindings")}
+                       for f in model.get("features", [])]
+    old["bodies"] = [{k: v for k, v in b.items() if k != "id"} for b in model.get("bodies", [])]
+    old["groups"] = [{k: v for k, v in g.items() if k not in ("id", "member_ids")} for g in model.get("groups", [])]
+    return old
+
+
+def normalised():
+    from simplecad.core.document import Document
+    from simplecad.core.result_store import signatures
+
+    folder = os.path.join(ROOT, "engine", "scad", "tests", "corpus")
+    cases = []
+    for file in sorted(os.listdir(folder)):
+        if not file.endswith(".scad3"):
+            continue
+        model = json.loads(zipfile.ZipFile(os.path.join(folder, file)).read("model.json"))
+        for name, source in ((file, model), (file + " as format 1", as_format_1(model))):
+            document = Document.from_dict(json.loads(json.dumps(source)))
+            cases.append({"name": name, "model": source, "document": document.to_dict(),
+                          "signatures": signatures(document)})
+    with open(os.path.join(DATA, "normalised.json"), "w", encoding="utf-8") as handle:
+        json.dump(cases, handle, indent=0, sort_keys=True)
+        handle.write("\n")
+    print(f"normalised.json: {len(cases)} documents")
+
+
 def main() -> int:
+    import simplecad.kernel  # noqa: F401 - registers every feature type
     corpus()
+    normalised()
     write("dependencies.json", project_texts(sys.argv[1:]) | EDGE_CASES)
     write("dependencies_fuzz.json", fuzz())
     with open(os.path.join(DATA, "pyjson.json"), "w", encoding="utf-8") as handle:

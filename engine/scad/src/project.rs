@@ -63,7 +63,7 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
     };
     let raw = entry("model.json")
         .ok_or("This file has no SimpleCAD model in it. The file may be damaged.")?;
-    let model: Value = serde_json::from_slice(&raw).map_err(|_| DAMAGED.to_string())?;
+    let mut model: Value = serde_json::from_slice(&raw).map_err(|_| DAMAGED.to_string())?;
     let format = match model.get("format") {
         None => 1,
         Some(v) => v.as_i64().filter(|f| *f >= 1).ok_or(DAMAGED)?,
@@ -73,6 +73,8 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
             "This project was saved by a newer SimpleCAD. Update SimpleCAD to open it.".into(),
         );
     }
+    // As the Python app holds it: format 1 gains its ids here, which the geometry is found by.
+    crate::graph::normalise(&mut model);
     let listed: Vec<&Value> = match model.get("bodies") {
         Some(Value::Array(list)) => list.iter().collect(),
         Some(Value::Object(map)) => map.values().collect(),

@@ -69,7 +69,7 @@ fn pull(args: &[String]) -> Result<(), String> {
         "neighbours": [],
     });
     let pulled = occt::push_pull(&shape, face, amount).map_err(err)?;
-    let mut model = scad::document::Model::new(project.model);
+    let mut model = scad::document::Model::open(&project);
     let reference = model.face_ref(body, face, fingerprint);
     model.push_pull(
         body,
@@ -82,10 +82,27 @@ fn pull(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `scad save <in> <out>`: open and save, no edit, as Save As would.
+fn save(args: &[String]) -> Result<(), String> {
+    let [input, output] = args else {
+        return Err("usage: scad save <in.scad3> <out.scad3>".into());
+    };
+    let original = std::fs::read(input).map_err(|e| e.to_string())?;
+    let model = scad::document::Model::open(&scad::project::read(&original)?);
+    std::fs::write(output, model.save(&original)?).map_err(|e| e.to_string())
+}
+
+type Command = fn(&[String]) -> Result<(), String>;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("pull") {
-        if let Err(error) = pull(&args[2..]) {
+    let command: Option<Command> = match args.get(1).map(String::as_str) {
+        Some("pull") => Some(pull),
+        Some("save") => Some(save),
+        _ => None,
+    };
+    if let Some(command) = command {
+        if let Err(error) = command(&args[2..]) {
             eprintln!("{error}");
             std::process::exit(1);
         }
@@ -93,12 +110,12 @@ fn main() {
     }
     let [_, command, path] = args.as_slice() else {
         eprintln!(
-            "usage: scad dump <file.scad3> | scad pull <in.scad3> <body> <face> <distance> <out.scad3>"
+            "usage: scad dump <file.scad3> | scad pull <in.scad3> <body> <face> <distance> <out.scad3> | scad save <in.scad3> <out.scad3>"
         );
         std::process::exit(2);
     };
     if command != "dump" {
-        eprintln!("unknown command {command:?}; use dump or pull");
+        eprintln!("unknown command {command:?}; use dump, pull or save");
         std::process::exit(2);
     }
     let result = std::fs::read(path)
@@ -122,18 +139,12 @@ fn main() {
                     );
                 }
             }
-            let mut stages = json!({ "loaded": loaded, "fingerprints": fingerprints });
-            // Format 1 files get their output ids on load; those have no saved signatures to match.
-            if project
-                .model
-                .get("format")
-                .and_then(Value::as_i64)
-                .unwrap_or(1)
-                >= 2
-            {
-                stages["signatures"] = json!(scad::signatures::signatures(&project.model));
-            }
-            Ok(stages)
+            Ok(json!({
+                "loaded": loaded,
+                "fingerprints": fingerprints,
+                "signatures": scad::signatures::signatures(&project.model),
+                "document": scad::document::Model::new(project.model).document(),
+            }))
         });
     match result {
         Ok(stages) => println!("{stages}"),

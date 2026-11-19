@@ -48,6 +48,100 @@ impl Model {
         }
     }
 
+    /// A project opened for editing. A format 1 file's bodies are its steps'
+    /// results, adopted as the Python app's `Rebuilder.adopt_baseline` does when
+    /// every body was read, so that saving gives each its cached geometry.
+    pub fn open(project: &crate::project::Project) -> Self {
+        let mut model = Self::new(project.model.clone());
+        if project
+            .model
+            .get("format")
+            .and_then(Value::as_i64)
+            .unwrap_or(1)
+            >= 2
+        {
+            return model;
+        }
+        let latest = model.latest();
+        let adopted = project
+            .bodies
+            .iter()
+            .all(|b| b.brep.is_some() && latest.contains_key(&b.name));
+        let signatures = if adopted {
+            signatures(&model.payload)
+        } else {
+            None
+        }
+        .unwrap_or_default();
+        let mut outputs: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+        let payload = model.payload.as_object_mut().unwrap();
+        let mut geometry = Map::new();
+        for body in &project.bodies {
+            let (Some(brep), Some((feature, object))) = (&body.brep, latest.get(&body.name)) else {
+                continue;
+            };
+            let sha = format!("{:x}", Sha256::digest(brep));
+            let signature = signatures.get(feature);
+            geometry.insert(
+                object.clone(),
+                json!({ "sha256": sha, "feature_id": feature,
+                "signature": signature, "current": signature.is_some() }),
+            );
+            outputs
+                .entry(feature.clone())
+                .or_default()
+                .insert(object.clone(), json!({ "kind": "brep", "sha256": sha }));
+            model.blobs.insert(sha, brep.clone());
+        }
+        let mut entries = Map::new();
+        for feature in payload
+            .get("features")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let id = feature["id"].as_str().unwrap_or("");
+            let (Some(signature), Some(found)) = (signatures.get(id), outputs.get(id)) else {
+                continue;
+            };
+            // A partial multi-output result must not pass for the whole step.
+            let dropped = &feature["dropped"];
+            let wanted: Vec<&str> = feature["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|n| !dropped.as_array().is_some_and(|d| d.contains(n)))
+                .filter_map(|n| feature["output_ids"].get(n.as_str()?)?.as_str())
+                .collect();
+            if wanted.len() == found.len() && wanted.iter().all(|o| found.contains_key(*o)) {
+                entries.insert(
+                    signature.clone(),
+                    json!({ "feature_id": id, "outputs": found,
+                    "message": "", "version": CACHE_VERSION }),
+                );
+            }
+        }
+        let diagnostics: Map<String, Value> = payload
+            .get("features")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                Some((
+                    f["id"].as_str()?.to_string(),
+                    json!({ "state": "ok", "message": "" }),
+                ))
+            })
+            .collect();
+        payload.insert(
+            "cache".into(),
+            json!({ "version": CACHE_VERSION, "entries": entries }),
+        );
+        payload.insert("geometry".into(), Value::Object(geometry));
+        payload.insert("diagnostics".into(), Value::Object(diagnostics));
+        model
+    }
+
     /// `Document.to_dict()`.
     pub fn document(&self) -> Value {
         let map: Map<String, Value> = DOCUMENT_KEYS
@@ -242,7 +336,8 @@ impl Model {
         for i in 0..source.len() {
             let mut entry = source.by_index(i).map_err(|e| damaged(&e))?;
             let name = entry.name().map_err(|e| damaged(&e))?.to_string();
-            if name == "model.json" || entry.is_dir() {
+            // `bodies/` is format 1's geometry, now under `geometry/`.
+            if name == "model.json" || name.starts_with("bodies/") || entry.is_dir() {
                 continue;
             }
             let mut bytes = Vec::new();
