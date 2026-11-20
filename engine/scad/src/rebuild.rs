@@ -123,7 +123,11 @@ impl Context<'_> {
                 "This feature is missing one of its inputs. Re-select the body it should act on.",
             )
         })?;
-        self.bodies.get(&name).cloned().ok_or_else(|| {
+        self.named_shape(&name)
+    }
+
+    pub(crate) fn named_shape(&self, name: &str) -> Result<Shape, StepError> {
+        self.bodies.get(name).cloned().ok_or_else(|| {
             failed(format!("The body '{name}' this feature needs is not available. It may have been deleted. Re-select the body."))
         })
     }
@@ -368,6 +372,7 @@ pub const PORTED: &[&str] = &[
     "edge_finish",
     "shell",
     "align",
+    "arrange",
     "boolean",
     "split",
     "hole",
@@ -757,6 +762,7 @@ fn execute(
                 let (name, placed) = crate::align::execute(ctx)?;
                 Ok(BTreeMap::from([(name, placed)]))
             }
+            "arrange" => crate::advanced::arrange_row(ctx),
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
                 [(body_name()?, crate::advanced::build(kind, ctx)?)],
@@ -1996,4 +2002,86 @@ pub fn rebuild(
         failures: rebuilder.failures,
         rebuilt: rebuilder.rebuilt,
     })
+}
+
+#[cfg(test)]
+mod arrange_tests {
+    use super::*;
+
+    #[test]
+    fn saved_arrange_rows_use_world_axes_and_keep_the_group_offset() {
+        for (axis, key) in ["x", "y", "z"].into_iter().enumerate() {
+            for (mode, positions, gap) in [
+                ("fixed_gap", [0.0, 5.0, 12.0], 3),
+                ("equal_gaps", [0.0, 9.0, 20.0], 7),
+            ] {
+                let names = ["A", "B", "C"];
+                let bodies = names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let width = 2.0 * (i + 1) as f64;
+                        let shape = occt::make_box(width, width, width).unwrap();
+                        let mut origin = [3.0 * i as f64, 6.0 * i as f64, 9.0 * i as f64];
+                        origin[axis] = [0.0, 5.0, 20.0][i];
+                        let shape =
+                            occt::transform_shape(&shape, &occt::trsf_translation(&origin), true)
+                                .unwrap();
+                        (name.into(), Rc::new(shape))
+                    })
+                    .collect();
+                let offset = [1.0, -2.0, 4.0];
+                let feature = json!({"inputs": {
+                    "bodies": [{"__body__": "B"}, {"__body__": "C"}, {"__body__": "A"}],
+                    "mode": mode, "axis": key, "gap": "3 mm",
+                    "dx": offset[0], "dy": offset[1], "dz": offset[2],
+                }});
+                let ctx = Context {
+                    feature: &feature,
+                    bodies,
+                    parameters: &HashMap::new(),
+                    message: Default::default(),
+                };
+                let output = execute("arrange", &ctx, None)
+                    .expect("saved row implemented")
+                    .unwrap();
+                assert_eq!(output.len(), names.len());
+                for (i, name) in names.into_iter().enumerate() {
+                    let bounds = occt::bounds(&output[name]).unwrap();
+                    let center = (bounds[axis] + bounds[axis + 3]) / 2.0;
+                    let expected = positions[i] + (i + 1) as f64 + offset[axis];
+                    assert!((center - expected).abs() < 1e-6, "{mode} {key} {name}");
+                    for cross in (0..3).filter(|&cross| cross != axis) {
+                        let center = (bounds[cross] + bounds[cross + 3]) / 2.0;
+                        assert!((center - [5.0, 8.0, 11.0][cross] - offset[cross]).abs() < 1e-6);
+                    }
+                }
+                assert_eq!(
+                    ctx.message.into_inner(),
+                    format!("Arranged 3 objects with {gap} mm gaps.")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arrange_patterns_and_target_rows_still_report_unported() {
+        for inputs in [
+            json!({"pattern": "grid"}),
+            json!({"target_face": {"__ref__": {}}}),
+        ] {
+            let feature = json!({"inputs": inputs});
+            let ctx = Context {
+                feature: &feature,
+                bodies: HashMap::new(),
+                parameters: &HashMap::new(),
+                message: Default::default(),
+            };
+            let error = execute("arrange", &ctx, None)
+                .expect("Arrange dispatch")
+                .err()
+                .unwrap();
+            assert!(error.message.contains("cannot build it yet"));
+        }
+    }
 }
