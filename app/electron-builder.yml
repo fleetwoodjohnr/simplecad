@@ -8,6 +8,10 @@ files:
 asarUnpack:
   - native/**
 npmRebuild: false
+fileAssociations:
+  - ext: scad3
+    name: SimpleCAD project
+    role: Editor
 linux:
   executableName: simplecad
   category: Graphics

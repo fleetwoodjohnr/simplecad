@@ -8,7 +8,16 @@ ipcRenderer.on('engine:port', (e) => window.postMessage('simplecad:engine-port',
 const api: SimpleCadApi = {
   platform: process.platform,
   openProject: () => ipcRenderer.invoke('project:open'),
+  pendingProject: () => ipcRenderer.invoke('project:pending'),
+  acceptProject: (token) => ipcRenderer.invoke('project:accept', token),
+  onProjectRequested: (run) => {
+    const listener = () => run()
+    ipcRenderer.on('project:requested', listener)
+    return () => ipcRenderer.removeListener('project:requested', listener)
+  },
+  openStep: () => ipcRenderer.invoke('step:open'),
   saveProject: (data, saveAs) => ipcRenderer.invoke('project:save', data, saveAs),
+  saveExport: (data, format) => ipcRenderer.invoke('export:save', data, format),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),
   newFile: () => ipcRenderer.invoke('project:new'),
   pendingRecovery: () => ipcRenderer.invoke('recovery:pending'),

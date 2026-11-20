@@ -30,12 +30,12 @@ export interface Launched {
   page: Page
 }
 
-export async function launch(opts: { env?: Record<string, string> } = {}): Promise<Launched> {
+export async function launch(opts: { env?: Record<string, string>; args?: string[] } = {}): Promise<Launched> {
   const userData = mkdtempSync(path.join(tmpdir(), 'scad-profile-'))
   // SCAD_PACKAGED=path/to/binary runs the specs against an electron-builder output instead of the dev build.
   const packaged = process.env.SCAD_PACKAGED
   const app = await electron.launch({
-    ...(packaged ? { executablePath: packaged, args: [] } : { args: ['.'] }),
+    ...(packaged ? { executablePath: packaged, args: opts.args ?? [] } : { args: ['.', ...(opts.args ?? [])] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
     env: { ...process.env, SIMPLECAD_RECOVERY_DIR: mkdtempSync(path.join(tmpdir(), 'scad-recovery-')), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })

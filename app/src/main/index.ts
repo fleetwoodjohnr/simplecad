@@ -5,11 +5,24 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
-import { forgetProjectFile, openProjectFile, saveProjectFile } from './project-files'
+import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openStepFile, saveExportFile, saveProjectFile } from './project-files'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
+let pendingProject: string | undefined
+
+function requestProject(file: string) {
+  if (path.extname(file).toLowerCase() !== '.scad3') return
+  pendingProject = file
+  mainWindow?.webContents.send('project:requested')
+}
+
+function projectArgument(args: string[], workingDirectory: string) {
+  const file = args.slice(app.isPackaged ? 1 : 2)
+    .find((value) => !value.startsWith('-') && path.extname(value).toLowerCase() === '.scad3')
+  if (file) requestProject(path.resolve(workingDirectory, file))
+}
 
 // Packaged, the native addon is unpacked from the asar archive; in development it is built into
 // app/native by `npm run engine`.
@@ -61,6 +74,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow?.show())
   mainWindow.on('closed', () => {
     mainWindow = null
+    forgetProjectFile()
   })
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
@@ -90,7 +104,15 @@ function handle<A extends unknown[], R>(channel: string, fn: (e: IpcMainInvokeEv
 
 function registerIpc() {
   handle('project:open', () => mainWindow ? openProjectFile(mainWindow) : undefined)
+  handle('project:pending', async () => {
+    const target = pendingProject
+    pendingProject = undefined
+    if (target) return offerProjectFile(target)
+  })
+  handle('project:accept', (_event, token: unknown) => acceptProjectFile(token))
+  handle('step:open', () => mainWindow ? openStepFile(mainWindow) : undefined)
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
+  handle('export:save', (_event, data: unknown, format: unknown) => mainWindow ? saveExportFile(mainWindow, data, format) : undefined)
   handle('project:new', () => forgetProjectFile())
   handle('recovery:pending', async () => {
     const [newest] = await leftovers(recovery, autosaveFile)
@@ -149,7 +171,15 @@ if (process.argv.includes('--version')) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  projectArgument(process.argv, process.cwd())
+  app.on('open-file', (event, file) => {
+    event.preventDefault()
+    requestProject(file)
+    if (app.isReady() && !mainWindow) createWindow()
+  })
+  app.on('second-instance', (_event, args, workingDirectory) => {
+    projectArgument(args, workingDirectory)
+    if (!mainWindow && app.isReady()) createWindow()
     if (mainWindow?.isMinimized()) mainWindow.restore()
     mainWindow?.focus()
   })

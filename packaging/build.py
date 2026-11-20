@@ -68,6 +68,8 @@ def tool(name: str, env: str | None = None) -> str:
 def desktop_entry(executable: str) -> str:
     with open(os.path.join(ROOT, "simplecad.desktop")) as handle:
         text = handle.read()
+    if electron():
+        text = text.replace(";model/step;application/vnd.ms-package.3dmanufacturing-3dmodel+xml;model/stl;", ";")
     return text.replace("SIMPLECAD_LAUNCHER", executable)
 
 
@@ -138,6 +140,9 @@ def appimage() -> None:
     metainfo = os.path.join(appdir, "usr", "share", "metainfo")
     os.makedirs(metainfo, exist_ok=True)
     shutil.copy(METAINFO, metainfo)
+    mime = os.path.join(appdir, "usr", "share", "mime", "packages")
+    os.makedirs(mime, exist_ok=True)
+    shutil.copy(os.path.join(ROOT, "packaging", "simplecad-mime.xml"), mime)
     os.makedirs(RELEASE, exist_ok=True)
     out = os.path.join(RELEASE, f"SimpleCAD-{version()}-linux-{arch()}.AppImage")
     run(tool("appimagetool", "APPIMAGETOOL"), "--no-appstream", appdir, out,
@@ -212,6 +217,8 @@ depends:
     dst: /usr/share/icons/hicolor/scalable/apps/simplecad.svg
   - src: {METAINFO}
     dst: /usr/share/metainfo/{APP_ID}.metainfo.xml
+  - src: {ROOT}/packaging/simplecad-mime.xml
+    dst: /usr/share/mime/packages/simplecad-mime.xml
 """ + "".join(f"""  - src: {BUILD}/icons/simplecad-{size}.png
     dst: /usr/share/icons/hicolor/{size}x{size}/apps/simplecad.png
 """ for size in (16, 24, 32, 48, 64, 128, 256, 512)))

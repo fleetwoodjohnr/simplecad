@@ -1,19 +1,55 @@
 import { dialog, type BrowserWindow } from 'electron'
-import { mkdtemp, open, rename, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import { link, mkdtemp, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { MAX_PROJECT_BYTES } from '../shared/engine-protocol'
+import { isExportFormat, MAX_PROJECT_BYTES } from '../shared/engine-protocol'
 
 const filters = [{ name: 'SimpleCAD project', extensions: ['scad3'] }]
 /** The file this window's session came from or was last saved to: where Save writes. */
 let current: string | undefined
+let offered: { token: string; target: string } | undefined
 
 export async function openProjectFile(window: BrowserWindow) {
   const choice = await dialog.showOpenDialog(window, { properties: ['openFile'], filters })
-  if (choice.canceled) return
-  const file = await open(choice.filePaths[0], 'r')
+  if (choice.canceled || !choice.filePaths.length) return
+  return offerProjectFile(choice.filePaths[0])
+}
+
+export async function offerProjectFile(target: string) {
+  if (path.extname(target).toLowerCase() !== '.scad3') throw new Error('Choose a SimpleCAD project.')
+  offered = undefined
+  const data = await readInputFile(target)
+  const token = randomUUID()
+  offered = { token, target }
+  return { name: path.basename(target), data, token }
+}
+
+export function acceptProjectFile(token: unknown) {
+  if (!offered || offered.token !== token) throw new Error('The project open request has expired.')
+  current = offered.target
+  offered = undefined
+}
+
+export async function openStepFile(window: BrowserWindow) {
+  const choice = await dialog.showOpenDialog(window, {
+    properties: ['openFile'], filters: [{ name: 'STEP solid', extensions: ['step', 'stp'] }]
+  })
+  if (choice.canceled || !choice.filePaths.length) return
+  const target = choice.filePaths[0]
+  const ext = path.extname(target)
+  if (!['.step', '.stp'].includes(ext.toLowerCase())) throw new Error('Choose a STEP file.')
+  return { importName: path.basename(target, ext), data: await readInputFile(target) }
+}
+
+async function readInputFile(target: string): Promise<Uint8Array> {
+  const flags = process.platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NONBLOCK
+  const file = await open(target, flags)
   try {
     const stat = await file.stat()
-    if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('This file is too large for this build to open.')
+    if (!stat.isFile()) throw new Error('Choose a regular file.')
+    if (!stat.size) throw new Error('This file is empty.')
+    if (stat.size > MAX_PROJECT_BYTES) throw new Error('This file is too large for this build to open.')
     const data = Buffer.alloc(stat.size)
     let offset = 0
     while (offset < data.length) {
@@ -21,8 +57,7 @@ export async function openProjectFile(window: BrowserWindow) {
       if (!bytesRead) throw new Error('The file changed while it was being opened.')
       offset += bytesRead
     }
-    current = choice.filePaths[0]
-    return { name: path.basename(current), data: new Uint8Array(data) }
+    return new Uint8Array(data)
   } finally {
     await file.close()
   }
@@ -30,6 +65,7 @@ export async function openProjectFile(window: BrowserWindow) {
 
 export function forgetProjectFile() {
   current = undefined
+  offered = undefined
 }
 
 /** Save to the session's file, or ask where (`saveAs`, or no file yet). Returns the file's name, or nothing if cancelled. */
@@ -43,11 +79,53 @@ export async function saveProjectFile(window: BrowserWindow, data: unknown, save
       defaultPath: target ?? 'Untitled.scad3', filters, properties: ['showOverwriteConfirmation']
     })
     if (choice.canceled || !choice.filePath) return
-    target = choice.filePath.toLowerCase().endsWith('.scad3') ? choice.filePath : `${choice.filePath}.scad3`
+    target = await writeChosen(window, choice.filePath, 'scad3', data)
+    if (!target) return
+  } else {
+    await writeAtomic(target, data, true)
   }
-  // Written beside the target and moved into place, so an interrupted save never destroys the previous version.
+  current = target
+  return path.basename(target)
+}
+
+export async function saveExportFile(window: BrowserWindow, data: unknown, format: unknown) {
+  if (!isExportFormat(format) || !(data instanceof Uint8Array) ||
+    !data.byteLength || data.byteLength > MAX_PROJECT_BYTES) throw new Error('Invalid export data.')
+  const name = current ? path.basename(current, path.extname(current)) : 'Untitled'
+  const choice = await dialog.showSaveDialog(window, {
+    defaultPath: `${name}.${format}`,
+    filters: [{ name: format.toUpperCase(), extensions: [format] }],
+    properties: ['showOverwriteConfirmation']
+  })
+  if (choice.canceled || !choice.filePath) return
+  const target = await writeChosen(window, choice.filePath, format, data)
+  return target ? path.basename(target) : undefined
+}
+
+async function writeChosen(window: BrowserWindow, chosen: string, extension: string, data: Uint8Array) {
+  if (path.extname(chosen).toLowerCase() === `.${extension}`) {
+    await writeAtomic(chosen, data, true)
+    return chosen
+  }
+  const target = `${chosen}.${extension}`
+  try {
+    await writeAtomic(target, data, false)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'warning', message: `Replace “${path.basename(target)}”?`,
+      buttons: ['Cancel', 'Replace'], cancelId: 0, defaultId: 0
+    })
+    if (response !== 1) return
+    await writeAtomic(target, data, true)
+  }
+  return target
+}
+
+// Written beside the target and moved into place so an interrupted write keeps the previous file.
+async function writeAtomic(target: string, data: Uint8Array, overwrite: boolean) {
   const temporary = await mkdtemp(path.join(path.dirname(target), '.simplecad-save-'))
-  const staged = path.join(temporary, 'model.scad3')
+  const staged = path.join(temporary, 'output')
   try {
     const file = await open(staged, 'wx', 0o600)
     try {
@@ -56,9 +134,8 @@ export async function saveProjectFile(window: BrowserWindow, data: unknown, save
     } finally {
       await file.close()
     }
-    await rename(staged, target)
-    current = target
-    return path.basename(target)
+    if (overwrite) await rename(staged, target)
+    else await link(staged, target)
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }

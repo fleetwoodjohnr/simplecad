@@ -1,11 +1,11 @@
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import {
   AmbientLight, Box3, BufferGeometry, DirectionalLight, GridHelper, LineBasicMaterial, LineSegments,
   Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
-import type { DisplayShape } from '@/shared/engine-protocol'
+import type { DisplayShape, ViewFrame } from '@/shared/engine-protocol'
 import { edgeGeometry, faceAtTriangle, surfaceGeometry } from './geometry'
 
 interface Props {
@@ -16,6 +16,7 @@ interface Props {
   showEdges: boolean
   canPull: boolean
   frame: number
+  readViewFrame: RefObject<(() => ViewFrame) | undefined>
   onSelect: (face?: number) => void
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
@@ -54,6 +55,15 @@ export function Viewport(props: Props) {
     const camera = new PerspectiveCamera(35, 1, 0.1, 10_000)
     camera.up.set(0, 0, 1)
     const controls = new OrbitControls(camera, canvas)
+    const viewFrame = () => {
+      camera.updateMatrixWorld()
+      return {
+        direction: camera.getWorldDirection(new Vector3()).toArray(),
+        up: new Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize().toArray()
+      }
+    }
+    const readViewFrame = current.current.readViewFrame
+    readViewFrame.current = viewFrame
     const grid = new GridHelper(200, 40, 0x888895, 0x474751)
     grid.rotation.x = Math.PI / 2
     grid.position.z = -0.02
@@ -239,6 +249,7 @@ export function Viewport(props: Props) {
       renderer.dispose()
       canvas.remove()
       sync.current = () => {}
+      readViewFrame.current = undefined
     }
   }, [])
 

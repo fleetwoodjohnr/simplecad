@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ModelResult, PullEdit, RendererCommand, ShapeEdit, StackEdit } from '@/shared/engine-protocol'
+import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, ModelResult, PullEdit, RendererCommand, ShapeEdit, StackEdit, StepImport } from '@/shared/engine-protocol'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -12,6 +12,7 @@ const pending = new Map<number, Pending>()
 let checkpoint: Checkpoint | undefined
 // The open file's bytes, so a restarted engine can reopen it and replay the edits.
 let source: Uint8Array | undefined
+const imports = new Map<string, Uint8Array>()
 const listeners = new Set<() => void>()
 
 window.addEventListener('message', (e) => {
@@ -64,11 +65,14 @@ function send<T>(req: RendererCommand): Promise<T> {
 
 function accept(result: ModelResult): ModelResult {
   checkpoint = result.checkpoint
+  const retained = new Set(checkpoint.edits.flatMap((step) => 'importId' in step ? [step.importId] : []))
+  for (const id of imports.keys()) if (!retained.has(id)) imports.delete(id)
   return result
 }
 
 export const openSession = (restore: boolean) => send<ModelResult>(restore && checkpoint
-  ? { op: 'restore', checkpoint, data: checkpoint.source.kind === 'file' ? source : undefined }
+  ? { op: 'restore', checkpoint, data: checkpoint.source.kind === 'file' ? source : undefined,
+    imports: [...imports].map(([importId, data]) => ({ importId, data })) }
   : { op: 'model' }).then(accept)
 export const openProject = (revision: number, data: Uint8Array, name: string, recovered = false) =>
   send<ModelResult>({ op: 'open', revision, data, name, recovered }).then((result) => {
@@ -107,7 +111,16 @@ export function previewStack(revision: number, edit: StackEdit): Promise<Display
 
 export const applyStack = (revision: number, edit: StackEdit) => send<ModelResult>({ op: 'applyStack', revision, ...edit }).then(accept)
 export const createShape = (revision: number, edit: ShapeEdit) => send<ModelResult>({ op: 'createShape', revision, ...edit }).then(accept)
+export const importStep = (revision: number, edit: StepImport) => {
+  const importId = crypto.randomUUID()
+  return send<ModelResult>({ op: 'importStep', revision, importId, ...edit }).then((result) => {
+    imports.set(importId, edit.data)
+    return accept(result)
+  })
+}
 export const saveModel = (revision: number) => send<Uint8Array>({ op: 'save', revision })
+export const exportModel = (revision: number, format: ExportFormat) =>
+  send<Uint8Array>({ op: 'export', revision, format })
 export const markSaved = (revision: number) => send<ModelResult>({ op: 'saved', revision }).then(accept)
 export const showBody = (revision: number, body: number, visible: boolean) =>
   send<ModelResult>({ op: 'show', revision, body, visible }).then(accept)

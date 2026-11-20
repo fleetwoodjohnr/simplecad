@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -12,9 +12,11 @@ export interface Body { name: string; shape: Shape | null }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
+  importStep(data: Uint8Array, name: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
-  place(moving: Shape, target: Shape, request: StackSettings & {
+  place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
+    viewDirection?: number[]; viewUp?: number[]
   }): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
@@ -69,6 +71,7 @@ export class EngineDocument {
   /** The history point last saved, so the window knows what is unsaved. */
   private saved = 0
   private edits: Step[] = []
+  private imports = new Map<string, Uint8Array>()
   private cursor = 0
   private revision = 0
   private notes: string[] = []
@@ -109,13 +112,16 @@ export class EngineDocument {
   }
 
   /** After an engine restart: the window's last checkpoint, with the file's bytes when it came from one. */
-  restore(checkpoint: Checkpoint, data?: Uint8Array): ModelResult {
+  restore(checkpoint: Checkpoint, data?: Uint8Array, imported: ImportSource[] = []): ModelResult {
     if (this.revision !== 0) throw new Error('This session is already open.')
     if (checkpoint.source.kind === 'file' && !data) throw new Error('Open the project again to keep editing it.')
     const opened = checkpoint.source.kind === 'box' ? this.newBox() : this.read(data!)
     const states: State[] = [{ bodies: opened.bodies, project: opened.project }]
-    for (const step of checkpoint.edits) states.push(this.execute(states[states.length - 1], step))
-    return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved, checkpoint.shown)
+    const sources = new Map(imported.map(({ importId, data }) => [importId, data]))
+    for (const step of checkpoint.edits) states.push(this.execute(states[states.length - 1], step, sources))
+    const model = this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved, checkpoint.shown)
+    this.imports = sources
+    return model
   }
 
   /** A recovered file is work never saved: it opens unsaved. */
@@ -135,6 +141,19 @@ export class EngineDocument {
   preview(edit: PullEdit | StackEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     return this.show(this.prepare(this.resolve(edit)).bodies)
+  }
+
+  exportShapes(revision: number) {
+    this.checkRevision(revision)
+    const { bodies } = this.states[this.cursor]
+    return this.shown(bodies).map(({ body, shape }) => ({ name: bodies[body].name, shape }))
+  }
+
+  meshParts(revision: number) {
+    return this.exportShapes(revision).map(({ name, shape }) => {
+      const { positions, indices } = this.display(shape)
+      return { name, positions, indices }
+    })
   }
 
   /** The `.scad3` of the shown point of the history, the steps after it kept to redo. Nothing counts as saved until `markSaved`. */
@@ -161,14 +180,30 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | ShapeEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | ShapeEdit | ImportRequest, revision: number): ModelResult {
     this.checkRevision(revision)
     if ('distance' in edit && edit.distance === 0) return this.model()
     if (this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
-    const step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
-    const state = this.prepare(step)
-    if ('shapeKind' in step) this.visible[state.bodies.length - 1] = true
-    this.edits = [...this.edits.slice(0, this.cursor), step]
+    let step: Step
+    const retained = this.edits.slice(0, this.cursor)
+    const sources = new Map<string, Uint8Array>()
+    for (const item of retained) {
+      if ('importId' in item) sources.set(item.importId, this.imports.get(item.importId)!)
+    }
+    if ('importName' in edit) {
+      if (sources.has(edit.importId)) throw new Error('This import is already in the project history.')
+      const bytes = [...sources.values()].reduce((size, data) => size + data.byteLength, edit.data.byteLength)
+      if (bytes > MAX_PROJECT_BYTES) throw new Error('This session has too much imported source data. Save and reopen the project to import more.')
+      sources.set(edit.importId, edit.data)
+      step = { importName: edit.importName, importId: edit.importId,
+        against: this.shown(this.states[this.cursor].bodies).map(({ body }) => body) }
+    } else {
+      step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
+    }
+    const state = 'importId' in step ? this.execute(this.states[this.cursor], step, sources) : this.prepare(step)
+    for (let i = this.states[this.cursor].bodies.length; i < state.bodies.length; i++) this.visible[i] = true
+    this.imports = sources
+    this.edits = [...retained, step]
     this.states = [...this.states.slice(0, this.cursor + 1), state]
     // The saved point is gone from the history once a new step replaces what followed it.
     if (this.saved > this.cursor) this.saved = -1
@@ -198,6 +233,7 @@ export class EngineDocument {
     this.states = states
     this.saved = saved
     this.edits = edits
+    this.imports.clear()
     this.cursor = cursor
     this.visible = states[states.length - 1].bodies.map((_, i) => opened.visible[i] ?? true)
     this.opened = opened.bodies.map((_, i) => opened.visible[i])
@@ -212,7 +248,10 @@ export class EngineDocument {
     const newest = this.states[this.states.length - 1].project
     let steps = this.stepLists.get(newest)
     if (!steps) this.stepLists.set(newest, steps = newest.steps())
-    const shown = steps.length - (this.states.length - 1 - this.cursor)
+    const active = this.states[this.cursor].project
+    let activeSteps = this.stepLists.get(active)
+    if (!activeSteps) this.stepLists.set(active, activeSteps = active.steps())
+    const shown = activeSteps.length
     return steps.map((step, i) => ({ ...step, undone: i >= shown }))
   }
 
@@ -232,7 +271,7 @@ export class EngineDocument {
   }
 
   /** Which body a face of the shown model belongs to, and its number within that body. */
-  private resolve(edit: PullEdit | StackEdit): Step {
+  private resolve(edit: PullEdit | StackEdit): (FacePick & PullEdit) | StackStep {
     if ('distance' in edit) return { ...this.pick(edit.face), distance: edit.distance }
     const moving = this.pick(edit.moving)
     const target = this.pick(edit.target)
@@ -251,7 +290,19 @@ export class EngineDocument {
   }
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
-  private execute({ bodies, project }: State, step: Step): State {
+  private execute({ bodies, project }: State, step: Step, sources = this.imports): State {
+    if ('importId' in step) {
+      const data = sources.get(step.importId)
+      if (!data) throw new Error('The STEP source for this recovery step is missing.')
+      const against = step.against.map((index) => {
+        const shape = bodies[index]?.shape
+        if (!shape) throw new Error('An import placement reference is missing.')
+        return shape
+      })
+      const imported = project.importStep(data, step.importName, MAX_BODIES - bodies.length, against)
+      for (const body of imported.bodies) if (body.shape) this.display(body.shape)
+      return { bodies: [...bodies, ...imported.bodies], project: imported.project }
+    }
     if ('shapeKind' in step) {
       if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
       const created = project.addShape(step.shapeKind, step.values)
@@ -269,9 +320,10 @@ export class EngineDocument {
   private place(project: Project, bodies: Body[], shape: Shape, step: StackStep) {
     const target = bodies[step.target.body]
     if (!target?.shape) throw new Error('The target body has no geometry to place against.')
+    const { view, ...settings } = step.settings
     return project.place(shape, target.shape, {
-      ...step.settings, movingName: bodies[step.moving.body].name, movingFace: step.moving.face,
-      targetName: target.name, targetFace: step.target.face
+      ...settings, movingName: bodies[step.moving.body].name, movingFace: step.moving.face,
+      targetName: target.name, targetFace: step.target.face, viewDirection: view?.direction, viewUp: view?.up
     })
   }
 
@@ -284,7 +336,7 @@ export class EngineDocument {
     if (revision !== this.revision) throw new Error('The model changed. Select the face again.')
   }
 
-  private prepare(step: Step): State {
+  private prepare(step: Exclude<Step, ImportRef>): State {
     const cached = this.previewResult
     if (cached && JSON.stringify(cached.step) === JSON.stringify(step)) return cached.state
     const state = this.execute(this.states[this.cursor], step)

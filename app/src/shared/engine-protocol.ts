@@ -37,6 +37,10 @@ export type Source = { kind: 'box' } | { kind: 'file'; name: string }
 export interface PullEdit { face: number; distance: number }
 /** A push/pull as the history keeps it: the body, and the face as that body numbers it, so showing or hiding bodies doesn't change it. */
 export interface FacePick { body: number; face: number }
+export interface ViewFrame {
+  direction: [number, number, number]
+  up: [number, number, number]
+}
 export interface StackSettings {
   operation: 'stack' | 'center' | 'concentric'
   offset: number
@@ -46,11 +50,22 @@ export interface StackSettings {
   vertical: 'bottom' | 'center' | 'top'
   horizontalGap: number
   verticalGap: number
+  view?: ViewFrame
 }
 export interface StackEdit { moving: number; target: number; settings: StackSettings }
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
+export interface StepImport { importName: string; data: Uint8Array }
+export interface ImportSource { importId: string; data: Uint8Array }
+export type ImportRequest = StepImport & Pick<ImportSource, 'importId'>
+export type ImportRef = Omit<ImportRequest, 'data'> & { against: number[] }
+export type MeshFormat = 'stl' | 'obj' | '3mf'
+export type ExportFormat = MeshFormat | 'step'
+export const isMeshFormat = (format: unknown): format is MeshFormat =>
+  format === 'stl' || format === 'obj' || format === '3mf'
+export const isExportFormat = (format: unknown): format is ExportFormat =>
+  format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & PullEdit) | StackStep | ShapeEdit
+export type Step = (FacePick & PullEdit) | StackStep | ShapeEdit | ImportRef
 
 export interface Checkpoint {
   source: Source
@@ -88,14 +103,16 @@ export interface ModelResult {
 export type RendererCommand =
   | { op: 'model' | 'crash' }
   | { op: 'reset'; revision: number }
-  | { op: 'restore'; checkpoint: Checkpoint; data?: Uint8Array }
+  | { op: 'restore'; checkpoint: Checkpoint; data?: Uint8Array; imports?: ImportSource[] }
   /** `recovered`: work from a session that crashed, opened as unsaved. */
   | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
+  | ({ op: 'importStep'; revision: number } & ImportRequest)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
+  | { op: 'export'; revision: number; format: ExportFormat }
   | { op: 'undo' | 'redo'; revision: number }
 
 export type RendererRequest = RendererCommand & { id: number }
@@ -133,13 +150,31 @@ function isEdit(value: unknown): value is PullEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value)) return true
+  if (isShapeEdit(value) || isImportRef(value)) return true
   if (isEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
   return isPick(step.moving) && isPick(step.target) && step.moving.body !== step.target.body && isStackSettings(step.settings)
 }
 
+function isImportRef(value: unknown): value is ImportRef {
+  if (!value || typeof value !== 'object') return false
+  const step = value as Partial<ImportRef>
+  return isName(step.importName) && isName(step.importId) &&
+    Array.isArray(step.against) && step.against.length <= MAX_BODIES &&
+    step.against.every((index) => isIndex(index) && index < MAX_BODIES)
+}
+
+function isImportSource(value: unknown): value is ImportSource {
+  if (!value || typeof value !== 'object') return false
+  const source = value as Partial<ImportSource>
+  return isName(source.importId) && isData(source.data) && !!source.data?.byteLength
+}
+
+function isImportList(value: unknown): value is ImportSource[] {
+  return Array.isArray(value) && value.length <= MAX_EDITS && value.every(isImportSource) &&
+    value.reduce((size, source) => size + source.data.byteLength, 0) <= MAX_PROJECT_BYTES
+}
 function isShapeEdit(value: unknown): value is ShapeEdit {
   if (!value || typeof value !== 'object') return false
   const { shapeKind, values } = value as Partial<ShapeEdit>
@@ -160,9 +195,18 @@ function isStackSettings(value: unknown): value is StackSettings {
   const s = value as Partial<StackSettings>
   return ['stack', 'center', 'concentric'].includes(s.operation ?? '') && typeof s.flip === 'boolean' &&
     ['left', 'center', 'right'].includes(s.horizontal ?? '') && ['bottom', 'center', 'top'].includes(s.vertical ?? '') &&
-    [s.offset, s.rotation, s.horizontalGap, s.verticalGap].every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9)
+    [s.offset, s.rotation, s.horizontalGap, s.verticalGap].every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9) &&
+    (s.view === undefined || isViewFrame(s.view))
 }
 
+function isViewFrame(value: unknown): value is ViewFrame {
+  if (!value || typeof value !== 'object') return false
+  const view = value as Partial<ViewFrame>
+  const isDirection = (vector: unknown): boolean => Array.isArray(vector) && vector.length === 3 &&
+    vector.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1.000001) &&
+    Math.abs(Math.hypot(...vector) - 1) < 1e-6
+  return isDirection(view.direction) && isDirection(view.up)
+}
 export function isCheckpoint(value: unknown): value is Checkpoint {
   if (!value || typeof value !== 'object') return false
   const model = value as Partial<Checkpoint>
@@ -177,15 +221,18 @@ export function checkRendererRequest(data: unknown): RendererRequest {
   const m = data as Record<string, unknown> | null
   if (!m || typeof m !== 'object' || !isIndex(m.id)) throw new Error('Malformed engine request.')
   if (m.op === 'model' || m.op === 'crash' ||
-      (m.op === 'restore' && isCheckpoint(m.checkpoint) && (m.data === undefined || isData(m.data))) ||
+      (m.op === 'restore' && isCheckpoint(m.checkpoint) && (m.data === undefined || isData(m.data)) &&
+        (m.imports === undefined || isImportList(m.imports))) ||
       (isIndex(m.revision) && (
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
+        (m.op === 'export' && isExportFormat(m.format)) ||
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
-        (m.op === 'createShape' && isShapeEdit(m))
+        (m.op === 'createShape' && isShapeEdit(m)) ||
+        (m.op === 'importStep' && isName(m.importName) && isImportSource(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')
 }

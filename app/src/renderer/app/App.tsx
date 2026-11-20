@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
-import type { BodyInfo, DisplayShape, FaceInfo, ModelResult, StackEdit, StackSettings } from '@/shared/engine-protocol'
-import { applyPull, applyStack, cancelQueuedStackPreview, createShape, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, ModelResult, StackEdit, StackSettings, ViewFrame } from '@/shared/engine-protocol'
+import type { OfferedProject } from '@/shared/ipc-types'
+import { applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importStep, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -91,6 +92,8 @@ export function App() {
   const [stack, setStack] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
   const [target, setTarget] = useState<number>()
+  const [targetView, setTargetView] = useState<ViewFrame>()
+  const readViewFrame = useRef<() => ViewFrame>(undefined)
   const [stackSettings, setStackSettings] = useState(defaultStack)
   const [stackPrepared, setStackPrepared] = useState<{ edit: StackEdit; revision: number }>()
   const [distance, setDistance] = useState('')
@@ -100,6 +103,7 @@ export function App() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [projectRequested, setProjectRequested] = useState(true)
   /** How long ago a crashed session left unsaved work, while that is on offer. */
   const [recovery, setRecovery] = useState<string>()
   /** Set once the close is allowed, so the unsaved-work guard lets it through. */
@@ -125,9 +129,15 @@ export function App() {
   const cancelPlacement = () => {
     setStack(false)
     setTarget(undefined)
+    setTargetView(undefined)
     setStackPrepared(undefined)
     setPreview(undefined)
     cancelQueuedStackPreview()
+  }
+  const pickTarget = (face?: number) => {
+    setPreview(undefined)
+    setTarget(face)
+    setTargetView(face === undefined ? undefined : readViewFrame.current?.())
   }
 
   useEffect(() => onEngineConnected(() => {
@@ -157,8 +167,10 @@ export function App() {
   const value = distance === '' ? NaN : Number(distance)
   const revision = model?.revision
   const placement = useMemo<StackEdit | undefined>(() =>
-    stack && selected !== undefined && target !== undefined ? { moving: selected, target, settings: stackSettings } : undefined,
-  [stack, selected, target, stackSettings])
+    stack && selected !== undefined && target !== undefined
+      ? { moving: selected, target, settings: { ...stackSettings, view: targetView } }
+      : undefined,
+  [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
     if (stack) return
     setPreview(undefined)
@@ -247,12 +259,25 @@ export function App() {
     mutate(async () => {
       if (dirty && !await window.simplecad.confirmDiscard()) return
       const file = await window.simplecad.openProject()
-      if (!file) return
-      const next = await openProject(revision, file.data, file.name)
-      setFileName(file.name)
-      return next
+      return file ? finishOpen(revision, file) : undefined
     }, true)
   }
+  const finishOpen = async (revision: number, file: OfferedProject) => {
+    const next = await openProject(revision, file.data, file.name)
+    await window.simplecad.acceptProject(file.token)
+    setFileName(file.name)
+    return next
+  }
+  useEffect(() => window.simplecad.onProjectRequested(() => setProjectRequested(true)), [])
+  useEffect(() => {
+    if (busy || revision === undefined || !projectRequested) return
+    setProjectRequested(false)
+    mutate(async () => {
+      const file = await window.simplecad.pendingProject()
+      if (!file || (dirty && !await window.simplecad.confirmDiscard())) return
+      return finishOpen(revision, file)
+    }, true)
+  }, [busy, dirty, projectRequested, revision])
 
   // Marked saved only once the file is written: a cancelled dialog or a failed write leaves the work unsaved.
   const save = (saveAs: boolean, close = false) => {
@@ -270,6 +295,20 @@ export function App() {
     })
   }
   const saveRef = useRef(save)
+  const exportProject = (format: ExportFormat) => {
+    if (revision === undefined) return
+    mutate(async () => {
+      await window.simplecad.saveExport(await exportModel(revision, format), format)
+      return undefined
+    })
+  }
+  const importSolid = () => {
+    if (revision === undefined) return
+    mutate(async () => {
+      const file = await window.simplecad.openStep()
+      return file ? importStep(revision, file) : undefined
+    }, true)
+  }
   saveRef.current = save
   useEffect(() => window.simplecad.onSaveAndClose(() => saveRef.current(false, true)), [])
 
@@ -357,6 +396,12 @@ export function App() {
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
               })}
+              <MenuItem disabled={!ready} onSelect={importSolid}>Import STEP</MenuItem>
+              {(['step', 'stl', 'obj', '3mf'] as const).map((format) =>
+                <MenuItem key={format} disabled={!ready || (format === 'step'
+                  ? !model?.bodies.some((body) => body.visible && !body.empty)
+                  : !model?.shape.indices.length)}
+                  onSelect={() => exportProject(format)}>Export {format.toUpperCase()}</MenuItem>)}
             </MenuContent>
           </Menu>
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
@@ -387,13 +432,13 @@ export function App() {
         <div className="flex min-h-0 flex-1">
           <Viewport
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
+            readViewFrame={readViewFrame}
             placingBody={stack ? movingBody : undefined}
             canPull={!stack && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
               if (!ready) return
               if (!stack) select(face)
               else if (face !== undefined && face !== target && model.shape.faces[face]?.body !== movingBody) {
-                setPreview(undefined)
-                setTarget(face)
+                pickTarget(face)
               }
             }}
             onDrag={(next, commit) => {
@@ -429,7 +474,7 @@ export function App() {
               <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
                 <label className="grid gap-1">Target face
                   <select value={target ?? ''} className={inputCls} disabled={busy}
-                    onChange={(e) => { setPreview(undefined); setTarget(e.target.value === '' ? undefined : Number(e.target.value)) }}>
+                    onChange={(e) => pickTarget(e.target.value === '' ? undefined : Number(e.target.value))}>
                     <option value="">Select a target face</option>
                     {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies)}</option>)}
                   </select>

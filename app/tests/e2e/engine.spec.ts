@@ -1,5 +1,7 @@
 import type { ElectronApplication } from '@playwright/test'
 import path from 'node:path'
+import os from 'node:os'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { expect, launch, test } from './helpers'
 
 test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
@@ -73,6 +75,34 @@ test('the window restores accepted edits after the geometry worker exits', async
 
 const fixture = path.join(__dirname, 'fixtures', 'features.scad3')
 
+test('opens a project handed to the desktop launcher', async () => {
+  const { page } = await launch({ args: [fixture] })
+  await expect(page.getByTestId('engine-status')).toHaveText(/71016.32 mm³/)
+  await expect(page.getByText('features.scad3', { exact: true })).toBeVisible()
+})
+
+test('keeps an existing file when an export adds its extension and replacement is declined', async () => {
+  const { app, page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-export-overwrite-'))
+  try {
+    const selected = path.join(scratch, 'Model')
+    const target = `${selected}.stl`
+    await writeFile(target, 'previous file')
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+      dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false })
+    }, selected)
+    const file = page.getByRole('button', { name: 'File', exact: true })
+    await file.click()
+    await page.getByRole('menuitem', { name: 'Export STL' }).click()
+    await expect(page.getByRole('button', { name: 'Shape', exact: true })).toBeEnabled()
+    expect(await readFile(target, 'utf8')).toBe('previous file')
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('creates a cylinder from expressions and undoes and redoes creation', async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
@@ -89,6 +119,64 @@ test('creates a cylinder from expressions and undoes and redoes creation', async
   await expect(status).toHaveText(/24000 mm³/)
   await page.getByRole('button', { name: 'Redo', exact: true }).click()
   await expect(status).toHaveText(/24942.48 mm³/)
+})
+
+test('exports four formats and embeds an imported STEP solid through save and reopen', async () => {
+  const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-mesh-export-'))
+  try {
+    for (const format of ['step', 'stl', 'obj', '3mf']) {
+      const target = path.join(scratch, `Export.${format}`)
+      await app.evaluate(({ dialog }, filePath) => {
+        dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+      }, target)
+      await page.getByRole('button', { name: 'File', exact: true }).click()
+      await page.getByRole('menuitem', { name: `Export ${format.toUpperCase()}` }).click()
+      await expect.poll(async () => (await readFile(target).catch(() => Buffer.alloc(0))).length).toBeGreaterThan(0)
+      const data = await readFile(target)
+      if (format === 'step') expect(data.toString()).toMatch(/^ISO-10303-21;/)
+      if (format === 'stl') expect(data.readUInt32LE(80)).toBe(12)
+      if (format === 'obj') expect(data.toString()).toMatch(/^o Box$/m)
+      if (format === '3mf') expect(data.includes(Buffer.from('3D/3dmodel.model'))).toBe(true)
+    }
+    const status = page.getByTestId('engine-status')
+    await expect(status).toHaveText(/24000 mm³/)
+    const source = path.join(scratch, 'Export.step')
+    const project = path.join(scratch, 'Imported.scad3')
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+    }, source)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Import STEP' }).click()
+    await expect(status).toHaveText(/48000 mm³/)
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(status).toHaveText(/24000 mm³/)
+    await page.getByRole('button', { name: 'Redo', exact: true }).click()
+    await expect(status).toHaveText(/48000 mm³/)
+    await page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } })
+        .simplecadDrill.crashEngine().catch(() => {}))
+    await expect(page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(status).toHaveText(/48000 mm³/)
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+      dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+    }, project)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Save As' }).click()
+    await expect(page.getByText('Imported.scad3', { exact: true })).toBeVisible()
+    expect((await readFile(project)).includes(Buffer.from('assets/'))).toBe(true)
+    await rm(source)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'New box' }).click()
+    await expect(status).toHaveText(/24000 mm³/)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Open project' }).click()
+    await expect(status).toHaveText(/48000 mm³/)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
 })
 
 /** Answer the next Open dialog with the fixture, a plate with a hole, a recess and a boss, and a hidden box. */
