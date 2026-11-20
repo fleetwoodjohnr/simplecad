@@ -127,7 +127,16 @@ impl Context<'_> {
 
     /// `ctx.value`: a number input, which may be an expression, in mm or degrees.
     pub fn value(&self, key: &str, default: f64, dimension: Dimension) -> Result<f64, StepError> {
-        match self.input(key) {
+        self.number(self.input(key), default, dimension)
+    }
+
+    fn number(
+        &self,
+        input: Option<&Value>,
+        default: f64,
+        dimension: Dimension,
+    ) -> Result<f64, StepError> {
+        match input {
             None => Ok(default),
             Some(Value::Number(n)) => Ok(n.as_f64().unwrap_or(default)),
             Some(Value::Bool(b)) => Ok(f64::from(u8::from(*b))),
@@ -353,11 +362,71 @@ pub const PORTED: &[&str] = &[
     "scale",
     "fillet",
     "chamfer",
+    "edge_finish",
     "shell",
     "align",
     "boolean",
     "split",
+    "hole",
 ];
+
+/// The Shape panel creates the same recipe that the evaluator can rebuild.
+pub fn create_primitive(
+    model: &mut Model,
+    kind: &str,
+    mut inputs: Value,
+) -> Result<(String, occt::UniquePtr<occt::Shape>), String> {
+    let (kind, label, sides) = match kind {
+        "box" => (kind, "Box", None),
+        "cylinder" => (kind, "Cylinder", None),
+        "sphere" => (kind, "Sphere", None),
+        "cone" => (kind, "Cone", None),
+        "torus" => (kind, "Torus", None),
+        "tube" => (kind, "Tube", None),
+        "wedge" => (kind, "Wedge", None),
+        "oval" => (kind, "Oval", None),
+        "pill" => (kind, "Pill", None),
+        "polygon_prism" => (kind, "Polygon", None),
+        "star" => (kind, "Star", None),
+        "heart" => (kind, "Heart", None),
+        "cross" => (kind, "Cross", None),
+        "crescent" => (kind, "Crescent", None),
+        "lightning" => (kind, "Lightning", None),
+        "triangle" => ("polygon_prism", "Triangle", Some(3)),
+        "pentagon" => ("polygon_prism", "Pentagon", Some(5)),
+        "hexagon" => ("polygon_prism", "Hexagon", Some(6)),
+        "octagon" => ("polygon_prism", "Octagon", Some(8)),
+        _ => return Err("Choose a shape to create.".into()),
+    };
+    if !inputs.is_object() {
+        return Err("The shape dimensions could not be read.".into());
+    }
+    if let Some(sides) = sides {
+        inputs["sides"] = json!(sides);
+    }
+    let (parameters, _) = resolve(
+        model.payload["parameters"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    let feature = json!({ "inputs": inputs, "name": label });
+    let ctx = Context {
+        feature: &feature,
+        bodies: HashMap::new(),
+        parameters: &parameters,
+        message: Default::default(),
+    };
+    let shape = execute(kind, &ctx)
+        .ok_or("This shape cannot be created yet.")?
+        .map_err(|e| e.message)?
+        .remove(label)
+        .and_then(|shape| Rc::try_unwrap(shape).ok())
+        .ok_or("This shape produced no geometry.")?;
+    let brep = occt::write_brep(&shape).map_err(|e| e.what().to_string())?;
+    let name = model.add_primitive(kind, label, inputs, brep)?;
+    Ok((name, shape))
+}
 
 /// The steps this build can run, by type; `None` for the others.
 fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, StepError>> {
@@ -579,6 +648,7 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 let finished = occt::finish_edges(&body, &indices, size, fillet).map_err(kernel)?;
                 Ok(BTreeMap::from([(body_name()?, Rc::new(finished))]))
             }
+            "edge_finish" => Ok(BTreeMap::from([(body_name()?, edge_finish(ctx)?)])),
             "shell" => {
                 let body = ctx.shape("body")?;
                 let thickness = ctx.value("thickness", 2.0, Dimension::Length)?;
@@ -638,6 +708,7 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 let (name, placed) = crate::align::execute(ctx)?;
                 Ok(BTreeMap::from([(name, placed)]))
             }
+            "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
             "boolean" => combine(ctx),
             "split" => {
                 let coordinates = |key, default| -> Result<[f64; 3], StepError> {
@@ -689,6 +760,184 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
         }
     };
     PORTED.contains(&kind).then(run)
+}
+
+fn edge_finish(ctx: &Context) -> Result<Shape, StepError> {
+    let mut shape = ctx.shape("body")?;
+    let specs = ctx
+        .input("edge_specs")
+        .and_then(Value::as_array)
+        .filter(|specs| !specs.is_empty())
+        .ok_or_else(|| failed("This edge finish has no edges."))?;
+    for group in specs.chunk_by(|a, b| a["type"] == b["type"]) {
+        let kind = group[0]["type"].as_str().unwrap_or("missing");
+        let fillet = match kind {
+            "fillet" => true,
+            "chamfer" => false,
+            _ => return Err(failed(format!("Unknown edge finish type: {kind}."))),
+        };
+        let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
+        let finishes = group
+            .iter()
+            .map(|spec| {
+                let number = |key, default, dimension| {
+                    ctx.number(spec.get(key).filter(|v| !v.is_null()), default, dimension)
+                };
+                let reference = spec["edge"]
+                    .get("__ref__")
+                    .ok_or_else(|| failed("This feature has lost the geometry it was built on."))?;
+                let index = resolve_edge(reference, &edges)?;
+                let (key, default) = if fillet {
+                    ("radius", 2.0)
+                } else {
+                    ("distance", 1.0)
+                };
+                let first = number(key, default, Dimension::Length)?;
+                if first <= 0.0 {
+                    return Err(failed(format!("A {kind} needs a {key} greater than zero.")));
+                }
+                let mut finish = occt::EdgeFinishSpec {
+                    index,
+                    first,
+                    mode: 0,
+                    second: 0.0,
+                    side: -1,
+                    flip: false,
+                };
+                let mode = spec["mode"].as_str().unwrap_or("equal");
+                if fillet || mode == "equal" {
+                    return Ok(finish);
+                }
+                if let Some(side) = spec["side"].get("__ref__") {
+                    finish.side = i32::try_from(resolve_face(side, &shape)?)
+                        .map_err(|_| failed("The chamfer's reference face is missing."))?;
+                }
+                finish.flip = spec["flip"].as_bool().unwrap_or(false);
+                match mode {
+                    "two_distances" => {
+                        finish.mode = 1;
+                        finish.second = number("distance2", first, Dimension::Length)?;
+                        if finish.second <= 0.0 {
+                            return Err(failed("Both chamfer distances must be positive."));
+                        }
+                    }
+                    "distance_angle" => {
+                        finish.mode = 2;
+                        let angle = number("angle", 45.0, Dimension::Angle)?;
+                        if !(0.0 < angle && angle < 90.0) {
+                            return Err(failed(
+                                "A chamfer angle must be between 0 and 90 degrees.",
+                            ));
+                        }
+                        finish.second = angle.to_radians();
+                    }
+                    _ => return Err(failed(format!("Unknown chamfer setting: {mode}."))),
+                }
+                Ok(finish)
+            })
+            .collect::<Result<Vec<_>, StepError>>()?;
+        shape = Rc::new(occt::finish_edge_specs(&shape, &finishes, fillet).map_err(kernel)?);
+    }
+    Ok(shape)
+}
+
+fn drill(ctx: &Context) -> Result<Shape, StepError> {
+    let shape = ctx.shape("body")?;
+    let (source, face) = ctx.face("face")?;
+    let face = occt::sub_face(&source, face).map_err(kernel)?;
+    let plane = occt::plane_frame(&face).map_err(kernel)?;
+    if !plane.planar {
+        return Err(failed(
+            "Holes are placed on flat faces. Select a planar face to drill into.",
+        ));
+    }
+    let length = |key, default| ctx.value(key, default, Dimension::Length);
+    let diameter = length("diameter", 6.0)?;
+    if diameter <= 0.0 {
+        return Err(failed("A hole needs a diameter greater than zero."));
+    }
+    let style = ctx
+        .input("style")
+        .and_then(Value::as_str)
+        .unwrap_or("simple");
+    if style == "threaded" {
+        return Err(failed(
+            "This threaded hole has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
+        ));
+    }
+    let position = if let Some(values) = ctx
+        .input("position")
+        .and_then(Value::as_array)
+        .filter(|v| !v.is_empty())
+    {
+        let values: Vec<_> = values.iter().filter_map(Value::as_f64).collect();
+        <[f64; 3]>::try_from(values)
+            .map_err(|_| failed("The drill point needs three coordinates."))?
+    } else {
+        plane.center
+    };
+    let inward = plane.normal.map(|n| -n);
+    let bounds = occt::bounds(&shape).map_err(kernel)?;
+    let span = (0..3)
+        .map(|i| (bounds[i + 3] - bounds[i]).powi(2))
+        .sum::<f64>()
+        .sqrt()
+        + 10.0;
+    let depth = match ctx
+        .input("depth_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("through")
+    {
+        "through" => span,
+        "to_object" => {
+            let name = ctx.input("until").map(alias).unwrap_or_default();
+            if let Some(target) = ctx.bodies.get(&name) {
+                let hit = occt::first_ray_hit(target, &position, &inward).map_err(kernel)?;
+                if hit > 0.0 {
+                    hit
+                } else {
+                    ctx.set_message(format!(
+                        "The hole never reaches '{name}', so it goes all the way through."
+                    ));
+                    span
+                }
+            } else {
+                ctx.set_message(
+                    "No body was given to stop at, so the hole goes all the way through.".into(),
+                );
+                span
+            }
+        }
+        _ => length("depth", 10.0)?,
+    };
+    let (cap, cap_depth, tapered) = match style {
+        "counterbore" => (
+            length("counterbore_diameter", diameter * 1.8)?,
+            length("counterbore_depth", diameter * 0.6)?,
+            false,
+        ),
+        "countersink" => {
+            let angle = ctx.value("countersink_angle", 90.0, Dimension::Angle)?;
+            let cap = length("countersink_diameter", diameter * 2.0)?;
+            let cap_depth = ((cap - diameter) * 0.5 / (angle * 0.5).to_radians().tan()).max(1e-3);
+            (cap, cap_depth, true)
+        }
+        _ => (0.0, 0.0, false),
+    };
+    if matches!(style, "counterbore" | "countersink") && (cap <= 0.0 || cap_depth <= 0.0) {
+        return Err(failed("The hole's recess needs positive dimensions."));
+    }
+    let spec = occt::HoleCut {
+        position,
+        inward,
+        diameter,
+        depth,
+        cap_diameter: cap,
+        cap_depth,
+        tapered,
+    };
+    let cut = occt::hole_cut(&shape, &spec).map_err(kernel)?;
+    Ok(Rc::new(cut))
 }
 
 /// `BooleanFeature`: Join, Cut or Intersect, one target body against one or more tools.

@@ -161,6 +161,13 @@ pub struct Pulled {
     pub shape: Shape,
 }
 
+#[napi(object, object_from_js = false)]
+pub struct CreatedShape {
+    pub project: Project,
+    pub name: String,
+    pub shape: Shape,
+}
+
 #[napi(object)]
 pub struct StackRequest {
     pub moving_name: String,
@@ -184,6 +191,25 @@ fn expression(distance: f64) -> String {
 
 #[napi]
 impl Project {
+    #[napi]
+    pub fn add_shape(
+        &self,
+        kind: String,
+        inputs: std::collections::HashMap<String, String>,
+    ) -> Result<CreatedShape> {
+        let mut model = self.model.clone();
+        let (name, inner) =
+            scad::rebuild::create_primitive(&mut model, &kind, serde_json::json!(inputs))
+                .map_err(Error::from_reason)?;
+        Ok(CreatedShape {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            name,
+            shape: Shape { inner },
+        })
+    }
     #[napi]
     pub fn place(&self, moving: &Shape, target: &Shape, edit: StackRequest) -> Result<Pulled> {
         use scad::align::PickedFace;

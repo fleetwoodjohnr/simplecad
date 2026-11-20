@@ -28,6 +28,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepIntCurveSurface_Inter.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -70,6 +71,7 @@
 #include <gp_Dir.hxx>
 #include <gp_Elips.hxx>
 #include <gp_GTrsf.hxx>
+#include <gp_Lin.hxx>
 #include <gp_Mat.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -545,16 +547,29 @@ rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape) {
 
 std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
                                     double size, bool fillet) {
-  ShapeMap map;
-  TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
+  std::vector<EdgeFinishSpec> specs;
+  specs.reserve(indices.size());
+  for (const uint32_t index : indices) {
+    specs.push_back({index, size, 0, 0.0, -1, false});
+  }
+  return finish_edge_specs(shape, rust::Slice<const EdgeFinishSpec>(specs.data(), specs.size()), fillet);
+}
+
+std::unique_ptr<Shape> finish_edge_specs(const Shape &shape, rust::Slice<const EdgeFinishSpec> specs,
+                                         bool fillet) {
+  if (specs.empty()) {
+    throw std::runtime_error("This edge finish has no edges.");
+  }
+  ShapeMap edges;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
   const char *operation = fillet ? "fillet" : "chamfer";
-  const auto finish = [&](auto &builder) {
-    for (const uint32_t index : indices) {
-      if (index >= static_cast<uint32_t>(map.Extent())) {
-        throw std::runtime_error("Select an edge of this body.");
-      }
-      builder.Add(size, TopoDS::Edge(map.FindKey(static_cast<int>(index) + 1)));
+  const auto selected_edge = [&](uint32_t index) {
+    if (index >= static_cast<uint32_t>(edges.Extent())) {
+      throw std::runtime_error("Select an edge of this body.");
     }
+    return TopoDS::Edge(edges.FindKey(static_cast<int>(index) + 1));
+  };
+  const auto finish = [&](BRepBuilderAPI_MakeShape &builder) {
     builder.Build();
     if (!builder.IsDone()) {
       throw std::runtime_error(std::string("The ") + operation + " operation did not succeed on this geometry.");
@@ -563,9 +578,79 @@ std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32
   };
   if (fillet) {
     BRepFilletAPI_MakeFillet builder(shape.shape);
+    for (const auto &spec : specs) {
+      if (!std::isfinite(spec.first) || spec.first <= 0) {
+        throw std::runtime_error("A fillet needs a radius greater than zero.");
+      }
+      builder.Add(spec.first, selected_edge(spec.index));
+    }
     return finish(builder);
   }
+
+  ShapeMap faces;
+  AncestorMap adjacent;
+  if (std::any_of(specs.begin(), specs.end(), [](const auto &spec) { return spec.mode != 0; })) {
+    TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+    TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, adjacent);
+  }
+  // The Python fallback and flip both use the body's face traversal order.
+  const auto first_adjacent = [&](const TopoDS_Edge &edge, const TopoDS_Face &exclude) {
+    int first = 0;
+    if (adjacent.Contains(edge)) {
+      for (const auto &candidate : adjacent.FindFromKey(edge)) {
+        if (!candidate.IsSame(exclude)) {
+          const int index = faces.FindIndex(candidate);
+          if (index > 0 && (first == 0 || index < first)) {
+            first = index;
+          }
+        }
+      }
+    }
+    return first > 0 ? TopoDS::Face(faces.FindKey(first)) : TopoDS_Face();
+  };
+
   BRepFilletAPI_MakeChamfer builder(shape.shape);
+  for (const auto &spec : specs) {
+    const TopoDS_Edge edge = selected_edge(spec.index);
+    if (!std::isfinite(spec.first) || spec.first <= 0) {
+      throw std::runtime_error("A chamfer needs a distance greater than zero.");
+    }
+    if (spec.mode == 0) {
+      builder.Add(spec.first, edge);
+      continue;
+    }
+    TopoDS_Face side;
+    if (spec.side == -1) {
+      side = first_adjacent(edge, {});
+    } else if (spec.side >= 0 && spec.side < faces.Extent()) {
+      side = TopoDS::Face(faces.FindKey(spec.side + 1));
+    }
+    if (side.IsNull()) {
+      throw std::runtime_error("The chamfer's reference face is missing.");
+    }
+    if (spec.flip) {
+      const TopoDS_Face other = first_adjacent(edge, side);
+      if (!other.IsNull()) {
+        side = other;
+      }
+    }
+    switch (spec.mode) {
+    case 1:
+      if (!std::isfinite(spec.second) || spec.second <= 0) {
+        throw std::runtime_error("Both chamfer distances must be positive.");
+      }
+      builder.Add(spec.first, spec.second, edge, side);
+      break;
+    case 2:
+      if (!(spec.second > 0 && spec.second < M_PI / 2)) {
+        throw std::runtime_error("A chamfer angle must be between 0 and 90 degrees.");
+      }
+      builder.AddDA(spec.first, spec.second, edge, side);
+      break;
+    default:
+      throw std::runtime_error("Unknown chamfer setting.");
+    }
+  }
   return finish(builder);
 }
 
@@ -1219,6 +1304,54 @@ std::unique_ptr<Shape> resize_round(const Shape &shape, uint32_t face, double de
     throw std::runtime_error("That would leave nothing behind. Take less off, or delete the body instead.");
   }
   return owned(unified(result), "resize");
+}
+
+static gp_Ax2 drill_axis(rust::Slice<const double> position, rust::Slice<const double> inward) {
+  if (position.size() != 3 || inward.size() != 3) {
+    throw std::runtime_error("A hole needs a three-coordinate start point and direction.");
+  }
+  return gp_Ax2(gp_Pnt(position[0], position[1], position[2]), gp_Dir(inward[0], inward[1], inward[2]));
+}
+
+// `HoleFeature`'s drill and optional counterbore or countersink.
+std::unique_ptr<Shape> hole_cut(const Shape &shape, const HoleCut &cut) {
+  const auto &[position, inward, diameter, depth, cap_diameter, cap_depth, tapered] = cut;
+  if (!std::isfinite(diameter) || diameter <= 0) {
+    throw std::runtime_error("A hole needs a diameter greater than zero.");
+  }
+  if (!std::isfinite(depth) || depth <= 0) {
+    throw std::runtime_error("A hole needs a depth greater than zero.");
+  }
+  const gp_Ax2 axis = drill_axis({position.data(), position.size()}, {inward.data(), inward.size()});
+  const double radius = diameter / 2.0;
+  constexpr const char *failure = "The hole operation did not succeed on this geometry. Try adjusting the inputs slightly.";
+  TopoDS_Shape tool = BRepPrimAPI_MakeCylinder(axis, radius, depth).Shape();
+  if (cap_diameter != 0) {
+    if (!std::isfinite(cap_diameter) || cap_diameter < 0 || !std::isfinite(cap_depth) || cap_depth <= 0) {
+      throw std::runtime_error("The counterbore or countersink needs a positive diameter and depth.");
+    }
+    const double cap_radius = cap_diameter / 2.0;
+    const TopoDS_Shape cap = tapered ? BRepPrimAPI_MakeCone(axis, cap_radius, radius, cap_depth).Shape()
+                                     : BRepPrimAPI_MakeCylinder(axis, cap_radius, cap_depth).Shape();
+    tool = boolean<BRepAlgoAPI_Fuse>(tool, cap, failure);
+  }
+  return owned(boolean<BRepAlgoAPI_Cut>(shape.shape, tool, failure), "hole");
+}
+
+double first_ray_hit(const Shape &shape, rust::Slice<const double> position,
+                     rust::Slice<const double> inward) {
+  const gp_Ax2 axis = drill_axis(position, inward);
+  constexpr double tolerance = 1e-6;
+  BRepIntCurveSurface_Inter finder;
+  finder.Init(shape.shape, gp_Lin(axis.Location(), axis.Direction()), tolerance);
+  double nearest = std::numeric_limits<double>::infinity();
+  for (; finder.More(); finder.Next()) {
+    const double distance = finder.W();
+    if (distance > tolerance && distance < nearest) {
+      nearest = distance;
+    }
+  }
+  return std::isfinite(nearest) ? nearest : 0.0;
 }
 
 namespace {

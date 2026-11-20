@@ -685,22 +685,49 @@ impl Model {
             "title": "Untitled", "counters": {}, "retired_ids": [], "parameters": [], "features": [],
             "bodies": [], "groups": [], "metadata": {}, "assets": [],
         }));
+        model.record_primitive(
+            id,
+            "box",
+            "Box",
+            json!({ "width": "40 mm", "depth": "30 mm", "height": "20 mm" }),
+            brep,
+        )?;
+        Ok(model)
+    }
+
+    pub(crate) fn add_primitive(
+        &mut self,
+        kind: &str,
+        label: &str,
+        inputs: Value,
+        brep: Vec<u8>,
+    ) -> Result<String, String> {
+        self.record_primitive(&new_feature_id(), kind, label, inputs, brep)
+    }
+
+    fn record_primitive(
+        &mut self,
+        id: &str,
+        kind: &str,
+        label: &str,
+        inputs: Value,
+        brep: Vec<u8>,
+    ) -> Result<String, String> {
         // Named before the undo snapshot, as the panel does.
-        let name = model.unique_name("Box");
-        let before = model.document();
+        let name = self.unique_name(label);
+        let before = self.document();
         let object = crate::graph::output_id(id, &name);
-        let payload = model.payload.as_object_mut().unwrap();
+        let payload = self.payload.as_object_mut().unwrap();
         payload["features"].as_array_mut().unwrap().push(json!({
-            "id": id, "type": "box", "name": name,
-            "inputs": { "width": "40 mm", "depth": "30 mm", "height": "20 mm" },
+            "id": id, "type": kind, "name": name, "inputs": inputs,
             "outputs": [name], "output_ids": { &name: object }, "bindings": {},
             "suppressed": false, "dropped": [],
         }));
         payload["bodies"].as_array_mut().unwrap().push(json!({
             "id": object, "name": name, "visible": true, "color": null, "producer": id, "metadata": {},
         }));
-        model.record(id, "Box", &object, brep, before, "")?;
-        Ok(model)
+        self.record(id, label, &object, brep, before, "")?;
+        Ok(name)
     }
 
     /// A step just added, `id` writing `object` as `brep`: its cached result,

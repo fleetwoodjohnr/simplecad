@@ -1,4 +1,4 @@
-import { MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ModelResult, type PullEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -11,6 +11,7 @@ export interface Shape {
 export interface Body { name: string; shape: Shape | null }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
+  addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   place(moving: Shape, target: Shape, request: StackSettings & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
@@ -93,7 +94,7 @@ export class EngineDocument {
     const { bodies } = this.states[this.cursor]
     return {
       shape: this.show(bodies),
-      bodies: bodies.map((b, i): BodyInfo => ({ name: b.name, visible: this.visible[i], empty: !b.shape })),
+      bodies: bodies.map((b, i): BodyInfo => ({ name: b.name, visible: this.visible[i] ?? true, empty: !b.shape })),
       unsaved: this.unsaved,
       revision: this.revision,
       checkpoint: this.checkpoint(),
@@ -112,10 +113,9 @@ export class EngineDocument {
     if (this.revision !== 0) throw new Error('This session is already open.')
     if (checkpoint.source.kind === 'file' && !data) throw new Error('Open the project again to keep editing it.')
     const opened = checkpoint.source.kind === 'box' ? this.newBox() : this.read(data!)
-    for (const [body, shown] of checkpoint.shown) if (body < opened.visible.length) opened.visible[body] = shown
     const states: State[] = [{ bodies: opened.bodies, project: opened.project }]
     for (const step of checkpoint.edits) states.push(this.execute(states[states.length - 1], step))
-    return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved)
+    return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved, checkpoint.shown)
   }
 
   /** A recovered file is work never saved: it opens unsaved. */
@@ -126,7 +126,7 @@ export class EngineDocument {
 
   setVisible(body: number, visible: boolean, revision: number): ModelResult {
     this.checkRevision(revision)
-    if (body >= this.visible.length) throw new Error('There is no such body.')
+    if (body >= this.states[this.cursor].bodies.length) throw new Error('There is no such body.')
     this.visible[body] = visible
     this.advance()
     return this.model()
@@ -161,12 +161,13 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | ShapeEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if ('distance' in edit && edit.distance === 0) return this.model()
     if (this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
-    const step = this.resolve(edit)
+    const step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     const state = this.prepare(step)
+    if ('shapeKind' in step) this.visible[state.bodies.length - 1] = true
     this.edits = [...this.edits.slice(0, this.cursor), step]
     this.states = [...this.states.slice(0, this.cursor + 1), state]
     // The saved point is gone from the history once a new step replaces what followed it.
@@ -187,19 +188,20 @@ export class EngineDocument {
   }
 
   private checkpoint(): Checkpoint {
-    const shown = this.visible.flatMap((v, i): [number, boolean][] => v === this.opened[i] ? [] : [[i, v]])
+    const shown = this.visible.flatMap((v, i): [number, boolean][] => v === (this.opened[i] ?? true) ? [] : [[i, v]])
     return { source: this.source, edits: this.edits, cursor: this.cursor, shown, saved: this.saved }
   }
 
   private install(source: Source, opened: Opened, edits: Step[], cursor: number,
-    states: State[] = [{ bodies: opened.bodies, project: opened.project }], saved = 0): ModelResult {
+    states: State[] = [{ bodies: opened.bodies, project: opened.project }], saved = 0, shown: Checkpoint['shown'] = []): ModelResult {
     this.source = source
     this.states = states
     this.saved = saved
     this.edits = edits
     this.cursor = cursor
-    this.visible = [...opened.visible]
+    this.visible = states[states.length - 1].bodies.map((_, i) => opened.visible[i] ?? true)
     this.opened = opened.bodies.map((_, i) => opened.visible[i])
+    for (const [body, visible] of shown) if (body < this.visible.length) this.visible[body] = visible
     this.notes = opened.notes
     this.advance()
     return this.model()
@@ -222,7 +224,7 @@ export class EngineDocument {
 
   /** The bodies that are drawn and can be edited: shown, with geometry. */
   private shown(bodies: Body[]) {
-    return bodies.flatMap((b, i) => this.visible[i] && b.shape ? [{ body: i, shape: b.shape }] : [])
+    return bodies.flatMap((b, i) => this.visible[i] !== false && b.shape ? [{ body: i, shape: b.shape }] : [])
   }
 
   private show(bodies: Body[]): DisplayShape {
@@ -250,6 +252,11 @@ export class EngineDocument {
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
   private execute({ bodies, project }: State, step: Step): State {
+    if ('shapeKind' in step) {
+      if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
+      const created = project.addShape(step.shapeKind, step.values)
+      return { bodies: [...bodies, { name: created.name, shape: created.shape }], project: created.project }
+    }
     const body = 'target' in step ? step.moving.body : step.body
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')

@@ -65,9 +65,28 @@ pub mod ffi {
         pub neighbours: Vec<FaceFingerprint>,
     }
 
+    pub struct EdgeFinishSpec {
+        pub index: u32,
+        pub first: f64,
+        pub mode: u8,
+        pub second: f64,
+        pub side: i32,
+        pub flip: bool,
+    }
+
     pub struct SplitParts {
         pub below: UniquePtr<Shape>,
         pub above: UniquePtr<Shape>,
+    }
+
+    pub struct HoleCut {
+        pub position: [f64; 3],
+        pub inward: [f64; 3],
+        pub diameter: f64,
+        pub depth: f64,
+        pub cap_diameter: f64,
+        pub cap_depth: f64,
+        pub tapered: bool,
     }
 
     /// A face as `detect.analyse_plane` and `align.planar_frame` read it.
@@ -157,6 +176,11 @@ pub mod ffi {
         /// Face `face` (a `faces` index) as the naming fingerprints it.
         fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
         fn edge_fingerprints(shape: &Shape) -> Result<Vec<EdgeFingerprint>>;
+        fn finish_edge_specs(
+            shape: &Shape,
+            specs: &[EdgeFinishSpec],
+            fillet: bool,
+        ) -> Result<UniquePtr<Shape>>;
         fn finish_edges(
             shape: &Shape,
             indices: &[u32],
@@ -170,6 +194,8 @@ pub mod ffi {
         fn push_pull(shape: &Shape, face: u32, distance: f64) -> Result<UniquePtr<Shape>>;
         fn resize_round(shape: &Shape, face: u32, delta: f64) -> Result<UniquePtr<Shape>>;
         fn split_solid(shape: &Shape, point: &[f64], normal: &[f64]) -> Result<SplitParts>;
+        fn hole_cut(shape: &Shape, cut: &HoleCut) -> Result<UniquePtr<Shape>>;
+        fn first_ray_hit(shape: &Shape, position: &[f64], inward: &[f64]) -> Result<f64>;
         /// Mesh with an absolute chord `deflection` (mm) and `angle` (radians).
         fn mesh(shape: &Shape, deflection: f64, angle: f64) -> Result<MeshBuffers>;
         /// A `gp_Trsf`, composed in C++ as OCP composes it.

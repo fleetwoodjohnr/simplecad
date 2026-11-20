@@ -153,7 +153,7 @@ fn saved_profile_primitives_match_the_python_defaults() {
 }
 
 #[test]
-fn legacy_edge_finishes_follow_a_reference_with_an_outdated_index() {
+fn edge_finishes_follow_a_reference_with_an_outdated_index() {
     let shape = occt::make_box(40.0, 30.0, 20.0).unwrap();
     let edges = occt::edge_fingerprints(&shape).unwrap();
     let (index, edge) = edges
@@ -165,6 +165,7 @@ fn legacy_edge_finishes_follow_a_reference_with_an_outdated_index() {
     for (kind, size_key, reduction) in [
         ("fillet", "radius", (4.0 - std::f64::consts::PI) * 20.0),
         ("chamfer", "distance", 40.0),
+        ("edge_finish", "distance", 60.0),
     ] {
         let mut model = Model::new_box(occt::write_brep(&shape).unwrap()).unwrap();
         let producer = model.payload["features"][0]["id"].clone();
@@ -175,9 +176,14 @@ fn legacy_edge_finishes_follow_a_reference_with_an_outdated_index() {
                 "direction": f.direction, "radius": null, "neighbours": [],
             },
         }});
+        let inputs = if kind == "edge_finish" {
+            json!({ "body": { "__body__": "Box" }, "edge_specs": [{ "edge": reference, "type": "chamfer", "mode": "two_distances", "distance": "2", "distance2": "3", "flip": true }] })
+        } else {
+            json!({ "body": { "__body__": "Box" }, "edges": [reference], size_key: "2" })
+        };
         model.payload["features"].as_array_mut().unwrap().push(json!({
             "id": "finish", "type": kind, "name": "Finish", "outputs": ["Box"], "output_ids": { "Box": body },
-            "inputs": { "body": { "__body__": "Box" }, "edges": [reference], size_key: "2" },
+            "inputs": inputs,
             "bindings": { "Box": { "feature_id": producer, "object_id": body } },
             "suppressed": false, "dropped": [],
         }));
@@ -212,4 +218,50 @@ fn a_saved_split_consumes_its_source_and_keeps_both_output_ids() {
         assert_eq!(body.name, name);
         assert!((occt::volume(body.shape.as_ref().unwrap()) - volume).abs() < 1e-6);
     }
+}
+
+#[test]
+fn a_new_hexagon_saves_as_an_editable_polygon_and_undo_removes_the_body() {
+    let box_shape = occt::make_box(40.0, 30.0, 20.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&box_shape).unwrap()).unwrap();
+    let (name, _) = scad::rebuild::create_primitive(
+        &mut model,
+        "hexagon",
+        json!({"across_flats": "17 mm", "height": "8 mm"}),
+    )
+    .unwrap();
+    assert_eq!(name, "Hexagon");
+    let bytes = model.save(&[]).unwrap();
+    let reopened = scad::project::read(&bytes).unwrap();
+    assert_eq!(reopened.model["features"][1]["type"], "polygon_prism");
+    assert_eq!(reopened.model["features"][1]["inputs"]["sides"], 6);
+    assert_eq!(reopened.bodies[1].name, "Hexagon");
+    model.undo().unwrap();
+    let undone = model.save(&[]).unwrap();
+    let reopened = scad::project::read(&undone).unwrap();
+    assert_eq!(reopened.bodies.len(), 1);
+    assert_eq!(
+        reopened.model["history"]["redo"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_saved_through_hole_uses_the_inward_direction_of_the_face() {
+    let shape = occt::make_box(40.0, 30.0, 20.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&shape).unwrap()).unwrap();
+    let (index, fingerprint) = top(&shape);
+    let reference = model.face_ref("Box", index, fingerprint);
+    let producer = model.payload["features"][0]["id"].clone();
+    let body = model.payload["bodies"][0]["id"].clone();
+    model.payload["features"].as_array_mut().unwrap().push(json!({
+        "id": "hole", "type": "hole", "name": "Hole", "outputs": ["Box"], "output_ids": { "Box": body },
+        "inputs": { "body": { "__body__": "Box" }, "face": { "__ref__": reference }, "diameter": "6 mm" },
+        "bindings": { "Box": { "feature_id": producer, "object_id": body } },
+        "suppressed": false, "dropped": [],
+    }));
+    let report = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let expected = 24_000.0 - std::f64::consts::PI * 9.0 * 20.0;
+    assert!((occt::volume(report.bodies[0].shape.as_ref().unwrap()) - expected).abs() < 1e-6);
 }

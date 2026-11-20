@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, FaceInfo, ModelResult, StackEdit, StackSettings } from '@/shared/engine-protocol'
-import { applyPull, applyStack, cancelQueuedStackPreview, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyPull, applyStack, cancelQueuedStackPreview, createShape, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
+import { ShapePanel } from './ShapePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
 function useTheme(): [boolean, () => void] {
@@ -88,6 +89,7 @@ export function App() {
   const [preview, setPreview] = useState<DisplayShape>()
   const [selected, setSelected] = useState<number>()
   const [stack, setStack] = useState(false)
+  const [shapePanel, setShapePanel] = useState(false)
   const [target, setTarget] = useState<number>()
   const [stackSettings, setStackSettings] = useState(defaultStack)
   const [stackPrepared, setStackPrepared] = useState<{ edit: StackEdit; revision: number }>()
@@ -115,7 +117,10 @@ export function App() {
     setPreview(undefined)
     setDistance('')
     setError('')
-    if (face === undefined) cancelPlacement()
+    if (face === undefined) {
+      cancelPlacement()
+      setShapePanel(false)
+    }
   }
   const cancelPlacement = () => {
     setStack(false)
@@ -133,6 +138,7 @@ export function App() {
     setSelected(undefined)
     setDistance('')
     cancelPlacement()
+    setShapePanel(false)
     setError('')
     void openSession(generation > 1).then(
       (next) => {
@@ -295,7 +301,7 @@ export function App() {
   const canRedo = !!model && model.checkpoint.cursor < model.checkpoint.edits.length && !busy
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
-  const canStack = ready && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  const canStack = ready && !shapePanel && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -318,9 +324,10 @@ export function App() {
         return
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
-      if (stack && event.key === 'Escape') {
+      if ((stack || shapePanel) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
+        setShapePanel(false)
         setError('')
         return
       }
@@ -353,6 +360,10 @@ export function App() {
             </MenuContent>
           </Menu>
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
+          <Btn size="sm" disabled={!ready || stack || shapePanel} onClick={() => {
+            select()
+            setShapePanel(true)
+          }}>Shape</Btn>
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
           <Btn size="sm" disabled={!canStack || stack} onClick={() => {
@@ -432,6 +443,9 @@ export function App() {
                 </div>
               </section>
             )}
+            {shapePanel && revision !== undefined && <ShapePanel busy={busy}
+              onCreate={(edit) => mutate(() => createShape(revision, edit), true)}
+              onCancel={() => { setShapePanel(false); setError('') }} />}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
               {model?.steps.map((step, index) => (

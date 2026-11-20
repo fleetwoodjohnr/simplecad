@@ -73,6 +73,24 @@ test('the window restores accepted edits after the geometry worker exits', async
 
 const fixture = path.join(__dirname, 'fixtures', 'features.scad3')
 
+test('creates a cylinder from expressions and undoes and redoes creation', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  await page.getByRole('button', { name: 'Shape', exact: true }).click()
+  const panel = page.getByRole('form', { name: 'Create shape' })
+  await panel.getByLabel('Shape type').selectOption('cylinder')
+  await panel.getByLabel('Radius').fill('10 mm / 2')
+  await panel.getByLabel('Height').fill('12 mm')
+  await panel.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(status).toHaveText(/24942.48 mm³/)
+  await expect(page.getByRole('list', { name: 'Bodies' })).toContainText('Cylinder')
+  await page.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+  await page.getByRole('button', { name: 'Redo', exact: true }).click()
+  await expect(status).toHaveText(/24942.48 mm³/)
+})
+
 /** Answer the next Open dialog with the fixture, a plate with a hole, a recess and a boss, and a hidden box. */
 async function offerFixture(app: ElectronApplication) {
   await app.evaluate(({ dialog }, filePath) => {

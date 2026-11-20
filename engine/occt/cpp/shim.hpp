@@ -38,9 +38,11 @@ struct MeshBuffers;
 struct FaceData;
 struct FaceFingerprint;
 struct EdgeFingerprint;
+struct EdgeFinishSpec;
 struct PlaneFrame;
 struct CylinderData;
 struct SplitParts;
+struct HoleCut;
 
 class Shape {
 public:
@@ -93,8 +95,13 @@ FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
 rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape);
 std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
                                     double size, bool fillet);
+std::unique_ptr<Shape> finish_edge_specs(const Shape &shape, rust::Slice<const EdgeFinishSpec> specs,
+                                         bool fillet);
 std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t face, double distance);
 std::unique_ptr<Shape> resize_round(const Shape &shape, uint32_t face, double delta);
+std::unique_ptr<Shape> hole_cut(const Shape &shape, const HoleCut &cut);
+double first_ray_hit(const Shape &shape, rust::Slice<const double> position,
+                     rust::Slice<const double> inward);
 SplitParts split_solid(const Shape &shape, rust::Slice<const double> point, rust::Slice<const double> normal);
 MeshBuffers mesh(const Shape &shape, double deflection, double angle);
 std::unique_ptr<Trsf> trsf_identity();

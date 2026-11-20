@@ -28,6 +28,9 @@ class FakeShape implements Shape {
 /** Stands in for the addon's Project: remembers the steps it was given. */
 class FakeProject implements Project {
   constructor(readonly made: string[] = []) {}
+  addShape(kind: string) {
+    return { project: new FakeProject([...this.made, kind]), name: kind, shape: new FakeShape(3) }
+  }
   pushPull(body: string, shape: Shape, face: number, distance: number) {
     return { project: new FakeProject([...this.made, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
   }

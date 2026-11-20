@@ -48,8 +48,9 @@ export interface StackSettings {
   verticalGap: number
 }
 export interface StackEdit { moving: number; target: number; settings: StackSettings }
+export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & PullEdit) | StackStep
+export type Step = (FacePick & PullEdit) | StackStep | ShapeEdit
 
 export interface Checkpoint {
   source: Source
@@ -92,6 +93,7 @@ export type RendererCommand =
   | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
+  | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
   | { op: 'undo' | 'redo'; revision: number }
@@ -131,10 +133,20 @@ function isEdit(value: unknown): value is PullEdit {
 }
 
 function isStep(value: unknown): value is Step {
+  if (isShapeEdit(value)) return true
   if (isEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
   return isPick(step.moving) && isPick(step.target) && step.moving.body !== step.target.body && isStackSettings(step.settings)
+}
+
+function isShapeEdit(value: unknown): value is ShapeEdit {
+  if (!value || typeof value !== 'object') return false
+  const { shapeKind, values } = value as Partial<ShapeEdit>
+  if (typeof shapeKind !== 'string' || !/^[a-z_]{1,20}$/.test(shapeKind) || !values || typeof values !== 'object' || Array.isArray(values)) return false
+  const entries = Object.entries(values)
+  return entries.length <= 12 && entries.every(([key, expression]) => /^[a-z][a-z_0-9]{0,30}$/.test(key) &&
+    typeof expression === 'string' && expression.length > 0 && expression.length < 256)
 }
 
 function isPick(value: unknown): value is FacePick {
@@ -172,7 +184,8 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
-          m.moving !== m.target && isStackSettings(m.settings))
+          m.moving !== m.target && isStackSettings(m.settings)) ||
+        (m.op === 'createShape' && isShapeEdit(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')
 }
