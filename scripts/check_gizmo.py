@@ -62,8 +62,12 @@ def main() -> int:
     from simplecad.ui.main_window import MainWindow
     from simplecad.ui.theme import Mode
 
+    viewport = None
+
     def build(_app):
+        nonlocal viewport
         window = MainWindow(Mode.DARK)
+        viewport = window.stage.viewport
 
         def run() -> None:
             from simplecad.kernel.occ import bounding_box
@@ -255,8 +259,13 @@ def main() -> int:
         window.stage.viewport.ready.connect(lambda: QTimer.singleShot(500, run))
         return window
 
-    run_and_capture(build, "docs/shots/gizmo.png", settle_ms=5000, size=(1300, 860))
+    capture = run_and_capture(build, "docs/shots/gizmo.png", settle_ms=5000, size=(1300, 860))
     print("--- transform gizmo ---")
+    if not REPORT:
+        print(f"  viewport_ready: {viewport is not None and viewport.is_ready}")
+        print(f"  viewport_failure: {viewport.failure if viewport is not None else 'not created'}")
+        if capture.get("error"):
+            print(f"  capture_failure: {capture['error']}")
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
     moved = REPORT.get("moved_x", 0)
