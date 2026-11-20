@@ -13,7 +13,7 @@ from scripts import compare_projects
 @pytest.fixture
 def comparison(monkeypatch):
     original = os.path.abspath("original.scad3")
-    dump = {"loaded": {}, "signatures": {}, "fingerprints": {}, "document": {}}
+    dump = {"loaded": {}, "displayed": {}, "signatures": {}, "fingerprints": {}, "document": {}}
     outcomes = {
         ("dump",): dump.copy(),
         ("rebuild",): {"cached_rebuild": {}, "cached_failed": 0, "cached_diagnostics": {}, "unported": []},
@@ -43,7 +43,7 @@ def comparison(monkeypatch):
     def reference(tree, path, *, flag, python=sys.executable):
         assert path == original
         references.append((tree, python, flag))
-        return full_dump if flag == "--dump" else dump
+        return full_dump if flag == "--dump" else {key: value for key, value in dump.items() if key != "displayed"}
 
     monkeypatch.setattr(compare_projects.subprocess, "run", rust)
     monkeypatch.setattr(compare_projects, "_run", reference)
@@ -66,6 +66,7 @@ def comparison(monkeypatch):
     (("rebuild",), {"unported": ["sketch"]}, "sketch"),
     (("rebuild", "--from-recipe"), {"recipe_rebuild": None}, "recipe_rebuild"),
     (("rebuild",), {"unported": None}, "unported"),
+    (("dump",), {"displayed": None}, "displayed"),
     (("rebuild",), {"cached_diagnostics": {"unexpected": "failed"}}, "cached_diagnostics"),
     (("history",), {"redo_steps": None}, "redo_steps"),
     (("history",), {"redo_steps": 3}, "redo_steps"),

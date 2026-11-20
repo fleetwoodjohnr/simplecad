@@ -5,7 +5,7 @@ Every change to rebuilding, history or the file format has to leave existing
 ``.scad3`` files opening and editing exactly as before. For each file this runs
 both source trees in their own process, never writing the file itself:
 
-* the geometry as loaded from the file's cache
+* the geometry saved in the file and the geometry displayed after opening
 * a rebuild that adopts that cache, and one from the recipe alone
 * after undoing everything, and after redoing it all again
 * after Save As to a scratch file and reopening that
@@ -32,7 +32,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DUMP_STAGES = {"loaded": dict, "signatures": dict, "fingerprints": dict, "document": dict}
+_DUMP_STAGES = {"loaded": dict, "displayed": dict, "signatures": dict, "fingerprints": dict, "document": dict}
 _HISTORY_STAGES = {"undo_all": dict, "redo_all": dict, "undo_steps": int, "redo_steps": int,
                    "undo_diagnostics": dict, "redo_diagnostics": dict}
 _REBUILD_STAGES = {"cached_rebuild": dict, "cached_failed": int, "cached_diagnostics": dict,
@@ -87,7 +87,7 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     from simplecad.core.rebuild import Rebuilder
 
     stages = {}
-    document, _cached = load(path)
+    document, cached = load(path)
     stages["loaded"] = _signature(document)
     from simplecad.core.naming import fingerprint, sub_shapes
     from simplecad.core.result_store import signatures
@@ -99,10 +99,12 @@ def dump(path: str, loaded_only: bool = False) -> dict:
     if loaded_only:
         return stages
 
+    opens_from_cache = cached and document._cache_complete
     rebuilder = Rebuilder(document)
     rebuilder.adopt_baseline()
     report = rebuilder.rebuild()
     stages["cached_rebuild"] = _signature(document)
+    stages["displayed"] = stages["loaded"] if opens_from_cache else stages["cached_rebuild"]
     stages["cached_failed"] = len(report.failures)
     stages["cached_diagnostics"] = _failure_states(report)
 
@@ -219,8 +221,13 @@ def _resaved(path: str, target: str) -> str:
     """Run inside one tree: *path* saved here to *target*, as Save As does."""
     import simplecad.kernel  # noqa: F401 - registers every feature type
     from simplecad.core.project import load, save
+    from simplecad.core.rebuild import Rebuilder
 
-    document, _ = load(path)
+    document, cached = load(path)
+    if not (cached and document._cache_complete):
+        rebuilder = Rebuilder(document)
+        rebuilder.adopt_baseline()
+        rebuilder.rebuild()
     return save(document, target)
 
 
@@ -330,6 +337,7 @@ def _compare_rust(rust: str, path: str, rebuild: bool, reference) -> tuple[dict,
         _require_stages(original, _DUMP_STAGES if rebuild else {"loaded": dict}, "Rust dump")
         new = {**original, "loaded": _body_stage(original, "loaded")}
         if rebuild:
+            new["displayed"] = _body_stage(original, "displayed")
             for stage, extra in (("cached", ()), ("recipe", ("--from-recipe",))):
                 bodies, failures = f"{stage}_rebuild", f"{stage}_failed"
                 result = _rust_json(rust, "rebuild", path, *extra)
@@ -350,6 +358,7 @@ def _compare_rust(rust: str, path: str, rebuild: bool, reference) -> tuple[dict,
             _require_stages(old, required, "Python dump")
             old = {name: old[name] for name in required}
         else:
+            new.pop("displayed", None)
             old = reference(path, flag="--dump-loaded")
             _require_stages(old, {"loaded": dict}, "Python dump")
             old = {stage: value for stage, value in old.items() if stage in new}

@@ -43,6 +43,20 @@ fn face_fingerprints(brep: &[u8], location: Option<&[f64; 12]>) -> Result<Value,
         .map(Value::Array)
 }
 
+fn saved_signatures(project: &Project) -> Result<Map<String, Value>, String> {
+    project
+        .bodies
+        .iter()
+        .map(|body| {
+            let geometry = match &body.brep {
+                Some(brep) => signature(brep, body.location.as_ref())?,
+                None => Value::Null,
+            };
+            Ok((body.name.clone(), geometry))
+        })
+        .collect()
+}
+
 /// `scad pull <in> <body> <face> <distance>[,<distance>...] <out> [undone]`:
 /// push/pull face `face` of `body` by each distance in turn, saved as the Pull
 /// tool would with the newest `undone` pulls taken back (kept to redo), for
@@ -344,16 +358,9 @@ fn main() {
     }
     let result = std::fs::read(path)
         .map_err(|e| e.to_string())
-        .and_then(|data| scad::project::read(&data))
-        .and_then(|project| {
-            let mut loaded = Map::new();
-            for body in &project.bodies {
-                let value = match &body.brep {
-                    Some(brep) => signature(brep, body.location.as_ref())?,
-                    None => Value::Null,
-                };
-                loaded.insert(body.name.clone(), value);
-            }
+        .and_then(|data| {
+            let project = scad::project::read_saved(&data)?;
+            let displayed = scad::project::read(&data)?;
             let mut fingerprints = Map::new();
             for body in &project.bodies {
                 if let Some(brep) = &body.brep {
@@ -364,7 +371,8 @@ fn main() {
                 }
             }
             Ok(json!({
-                "loaded": loaded,
+                "loaded": saved_signatures(&project)?,
+                "displayed": saved_signatures(&displayed)?,
                 "fingerprints": fingerprints,
                 "signatures": scad::signatures::signatures(&project.model),
                 "document": scad::document::Model::new(project.model).document(),

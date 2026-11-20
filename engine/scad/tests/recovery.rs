@@ -1,5 +1,5 @@
 use scad::document::Model;
-use scad::project::{Project, read};
+use scad::project::{Project, read, read_saved};
 use scad::rebuild::rebuild;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
@@ -88,6 +88,15 @@ fn opening_a_missing_body_recovers_the_cut_and_saving_persists_it() {
     let cut_plate = cached_plate(&model, &cut_id, &plate_id);
     let original = model.save(ORIGINAL).unwrap();
 
+    let raw = read_saved(&original).unwrap();
+    assert!(
+        raw.bodies
+            .iter()
+            .find(|body| body.name == "Plate")
+            .unwrap()
+            .brep
+            .is_none()
+    );
     let opened = read(&original).unwrap();
     assert_opened_plate(&opened, &cut_plate);
     let saved = Model::open(&opened).save(&original).unwrap();

@@ -55,6 +55,15 @@ pub fn legacy_entry(name: &str) -> String {
 /// Every body of the project, shown or hidden, in the file's order. A missing or
 /// damaged body is listed without geometry and noted, as the Python app skips it.
 pub fn read(data: &[u8]) -> Result<Project, String> {
+    read_bodies(data, true)
+}
+
+/// Inspect the saved body blobs before recovering failed steps for display.
+pub fn read_saved(data: &[u8]) -> Result<Project, String> {
+    read_bodies(data, false)
+}
+
+fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(data))
         .map_err(|_| "This is not a SimpleCAD project, or the file is damaged.".to_string())?;
     let mut entry = |name: &str| -> Option<Vec<u8>> {
@@ -147,7 +156,7 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
         });
     }
     let mut recovered_blobs = BTreeMap::new();
-    if format >= 2 {
+    if format >= 2 && recover {
         let missing: Vec<_> = bodies
             .iter()
             .zip(&named)
@@ -198,7 +207,7 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
             model["geometry"] = Value::Object(manifest);
         }
     }
-    if !bodies.is_empty() && bodies.iter().all(|b| b.brep.is_none()) {
+    if recover && !bodies.is_empty() && bodies.iter().all(|b| b.brep.is_none()) {
         return Err(
             "This project has no saved bodies this build can show. Open it in SimpleCAD 0.4."
                 .into(),
