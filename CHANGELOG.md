@@ -5,8 +5,8 @@ updater shows (`scripts/release_notes.py`).
 
 ## 0.4.4 (2026-11-20)
 
-Installing updates works again on Linux, and Stack & Place keeps up on large
-projects.
+Installing updates works again on Linux, parts no longer go missing when a
+project opens, and Stack & Place keeps up on large projects.
 
 ### Fixed
 
@@ -25,6 +25,14 @@ projects.
   measured the whole moving part again, which took about five seconds for a
   part with a few thousand faces. It now measures only the faces that can reach
   the edges, with exactly the same result.
+- **Some parts didn't show after opening a project.** Deleting a body that a
+  later step still used (for example the tool of a Cut kept with "Keep tool
+  bodies") left that step needing attention, and the parts it made could be
+  saved with no shape at all: the project then opened with them listed but
+  invisible. A step that needs attention now shows its last good result again
+  -- its own, or failing that the newest one before it -- whether the project
+  was saved that way or not. Re-select the missing input to bring the step up
+  to date.
 - **Stack & Place placed a part from the wrong position after Undo.** In a
   project just opened from a file, undoing past a change to a part could leave
   the window showing the part as it was before the undo. The panel then
