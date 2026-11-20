@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { link, mkdtemp, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { isExportFormat, MAX_PROJECT_BYTES } from '../shared/engine-protocol'
+import { isExportFormat, MAX_PROJECT_BYTES, type ModelImport } from '../shared/engine-protocol'
 
 const filters = [{ name: 'SimpleCAD project', extensions: ['scad3'] }]
 /** The file this window's session came from or was last saved to: where Save writes. */
@@ -31,15 +31,22 @@ export function acceptProjectFile(token: unknown) {
   offered = undefined
 }
 
-export async function openStepFile(window: BrowserWindow) {
+export async function openModelFile(window: BrowserWindow): Promise<ModelImport | undefined> {
   const choice = await dialog.showOpenDialog(window, {
-    properties: ['openFile'], filters: [{ name: 'STEP solid', extensions: ['step', 'stp'] }]
+    properties: ['openFile'],
+    filters: [
+      { name: 'Supported models', extensions: ['step', 'stp', 'brep'] },
+      { name: 'STEP', extensions: ['step', 'stp'] },
+      { name: 'B-Rep', extensions: ['brep'] }
+    ]
   })
   if (choice.canceled || !choice.filePaths.length) return
   const target = choice.filePaths[0]
   const ext = path.extname(target)
-  if (!['.step', '.stp'].includes(ext.toLowerCase())) throw new Error('Choose a STEP file.')
-  return { importName: path.basename(target, ext), data: await readInputFile(target) }
+  const extension = ext.toLowerCase()
+  if (!['.step', '.stp', '.brep'].includes(extension)) throw new Error('Choose a STEP or B-Rep file.')
+  return { importName: path.basename(target, ext), data: await readInputFile(target),
+    importFormat: extension === '.brep' ? 'brep' : 'step' }
 }
 
 async function readInputFile(target: string): Promise<Uint8Array> {

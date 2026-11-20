@@ -484,7 +484,7 @@ fn execute(
                 let index = ctx.input("index").and_then(Value::as_u64).unwrap_or(0);
                 let parts = store
                     .ok_or_else(|| failed("The import source is unavailable."))?
-                    .step_source(path)?;
+                    .import_source(path)?;
                 let index = usize::try_from(index).unwrap_or(usize::MAX);
                 let body = parts.get(index).ok_or_else(|| {
                     failed(format!(
@@ -1206,19 +1206,19 @@ struct Store<'a> {
     original: Option<zip::ZipArchive<Cursor<&'a [u8]>>>,
     model_blobs: &'a BTreeMap<String, Arc<[u8]>>,
     decoded: HashMap<String, Shape>,
-    step_sources: HashMap<String, Vec<Shape>>,
+    import_sources: HashMap<String, Vec<Shape>>,
 }
 
 impl Store<'_> {
-    fn step_source(&mut self, path: &str) -> Result<&[Shape], StepError> {
-        if !self.step_sources.contains_key(path) {
-            let parts = read_step_source(path)?;
-            if self.step_sources.len() >= 4 {
-                self.step_sources.clear();
+    fn import_source(&mut self, path: &str) -> Result<&[Shape], StepError> {
+        if !self.import_sources.contains_key(path) {
+            let parts = read_import_source(path)?;
+            if self.import_sources.len() >= 4 {
+                self.import_sources.clear();
             }
-            self.step_sources.insert(path.into(), parts);
+            self.import_sources.insert(path.into(), parts);
         }
-        Ok(&self.step_sources[path])
+        Ok(&self.import_sources[path])
     }
 
     fn blob(&mut self, sha: &str) -> Option<Arc<[u8]>> {
@@ -1303,7 +1303,7 @@ impl Store<'_> {
 
 const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 
-fn read_step_source(path: &str) -> Result<Vec<Shape>, StepError> {
+fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
     let name = source_name(path);
     let disk_path = Path::new(path);
     if !disk_path.exists() {
@@ -1314,20 +1314,22 @@ fn read_step_source(path: &str) -> Result<Vec<Shape>, StepError> {
     let extension = disk_path
         .extension()
         .and_then(|ext| ext.to_str())
-        .unwrap_or("");
-    if !["step", "stp"]
-        .iter()
-        .any(|ext| extension.eq_ignore_ascii_case(ext))
-    {
-        return Err(failed(format!(
-            "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
-        )));
-    }
-    let unreadable = |_| failed(format!("'{name}' is not a readable STEP file."));
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let format = match extension.as_str() {
+        "step" | "stp" => "STEP",
+        "brep" => "B-Rep",
+        _ => {
+            return Err(failed(format!(
+                "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
+            )));
+        }
+    };
+    let unreadable = |_| failed(format!("'{name}' is not a readable {format} file."));
     let info = disk_path.metadata().map_err(unreadable)?;
     if !info.is_file() || info.len() > MAX_IMPORT_BYTES {
         return Err(failed(format!(
-            "The imported file '{name}' must be a regular STEP file no larger than 256 MB."
+            "The imported file '{name}' must be a regular {format} file no larger than 256 MB."
         )));
     }
     let mut bytes = Vec::new();
@@ -1345,9 +1347,14 @@ fn read_step_source(path: &str) -> Result<Vec<Shape>, StepError> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("Imported");
-    occt::ffi::read_step(&bytes, fallback)
+    let parts = if extension == "brep" {
+        occt::read_brep_parts(&bytes, fallback)
+    } else {
+        occt::read_step(&bytes, fallback)
+    };
+    parts
         .map(|parts| parts.into_iter().map(|part| Rc::new(part.shape)).collect())
-        .map_err(|_| failed(format!("'{name}' is not a readable STEP file.")))
+        .map_err(|_| failed(format!("'{name}' is not a readable {format} file.")))
 }
 
 struct Rebuilder<'a> {
@@ -1660,7 +1667,7 @@ fn setup<'a>(
             original: archive,
             model_blobs: blobs,
             decoded: HashMap::new(),
-            step_sources: HashMap::new(),
+            import_sources: HashMap::new(),
         },
         parameters,
         invalid: stale.iter().cloned().collect(),

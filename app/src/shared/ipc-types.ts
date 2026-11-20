@@ -1,4 +1,4 @@
-import type { ExportFormat, StepImport } from './engine-protocol'
+import type { ExportFormat, ModelImport } from './engine-protocol'
 
 export interface OfferedProject { name: string; data: Uint8Array; token: string }
 
@@ -9,7 +9,7 @@ export interface SimpleCadApi {
   pendingProject(): Promise<OfferedProject | undefined>
   acceptProject(token: string): Promise<void>
   onProjectRequested(run: () => void): () => void
-  openStep(): Promise<StepImport | undefined>
+  openModel(): Promise<ModelImport | undefined>
   /** Writes to the session's file, or asks where; resolves to the file's name, or nothing if cancelled. */
   saveProject(data: Uint8Array, saveAs: boolean): Promise<string | undefined>
   saveExport(data: Uint8Array, format: ExportFormat): Promise<string | undefined>

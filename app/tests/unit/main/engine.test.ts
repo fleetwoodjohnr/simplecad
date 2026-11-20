@@ -31,7 +31,7 @@ class FakeProject implements Project {
   addShape(kind: string) {
     return { project: new FakeProject([...this.made, kind]), name: kind, shape: new FakeShape(3) }
   }
-  importStep(_data: Uint8Array, _name: string, _limit: number): ReturnType<Project['importStep']> {
+  importModel(_data: Uint8Array, _name: string, _format: string, _limit: number): ReturnType<Project['importModel']> {
     throw new Error('Not a STEP test')
   }
   pushPull(body: string, shape: Shape, face: number, distance: number) {

@@ -15,7 +15,7 @@ const api: SimpleCadApi = {
     ipcRenderer.on('project:requested', listener)
     return () => ipcRenderer.removeListener('project:requested', listener)
   },
-  openStep: () => ipcRenderer.invoke('step:open'),
+  openModel: () => ipcRenderer.invoke('model:import'),
   saveProject: (data, saveAs) => ipcRenderer.invoke('project:save', data, saveAs),
   saveExport: (data, format) => ipcRenderer.invoke('export:save', data, format),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),

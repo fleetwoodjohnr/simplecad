@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, ModelResult, StackEdit, StackSettings, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importStep, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -305,8 +305,8 @@ export function App() {
   const importSolid = () => {
     if (revision === undefined) return
     mutate(async () => {
-      const file = await window.simplecad.openStep()
-      return file ? importStep(revision, file) : undefined
+      const file = await window.simplecad.openModel()
+      return file ? importModel(revision, file) : undefined
     }, true)
   }
   saveRef.current = save
@@ -396,7 +396,7 @@ export function App() {
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
               })}
-              <MenuItem disabled={!ready} onSelect={importSolid}>Import STEP</MenuItem>
+              <MenuItem disabled={!ready} onSelect={importSolid}>Import model</MenuItem>
               {(['step', 'stl', 'obj', '3mf'] as const).map((format) =>
                 <MenuItem key={format} disabled={!ready || (format === 'step'
                   ? !model?.bodies.some((body) => body.visible && !body.empty)

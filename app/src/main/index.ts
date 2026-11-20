@@ -5,7 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
-import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openStepFile, saveExportFile, saveProjectFile } from './project-files'
+import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, saveExportFile, saveProjectFile } from './project-files'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
 const isMac = process.platform === 'darwin'
@@ -110,7 +110,7 @@ function registerIpc() {
     if (target) return offerProjectFile(target)
   })
   handle('project:accept', (_event, token: unknown) => acceptProjectFile(token))
-  handle('step:open', () => mainWindow ? openStepFile(mainWindow) : undefined)
+  handle('model:import', () => mainWindow ? openModelFile(mainWindow) : undefined)
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
   handle('export:save', (_event, data: unknown, format: unknown) => mainWindow ? saveExportFile(mainWindow, data, format) : undefined)
   handle('project:new', () => forgetProjectFile())

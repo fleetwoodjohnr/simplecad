@@ -54,9 +54,13 @@ export interface StackSettings {
 }
 export interface StackEdit { moving: number; target: number; settings: StackSettings }
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
-export interface StepImport { importName: string; data: Uint8Array }
+export type ImportFormat = 'step' | 'brep'
+export interface ModelImport { importName: string; data: Uint8Array; importFormat?: ImportFormat }
+function isImportFormat(format: unknown): format is ImportFormat | undefined {
+  return format === undefined || format === 'step' || format === 'brep'
+}
 export interface ImportSource { importId: string; data: Uint8Array }
-export type ImportRequest = StepImport & Pick<ImportSource, 'importId'>
+export type ImportRequest = ModelImport & Pick<ImportSource, 'importId'>
 export type ImportRef = Omit<ImportRequest, 'data'> & { against: number[] }
 export type MeshFormat = 'stl' | 'obj' | '3mf'
 export type ExportFormat = MeshFormat | 'step'
@@ -109,7 +113,7 @@ export type RendererCommand =
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
-  | ({ op: 'importStep'; revision: number } & ImportRequest)
+  | ({ op: 'importModel'; revision: number } & ImportRequest)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
   | { op: 'export'; revision: number; format: ExportFormat }
@@ -161,6 +165,7 @@ function isImportRef(value: unknown): value is ImportRef {
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<ImportRef>
   return isName(step.importName) && isName(step.importId) &&
+    isImportFormat(step.importFormat) &&
     Array.isArray(step.against) && step.against.length <= MAX_BODIES &&
     step.against.every((index) => isIndex(index) && index < MAX_BODIES)
 }
@@ -232,7 +237,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||
-        (m.op === 'importStep' && isName(m.importName) && isImportSource(m))
+        (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')
 }

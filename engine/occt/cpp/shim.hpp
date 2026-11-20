@@ -43,7 +43,7 @@ struct PlaneFrame;
 struct CylinderData;
 struct SplitParts;
 struct HoleCut;
-struct StepBody;
+struct ImportedBody;
 
 class Shape {
 public:
@@ -90,7 +90,8 @@ std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> unify(const Shape &shape);
 std::unique_ptr<Shape> read_brep(rust::Slice<const uint8_t> bytes);
 rust::Vec<uint8_t> write_brep(const Shape &shape);
-rust::Vec<StepBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallback_name);
+rust::Vec<ImportedBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallback_name);
+rust::Vec<ImportedBody> read_brep_parts(rust::Slice<const uint8_t> bytes, rust::Str fallback_name);
 rust::Vec<uint8_t> write_step(const Shapes &shapes);
 std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> matrix);
 double volume(const Shape &shape);

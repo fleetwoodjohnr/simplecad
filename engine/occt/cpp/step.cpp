@@ -52,7 +52,7 @@ std::string product_name(const occ::handle<Standard_Transient> &root) {
   return name;
 }
 
-void append_bodies(rust::Vec<StepBody> &bodies, const TopoDS_Shape &shape, const std::string &name) {
+void append_bodies(rust::Vec<ImportedBody> &bodies, const TopoDS_Shape &shape, const std::string &name) {
   std::vector<TopoDS_Shape> parts;
   for (const auto kind : {TopAbs_SOLID, TopAbs_SHELL}) {
     for (TopExp_Explorer part(shape, kind); part.More(); part.Next()) {
@@ -73,7 +73,14 @@ void append_bodies(rust::Vec<StepBody> &bodies, const TopoDS_Shape &shape, const
 
 } // namespace
 
-rust::Vec<StepBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallback_name) {
+rust::Vec<ImportedBody> read_brep_parts(rust::Slice<const uint8_t> bytes, rust::Str fallback_name) {
+  const auto shape = read_brep(bytes);
+  rust::Vec<ImportedBody> bodies;
+  append_bodies(bodies, shape->shape, fallback_name.empty() ? "Imported" : std::string(fallback_name));
+  return bodies;
+}
+
+rust::Vec<ImportedBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallback_name) {
   const char *unreadable = "This is not a readable STEP file. Re-export it as AP203 or AP214 and try again.";
   if (bytes.empty()) {
     throw std::runtime_error(unreadable);
@@ -91,7 +98,7 @@ rust::Vec<StepBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallba
 
   const std::string fallback = fallback_name.empty() ? "Imported" : std::string(fallback_name);
   const auto transfer = reader.WS()->TransferReader();
-  rust::Vec<StepBody> bodies;
+  rust::Vec<ImportedBody> bodies;
   for (int index = 1; index <= roots; ++index) {
     const auto root = reader.RootForTransfer(index);
     const TopoDS_Shape shape = transfer->ShapeResult(root);

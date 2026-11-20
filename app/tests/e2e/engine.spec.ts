@@ -1,7 +1,7 @@
 import type { ElectronApplication } from '@playwright/test'
 import path from 'node:path'
 import os from 'node:os'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { expect, launch, test } from './helpers'
 
 test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
@@ -121,6 +121,47 @@ test('creates a cylinder from expressions and undoes and redoes creation', async
   await expect(status).toHaveText(/24942.48 mm³/)
 })
 
+test('imports a B-Rep compound as independently editable bodies in one undo step', async () => {
+  const { app, page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-brep-'))
+  const source = path.join(scratch, 'two-cubes.brep')
+  const target = path.join(scratch, 'BRep.scad3')
+  try {
+    await copyFile(path.join(__dirname, 'fixtures', 'two-cubes.brep'), source)
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+    }, source)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: /Import/ }).click()
+    await expect(status).toHaveText(/24250 mm³/)
+    const bodies = page.getByRole('list', { name: 'Bodies' })
+    await expect(bodies.getByText('two-cubes 1', { exact: true })).toBeVisible()
+    await expect(bodies.getByText('two-cubes 2', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(status).toHaveText(/24000 mm³/)
+    await page.getByRole('button', { name: 'Redo', exact: true }).click()
+    await expect(status).toHaveText(/24250 mm³/)
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+      dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+    }, target)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Save As' }).click()
+    await expect(page.getByText('BRep.scad3', { exact: true })).toBeVisible()
+    await rm(source)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'New box' }).click()
+    await expect(status).toHaveText(/24000 mm³/)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Open project' }).click()
+    await expect(status).toHaveText(/24250 mm³/)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('exports four formats and embeds an imported STEP solid through save and reopen', async () => {
   const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
@@ -148,7 +189,7 @@ test('exports four formats and embeds an imported STEP solid through save and re
       dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
     }, source)
     await page.getByRole('button', { name: 'File', exact: true }).click()
-    await page.getByRole('menuitem', { name: 'Import STEP' }).click()
+    await page.getByRole('menuitem', { name: 'Import model' }).click()
     await expect(status).toHaveText(/48000 mm³/)
     await page.getByRole('button', { name: 'Undo', exact: true }).click()
     await expect(status).toHaveText(/24000 mm³/)

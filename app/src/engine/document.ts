@@ -12,7 +12,7 @@ export interface Body { name: string; shape: Shape | null }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
-  importStep(data: Uint8Array, name: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
+  importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
@@ -195,7 +195,7 @@ export class EngineDocument {
       const bytes = [...sources.values()].reduce((size, data) => size + data.byteLength, edit.data.byteLength)
       if (bytes > MAX_PROJECT_BYTES) throw new Error('This session has too much imported source data. Save and reopen the project to import more.')
       sources.set(edit.importId, edit.data)
-      step = { importName: edit.importName, importId: edit.importId,
+      step = { importName: edit.importName, importId: edit.importId, importFormat: edit.importFormat ?? 'step',
         against: this.shown(this.states[this.cursor].bodies).map(({ body }) => body) }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
@@ -293,13 +293,14 @@ export class EngineDocument {
   private execute({ bodies, project }: State, step: Step, sources = this.imports): State {
     if ('importId' in step) {
       const data = sources.get(step.importId)
-      if (!data) throw new Error('The STEP source for this recovery step is missing.')
+      if (!data) throw new Error('The import source for this recovery step is missing.')
       const against = step.against.map((index) => {
         const shape = bodies[index]?.shape
         if (!shape) throw new Error('An import placement reference is missing.')
         return shape
       })
-      const imported = project.importStep(data, step.importName, MAX_BODIES - bodies.length, against)
+      const imported = project.importModel(data, step.importName, step.importFormat ?? 'step',
+        MAX_BODIES - bodies.length, against)
       for (const body of imported.bodies) if (body.shape) this.display(body.shape)
       return { bodies: [...bodies, ...imported.bodies], project: imported.project }
     }

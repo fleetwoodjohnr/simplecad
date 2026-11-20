@@ -44,7 +44,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
       case 'applyStack':
-      case 'importStep':
+      case 'importModel':
       case 'createShape': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break

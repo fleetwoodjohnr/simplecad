@@ -200,7 +200,7 @@ pub struct CreatedShape {
 }
 
 #[napi(object, object_from_js = false)]
-pub struct ImportedStep {
+pub struct ImportedModel {
     pub project: Project,
     pub bodies: Vec<OpenedBody>,
 }
@@ -244,14 +244,20 @@ fn bounds_for<'a>(shapes: impl IntoIterator<Item = &'a ffi::Shape>) -> Result<[f
 #[napi]
 impl Project {
     #[napi]
-    pub fn import_step(
+    pub fn import_model(
         &self,
         bytes: Uint8Array,
         name: String,
+        format: String,
         limit: u32,
         visible: Vec<ClassInstance<Shape>>,
-    ) -> Result<ImportedStep> {
-        let mut parts = ffi::read_step(&bytes, &name).map_err(reason)?;
+    ) -> Result<ImportedModel> {
+        let mut parts = match format.as_str() {
+            "step" => ffi::read_step(&bytes, &name),
+            "brep" => ffi::read_brep_parts(&bytes, &name),
+            _ => return Err(Error::from_reason("Choose a STEP or B-Rep file.")),
+        }
+        .map_err(reason)?;
         if parts.len() > limit as usize {
             return Err(Error::from_reason(
                 "This import would exceed the project's body limit.",
@@ -301,7 +307,7 @@ impl Project {
                 shape: Some(Shape { inner: part.shape }),
             })
             .collect();
-        Ok(ImportedStep {
+        Ok(ImportedModel {
             project: Project {
                 model,
                 original: self.original.clone(),

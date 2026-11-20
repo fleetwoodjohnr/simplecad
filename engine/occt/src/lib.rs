@@ -79,7 +79,7 @@ pub mod ffi {
         pub above: UniquePtr<Shape>,
     }
 
-    pub struct StepBody {
+    pub struct ImportedBody {
         pub name: String,
         pub shape: UniquePtr<Shape>,
     }
@@ -174,7 +174,8 @@ pub mod ffi {
         fn read_brep(bytes: &[u8]) -> Result<UniquePtr<Shape>>;
         fn write_brep(shape: &Shape) -> Result<Vec<u8>>;
         /// Read independently editable solids or shells, in STEP root order, in mm.
-        fn read_step(bytes: &[u8], fallback_name: &str) -> Result<Vec<StepBody>>;
+        fn read_step(bytes: &[u8], fallback_name: &str) -> Result<Vec<ImportedBody>>;
+        fn read_brep_parts(bytes: &[u8], fallback_name: &str) -> Result<Vec<ImportedBody>>;
         /// Write one analytic STEP transfer root per object in order, as AP214 in mm.
         fn write_step(shapes: &Shapes) -> Result<Vec<u8>>;
         /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
