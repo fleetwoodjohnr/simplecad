@@ -156,3 +156,43 @@ def test_geometry_missing_from_the_table_refuses_the_baseline():
 
     assert Rebuilder(document).adopt_baseline() is False
     assert Rebuilder(document).baseline_size == 0
+
+
+def test_a_body_opened_without_geometry_keeps_its_failed_steps_last_result(tmp_path):
+    """The Atlas Box enclosure vanished: its cut's tool was deleted, and the
+    file kept no shape for it. A failed step's body now shows the step's own
+    newest saved result -- here the cut, as it was on screen -- not nothing."""
+    from simplecad.core.project import load, save
+
+    document = Document("Cut")
+    document.add_feature(BoxFeature(inputs={"width": 20, "depth": 20, "height": 10},
+                                    outputs=["Body"]))
+    tool = document.add_feature(BoxFeature(inputs={"width": 5, "depth": 5, "height": 30},
+                                           outputs=["Tool"]))
+    document.add_feature(BooleanFeature(inputs={
+        "body": BodyRef("Body"), "tools": [BodyRef("Tool")], "operation": "cut",
+        "keep_tool": True,
+    }, outputs=["Body"]))
+    assert Rebuilder(document).rebuild().ok
+    cut = volume(document.body("Body").shape)
+    assert cut == pytest.approx(3750)
+    from simplecad.core.history import History
+
+    History(document).record("Delete")      # as the window records it
+    document.remove_feature(tool.id, splice=False)
+    assert not Rebuilder(document).rebuild().ok
+    path = save(document, str(tmp_path / "cut.scad3"))
+
+    reopened_document, _ = load(path)
+    reopened_document.body("Body").shape = None        # as the Atlas Box file was saved
+    Rebuilder(reopened_document).rebuild()
+    assert reopened_document.features[-1].state.value == "needs_attention"
+    assert volume(reopened_document.body("Body").shape) == pytest.approx(cut)
+
+    # With no saved result for the failed step, the newest one before it.
+    reopened_document.body("Body").shape = None
+    rebuilder = Rebuilder(reopened_document)
+    rebuilder.store.entries = {k: e for k, e in rebuilder.store.entries.items()
+                               if e["feature_id"] != reopened_document.features[-1].id}
+    rebuilder.rebuild()
+    assert volume(reopened_document.body("Body").shape) == pytest.approx(4000)   # uncut

@@ -16,6 +16,7 @@ import zipfile
 from dataclasses import dataclass
 
 from ..core.errors import CadError, guard
+from ..core.paths import system_env
 from .tessellate import Mesh, triangulate
 
 #: Extension -> human label, for file dialogs.
@@ -1348,7 +1349,7 @@ def import_scad(path: str) -> list[ImportedBody]:
             completed = subprocess.run(
                 [executable, "-o", rendered, os.path.abspath(path)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                timeout=300, check=False,
+                timeout=300, check=False, env=system_env(),
             )
         except subprocess.TimeoutExpired as exc:
             raise CadError("OpenSCAD took too long to render this model.") from exc

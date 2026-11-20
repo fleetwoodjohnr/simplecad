@@ -678,3 +678,32 @@ def test_parameter_change_without_explicit_stale_rebuilds_in_worker(child):
     document.parameters.set("width", "35")
     result = ask(child, document)
     assert volume(service.deserialise_shape(result["bodies"]["Box"])) == pytest.approx(35 * 30 * 10)
+
+
+
+def test_undo_shows_the_earlier_result_of_a_body_opened_from_a_file():
+    """The window kept a reopened body's newest geometry after undoing it.
+
+    A body opened from a file had no record of which result it showed, and the
+    guess standing in for one -- same producer, same signature as the last
+    reply -- is exactly what undo produces when it hands the body back to an
+    earlier step. On the Atlas Box, Stack & Place then previewed a part where
+    the window still drew it and committed it where the worker had it.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    from simplecad.core.result_store import ResultStore
+    from simplecad.ui.geometry_client import apply_result
+
+    document = Document("T")
+    document._geometry_store = ResultStore()
+    newest, earlier = (BRepPrimAPI_MakeBox(w, 10.0, 10.0).Shape() for w in (50.0, 10.0))
+    document.bodies["Box"] = Body(name="Box", shape=newest)
+    document.bodies["Box"].id, document.bodies["Box"].producer = "box-id", "first-step"
+    document._geometry_signatures = {"first-step": "sig-1", "second-step": "sig-2"}
+    apply_result(document, {
+        "bodies": {"Box": service.serialise_shape(earlier)},
+        "report": {"signatures": {"first-step": "sig-1"},
+                   "body_metadata": {"Box": {"id": "box-id", "producer": "first-step"}}},
+    })
+    assert volume(document.body("Box").shape) == pytest.approx(1000)

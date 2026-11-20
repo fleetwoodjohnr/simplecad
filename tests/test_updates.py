@@ -365,6 +365,48 @@ def test_an_installer_that_cannot_start_is_reported(tmp_path):
         updates.install(str(tmp_path / "x.deb"), "deb", opener=missing)
 
 
+def test_system_programs_start_without_the_bundled_libraries(monkeypatch):
+    """0.4.1 handed xdg-open its own LD_LIBRARY_PATH, and no update ever opened."""
+    import sys
+
+    from simplecad.core.paths import system_env
+
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/simplecad/_internal")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    assert system_env()["LD_LIBRARY_PATH"] == "/opt/simplecad/_internal"   # not frozen: as is
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert "LD_LIBRARY_PATH" not in system_env()
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/home/me/lib")
+    env = system_env()
+    assert env["LD_LIBRARY_PATH"] == "/home/me/lib" and "LD_LIBRARY_PATH_ORIG" not in env
+
+
+def test_a_package_the_system_would_not_open_says_how_to_install_it(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    from simplecad.core.paths import system_env
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    calls = []
+
+    def run(command, **options):
+        calls.append((command, options["env"]))
+        return subprocess.CompletedProcess(command, 3, b"", b"xdg-open: no method available")
+
+    package = str(tmp_path / "SimpleCAD-0.4.4-linux-x86_64.rpm")
+    assert updates._open_with_system(package, run=run) is False
+    assert calls == [(["xdg-open", package], system_env())]
+    with pytest.raises(updates.UpdateError) as raised:
+        updates.install(package, "rpm", opener=lambda p: updates._open_with_system(p, run=run))
+    assert f"sudo dnf install '{package}'" in str(raised.value)
+    deb = package.replace(".rpm", ".deb")
+    with pytest.raises(updates.UpdateError, match="sudo apt install"):
+        updates.install(deb, "deb", opener=lambda p: updates._open_with_system(p, run=run))
+    ok = lambda command, **_: subprocess.CompletedProcess(command, 0)  # noqa: E731
+    assert updates.install(package, "rpm", opener=lambda p: updates._open_with_system(p, run=ok)) == "handed-off"
+
+
 def test_v0_3_0_is_offered_to_a_v0_2_0_install_and_picks_each_platforms_file():
     assert updates.is_newer("v0.3.0", "0.2.0")
     assert not updates.is_newer("v0.3.0", "0.3.0")

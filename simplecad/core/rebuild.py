@@ -333,6 +333,63 @@ class Rebuilder:
         finally:
             self._evaluating.discard(fid)
 
+    def _kept(self, body, feature, oid, name):
+        """A failed chain's body, given the last result it had when it has no shape.
+
+        "Keeping the last valid model" kept the shape the body held before the
+        rebuild -- and a body opened from a file whose step needs attention
+        holds none, so it vanished: the Atlas Box enclosure, after the box it
+        was cut with was deleted, though every earlier result was in the file.
+        Takes the step's own newest saved result, else walks back through the
+        steps that wrote this object, through each one's own input for it, to
+        the newest result already built or saved for its recipe. Nothing is
+        run. Returns None when *body* already has a shape, or nothing earlier
+        can be had.
+        """
+        if body is not None and body.shape is not None:
+            return None
+        head = self._graph.heads.get(oid)
+        feature = self._graph.features.get(head.feature_id, feature) if head is not None else feature
+        producer = feature.id
+
+        def keep(shape):
+            nonlocal body
+            if body is None:
+                body = Body(name=name, id=oid)
+                body.producer = producer
+            body.shape = shape
+            return body
+
+        # The failed step's own newest result first: what the window showed
+        # before the input went missing. Entries are kept in the order they
+        # were made, in the file and in the worker alike.
+        output = next((n for n, o in feature.output_ids.items() if o == oid), None)
+        for key in reversed([k for k, e in self.store.entries.items() if e.get("feature_id") == feature.id]):
+            try:
+                outputs = self.store.get(feature, key)
+            except Exception:  # noqa: BLE001 - an unreadable result is no result
+                outputs = None
+            if outputs and output in outputs:
+                return keep(outputs[output])
+        seen = set()
+        while feature is not None and feature.id not in seen:
+            seen.add(feature.id)
+            ref = next((r for r in feature.bindings.values() if r.object_id == oid), None)
+            source = self._graph.features.get(ref.feature_id) if ref is not None else None
+            if source is None:
+                return None
+            outputs = self._cache.get(source.id)
+            if outputs is None and source.id not in self._failed:
+                try:
+                    outputs = self.store.get(source, self._signatures.get(source.id))
+                except Exception:  # noqa: BLE001 - an unreadable result is no result
+                    outputs = None
+            output = next((n for n, o in source.output_ids.items() if o == oid), None)
+            if outputs and output in outputs:
+                return keep(outputs[output])
+            feature = source
+        return None
+
     def rebuild(self, force=False, on_feature=None):
         start = time.perf_counter()
         stamp = (self.document.revision, self.document.parameters.to_list())
@@ -373,6 +430,9 @@ class Rebuilder:
             except CadError:
                 if oid in previous:
                     final[oid] = previous[oid]
+                kept = self._kept(final.get(oid), feature, oid, name)
+                if kept is not None:
+                    final[oid] = kept
         # Internal-only documents still need to solve sketches/constructions.
         for oid, ref in graph.heads.items():
             if not graph.names[oid].startswith(self.INTERNAL_PREFIX):
@@ -409,13 +469,16 @@ class Rebuilder:
             if fid not in self._failed:
                 feature.state = FeatureState.NEEDS_ATTENTION
                 feature.message = "An earlier feature failed; keeping the last valid model."
-            for oid in feature.output_ids.values():
+            for name, oid in feature.output_ids.items():
                 if oid in previous:
                     body = previous[oid]
                     body.shape, body.producer, body.name = previous_geometry[oid]
                     final[oid] = body
                 else:
                     final.pop(oid, None)
+                kept = self._kept(final.get(oid), feature, oid, name)
+                if kept is not None:
+                    final[oid] = kept
         old_names = set(document.bodies)
         document.bodies = {body.name: body for body in final.values()}
         self._report.changed_bodies.extend(sorted(old_names - set(document.bodies)))
