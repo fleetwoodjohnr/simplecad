@@ -234,13 +234,6 @@ def _pointer_capsule(pointer: int):
 
 def _current_occt_context():
     """Read Qt's current context in the type accepted by this OCP build."""
-    if sys.platform == "darwin":
-        from OCP.OpenGl import OpenGl_Context
-
-        # OCCT exposes a typed NSOpenGLContext* on macOS. Let its own context
-        # wrapper obtain it from the current Qt context for OCP to return.
-        context = OpenGl_Context()
-        return context.RenderingContext() if context.Init(True) else None
     pointer = _current_gl_context_pointer()
     return _pointer_capsule(pointer) if pointer is not None else None
 
@@ -1470,9 +1463,20 @@ class OcctViewport(QOpenGLWidget):
         return handle
 
     def _occt_window_handle(self):
-        handle = self._native_window_handle()
-        # HWND is bound as a pointer, while X11 and Cocoa use integer handles.
-        return _pointer_capsule(handle) if sys.platform == "win32" else handle
+        if sys.platform != "win32":
+            return self._native_window_handle()
+        # The window holding Qt's current WGL device context owns its pixel
+        # format. The top-level QWidget may have a different pixel format.
+        get_dc = ctypes.windll.opengl32.wglGetCurrentDC
+        get_dc.restype = ctypes.c_void_p
+        get_dc.argtypes = []
+        window_from_dc = ctypes.windll.user32.WindowFromDC
+        window_from_dc.restype = ctypes.c_void_p
+        window_from_dc.argtypes = [ctypes.c_void_p]
+        window = window_from_dc(get_dc())
+        if not window:
+            raise RuntimeError("Qt's current WGL context has no window.")
+        return _pointer_capsule(window)
 
     def _check_health(self) -> None:
         """Keep asking for a frame while a repair is outstanding.
