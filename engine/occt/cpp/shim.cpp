@@ -7,6 +7,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -18,7 +19,9 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
+#include <BRepLProp_SLProps.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -42,6 +45,7 @@
 #include <NCollection_List.hxx>
 #include <Poly_Connect.hxx>
 #include <Poly_Triangulation.hxx>
+#include <ShapeAnalysis_ShapeTolerance.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
@@ -51,6 +55,7 @@
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
@@ -797,6 +802,344 @@ MeshBuffers mesh(const Shape &shape, double deflection, double angle) {
     out.edge_start.push_back(static_cast<uint32_t>(out.edge_points.size() / 3));
   }
   return out;
+}
+
+// -- Align (simplecad/kernel/align.py): the transforms and face data it reads ----------
+
+std::unique_ptr<Trsf> trsf_identity() { return std::make_unique<Trsf>(gp_Trsf()); }
+
+std::unique_ptr<Trsf> trsf_rotation(rust::Slice<const double> p, rust::Slice<const double> a, double angle) {
+  gp_Trsf trsf;
+  trsf.SetRotation(gp_Ax1(gp_Pnt(p[0], p[1], p[2]), gp_Dir(a[0], a[1], a[2])), angle);
+  return std::make_unique<Trsf>(trsf);
+}
+
+std::unique_ptr<Trsf> trsf_translation(rust::Slice<const double> v) {
+  gp_Trsf trsf;
+  trsf.SetTranslation(gp_Vec(v[0], v[1], v[2]));
+  return std::make_unique<Trsf>(trsf);
+}
+
+std::unique_ptr<Trsf> trsf_multiplied(const Trsf &a, const Trsf &b) {
+  return std::make_unique<Trsf>(a.trsf.Multiplied(b.trsf));
+}
+
+rust::Vec<double> trsf_point(const Trsf &trsf, rust::Slice<const double> point) {
+  gp_Pnt p(point[0], point[1], point[2]);
+  p.Transform(trsf.trsf);
+  rust::Vec<double> out;
+  for (double v : {p.X(), p.Y(), p.Z()}) {
+    out.push_back(v);
+  }
+  return out;
+}
+
+rust::Vec<double> trsf_values(const Trsf &trsf) {
+  rust::Vec<double> out;
+  for (int row = 1; row <= 3; ++row) {
+    for (int column = 1; column <= 4; ++column) {
+      out.push_back(trsf.trsf.Value(row, column));
+    }
+  }
+  return out;
+}
+
+std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, bool copy) {
+  BRepBuilderAPI_Transform builder(shape.shape, trsf.trsf, copy);
+  if (!builder.IsDone()) {
+    throw std::runtime_error("The move operation did not succeed on this geometry.");
+  }
+  return owned(builder.Shape(), "move");
+}
+
+std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t index) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  if (index >= static_cast<uint32_t>(map.Extent())) {
+    throw std::runtime_error("no such face");
+  }
+  return owned(map.FindKey(static_cast<int>(index) + 1), "face");
+}
+
+// `detect.analyse_plane` and what `align.planar_frame` reads off the plane.
+PlaneFrame plane_frame(const Shape &face_shape) {
+  PlaneFrame out{};
+  if (face_shape.shape.IsNull() || face_shape.shape.ShapeType() != TopAbs_FACE) {
+    return out;
+  }
+  const TopoDS_Face face = TopoDS::Face(face_shape.shape);
+  const auto plane = analyse_plane(face);
+  if (!plane) {
+    return out;
+  }
+  out.planar = true;
+  out.center = {plane->center.X(), plane->center.Y(), plane->center.Z()};
+  out.normal = {plane->normal.X(), plane->normal.Y(), plane->normal.Z()};
+  out.area = plane->area;
+  const gp_Ax3 position = BRepAdaptor_Surface(face).Plane().Position();
+  const gp_Pnt origin = position.Location();
+  const gp_Dir x = position.XDirection();
+  const gp_Dir y = position.YDirection();
+  out.origin = {origin.X(), origin.Y(), origin.Z()};
+  out.x_dir = {x.X(), x.Y(), x.Z()};
+  out.y_dir = {y.X(), y.Y(), y.Z()};
+  BRepTools::UVBounds(face, out.uv[0], out.uv[1], out.uv[2], out.uv[3]);
+  return out;
+}
+
+// `detect.analyse_cylinder`.
+CylinderData cylinder_data(const Shape &face_shape) {
+  CylinderData out{};
+  if (face_shape.shape.IsNull() || face_shape.shape.ShapeType() != TopAbs_FACE) {
+    return out;
+  }
+  const TopoDS_Face face = TopoDS::Face(face_shape.shape);
+  BRepAdaptor_Surface adaptor(face);
+  if (adaptor.GetType() != GeomAbs_Cylinder) {
+    return out;
+  }
+  const gp_Cylinder cylinder = adaptor.Cylinder();
+  const gp_Pnt location = cylinder.Axis().Location();
+  const gp_Dir direction = cylinder.Axis().Direction();
+  double umin, umax, vmin, vmax;
+  BRepTools::UVBounds(face, umin, umax, vmin, vmax);
+  out.cylindrical = true;
+  out.radius = cylinder.Radius();
+  out.length = std::abs(vmax - vmin);
+  out.direction = {direction.X(), direction.Y(), direction.Z()};
+  out.origin = {location.X() + direction.X() * vmin, location.Y() + direction.Y() * vmin,
+                location.Z() + direction.Z() * vmin};
+  BRepLProp_SLProps props(BRepAdaptor_Surface(face), (umin + umax) / 2.0, (vmin + vmax) / 2.0, 1, 1e-6);
+  if (props.IsNormalDefined()) {
+    gp_Dir normal = props.Normal();
+    const gp_Pnt point = props.Value();
+    const double middle = (vmin + vmax) / 2.0;
+    const double radial[3] = {point.X() - (location.X() + direction.X() * middle),
+                              point.Y() - (location.Y() + direction.Y() * middle),
+                              point.Z() - (location.Z() + direction.Z() * middle)};
+    double n[3] = {normal.X(), normal.Y(), normal.Z()};
+    if (face.Orientation() == TopAbs_REVERSED) {
+      for (double &v : n) {
+        v = -v;
+      }
+    }
+    const double dot = n[0] * radial[0] + n[1] * radial[1] + n[2] * radial[2];
+    out.internal = dot < 0.0;
+  }
+  return out;
+}
+
+namespace {
+std::optional<std::pair<double, double>> optimal_x(const TopoDS_Shape &shape) {
+  Bnd_Box box;
+  BRepBndLib::AddOptimal(shape, box, false, true);
+  if (box.IsVoid()) {
+    return std::nullopt;
+  }
+  return std::make_pair(box.CornerMin().X(), box.CornerMax().X());
+}
+} // namespace
+
+// `align._x_extent`: the X range of AddOptimal(shape, exact geometry), bounding
+// only the faces whose cheap box can reach an extreme.
+rust::Vec<double> x_extent(const Shape &shape_in) {
+  const TopoDS_Shape &shape = shape_in.shape;
+  const bool loose = TopExp_Explorer(shape, TopAbs_EDGE, TopAbs_FACE).More() ||
+                     TopExp_Explorer(shape, TopAbs_VERTEX, TopAbs_EDGE).More();
+  struct Entry {
+    double low, high;
+    TopoDS_Shape face;
+  };
+  std::vector<Entry> faces;
+  double margin = ShapeAnalysis_ShapeTolerance().Tolerance(shape, 1);
+  for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+    Bnd_Box cheap;
+    BRepBndLib::Add(e.Current(), cheap, false);
+    if (!cheap.IsVoid()) {
+      faces.push_back({cheap.CornerMin().X(), cheap.CornerMax().X(), e.Current()});
+    }
+  }
+  rust::Vec<double> out;
+  if (loose || faces.empty()) {
+    const auto whole = optimal_x(shape);
+    out.push_back(whole ? whole->first : 0.0);
+    out.push_back(whole ? whole->second : 0.0);
+    return out;
+  }
+  margin = 2.0 * margin + 1e-9;
+  double low = std::numeric_limits<double>::infinity(), high = -low;
+  std::vector<size_t> order(faces.size());
+  for (size_t i = 0; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::vector<bool> done(faces.size(), false);
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return -faces[a].high < -faces[b].high; });
+  for (size_t index : order) {
+    if (faces[index].high + margin < high) {
+      break;
+    }
+    if (const auto found = optimal_x(faces[index].face)) {
+      done[index] = true;
+      low = std::min(low, found->first);
+      high = std::max(high, found->second);
+    }
+  }
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return faces[a].low < faces[b].low; });
+  for (size_t index : order) {
+    if (faces[index].low - margin > low) {
+      break;
+    }
+    if (!done[index]) {
+      if (const auto found = optimal_x(faces[index].face)) {
+        low = std::min(low, found->first);
+        high = std::max(high, found->second);
+      }
+    }
+  }
+  out.push_back(low <= high ? low : 0.0);
+  out.push_back(low <= high ? high : 0.0);
+  return out;
+}
+
+// -- Combine (BooleanFeature in simplecad/kernel/operations.py) ------------------------
+
+std::unique_ptr<Shapes> shapes_new() { return std::make_unique<Shapes>(); }
+
+void shapes_push(Shapes &shapes, const Shape &shape) { shapes.list.Append(shape.shape); }
+
+namespace {
+template <class Operation>
+TopoDS_Shape combined(const ShapeList &arguments, const ShapeList &tools, double fuzzy) {
+  Operation operation;
+  operation.SetArguments(arguments);
+  operation.SetTools(tools);
+  operation.SetNonDestructive(true);
+  if (fuzzy != 0.0) {
+    operation.SetFuzzyValue(fuzzy);
+  }
+  operation.SetRunParallel(true);
+  operation.Build();
+  if (!operation.IsDone()) {
+    // `check_done`, translated: what the Python app says for StdFail_NotDone.
+    throw std::runtime_error("The operation could not be completed on this geometry. "
+                             "Try adjusting the size or position of the inputs slightly.");
+  }
+  return operation.Shape();
+}
+} // namespace
+
+// `BooleanFeature.execute`'s `combine`: join (0) or cut (1) as one boolean with
+// every tool; intersect (2) one tool at a time, in order.
+std::unique_ptr<Shape> combine(uint8_t operation, const Shape &target, const Shapes &tools, double fuzzy) {
+  ShapeList arguments;
+  arguments.Append(target.shape);
+  if (operation == 0) {
+    return owned(combined<BRepAlgoAPI_Fuse>(arguments, tools.list, fuzzy), "join");
+  }
+  if (operation == 1) {
+    return owned(combined<BRepAlgoAPI_Cut>(arguments, tools.list, fuzzy), "cut");
+  }
+  TopoDS_Shape result = target.shape;
+  for (const TopoDS_Shape &tool : tools.list) {
+    ShapeList argument, one;
+    argument.Append(result);
+    one.Append(tool);
+    result = combined<BRepAlgoAPI_Common>(argument, one, fuzzy);
+  }
+  return owned(result, "intersect");
+}
+
+// `_join_solids`: the distinct solids in a result.
+uint32_t distinct_solids(const Shape &shape) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_SOLID, map);
+  return static_cast<uint32_t>(map.Extent());
+}
+
+// `_join_bridge_gap`: the smallest tolerance connecting every solid, 0 when they
+// already touch, or -1 when some solid is more than 0.2 mm from the rest.
+double join_bridge_gap(const Shape &shape) {
+  constexpr double kMaxJoinGap = 0.2;
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_SOLID, map);
+  const int count = map.Extent();
+  if (count == 0) {
+    return -1;
+  }
+  if (count == 1) {
+    return 0;
+  }
+  std::vector<int> parent(count);
+  for (int i = 0; i < count; ++i) {
+    parent[i] = i;
+  }
+  auto root = [&](int index) {
+    while (parent[index] != index) {
+      parent[index] = parent[parent[index]];
+      index = parent[index];
+    }
+    return index;
+  };
+  std::vector<std::pair<gp_XYZ, gp_XYZ>> bounds;
+  for (int i = 1; i <= count; ++i) {
+    Bnd_Box box;
+    BRepBndLib::Add(map.FindKey(i), box, true);
+    bounds.push_back(box.IsVoid() ? std::make_pair(gp_XYZ(0, 0, 0), gp_XYZ(0, 0, 0))
+                                  : std::make_pair(box.CornerMin().XYZ(), box.CornerMax().XYZ()));
+  }
+  std::vector<int> order(count);
+  for (int i = 0; i < count; ++i) {
+    order[i] = i;
+  }
+  std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return bounds[a].first.X() < bounds[b].first.X(); });
+  std::vector<std::tuple<double, int, int>> nearby;
+  for (size_t position = 0; position < order.size(); ++position) {
+    const int first = order[position];
+    const auto &[first_low, first_high] = bounds[first];
+    for (size_t next = position + 1; next < order.size(); ++next) {
+      const int second = order[next];
+      const auto &[second_low, second_high] = bounds[second];
+      if (second_low.X() - first_high.X() > kMaxJoinGap + 1.0e-9) {
+        break;
+      }
+      double box_gap_sq = 0;
+      for (int axis = 1; axis <= 3; ++axis) {
+        const double gap = std::max({0.0, first_low.Coord(axis) - second_high.Coord(axis),
+                                     second_low.Coord(axis) - first_high.Coord(axis)});
+        box_gap_sq += gap * gap;
+      }
+      if (box_gap_sq > (kMaxJoinGap + 1.0e-9) * (kMaxJoinGap + 1.0e-9)) {
+        continue;
+      }
+      BRepExtrema_DistShapeShape distance;
+      distance.LoadS1(map.FindKey(first + 1));
+      distance.LoadS2(map.FindKey(second + 1));
+      distance.Perform();
+      if (!distance.IsDone()) {
+        continue;
+      }
+      const double gap = distance.Value();
+      if (gap <= kMaxJoinGap + 1.0e-9) {
+        nearby.emplace_back(gap, first, second);
+      }
+    }
+  }
+  std::sort(nearby.begin(), nearby.end());
+  double largest = 0;
+  for (const auto &[gap, first, second] : nearby) {
+    const int a = root(first), b = root(second);
+    if (a != b) {
+      parent[a] = b;
+      largest = gap;
+    }
+  }
+  const int one = root(0);
+  for (int i = 1; i < count; ++i) {
+    if (root(i) != one) {
+      return -1;
+    }
+  }
+  return largest;
 }
 
 void crash() {

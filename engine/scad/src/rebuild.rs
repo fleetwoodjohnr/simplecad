@@ -37,7 +37,7 @@ pub struct StepError {
     pub lost: bool,
 }
 
-fn failed(message: impl Into<String>) -> StepError {
+pub(crate) fn failed(message: impl Into<String>) -> StepError {
     StepError {
         message: message.into(),
         lost: false,
@@ -78,11 +78,17 @@ pub struct Context<'a> {
     feature: &'a Value,
     bodies: HashMap<String, Shape>,
     parameters: &'a HashMap<String, f64>,
+    /// What the step says about its result (`feature.message`).
+    message: std::cell::RefCell<String>,
 }
 
 impl Context<'_> {
-    fn input(&self, key: &str) -> Option<&Value> {
+    pub(crate) fn input(&self, key: &str) -> Option<&Value> {
         self.feature["inputs"].get(key)
+    }
+
+    pub(crate) fn set_message(&self, message: String) {
+        *self.message.borrow_mut() = message;
     }
 
     /// `ctx.shape`: the body an input names.
@@ -158,7 +164,7 @@ impl Context<'_> {
 }
 
 /// A body alias as `str()` of a decoded input gives it.
-fn alias(value: &Value) -> String {
+pub(crate) fn alias(value: &Value) -> String {
     match value {
         Value::Object(map) => map
             .get("__body__")
@@ -277,6 +283,8 @@ pub const PORTED: &[&str] = &[
     "move",
     "move_many",
     "shell",
+    "align",
+    "boolean",
 ];
 
 /// The steps this build can run, by type; `None` for the others.
@@ -475,11 +483,133 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 let pulled = occt::push_pull(&shape, face, distance).map_err(kernel)?;
                 Ok(BTreeMap::from([(body_name()?, Rc::new(pulled))]))
             }
+            "align" => {
+                let (name, placed) = crate::align::execute(ctx)?;
+                Ok(BTreeMap::from([(name, placed)]))
+            }
+            "boolean" => combine(ctx),
             _ => unreachable!(),
         }
     };
     PORTED.contains(&kind).then(run)
 }
+
+/// `BooleanFeature`: Join, Cut or Intersect, one target body against one or more tools.
+fn combine(ctx: &Context) -> Result<BTreeMap<String, Shape>, StepError> {
+    let text = |value: Option<&Value>, default: &str| match value {
+        None => default.to_string(),
+        Some(v) => alias(v),
+    };
+    let operation = text(ctx.input("operation"), "join");
+    let code = match operation.as_str() {
+        "join" => 0,
+        "cut" => 1,
+        "intersect" => 2,
+        _ => return Err(failed(format!("'{operation}' is not a combine operation."))),
+    };
+    let did_not = || {
+        failed(
+            "The combine operation did not succeed on this geometry. Try adjusting the inputs slightly, or undo and take a different approach.",
+        )
+    };
+    let name = ctx.input("body").map(alias).ok_or_else(did_not)?;
+    // `tool_names`: `tools`, or a project's single `tool` from before several were allowed.
+    let tool_names: Vec<String> = match ctx.input("tools") {
+        Some(Value::Array(tools)) if !tools.is_empty() => tools.iter().map(alias).collect(),
+        _ => match ctx.input("tool") {
+            Some(tool) if !matches!(tool, Value::Null) && !alias(tool).is_empty() => {
+                vec![alias(tool)]
+            }
+            _ => Vec::new(),
+        },
+    };
+    if tool_names.is_empty() {
+        return Err(failed("Combine needs a second body to work with."));
+    }
+    let target = ctx.shape("body")?;
+    let mut tools = Vec::with_capacity(tool_names.len());
+    for tool in &tool_names {
+        tools.push(ctx.bodies.get(tool).cloned().ok_or_else(|| {
+            failed(format!("The body '{tool}' this feature needs is not available. It may have been deleted. Re-select the body."))
+        })?);
+    }
+    let kernel = |e: occt::Exception| {
+        let what = e.what();
+        if what.starts_with("The operation could not be completed") {
+            failed(what)
+        } else {
+            failed(format!(
+                "The {operation} operation did not succeed on this geometry. Try adjusting the inputs slightly, or undo and take a different approach."
+            ))
+        }
+    };
+    let run = |fuzzy: f64| -> Result<occt::UniquePtr<occt::Shape>, StepError> {
+        let mut list = occt::shapes_new();
+        for tool in &tools {
+            occt::shapes_push(list.pin_mut(), tool);
+        }
+        occt::combine(code, &target, &list, fuzzy).map_err(kernel)
+    };
+    let valid = |shape: &occt::Shape| occt::is_valid(shape).unwrap_or(false);
+    let mut result = run(0.0)?;
+    if code == 0 {
+        // A Join must make one connected solid: parts that touch, or are within a
+        // measured gap of 0.2 mm, are joined with just enough fuzziness to bridge it.
+        let mut connected = occt::distinct_solids(&result) == 1;
+        let mut checked = false;
+        let mut bridged = None;
+        if occt::distinct_solids(&result) > 1 {
+            let gap = occt::join_bridge_gap(&result);
+            if gap < 0.0 {
+                return Err(failed(
+                    "Join cannot make one connected solid: the parts do not make solid contact within 0.2 mm. Move them closer with Align & Stack, then try Join again.",
+                ));
+            }
+            let fuzzies: Vec<f64> = if gap > JOIN_CONTACT_MM {
+                vec![gap + 1.0e-6]
+            } else {
+                [1.0e-4, 1.0e-3].into_iter().filter(|v| *v <= 0.2).collect()
+            };
+            for fuzzy in fuzzies {
+                let candidate = run(fuzzy)?;
+                if occt::distinct_solids(&candidate) == 1 && valid(&candidate) {
+                    result = candidate;
+                    connected = true;
+                    checked = true;
+                    bridged = Some(gap);
+                    break;
+                }
+            }
+        }
+        if !connected || (!checked && !valid(&result)) {
+            return Err(failed(
+                "Join could not make one valid connected solid. Adjust the parts so their faces overlap, then try again.",
+            ));
+        }
+        if let Some(gap) = bridged.filter(|g| *g > JOIN_CONTACT_MM) {
+            ctx.set_message(format!(
+                "Join bridged a {gap:.3} mm gap; the parts did not originally touch."
+            ));
+        }
+    } else if occt::solid_count(&result) == 0 || !valid(&result) {
+        let title = if code == 1 { "Cut" } else { "Intersect" };
+        return Err(failed(format!(
+            "{title} could not make a valid solid. Check that the target and tools are valid solids, then adjust their overlap."
+        )));
+    }
+    let mut outputs = BTreeMap::from([(name.clone(), Rc::new(result))]);
+    if crate::align::truthy(ctx.input("keep_tool")) {
+        for (tool, shape) in tool_names.iter().zip(&tools) {
+            if *tool != name {
+                outputs.insert(tool.clone(), shape.clone());
+            }
+        }
+    }
+    Ok(outputs)
+}
+
+/// Below this a measured gap is contact, not a gap (`JOIN_CONTACT_MM`).
+const JOIN_CONTACT_MM: f64 = 1.0e-6;
 
 /// A primitive's placement (`_Primitive._placement` then `_finish`): moved to
 /// `x y z`, then turned about X, Y and Z by `rx ry rz` degrees.
@@ -701,7 +831,12 @@ impl Rebuilder<'_> {
             self.cache.insert(fid.to_string(), outputs.clone());
             return Ok(outputs);
         }
-        // `_input_context`: each bound name, from the step that wrote it.
+        let bodies = self.inputs(&feature)?;
+        self.finish(fid, feature, signature, bodies, suppressed)
+    }
+
+    /// `_input_context`: each bound name, from the step that wrote it.
+    fn inputs(&mut self, feature: &Value) -> Result<HashMap<String, Shape>, StepError> {
         let mut bodies = HashMap::new();
         for (name, reference) in feature["bindings"].as_object().into_iter().flatten() {
             let source_id = reference["feature_id"].as_str().unwrap_or("");
@@ -728,6 +863,18 @@ impl Rebuilder<'_> {
                 }
             };
         }
+        Ok(bodies)
+    }
+
+    /// The step run on its inputs, and its result stored.
+    fn finish(
+        &mut self,
+        fid: &str,
+        feature: Value,
+        signature: String,
+        bodies: HashMap<String, Shape>,
+        suppressed: bool,
+    ) -> Result<Outputs, StepError> {
         let names: Vec<String> = feature["outputs"]
             .as_array()
             .into_iter()
@@ -747,6 +894,7 @@ impl Rebuilder<'_> {
                 feature: &feature,
                 bodies,
                 parameters: &self.parameters,
+                message: Default::default(),
             };
             let made = execute(kind, &ctx).ok_or_else(|| {
                 failed("This step has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.")
@@ -755,7 +903,7 @@ impl Rebuilder<'_> {
                 return Err(failed("This feature produced no geometry."));
             }
             self.states
-                .insert(fid.to_string(), ("ok".into(), String::new()));
+                .insert(fid.to_string(), ("ok".into(), ctx.message.take()));
             self.rebuilt.push(fid.to_string());
             made
         };
@@ -818,6 +966,95 @@ impl Rebuilder<'_> {
     }
 }
 
+/// A rebuilder over `payload`'s steps, saved results and blobs.
+fn setup<'a>(
+    order: &[Value],
+    payload: &Value,
+    signatures_now: BTreeMap<String, String>,
+    parameters: HashMap<String, f64>,
+    blobs: &'a BTreeMap<String, Vec<u8>>,
+    original: &'a [u8],
+    stale: &BTreeSet<String>,
+) -> Rebuilder<'a> {
+    let archive = if original.is_empty() {
+        None
+    } else {
+        zip::ZipArchive::new(Cursor::new(original)).ok()
+    };
+    Rebuilder {
+        features: order
+            .iter()
+            .filter_map(|f| Some((f["id"].as_str()?.to_string(), f.clone())))
+            .collect(),
+        signatures: signatures_now,
+        entries: payload["cache"]["entries"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        store: Store {
+            original: archive,
+            model_blobs: blobs,
+            decoded: HashMap::new(),
+        },
+        parameters,
+        invalid: stale.iter().cloned().collect(),
+        cache: HashMap::new(),
+        failed: HashSet::new(),
+        evaluating: HashSet::new(),
+        states: HashMap::new(),
+        failures: BTreeMap::new(),
+        rebuilt: Vec::new(),
+        new_entries: Map::new(),
+        new_blobs: BTreeMap::new(),
+    }
+}
+
+/// Each step of type `kind` solved again on its saved inputs, for checking a
+/// port against the Python app: Align's transform (3×4, row by row) and
+/// description, or the error it gives.
+pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Value>, String> {
+    let unreadable = || "This project's steps could not be read.".to_string();
+    let order: Vec<Value> = model.payload["features"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let signatures_now = signatures(&model.payload).ok_or_else(unreadable)?;
+    let (parameters, _) = resolve(
+        model.payload["parameters"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    let blobs = model.blobs.clone();
+    let mut rebuilder = setup(
+        &order,
+        &model.payload,
+        signatures_now,
+        parameters,
+        &blobs,
+        original,
+        &BTreeSet::new(),
+    );
+    let mut found = Vec::new();
+    for feature in order.iter().filter(|f| f["type"] == kind) {
+        let name = feature["name"].clone();
+        let outcome = rebuilder.inputs(feature).and_then(|bodies| {
+            let ctx = Context { feature, bodies, parameters: &rebuilder.parameters, message: Default::default() };
+            match kind {
+                "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
+                    json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
+                }),
+                _ => Err(failed("not a checked step type")),
+            }
+        });
+        found.push(match outcome {
+            Ok(value) => json!({ "name": name, "result": value }),
+            Err(error) => json!({ "name": name, "error": error.message }),
+        });
+    }
+    Ok(found)
+}
+
 /// `DependencyGraph.dependents`: `ids` and everything downstream of them.
 fn dependents(order: &[Value], ids: &HashSet<String>) -> HashSet<String> {
     let mut found = ids.clone();
@@ -853,37 +1090,15 @@ pub fn rebuild(
             .unwrap_or(&[]),
     );
     let blobs = model.blobs.clone();
-    let archive = if original.is_empty() {
-        None
-    } else {
-        zip::ZipArchive::new(Cursor::new(original)).ok()
-    };
-    let mut rebuilder = Rebuilder {
-        features: order
-            .iter()
-            .filter_map(|f| Some((f["id"].as_str()?.to_string(), f.clone())))
-            .collect(),
-        signatures: signatures_now.clone(),
-        entries: model.payload["cache"]["entries"]
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        store: Store {
-            original: archive,
-            model_blobs: &blobs,
-            decoded: HashMap::new(),
-        },
+    let mut rebuilder = setup(
+        &order,
+        &model.payload,
+        signatures_now.clone(),
         parameters,
-        invalid: stale.iter().cloned().collect(),
-        cache: HashMap::new(),
-        failed: HashSet::new(),
-        evaluating: HashSet::new(),
-        states: HashMap::new(),
-        failures: BTreeMap::new(),
-        rebuilt: Vec::new(),
-        new_entries: Map::new(),
-        new_blobs: BTreeMap::new(),
-    };
+        &blobs,
+        original,
+        stale,
+    );
 
     // The graph's heads: each object's newest writer, in the order first written.
     let mut heads: Vec<(String, String, String)> = Vec::new();

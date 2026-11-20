@@ -59,6 +59,37 @@ pub mod ffi {
         pub radius: f64,
     }
 
+    /// A face as `detect.analyse_plane` and `align.planar_frame` read it.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct PlaneFrame {
+        /// False for a face that is not planar; the rest is then zero.
+        pub planar: bool,
+        pub center: [f64; 3],
+        /// Outward unit normal.
+        pub normal: [f64; 3],
+        pub area: f64,
+        /// The plane's own position: origin, X and Y directions.
+        pub origin: [f64; 3],
+        pub x_dir: [f64; 3],
+        pub y_dir: [f64; 3],
+        /// `BRepTools::UVBounds`: umin, umax, vmin, vmax.
+        pub uv: [f64; 4],
+    }
+
+    /// A face as `detect.analyse_cylinder` reads it.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct CylinderData {
+        /// False for a face that is not cylindrical; the rest is then zero.
+        pub cylindrical: bool,
+        pub radius: f64,
+        /// A point on the axis, at the face's low end.
+        pub origin: [f64; 3],
+        pub direction: [f64; 3],
+        pub length: f64,
+        /// A hole rather than a shaft.
+        pub internal: bool,
+    }
+
     unsafe extern "C++" {
         include!("shim.hpp");
 
@@ -111,6 +142,42 @@ pub mod ffi {
         fn push_pull(shape: &Shape, face: u32, distance: f64) -> Result<UniquePtr<Shape>>;
         /// Mesh with an absolute chord `deflection` (mm) and `angle` (radians).
         fn mesh(shape: &Shape, deflection: f64, angle: f64) -> Result<MeshBuffers>;
+        /// A `gp_Trsf`, composed in C++ as OCP composes it.
+        type Trsf;
+        fn trsf_identity() -> UniquePtr<Trsf>;
+        /// A turn of `angle` radians about the axis through `pivot`.
+        fn trsf_rotation(pivot: &[f64], axis: &[f64], angle: f64) -> Result<UniquePtr<Trsf>>;
+        fn trsf_translation(by: &[f64]) -> UniquePtr<Trsf>;
+        /// `a.Multiplied(b)`: `b`, then `a`.
+        fn trsf_multiplied(a: &Trsf, b: &Trsf) -> UniquePtr<Trsf>;
+        fn trsf_point(trsf: &Trsf, point: &[f64]) -> Vec<f64>;
+        /// The 3×4 matrix, row by row.
+        fn trsf_values(trsf: &Trsf) -> Vec<f64>;
+        /// `occ.transformed`: geometry copied, or only relocated.
+        fn transform_shape(shape: &Shape, trsf: &Trsf, copy: bool) -> Result<UniquePtr<Shape>>;
+        /// Face `face` (a `faces` index) on its own.
+        fn sub_face(shape: &Shape, face: u32) -> Result<UniquePtr<Shape>>;
+        fn plane_frame(face: &Shape) -> Result<PlaneFrame>;
+        fn cylinder_data(face: &Shape) -> Result<CylinderData>;
+        /// `align._x_extent`: the X range of the exact optimal bounding box.
+        fn x_extent(shape: &Shape) -> Result<Vec<f64>>;
+        /// Shapes passed together, in order: a boolean's tools.
+        type Shapes;
+        fn shapes_new() -> UniquePtr<Shapes>;
+        fn shapes_push(shapes: Pin<&mut Shapes>, shape: &Shape);
+        /// `BooleanFeature`'s boolean: join (0), cut (1) or intersect (2) of
+        /// `target` with `tools`, with an optional fuzzy value.
+        fn combine(
+            operation: u8,
+            target: &Shape,
+            tools: &Shapes,
+            fuzzy: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        /// The distinct solids in a shape (`_join_solids`).
+        fn distinct_solids(shape: &Shape) -> u32;
+        /// `_join_bridge_gap`: the tolerance that connects every solid, 0 when they
+        /// touch, or -1 when one is more than 0.2 mm from the rest.
+        fn join_bridge_gap(shape: &Shape) -> f64;
         /// Dereferences null on purpose, so the crash isolation can be drilled.
         fn crash();
     }
@@ -123,6 +190,9 @@ pub use ffi::*;
 // atomically reference counted.
 unsafe impl Send for ffi::Shape {}
 unsafe impl Sync for ffi::Shape {}
+unsafe impl Send for ffi::Trsf {}
+unsafe impl Send for ffi::Shapes {}
+unsafe impl Sync for ffi::Trsf {}
 
 #[cfg(test)]
 mod tests {

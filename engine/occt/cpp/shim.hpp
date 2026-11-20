@@ -7,7 +7,9 @@
 #include <string>
 
 #include <Standard_Failure.hxx>
+#include <NCollection_List.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Trsf.hxx>
 
 #include "rust/cxx.h"
 
@@ -35,11 +37,27 @@ namespace simplecad {
 struct MeshBuffers;
 struct FaceData;
 struct FaceFingerprint;
+struct PlaneFrame;
+struct CylinderData;
 
 class Shape {
 public:
   explicit Shape(TopoDS_Shape shape) : shape(std::move(shape)) {}
   TopoDS_Shape shape;
+};
+
+// Shapes passed together, in order (a boolean's tools).
+class Shapes {
+public:
+  NCollection_List<TopoDS_Shape> list;
+};
+
+// A gp_Trsf, kept whole: composing it here, as OCP does, keeps placements
+// identical to the Python app's to the last bit.
+class Trsf {
+public:
+  explicit Trsf(gp_Trsf trsf) : trsf(trsf) {}
+  gp_Trsf trsf;
 };
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
@@ -66,6 +84,22 @@ rust::Vec<FaceData> faces(const Shape &shape);
 FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
 std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t face, double distance);
 MeshBuffers mesh(const Shape &shape, double deflection, double angle);
+std::unique_ptr<Trsf> trsf_identity();
+std::unique_ptr<Trsf> trsf_rotation(rust::Slice<const double> pivot, rust::Slice<const double> axis, double angle);
+std::unique_ptr<Trsf> trsf_translation(rust::Slice<const double> by);
+std::unique_ptr<Trsf> trsf_multiplied(const Trsf &a, const Trsf &b);
+rust::Vec<double> trsf_point(const Trsf &trsf, rust::Slice<const double> point);
+rust::Vec<double> trsf_values(const Trsf &trsf);
+std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, bool copy);
+std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t face);
+PlaneFrame plane_frame(const Shape &face);
+CylinderData cylinder_data(const Shape &face);
+rust::Vec<double> x_extent(const Shape &shape);
+std::unique_ptr<Shapes> shapes_new();
+void shapes_push(Shapes &shapes, const Shape &shape);
+std::unique_ptr<Shape> combine(uint8_t operation, const Shape &target, const Shapes &tools, double fuzzy);
+uint32_t distinct_solids(const Shape &shape);
+double join_bridge_gap(const Shape &shape);
 void crash();
 
 } // namespace simplecad

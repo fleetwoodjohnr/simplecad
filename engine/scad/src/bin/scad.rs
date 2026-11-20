@@ -205,6 +205,21 @@ fn rebuild(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `scad steps <file> <type>`: each step of that type solved again on its saved
+/// inputs (see `rebuild::check_steps`), for `compare_projects.py --steps`.
+fn steps(args: &[String]) -> Result<(), String> {
+    let [path, kind] = args else {
+        return Err("usage: scad steps <file.scad3> <step type>".into());
+    };
+    let original = std::fs::read(path).map_err(|e| e.to_string())?;
+    let project = scad::project::read(&original)?;
+    let mut model = scad::document::Model::open(&project);
+    model.adopt_baseline(&project.bodies);
+    let found = scad::rebuild::check_steps(&model, &original, kind)?;
+    println!("{}", json!(found));
+    Ok(())
+}
+
 type Command = fn(&[String]) -> Result<(), String>;
 
 fn main() {
@@ -213,6 +228,7 @@ fn main() {
         Some("pull") => Some(pull),
         Some("save") => Some(save),
         Some("rebuild") => Some(rebuild),
+        Some("steps") => Some(steps),
         _ => None,
     };
     if let Some(command) = command {

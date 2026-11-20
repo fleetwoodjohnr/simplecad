@@ -335,6 +335,89 @@ def evaluations(paths, seed=20261119):
     print(f"evaluate.json: {len(cases)} expressions")
 
 
+def align_project(out="align"):
+    """A project exercising every Align mode and every Combine, saved with
+    Python's bodies and step messages, for the Rust rebuild to match."""
+    import simplecad.kernel  # noqa: F401 - registers every feature type
+    from simplecad.core.document import BodyRef, Document
+    from simplecad.core.naming import make_ref, sub_shapes
+    from simplecad.core.project import save
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.align import frame_basis, reference_frame
+    from simplecad.kernel.detect import analyse_cylinder, analyse_plane
+    from simplecad.kernel.occ import bounding_box, volume
+    from simplecad.kernel.operations import AlignFeature, BooleanFeature
+    from simplecad.kernel.primitives import BoxFeature, CylinderFeature, TubeFeature
+
+    document = Document("Align oracle")
+    rebuilder = Rebuilder(document)
+
+    def add(feature):
+        document.add_feature(feature)
+        assert rebuilder.rebuild().ok, rebuilder._report.summary()
+
+    def planar(name, normal, pick=max):
+        faces = [f for f in sub_shapes(document.body(name).shape, "face")
+                 if (i := analyse_plane(f)) and all(abs(a - b) < 1e-9 for a, b in zip(i.normal, normal))]
+        return pick(faces, key=lambda f: analyse_plane(f).center[2] + analyse_plane(f).area * 1e-6)
+
+    def round_face(name):
+        return next(f for f in sub_shapes(document.body(name).shape, "face") if analyse_cylinder(f))
+
+    def ref(name, face):
+        return make_ref(document.body(name).shape, face, document.producer_of(name).id, body=name)
+
+    def align(moving, moving_face, target, target_face, **inputs):
+        add(AlignFeature(inputs={"body": BodyRef(moving), "moving_face": ref(moving, moving_face),
+                                 "target_face": ref(target, target_face), **inputs}, outputs=[moving]))
+
+    add(BoxFeature(inputs={"width": "80 mm", "depth": "60 mm", "height": "10 mm", "rz": "27"}, outputs=["Plate"]))
+    add(BoxFeature(inputs={"width": "20 mm", "depth": "10 mm", "height": "8 mm", "x": "200"}, outputs=["Block"]))
+    add(CylinderFeature(inputs={"radius": "3 mm", "height": "12 mm", "x": "-100"}, outputs=["Peg"]))
+    add(BoxFeature(inputs={"width": "6 mm", "depth": "6 mm", "height": "4 mm", "y": "150"}, outputs=["Cap"]))
+    add(CylinderFeature(inputs={"radius": "4 mm", "height": "30 mm", "x": "300"}, outputs=["Shaft"]))
+    add(TubeFeature(inputs={"outer_radius": "8 mm", "inner_radius": "4.2 mm", "height": "20 mm",
+                            "x": "-300", "rx": "90"}, outputs=["Sleeve"]))
+    top = planar("Plate", (0, 0, 1))
+    # Anchors, signed offsets and a quarter turn.
+    align("Block", planar("Block", (0, 0, -1)), "Plate", top, operation="stack", moving_anchor="center",
+          target_anchor="top_left", u="3 mm", v="-2 mm", offset="0 mm", flip=False, rotation="90°")
+    # Edge distances against a frame saved with the step, flipped, with a gap.
+    top = planar("Plate", (0, 0, 1))
+    frame = reference_frame(top)
+    align("Peg", planar("Peg", (0, 0, -1), pick=min), "Plate", top, operation="stack", offset="1.5 mm",
+          flip=True, rotation="0°", u="0 mm", v="0 mm", moving_anchor="center", target_anchor="center",
+          placement_mode="edge_gap", horizontal="left", vertical="top", horizontal_gap="4 mm",
+          vertical_gap="2 mm", target_basis=frame_basis(top, frame), target_u=list(frame.x_axis),
+          target_normal=list(frame.normal))
+    # Saved before anchors existed: Center by edge distance.
+    align("Cap", planar("Cap", (0, 0, -1), pick=min), "Plate", planar("Plate", (0, 0, 1)),
+          operation="center", offset="2 mm", x="5 mm", x_anchor="left", y="0", y_anchor="center", rotation="45°")
+    # A shaft into a bore.
+    align("Shaft", round_face("Shaft"), "Sleeve", [f for f in sub_shapes(document.body("Sleeve").shape, "face")
+                                                    if (c := analyse_cylinder(f)) and c.internal][0],
+          operation="concentric", offset="1 mm", flip=False, rotation="30°")
+    add(BooleanFeature(inputs={"body": BodyRef("Plate"), "tools": [BodyRef("Block")], "operation": "join"},
+                       outputs=["Plate"]))
+    add(BooleanFeature(inputs={"body": BodyRef("Plate"), "tools": [BodyRef("Peg")], "operation": "cut",
+                               "keep_tool": True}, outputs=["Plate"]))
+    add(BoxFeature(inputs={"width": "20 mm", "depth": "40 mm", "height": "20 mm", "x": "-320", "y": "-30",
+                           "z": "-10"}, outputs=["Half"]))
+    add(BoxFeature(inputs={"width": "60 mm", "depth": "10 mm", "height": "20 mm", "x": "-330", "y": "-10",
+                           "z": "-10"}, outputs=["Slice"]))
+    add(BooleanFeature(inputs={"body": BodyRef("Sleeve"), "tools": [BodyRef("Half"), BodyRef("Slice")],
+                               "operation": "intersect"}, outputs=["Sleeve"]))
+    path = save(document, os.path.join(DATA, f"{out}.scad3"))
+    expected = {
+        "bodies": {name: {"volume": volume(body.shape), "box": [v for corner in bounding_box(body.shape) for v in corner]}
+                   for name, body in sorted(document.bodies.items())},
+        "messages": {f.name: [f.state.value, f.message] for f in document.features},
+    }
+    with open(os.path.join(DATA, f"{out}.json"), "w", encoding="utf-8") as handle:
+        json.dump(expected, handle, indent=1, sort_keys=True)
+    return path
+
+
 def main() -> int:
     import simplecad.kernel  # noqa: F401 - registers every feature type
     corpus()
