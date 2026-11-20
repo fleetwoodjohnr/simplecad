@@ -214,6 +214,7 @@ pub mod ffi {
         /// A turn of `angle` radians about the axis through `pivot`.
         fn trsf_rotation(pivot: &[f64], axis: &[f64], angle: f64) -> Result<UniquePtr<Trsf>>;
         fn trsf_translation(by: &[f64]) -> UniquePtr<Trsf>;
+        fn trsf_axis_frame(origin: &[f64], normal: &[f64]) -> Result<UniquePtr<Trsf>>;
         /// `a.Multiplied(b)`: `b`, then `a`.
         fn trsf_multiplied(a: &Trsf, b: &Trsf) -> UniquePtr<Trsf>;
         fn trsf_point(trsf: &Trsf, point: &[f64]) -> Vec<f64>;
@@ -231,6 +232,7 @@ pub mod ffi {
         type Shapes;
         fn shapes_new() -> UniquePtr<Shapes>;
         fn shapes_push(shapes: Pin<&mut Shapes>, shape: &Shape);
+        fn shapes_compound(shapes: &Shapes) -> UniquePtr<Shape>;
         fn fuse_copies(shape: &Shape, copies: &Shapes) -> Result<UniquePtr<Shape>>;
         fn draft_angle(
             shape: &Shape,

@@ -248,6 +248,9 @@ fn similarity(
         .collect();
     if direction.len() == 3 && right.has_direction {
         let dot: f64 = (0..3).map(|k| direction[k] * right.direction[k]).sum();
+        // An edge's curve can be reparameterized in the opposite direction
+        // while its geometry stays put. Face normals still carry orientation.
+        let dot = if kind == "edge" { dot.abs() } else { dot };
         let aligned = ((dot + 1.0) / 2.0).clamp(0.0, 1.0);
         scores.push((aligned * aligned, 2.0));
     }
@@ -373,6 +376,8 @@ pub const PORTED: &[&str] = &[
     "shell",
     "align",
     "arrange",
+    "vent_plate",
+    "vent_cut",
     "boolean",
     "split",
     "hole",
@@ -703,6 +708,11 @@ fn execute(
                 Ok(BTreeMap::from([(body_name()?, Rc::new(finished))]))
             }
             "edge_finish" => Ok(BTreeMap::from([(body_name()?, edge_finish(ctx)?)])),
+            "vent_plate" => Ok(BTreeMap::from([(name()?, crate::vent::build(ctx, false)?)])),
+            "vent_cut" => Ok(BTreeMap::from([(
+                body_name()?,
+                crate::vent::build(ctx, true)?,
+            )])),
             "shell" => {
                 let body = ctx.shape("body")?;
                 let thickness = ctx.value("thickness", 2.0, Dimension::Length)?;
@@ -2005,8 +2015,75 @@ pub fn rebuild(
 }
 
 #[cfg(test)]
-mod arrange_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn vents_cut_the_same_hex_grid_into_a_plate_and_a_picked_face() {
+        let base = Rc::new(occt::make_box(30.0, 20.0, 3.0).unwrap());
+        let index = occt::faces(&base)
+            .unwrap()
+            .iter()
+            .position(|face| face.planar && face.normal[2] > 0.99)
+            .unwrap();
+        let fingerprint = occt::face_fingerprint(&base, index as u32).unwrap();
+        let feature = json!({ "name": "Vent", "outputs": ["Vent"], "inputs": {
+            "body": {"__body__": "Base"}, "width": "3 cm", "depth": "20 mm", "thickness": 3,
+            "across_flats": 5, "wall": 1, "margin": 2,
+            "face": {"__ref__": {"body": "Base", "index_hint": index, "fingerprint": {
+                "kind": "face", "geometry": fingerprint.geometry, "measure": fingerprint.measure,
+                "center": fingerprint.center, "direction": fingerprint.direction
+            }}}
+        }});
+        let ctx = Context {
+            feature: &feature,
+            bodies: HashMap::from([("Base".into(), base)]),
+            parameters: &HashMap::new(),
+            message: Default::default(),
+        };
+        let expected = 30.0 * 20.0 * 3.0 - 3.0 * 25.0 * 3.0_f64.sqrt() / 2.0 * 3.0;
+        for (step, body) in [("vent_plate", "Vent"), ("vent_cut", "Base")] {
+            let result = execute(step, &ctx, None).unwrap().unwrap();
+            assert!(occt::is_valid(&result[body]).unwrap());
+            assert!((occt::volume(&result[body]) - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn resolves_a_shell_floor_edge_when_its_curve_direction_reverses() {
+        let blank = occt::make_box(80.0, 100.0, 8.0).unwrap();
+        let top = occt::faces(&blank)
+            .unwrap()
+            .iter()
+            .position(|face| face.planar && face.normal[2] > 0.99)
+            .unwrap() as u32;
+        let tray = occt::shell(&blank, &[top], 3.0).unwrap();
+        let edges = occt::edge_fingerprints(&tray).unwrap();
+        let floor = edges
+            .iter()
+            .position(|edge| {
+                edge.curve
+                    .center
+                    .iter()
+                    .zip([3.0, 50.0, 3.0])
+                    .all(|(actual, expected)| (actual - expected).abs() < 1e-6)
+            })
+            .unwrap();
+        let curve = &edges[floor].curve;
+        let reference = json!({
+            "index_hint": floor,
+            "fingerprint": {
+                "kind": "edge", "geometry": curve.geometry, "measure": curve.measure,
+                "center": curve.center, "direction": curve.direction.map(|axis| -axis),
+                "neighbours": ["plane:0.0,0.0,1.0", "plane:1.0,0.0,0.0"]
+            }
+        });
+        let resolved = resolve_edge(&reference, &edges).unwrap();
+        assert_eq!(resolved as usize, floor);
+        let rounded = occt::finish_edges(&tray, &[resolved], 3.0, true).unwrap();
+        assert!(occt::is_valid(&rounded).unwrap());
+        assert!(occt::volume(&rounded) > occt::volume(&tray));
+    }
 
     #[test]
     fn saved_arrange_rows_use_world_axes_and_keep_the_group_offset() {

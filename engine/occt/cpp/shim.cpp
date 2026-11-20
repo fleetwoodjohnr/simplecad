@@ -1475,6 +1475,27 @@ std::unique_ptr<Shapes> shapes_new() { return std::make_unique<Shapes>(); }
 
 void shapes_push(Shapes &shapes, const Shape &shape) { shapes.list.Append(shape.shape); }
 
+std::unique_ptr<Shape> shapes_compound(const Shapes &shapes) {
+  TopoDS_Compound compound;
+  BRep_Builder builder;
+  builder.MakeCompound(compound);
+  for (const auto &shape : shapes.list) {
+    builder.Add(compound, shape);
+  }
+  return std::make_unique<Shape>(std::move(compound));
+}
+
+std::unique_ptr<Trsf> trsf_axis_frame(rust::Slice<const double> origin, rust::Slice<const double> normal) {
+  if (origin.size() != 3 || normal.size() != 3) {
+    throw std::runtime_error("The placement needs a three-coordinate origin and normal.");
+  }
+  gp_Trsf transform;
+  transform.SetTransformation(
+      gp_Ax3(gp_Pnt(origin[0], origin[1], origin[2]), gp_Dir(normal[0], normal[1], normal[2])),
+      gp_Ax3());
+  return std::make_unique<Trsf>(transform);
+}
+
 // Python's `_fuse_all`: fuse each copy in order and unify the completed pattern.
 std::unique_ptr<Shape> fuse_copies(const Shape &shape, const Shapes &copies) {
   if (copies.list.IsEmpty()) {
