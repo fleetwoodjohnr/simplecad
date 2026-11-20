@@ -24,13 +24,14 @@ def comparison(monkeypatch):
                        "undo_diagnostics": {}, "redo_diagnostics": {},
                        "unported": []},
     }
-    python = {
+    full_dump = {
         **dump, "cached_rebuild": {}, "cached_failed": 0, "recipe_rebuild": {},
         "recipe_failed": 0, "undo_all": {}, "redo_all": {}, "undo_steps": 1,
         "redo_steps": 2, "reopened": {}, "cached_diagnostics": {}, "recipe_diagnostics": {},
         "undo_diagnostics": {}, "redo_diagnostics": {},
     }
     calls = []
+    references = []
 
     def rust(args, **kwargs):
         executable, command, path, *extra = args
@@ -39,9 +40,10 @@ def comparison(monkeypatch):
         calls.append((command, *extra))
         return CompletedProcess(args, 0, json.dumps(outcomes[command, *extra]), "")
 
-    def reference(tree, path, *, flag):
+    def reference(tree, path, *, flag, python=sys.executable):
         assert path == original
-        return python if flag == "--dump" else dump
+        references.append((tree, python, flag))
+        return full_dump if flag == "--dump" else dump
 
     monkeypatch.setattr(compare_projects.subprocess, "run", rust)
     monkeypatch.setattr(compare_projects, "_run", reference)
@@ -50,7 +52,12 @@ def comparison(monkeypatch):
     def run(*extra):
         monkeypatch.setattr(sys, "argv", ["compare_projects.py", "--rust", "scad", *extra,
                                         "original.scad3"])
-        return compare_projects.main()
+        result = compare_projects.main()
+        if "--old" in extra:
+            checkout = os.path.abspath(extra[extra.index("--old") + 1])
+            interpreter = extra[extra.index("--old-python") + 1]
+            assert references and all(ref[:2] == (checkout, interpreter) for ref in references)
+        return result
 
     return run, outcomes, calls
 
@@ -86,6 +93,11 @@ def test_rust_loaded_only_comparison_requires_no_rebuild_or_history(comparison):
     run, _, calls = comparison
     assert run() == 0
     assert calls == [("dump",)]
+
+
+def test_rust_can_use_a_pinned_python_baseline(comparison):
+    run, _, _ = comparison
+    assert run("--old", "v0.4.4-checkout", "--old-python", "baseline-python", "--rebuild") == 0
 
 
 @pytest.fixture

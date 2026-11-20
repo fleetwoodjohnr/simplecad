@@ -224,7 +224,7 @@ def _resaved(path: str, target: str) -> str:
     return save(document, target)
 
 
-def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool) -> list[str]:
+def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference) -> list[str]:
     """What is wrong with the files Rust saves from *path*, reopened here."""
     problems = []
     with tempfile.TemporaryDirectory() as scratch:
@@ -232,10 +232,10 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool) -> list[str
         result = subprocess.run([rust, "save", path, plain], capture_output=True, text=True, timeout=3600)
         if result.returncode:
             return [f"save: {result.stderr.strip()}"]
-        ours = _run(ROOT, plain, flag="--reopen")
+        ours = reference(plain, flag="--reopen")
         python_saved = os.path.join(scratch, "python.scad3")
-        result = _run(ROOT, path, flag="--resave", extra=[python_saved])
-        theirs = result if "error" in result else _run(ROOT, python_saved, flag="--reopen")
+        result = reference(path, flag="--resave", extra=[python_saved])
+        theirs = result if "error" in result else reference(python_saved, flag="--reopen")
         required = {"bodies": dict, "cached": bool, "complete": bool, "signatures": dict}
         _require_stages(ours, required, "Python reopening Rust Save As")
         _require_stages(theirs, required, "Python reopening Python Save As")
@@ -259,7 +259,7 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool) -> list[str
         volumes = result["volumes"]
         if len(volumes) != 2 or any(type(volume) not in (float, int) for volume in volumes):
             raise ValueError("Rust pull: expected two volumes")
-        reopened = _run(ROOT, pulled, flag="--reopen-redo")
+        reopened = reference(pulled, flag="--reopen-redo")
         _require_stages(reopened, {**required, "redone": dict, "rebuild_failed": int, "redo_failed": int},
                         "Python reopening Rust edit")
         if not (reopened["cached"] and reopened["complete"]) and theirs.get("complete"):
@@ -323,7 +323,7 @@ def _rust_json(rust: str, command: str, path: str, *extra: str, expected=dict) -
     return stages
 
 
-def _compare_rust(rust: str, path: str, rebuild: bool) -> tuple[dict, dict]:
+def _compare_rust(rust: str, path: str, rebuild: bool, reference) -> tuple[dict, dict]:
     """Compare the same file at every requested stage, then exercise Save As."""
     try:
         original = _rust_json(rust, "dump", path)
@@ -346,14 +346,16 @@ def _compare_rust(rust: str, path: str, rebuild: bool) -> tuple[dict, dict]:
             new.update({name: _body_stage(history, name) if name in ("undo_all", "redo_all") else history[name]
                         for name in _HISTORY_STAGES})
             required = {**_DUMP_STAGES, **_REBUILD_STAGES, **_HISTORY_STAGES}
-            old = _run(ROOT, path, flag="--dump")
+            old = reference(path, flag="--dump")
             _require_stages(old, required, "Python dump")
             old = {name: old[name] for name in required}
         else:
-            old = _run(ROOT, path, flag="--dump-loaded")
+            old = reference(path, flag="--dump-loaded")
             _require_stages(old, {"loaded": dict}, "Python dump")
             old = {stage: value for stage, value in old.items() if stage in new}
-        new["reopened"], old["reopened"] = _rust_saves(rust, path, new, native=rebuild), []
+        new["reopened"], old["reopened"] = _rust_saves(
+            rust, path, new, native=rebuild, reference=reference,
+        ), []
         return old, new
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return {}, {"error": str(exc)}
@@ -373,7 +375,7 @@ def _align_outcome(entry: dict) -> tuple[str, str | tuple[list, str]]:
     return "result", (transform, description)
 
 
-def _compare_align(rust: str, path: str) -> tuple[int, float, list[str]]:
+def _compare_align(rust: str, path: str, reference) -> tuple[int, float, list[str]]:
     entries = _rust_json(rust, "steps", path, "align", expected=list)
     actual = {}
     for entry in entries:
@@ -383,7 +385,7 @@ def _compare_align(rust: str, path: str) -> tuple[int, float, list[str]]:
         if not feature_id or feature_id in actual:
             raise ValueError(f"invalid or duplicate Rust Align feature ID {feature_id!r}")
         actual[feature_id] = entry
-    expected = _run(ROOT, path, flag="--dump-align")
+    expected = reference(path, flag="--dump-align")
     _require_stages(expected, {}, "Python Align")
     problems = []
     worst = 0.0
@@ -415,7 +417,7 @@ def main() -> int:
     parser.add_argument("--old", help="checkout of the version to compare against")
     parser.add_argument("--old-python", default=sys.executable,
                         help="interpreter for --old, e.g. a venv with the previous OCCT")
-    parser.add_argument("--rust", help="the Rust engine's scad tool, compared against this tree")
+    parser.add_argument("--rust", help="the Rust engine's scad tool, compared against --old or this tree")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--rebuild", action="store_true",
                       help="with --rust, require rebuild and history parity and native Save As reopen")
@@ -444,6 +446,11 @@ def main() -> int:
         parser.error("--old or --rust is required")
     if args.align and not args.rust:
         parser.error("--align requires --rust")
+    reference_tree = os.path.abspath(args.old) if args.old else ROOT
+
+    def reference(path, **options):
+        return _run(reference_tree, path, python=args.old_python, **options)
+
     same = True
     matches = total = 0
     for file in args.files:
@@ -451,7 +458,7 @@ def main() -> int:
         name = os.path.basename(path)
         if args.align:
             try:
-                steps, worst, problems = _compare_align(args.rust, path)
+                steps, worst, problems = _compare_align(args.rust, path, reference)
             except (ValueError, OSError, OverflowError, subprocess.TimeoutExpired) as exc:
                 same = False
                 print(f"ERROR      {name}: {exc}")
@@ -467,9 +474,9 @@ def main() -> int:
                 print(f"same       {name}  ({steps} Align steps, worst transform delta {worst:g})")
             continue
         if args.rust:
-            old, new = _compare_rust(args.rust, path, args.rebuild)
+            old, new = _compare_rust(args.rust, path, args.rebuild, reference)
         else:
-            old, new = _run(os.path.abspath(args.old), path, args.old_python), _run(ROOT, path)
+            old, new = reference(path), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))
                        if old.get(stage) != new.get(stage)]
         if "error" in old or "error" in new:
