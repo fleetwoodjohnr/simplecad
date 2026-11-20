@@ -263,11 +263,13 @@ def _gsettings_prefers_dark() -> bool | None:
     import shutil
     import subprocess
 
+    from ..core.paths import system_env
+
     if shutil.which("gsettings") is None:
         return None
     result = subprocess.run(
         ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-        capture_output=True, text=True, timeout=2,
+        capture_output=True, text=True, timeout=2, env=system_env(),
     )
     if result.returncode != 0:
         return None

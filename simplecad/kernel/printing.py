@@ -17,6 +17,7 @@ import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 
+from ..core.paths import system_env
 from .occ import bounding_box, is_valid, volume
 from .tessellate import Mesh, triangle_normal, triangulate
 
@@ -460,7 +461,7 @@ def _flatpak_installed(app_id: str) -> bool:
     try:
         result = subprocess.run(
             ["flatpak", "info", app_id],
-            capture_output=True, timeout=8, check=False,
+            capture_output=True, timeout=8, check=False, env=system_env(),
         )
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -484,7 +485,7 @@ def open_in_slicer(path: str) -> str:
                 os.startfile(path)  # noqa: S606 - the user's own file, their own handler
             else:
                 subprocess.Popen(["open", path], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                                 stderr=subprocess.DEVNULL, env=system_env())
         except OSError as exc:
             raise CadError("No program is set to open 3MF files.",
                            suggestion="Install OrcaSlicer or another slicer, then try again.",
@@ -501,7 +502,7 @@ def open_in_slicer(path: str) -> str:
         subprocess.Popen(
             command + [path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=True, env=system_env(),
         )
     except OSError as exc:
         raise CadError(

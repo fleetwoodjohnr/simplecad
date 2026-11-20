@@ -388,7 +388,8 @@ def install(path: str, kind: str, *, opener=None, runner=None) -> str:
             # The software centre (or Finder, for a disk image) takes it from
             # here and asks for whatever permission it needs. No privileges from us.
             opener = opener or _open_with_system
-            opener(path)
+            if opener(path) is False:
+                raise UpdateError(_by_hand(path, kind))
             return "handed-off"
         if kind == "windows":
             runner = runner or (lambda p: subprocess.Popen([p]))  # noqa: S603 - verified installer
@@ -400,15 +401,34 @@ def install(path: str, kind: str, *, opener=None, runner=None) -> str:
     raise UpdateError(notify_only_reason(kind) or f"Cannot install updates for a {kind} copy.")
 
 
-def _open_with_system(path: str) -> None:
+def _by_hand(path: str, kind: str) -> str:
+    """What to tell the user when the system would not take the package."""
+    command = {"rpm": "sudo dnf install", "deb": "sudo apt install"}.get(kind)
+    how = f" Install it with:\n\n    {command} '{path}'" if command else " Open it by hand."
+    return f"Your system could not open the installer. The verified package is at {path}.{how}"
+
+
+def _open_with_system(path: str, run=None) -> bool:
+    """Hand *path* to whatever the desktop opens it with; False if nothing would.
+
+    ``xdg-open`` returns once the software centre has the file, and exits
+    non-zero when no program would take it -- which used to go unnoticed, so
+    the dialog announced a hand-over that never happened.
+    """
     import subprocess
 
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", path])  # noqa: S603, S607
-    elif sys.platform == "win32":
+    from .paths import system_env
+
+    if sys.platform == "win32":
         os.startfile(path)  # noqa: S606
-    else:
-        subprocess.Popen(["xdg-open", path])  # noqa: S603, S607
+        return True
+    command = ["open", path] if sys.platform == "darwin" else ["xdg-open", path]
+    run = run or subprocess.run
+    try:
+        result = run(command, env=system_env(), capture_output=True, timeout=30)  # noqa: S603
+    except subprocess.TimeoutExpired:
+        return True    # still busy handing it over: the installer has it
+    return result.returncode == 0
 
 
 # -- remembered state -------------------------------------------------------
