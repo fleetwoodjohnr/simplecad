@@ -59,6 +59,17 @@ pub mod ffi {
         pub radius: f64,
     }
 
+    /// Edge geometry and the surfaces meeting at it, for saved edge references.
+    pub struct EdgeFingerprint {
+        pub curve: FaceFingerprint,
+        pub neighbours: Vec<FaceFingerprint>,
+    }
+
+    pub struct SplitParts {
+        pub below: UniquePtr<Shape>,
+        pub above: UniquePtr<Shape>,
+    }
+
     /// A face as `detect.analyse_plane` and `align.planar_frame` read it.
     #[derive(Debug, Default, Clone, Copy)]
     pub struct PlaneFrame {
@@ -102,6 +113,10 @@ pub mod ffi {
         fn make_cone(bottom: f64, top: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn make_torus(major: f64, minor: f64) -> Result<UniquePtr<Shape>>;
         fn make_wedge(dx: f64, dy: f64, dz: f64, top: f64) -> Result<UniquePtr<Shape>>;
+        fn polygon_profile(points: &[f64], height: f64) -> Result<UniquePtr<Shape>>;
+        fn oval(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn pill(width: f64, depth: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        fn crescent(size: f64, height: f64, thickness: f64) -> Result<UniquePtr<Shape>>;
         /// A pipe: a cylinder with a concentric bore, cut as the Python app cuts it.
         fn make_tube(outer: f64, inner: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// A primitive's placement: `[x, y, z, rx, ry, rz]`, the turns in degrees
@@ -111,6 +126,12 @@ pub mod ffi {
         /// has axis (1/0), axis x, y, z, angle]`, turns in degrees, applied as a
         /// placement (geometry shared), as the Python app moves a body.
         fn move_shape(shape: &Shape, placement: &[f64]) -> Result<UniquePtr<Shape>>;
+        fn scale_shape(
+            shape: &Shape,
+            pivot: &[f64],
+            factors: &[f64],
+            uniform: bool,
+        ) -> Result<UniquePtr<Shape>>;
         /// `ShellFeature`'s thick solid with faces `faces` opened, inward by
         /// `thickness`; the error "unusable" when OCCT gives no hollow body.
         fn shell(shape: &Shape, faces: &[u32], thickness: f64) -> Result<UniquePtr<Shape>>;
@@ -135,11 +156,20 @@ pub mod ffi {
         fn faces(shape: &Shape) -> Result<Vec<FaceData>>;
         /// Face `face` (a `faces` index) as the naming fingerprints it.
         fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
+        fn edge_fingerprints(shape: &Shape) -> Result<Vec<EdgeFingerprint>>;
+        fn finish_edges(
+            shape: &Shape,
+            indices: &[u32],
+            size: f64,
+            fillet: bool,
+        ) -> Result<UniquePtr<Shape>>;
         /// Move planar face `face` (a `faces` index) `distance` mm along its
         /// outward normal, taking its recesses and bosses with it. The same
         /// operation, and the same messages, as the Python engine's
         /// `PushPullFeature`.
         fn push_pull(shape: &Shape, face: u32, distance: f64) -> Result<UniquePtr<Shape>>;
+        fn resize_round(shape: &Shape, face: u32, delta: f64) -> Result<UniquePtr<Shape>>;
+        fn split_solid(shape: &Shape, point: &[f64], normal: &[f64]) -> Result<SplitParts>;
         /// Mesh with an absolute chord `deflection` (mm) and `angle` (radians).
         fn mesh(shape: &Shape, deflection: f64, angle: f64) -> Result<MeshBuffers>;
         /// A `gp_Trsf`, composed in C++ as OCP composes it.

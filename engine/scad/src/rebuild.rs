@@ -190,10 +190,15 @@ pub(crate) fn alias(value: &Value) -> String {
     }
 }
 
-/// `naming.similarity` for faces, whose fingerprints carry no neighbours.
-fn similarity(left: &Value, right: &occt::FaceFingerprint) -> f64 {
+/// `naming.similarity` for saved sub-shape references.
+fn similarity(
+    left: &Value,
+    right: &occt::FaceFingerprint,
+    kind: &str,
+    neighbours: Option<f64>,
+) -> f64 {
     let closeness = |a: f64, b: f64, scale: f64| 1.0 / (1.0 + (a - b).abs() / scale.max(1e-9));
-    if left["kind"] != "face" || left["geometry"].as_str() != Some(right.geometry.as_str()) {
+    if left["kind"] != kind || left["geometry"].as_str() != Some(right.geometry.as_str()) {
         return 0.0;
     }
     let center: Vec<f64> = left["center"]
@@ -233,6 +238,9 @@ fn similarity(left: &Value, right: &occt::FaceFingerprint) -> f64 {
     if let (Some(radius), true) = (left["radius"].as_f64(), right.has_radius) {
         scores.push((closeness(radius, right.radius, radius.max(1.0)), 1.5));
     }
+    if let Some(score) = neighbours {
+        scores.push((score, 2.0));
+    }
     let weight: f64 = scores.iter().map(|(_, w)| w).sum();
     scores.iter().map(|(s, w)| s * w).sum::<f64>() / weight
 }
@@ -240,24 +248,61 @@ fn similarity(left: &Value, right: &occt::FaceFingerprint) -> f64 {
 /// `naming.resolve` for a face: the hinted face when it is certainly the one,
 /// else the one best match, never a doubtful one.
 fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
-    const MATCH_THRESHOLD: f64 = 0.55;
-    const CERTAIN_SCORE: f64 = 0.999;
     let count = occt::faces(shape).map_err(kernel)?.len() as u32;
-    if count == 0 {
-        return Err(lost(
-            "The face this feature depends on no longer exists. Re-select the geometry for this feature.",
-        ));
-    }
     let fingerprint = &reference["fingerprint"];
     let scores: Vec<f64> = (0..count)
         .map(|i| {
             occt::face_fingerprint(shape, i)
-                .map(|f| similarity(fingerprint, &f))
+                .map(|f| similarity(fingerprint, &f, "face", None))
                 .map_err(kernel)
         })
         .collect::<Result<_, _>>()?;
+    resolve_scores(reference, &scores, "face")
+}
+
+fn resolve_edge(reference: &Value, edges: &[occt::EdgeFingerprint]) -> Result<u32, StepError> {
+    let fingerprint = &reference["fingerprint"];
+    let neighbours: Vec<&str> = fingerprint["neighbours"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let summary = |face: &occt::FaceFingerprint| {
+        if !face.has_direction {
+            return face.geometry.clone();
+        }
+        let [x, y, z] = face
+            .direction
+            .map(|v| (v * 1000.0).round_ties_even() / 1000.0 + 0.0);
+        format!("{}:{x:?},{y:?},{z:?}", face.geometry)
+    };
+    let scores: Vec<_> = edges
+        .iter()
+        .map(|edge| {
+            let neighbour_score =
+                (!neighbours.is_empty() && !edge.neighbours.is_empty()).then(|| {
+                    let right: HashSet<_> = edge.neighbours.iter().map(summary).collect();
+                    let shared: HashSet<_> =
+                        neighbours.iter().filter(|s| right.contains(**s)).collect();
+                    shared.len() as f64 / neighbours.len().max(edge.neighbours.len()) as f64
+                });
+            similarity(fingerprint, &edge.curve, "edge", neighbour_score)
+        })
+        .collect();
+    resolve_scores(reference, &scores, "edge")
+}
+
+fn resolve_scores(reference: &Value, scores: &[f64], kind: &str) -> Result<u32, StepError> {
+    const MATCH_THRESHOLD: f64 = 0.55;
+    const CERTAIN_SCORE: f64 = 0.999;
+    if scores.is_empty() {
+        return Err(lost(format!(
+            "The {kind} this feature depends on no longer exists. Re-select the geometry for this feature."
+        )));
+    }
     let hint = reference["index_hint"].as_i64().unwrap_or(-1);
-    if (0..i64::from(count)).contains(&hint) {
+    if (0..scores.len() as i64).contains(&hint) {
         let hint = hint as usize;
         if scores[hint] >= CERTAIN_SCORE
             && !scores
@@ -278,9 +323,9 @@ fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
     }
     match best {
         Some(i) if best_score >= MATCH_THRESHOLD && best_score - runner_up > 1e-6 => Ok(i as u32),
-        _ => Err(lost(
-            "The face this feature was built on can no longer be found. The shape changed too much. Re-select the face to repair this feature.",
-        )),
+        _ => Err(lost(format!(
+            "The {kind} this feature was built on can no longer be found. The shape changed too much. Re-select the {kind} to repair this feature."
+        ))),
     }
 }
 
@@ -293,12 +338,25 @@ pub const PORTED: &[&str] = &[
     "torus",
     "tube",
     "wedge",
+    "polygon_prism",
+    "oval",
+    "pill",
+    "star",
+    "heart",
+    "cross",
+    "crescent",
+    "lightning",
     "push_pull",
+    "resize_round",
     "move",
     "move_many",
+    "scale",
+    "fillet",
+    "chamfer",
     "shell",
     "align",
     "boolean",
+    "split",
 ];
 
 /// The steps this build can run, by type; `None` for the others.
@@ -371,6 +429,11 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                     }
                 }
                 .map_err(kernel)?;
+                Ok(BTreeMap::from([(name()?, Rc::new(placed(shape, ctx)?))]))
+            }
+            "polygon_prism" | "oval" | "pill" | "star" | "heart" | "cross" | "crescent"
+            | "lightning" => {
+                let shape = crate::profiles::profile(kind, ctx)?;
                 Ok(BTreeMap::from([(name()?, Rc::new(placed(shape, ctx)?))]))
             }
             "move" => {
@@ -449,6 +512,73 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 }
                 Ok(out)
             }
+            "scale" => {
+                let body = ctx.shape("body")?;
+                let value = |key, default| ctx.value(key, default, Dimension::Scalar);
+                let uniform = value("factor", 1.0)?;
+                let factors = [
+                    value("sx", uniform)?,
+                    value("sy", uniform)?,
+                    value("sz", uniform)?,
+                ];
+                if factors.iter().any(|f| !f.is_finite() || *f <= 0.0) {
+                    return Err(failed(
+                        "A scale factor has to be greater than zero. Use 0.5 to halve the part, or 2 to double it.",
+                    ));
+                }
+                if factors.iter().all(|f| (f - 1.0).abs() < 1e-12) {
+                    return Ok(BTreeMap::from([(body_name()?, body)]));
+                }
+                let pivot = if let Some(values) = ctx
+                    .input("pivot")
+                    .and_then(Value::as_array)
+                    .filter(|p| !p.is_empty())
+                {
+                    let coordinates: Vec<_> = values.iter().filter_map(Value::as_f64).collect();
+                    <[f64; 3]>::try_from(coordinates)
+                        .map_err(|_| failed("The scale pivot needs three coordinates."))?
+                } else {
+                    let bounds = occt::bounds(&body).map_err(kernel)?;
+                    std::array::from_fn(|i| (bounds[i] + bounds[i + 3]) / 2.0)
+                };
+                let rounded = factors.map(|factor| (factor * 1e12).round_ties_even());
+                let uniform = rounded[0] == rounded[1] && rounded[1] == rounded[2];
+                let scaled = occt::scale_shape(&body, &pivot, &factors, uniform).map_err(kernel)?;
+                Ok(BTreeMap::from([(body_name()?, Rc::new(scaled))]))
+            }
+            "fillet" | "chamfer" => {
+                let body = ctx.shape("body")?;
+                let fillet = kind == "fillet";
+                let (key, default) = if fillet {
+                    ("radius", 2.0)
+                } else {
+                    ("distance", 1.0)
+                };
+                let size = ctx.value(key, default, Dimension::Length)?;
+                if size <= 0.0 {
+                    return Err(failed(format!("A {kind} needs a {key} greater than zero.")));
+                }
+                let refs = match ctx.input("edges") {
+                    Some(Value::Array(list)) => list.as_slice(),
+                    Some(one) => std::slice::from_ref(one),
+                    None => &[],
+                };
+                if refs.is_empty() {
+                    return Err(failed(format!("No edges are selected for this {kind}.")));
+                }
+                let edges = occt::edge_fingerprints(&body).map_err(kernel)?;
+                let indices = refs
+                    .iter()
+                    .map(|value| {
+                        let reference = value.get("__ref__").ok_or_else(|| {
+                            failed("This feature has lost the geometry it was built on.")
+                        })?;
+                        resolve_edge(reference, &edges)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let finished = occt::finish_edges(&body, &indices, size, fillet).map_err(kernel)?;
+                Ok(BTreeMap::from([(body_name()?, Rc::new(finished))]))
+            }
             "shell" => {
                 let body = ctx.shape("body")?;
                 let thickness = ctx.value("thickness", 2.0, Dimension::Length)?;
@@ -497,11 +627,64 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 let pulled = occt::push_pull(&shape, face, distance).map_err(kernel)?;
                 Ok(BTreeMap::from([(body_name()?, Rc::new(pulled))]))
             }
+            "resize_round" => {
+                let body = ctx.shape("body")?;
+                let delta = ctx.value("delta", 0.0, Dimension::Length)?;
+                let (_, face) = ctx.face("face")?;
+                let resized = occt::resize_round(&body, face, delta).map_err(kernel)?;
+                Ok(BTreeMap::from([(body_name()?, Rc::new(resized))]))
+            }
             "align" => {
                 let (name, placed) = crate::align::execute(ctx)?;
                 Ok(BTreeMap::from([(name, placed)]))
             }
             "boolean" => combine(ctx),
+            "split" => {
+                let coordinates = |key, default| -> Result<[f64; 3], StepError> {
+                    let Some(items) = ctx
+                        .input(key)
+                        .and_then(Value::as_array)
+                        .filter(|items| !items.is_empty())
+                    else {
+                        return Ok(default);
+                    };
+                    let values: Vec<_> = items.iter().filter_map(Value::as_f64).collect();
+                    values.try_into().map_err(|_| {
+                        failed(format!("The split plane {key} needs three coordinates."))
+                    })
+                };
+                let body = ctx.shape("body")?;
+                let origin = coordinates("origin", [0.0; 3])?;
+                let direction = coordinates("normal", [1.0, 0.0, 0.0])?;
+                let norm = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
+                if norm < 1e-12 || !norm.is_finite() {
+                    return Err(failed(
+                        "The split plane has no direction. Choose X, Y, Z or a flat face to cut along.",
+                    ));
+                }
+                let normal = direction.map(|v| v / norm);
+                let position = ctx.value("position", 0.0, Dimension::Length)?;
+                let point: [f64; 3] = std::array::from_fn(|i| origin[i] + normal[i] * position);
+                let source = body_name()?;
+                let names = ctx.feature["outputs"]
+                    .as_array()
+                    .filter(|names| names.len() == 2)
+                    .or_else(|| {
+                        ctx.input("names")
+                            .and_then(Value::as_array)
+                            .filter(|names| names.len() == 2)
+                    });
+                let (first, second) = names.map_or_else(
+                    || (format!("{source} A"), format!("{source} B")),
+                    |names| (alias(&names[0]), alias(&names[1])),
+                );
+                let parts = occt::split_solid(&body, &point, &normal).map_err(kernel)?;
+                ctx.set_message(format!("{first} and {second}, cut at {position:.2} mm"));
+                Ok(BTreeMap::from([
+                    (first, Rc::new(parts.below)),
+                    (second, Rc::new(parts.above)),
+                ]))
+            }
             _ => unreachable!(),
         }
     };

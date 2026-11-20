@@ -37,8 +37,10 @@ namespace simplecad {
 struct MeshBuffers;
 struct FaceData;
 struct FaceFingerprint;
+struct EdgeFingerprint;
 struct PlaneFrame;
 struct CylinderData;
+struct SplitParts;
 
 class Shape {
 public:
@@ -67,8 +69,14 @@ std::unique_ptr<Shape> make_cone(double bottom, double top, double height);
 std::unique_ptr<Shape> make_torus(double major, double minor);
 std::unique_ptr<Shape> make_wedge(double dx, double dy, double dz, double top);
 std::unique_ptr<Shape> make_tube(double outer, double inner, double height);
+std::unique_ptr<Shape> polygon_profile(rust::Slice<const double> points, double height);
+std::unique_ptr<Shape> oval(double width, double depth, double height);
+std::unique_ptr<Shape> pill(double width, double depth, double height);
+std::unique_ptr<Shape> crescent(double size, double height, double thickness);
 std::unique_ptr<Shape> place(const Shape &shape, rust::Slice<const double> placement);
 std::unique_ptr<Shape> move_shape(const Shape &shape, rust::Slice<const double> move);
+std::unique_ptr<Shape> scale_shape(const Shape &shape, rust::Slice<const double> pivot,
+                                   rust::Slice<const double> factors, bool uniform);
 std::unique_ptr<Shape> shell(const Shape &shape, rust::Slice<const uint32_t> faces, double thickness);
 std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> unify(const Shape &shape);
@@ -82,7 +90,12 @@ bool is_valid(const Shape &shape);
 rust::Vec<double> bounds(const Shape &shape);
 rust::Vec<FaceData> faces(const Shape &shape);
 FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
+rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape);
+std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
+                                    double size, bool fillet);
 std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t face, double distance);
+std::unique_ptr<Shape> resize_round(const Shape &shape, uint32_t face, double delta);
+SplitParts split_solid(const Shape &shape, rust::Slice<const double> point, rust::Slice<const double> normal);
 MeshBuffers mesh(const Shape &shape, double deflection, double angle);
 std::unique_ptr<Trsf> trsf_identity();
 std::unique_ptr<Trsf> trsf_rotation(rust::Slice<const double> pivot, rust::Slice<const double> axis, double angle);

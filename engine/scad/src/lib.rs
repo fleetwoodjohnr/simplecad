@@ -5,6 +5,7 @@ pub mod document;
 pub mod evaluate;
 pub mod graph;
 pub mod params;
+mod profiles;
 pub mod project;
 pub mod pyjson;
 pub mod rebuild;

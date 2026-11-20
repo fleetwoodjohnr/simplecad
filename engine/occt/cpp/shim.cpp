@@ -15,11 +15,18 @@
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
@@ -38,8 +45,11 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <GC_MakeSegment.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
@@ -55,8 +65,12 @@
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
+#include <gp_Elips.hxx>
+#include <gp_GTrsf.hxx>
+#include <gp_Mat.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Sphere.hxx>
@@ -177,7 +191,8 @@ uint32_t count_solids(const TopoDS_Shape &shape) {
 }
 
 template <class Operation>
-TopoDS_Shape boolean(const TopoDS_Shape &first, const TopoDS_Shape &second) {
+TopoDS_Shape boolean(const TopoDS_Shape &first, const TopoDS_Shape &second,
+                     const char *failure = kPullFailed) {
   ShapeList arguments, tools;
   arguments.Append(first);
   tools.Append(second);
@@ -188,7 +203,7 @@ TopoDS_Shape boolean(const TopoDS_Shape &first, const TopoDS_Shape &second) {
   operation.SetRunParallel(true);
   operation.Build();
   if (!operation.IsDone()) {
-    throw std::runtime_error(kPullFailed);
+    throw std::runtime_error(failure);
   }
   return operation.Shape();
 }
@@ -203,11 +218,11 @@ TopoDS_Shape translated(const TopoDS_Shape &shape, const gp_XYZ &by) {
   return builder.Shape();
 }
 
-TopoDS_Shape prism(const TopoDS_Shape &profile, const gp_Vec &along) {
+TopoDS_Shape prism(const TopoDS_Shape &profile, const gp_Vec &along, const char *failure = kPullFailed) {
   BRepPrimAPI_MakePrism builder(profile, along);
   builder.Build();
   if (!builder.IsDone()) {
-    throw std::runtime_error(kPullFailed);
+    throw std::runtime_error(failure);
   }
   return builder.Shape();
 }
@@ -420,13 +435,7 @@ rust::Vec<FaceData> faces(const Shape &shape) {
   return out;
 }
 
-FaceFingerprint face_fingerprint(const Shape &shape, uint32_t index) {
-  ShapeMap map;
-  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
-  if (index >= static_cast<uint32_t>(map.Extent())) {
-    throw std::runtime_error("There is no such face.");
-  }
-  const TopoDS_Face face = TopoDS::Face(map.FindKey(static_cast<int>(index) + 1));
+static FaceFingerprint describe_face(const TopoDS_Face &face) {
   FaceFingerprint out{};
   GProp_GProps props;
   BRepGProp::SurfaceProperties(face, props);
@@ -477,6 +486,87 @@ FaceFingerprint face_fingerprint(const Shape &shape, uint32_t index) {
   } catch (const Standard_Failure &) {
   }
   return out;
+}
+
+FaceFingerprint face_fingerprint(const Shape &shape, uint32_t index) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  if (index >= static_cast<uint32_t>(map.Extent())) {
+    throw std::runtime_error("There is no such face.");
+  }
+  return describe_face(TopoDS::Face(map.FindKey(static_cast<int>(index) + 1)));
+}
+
+rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
+  AncestorMap adjacent;
+  TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, adjacent);
+  rust::Vec<EdgeFingerprint> result;
+  result.reserve(map.Extent());
+  for (int i = 1; i <= map.Extent(); ++i) {
+    const TopoDS_Edge edge = TopoDS::Edge(map.FindKey(i));
+    EdgeFingerprint data{};
+    FaceFingerprint &out = data.curve;
+    GProp_GProps props;
+    BRepGProp::LinearProperties(edge, props);
+    const gp_Pnt c = props.CentreOfMass();
+    out.center = {c.X(), c.Y(), c.Z()};
+    out.measure = props.Mass();
+    out.geometry = "curve";
+    const auto direction = [&](const gp_Dir &d) {
+      out.has_direction = true;
+      out.direction = {d.X(), d.Y(), d.Z()};
+    };
+    const auto radius = [&](double r) { out.has_radius = true; out.radius = r; };
+    try {
+      const BRepAdaptor_Curve curve(edge);
+      switch (curve.GetType()) {
+      case GeomAbs_Line: out.geometry = "line"; direction(curve.Line().Direction()); break;
+      case GeomAbs_Circle: out.geometry = "circle"; direction(curve.Circle().Axis().Direction()); radius(curve.Circle().Radius()); break;
+      case GeomAbs_Ellipse: out.geometry = "ellipse"; direction(curve.Ellipse().Axis().Direction()); radius(curve.Ellipse().MajorRadius()); break;
+      case GeomAbs_Hyperbola: out.geometry = "hyperbola"; break;
+      case GeomAbs_Parabola: out.geometry = "parabola"; break;
+      case GeomAbs_BezierCurve: out.geometry = "bezier"; break;
+      case GeomAbs_BSplineCurve: out.geometry = "bspline"; break;
+      default: break;
+      }
+    } catch (const Standard_Failure &) {
+    }
+    if (adjacent.Contains(edge)) {
+      for (const auto &face : adjacent.FindFromKey(edge)) {
+        data.neighbours.push_back(describe_face(TopoDS::Face(face)));
+      }
+    }
+    result.push_back(std::move(data));
+  }
+  return result;
+}
+
+std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
+                                    double size, bool fillet) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
+  const char *operation = fillet ? "fillet" : "chamfer";
+  const auto finish = [&](auto &builder) {
+    for (const uint32_t index : indices) {
+      if (index >= static_cast<uint32_t>(map.Extent())) {
+        throw std::runtime_error("Select an edge of this body.");
+      }
+      builder.Add(size, TopoDS::Edge(map.FindKey(static_cast<int>(index) + 1)));
+    }
+    builder.Build();
+    if (!builder.IsDone()) {
+      throw std::runtime_error(std::string("The ") + operation + " operation did not succeed on this geometry.");
+    }
+    return owned(builder.Shape(), operation);
+  };
+  if (fillet) {
+    BRepFilletAPI_MakeFillet builder(shape.shape);
+    return finish(builder);
+  }
+  BRepFilletAPI_MakeChamfer builder(shape.shape);
+  return finish(builder);
 }
 
 std::unique_ptr<Shape> push_pull(const Shape &shape, uint32_t index, double distance) {
@@ -590,6 +680,71 @@ std::unique_ptr<Shape> make_tube(double outer, double inner, double height) {
   return owned(cut.Shape(), "tube");
 }
 
+// The Python primitive and decorative profiles use the wire's own winding.
+static std::unique_ptr<Shape> extrude_profile(const TopoDS_Wire &wire, double height, const char *operation) {
+  const std::string failure = std::string("The ") + operation + " profile could not be built.";
+  BRepBuilderAPI_MakeFace face(wire);
+  if (!face.IsDone()) {
+    throw std::runtime_error(failure);
+  }
+  return owned(prism(face.Face(), gp_Vec(0, 0, height), failure.c_str()), operation);
+}
+
+std::unique_ptr<Shape> polygon_profile(rust::Slice<const double> points, double height) {
+  if (points.size() < 6 || points.size() % 2 != 0) {
+    throw std::runtime_error("A polygon needs at least three XY points.");
+  }
+  BRepBuilderAPI_MakePolygon polygon;
+  for (size_t i = 0; i < points.size(); i += 2) {
+    polygon.Add(gp_Pnt(points[i], points[i + 1], 0));
+  }
+  polygon.Close();
+  if (!polygon.IsDone()) {
+    throw std::runtime_error("The polygon profile could not be built.");
+  }
+  return extrude_profile(polygon.Wire(), height, "polygon");
+}
+
+std::unique_ptr<Shape> oval(double width, double depth, double height) {
+  const gp_Dir major = width >= depth ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+  const gp_Elips ellipse(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), major),
+                         std::max(width, depth) / 2, std::min(width, depth) / 2);
+  BRepBuilderAPI_MakeWire wire(BRepBuilderAPI_MakeEdge(ellipse).Edge());
+  return extrude_profile(wire.Wire(), height, "oval");
+}
+
+std::unique_ptr<Shape> pill(double width, double depth, double height) {
+  const double radius = std::min(width, depth) / 2;
+  const double run = std::abs(width - depth) / 2;
+  if (run < 1e-6) {
+    throw std::runtime_error("A pill must be longer than it is wide. Make the width and depth different, or use Cylinder for a round one.");
+  }
+  const auto point = [width, depth](double u, double v) {
+    return width > depth ? gp_Pnt(u, v, 0) : gp_Pnt(v, u, 0);
+  };
+  const gp_Pnt lower_left = point(-run, -radius), lower_right = point(run, -radius);
+  const gp_Pnt upper_left = point(-run, radius), upper_right = point(run, radius);
+  BRepBuilderAPI_MakeWire wire;
+  wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeSegment(lower_left, lower_right).Value()).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(lower_right, point(run + radius, 0), upper_right).Value()).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeSegment(upper_right, upper_left).Value()).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(upper_left, point(-run - radius, 0), lower_left).Value()).Edge());
+  return extrude_profile(wire.Wire(), height, "pill");
+}
+
+std::unique_ptr<Shape> crescent(double size, double height, double thickness) {
+  if (thickness <= 0 || thickness >= size) {
+    throw std::runtime_error("The crescent thickness must be smaller than its size. Use a thickness between 0 and " + mm(size) + " mm.");
+  }
+  const double radius = size / 2;
+  const TopoDS_Shape outer = BRepPrimAPI_MakeCylinder(radius, height).Shape();
+  gp_Trsf move;
+  move.SetTranslation(gp_Vec(thickness, 0, -height));
+  const TopoDS_Shape cutter = transformed_copy(BRepPrimAPI_MakeCylinder(radius, 3 * height).Shape(), move);
+  const TopoDS_Shape cut = boolean<BRepAlgoAPI_Cut>(outer, cutter, "The crescent operation did not succeed on this geometry.");
+  return owned(unified(cut), "crescent");
+}
+
 // `_Primitive._placement` then `_finish`: moved to x y z, turned by rx ry rz
 // degrees about the world axes, as one `gp_Trsf` composed as Python composes it.
 std::unique_ptr<Shape> place(const Shape &shape, rust::Slice<const double> p) {
@@ -645,6 +800,34 @@ std::unique_ptr<Shape> move_shape(const Shape &shape, rust::Slice<const double> 
     throw std::runtime_error("The move operation did not succeed on this geometry.");
   }
   return owned(builder.Shape(), "move");
+}
+
+std::unique_ptr<Shape> scale_shape(const Shape &shape, rust::Slice<const double> pivot,
+                                   rust::Slice<const double> factors, bool uniform) {
+  if (pivot.size() != 3 || factors.size() != 3) {
+    throw std::runtime_error("Scaling needs a three-coordinate pivot and three scale factors.");
+  }
+  const auto scaled = [](BRepBuilderAPI_MakeShape &builder) {
+    if (!builder.IsDone()) {
+      throw std::runtime_error("The scale operation did not succeed on this geometry.");
+    }
+    return owned(builder.Shape(), "scale");
+  };
+
+  if (uniform) {
+    gp_Trsf transform;
+    transform.SetScale(gp_Pnt(pivot[0], pivot[1], pivot[2]), factors[0]);
+    BRepBuilderAPI_Transform builder(shape.shape, transform, true);
+    return scaled(builder);
+  }
+
+  gp_GTrsf transform;
+  transform.SetVectorialPart(gp_Mat(factors[0], 0, 0, 0, factors[1], 0, 0, 0, factors[2]));
+  transform.SetTranslationPart(gp_XYZ(pivot[0] * (1.0 - factors[0]),
+                                     pivot[1] * (1.0 - factors[1]),
+                                     pivot[2] * (1.0 - factors[2])));
+  BRepBuilderAPI_GTransform builder(shape.shape, transform, true);
+  return scaled(builder);
 }
 
 // `ShellFeature`'s thick solid, accepted only as `_usable_shell` accepts it.
@@ -736,6 +919,42 @@ double volume(const Shape &shape) {
   GProp_GProps props;
   BRepGProp::VolumeProperties(shape.shape, props);
   return props.Mass();
+}
+
+// `split_solid` and `SplitFeature` in simplecad/kernel/split.py.
+SplitParts split_solid(const Shape &shape, rust::Slice<const double> point,
+                      rust::Slice<const double> normal) {
+  if (point.size() != 3 || normal.size() != 3) {
+    throw std::runtime_error("The split plane needs a three-coordinate point and direction.");
+  }
+  const double length = std::hypot(normal[0], normal[1], normal[2]);
+  if (!std::isfinite(length) || length < 1e-12) {
+    throw std::runtime_error("The split plane has no direction. Choose X, Y, Z or a flat face to cut along.");
+  }
+  const gp_XYZ origin(point[0], point[1], point[2]);
+  const gp_XYZ axis(normal[0] / length, normal[1] / length, normal[2] / length);
+  const auto [low, high] = corners(shape.shape);
+  const double reach = (high - low).Modulus() * 1.75 + 10.0;
+  const gp_Pln plane{gp_Pnt(origin), gp_Dir(axis)};
+  const TopoDS_Face cutter = BRepBuilderAPI_MakeFace(plane, -reach, reach, -reach, reach).Face();
+  const TopoDS_Shape result = boolean<BRepAlgoAPI_Splitter>(
+      shape.shape, cutter, "The split could not be completed. Move the cut so it passes cleanly through the part.");
+
+  std::vector<TopoDS_Shape> below, above;
+  for (TopExp_Explorer solids(result, TopAbs_SOLID); solids.More(); solids.Next()) {
+    const auto &solid = solids.Current();
+    GProp_GProps properties;
+    BRepGProp::VolumeProperties(solid, properties);
+    const double side = offset(properties.CentreOfMass().XYZ(), origin, axis);
+    (side > 0 ? above : below).push_back(solid);
+  }
+  if (below.empty() || above.empty()) {
+    const auto [start, end] = span(shape.shape, origin, axis);
+    const double width = std::max(0.0, -start) + std::max(0.0, end);
+    throw std::runtime_error("The cut misses the body, so there is nothing to divide. "
+                             "Move the plane between 0 and " + mm(width) + " mm along the part.");
+  }
+  return {owned(unified(compound(below)), "split"), owned(unified(compound(above)), "split")};
 }
 
 MeshBuffers mesh(const Shape &shape, double deflection, double angle) {
@@ -927,6 +1146,79 @@ CylinderData cylinder_data(const Shape &face_shape) {
     out.internal = dot < 0.0;
   }
   return out;
+}
+
+// `RoundPushPullFeature`: moving an inner or outer cylindrical wall along its radius.
+std::unique_ptr<Shape> resize_round(const Shape &shape, uint32_t face, double delta) {
+  const CylinderData cylinder = cylinder_data(*sub_face(shape, face));
+  if (!cylinder.cylindrical) {
+    throw std::runtime_error("This only works on round faces. Select the side of a shaft, a tube or a hole.");
+  }
+  if (std::abs(delta) < 1e-9) {
+    return owned(shape.shape, "resize");
+  }
+  constexpr double radial_margin = 0.02;
+  constexpr double min_wall = 0.05;
+  constexpr const char *diameter = u8"\u2300";
+  const bool adding = delta > 0;
+  const double radius = cylinder.radius + (cylinder.internal ? -delta : delta);
+  if (radius <= min_wall) {
+    const char *kind = cylinder.internal ? "hole" : "shaft";
+    throw std::runtime_error(std::string("That would take the ") + kind + " down to " + diameter +
+                             mm(radius * 2) + " mm. Keep the diameter above " + diameter + mm(min_wall * 2) + " mm.");
+  }
+
+  const gp_XYZ origin(cylinder.origin[0], cylinder.origin[1], cylinder.origin[2]);
+  const gp_XYZ axis(cylinder.direction[0], cylinder.direction[1], cylinder.direction[2]);
+  if (!adding) {
+    double opposite_radius = 0;
+    ShapeMap faces;
+    TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+    for (int index = 1; index <= faces.Extent(); ++index) {
+      const CylinderData other = cylinder_data(Shape(faces.FindKey(index)));
+      if (!other.cylindrical || other.internal == cylinder.internal) {
+        continue;
+      }
+      const gp_XYZ other_axis(other.direction[0], other.direction[1], other.direction[2]);
+      if (std::abs(other_axis.Dot(axis)) < 0.999) {
+        continue;
+      }
+      const gp_XYZ offset = gp_XYZ(other.origin[0], other.origin[1], other.origin[2]) - origin;
+      const double along = offset.Dot(axis);
+      const double sideways = std::sqrt(std::max(0.0, offset.SquareModulus() - along * along));
+      if (sideways <= 1e-6) {
+        opposite_radius = std::max(opposite_radius, other.radius);
+      }
+    }
+    if (opposite_radius > 0 && cylinder.internal && radius >= opposite_radius - min_wall) {
+      throw std::runtime_error(std::string("Opening the hole to ") + diameter + mm(radius * 2) +
+                               " mm would break through the " + diameter + mm(opposite_radius * 2) +
+                               " mm wall around it. Stay under " + diameter + mm((opposite_radius - min_wall) * 2) + " mm.");
+    }
+    if (opposite_radius > 0 && !cylinder.internal && radius <= opposite_radius + min_wall) {
+      throw std::runtime_error(std::string("Thinning to ") + diameter + mm(radius * 2) +
+                               " mm would break through the " + diameter + mm(opposite_radius * 2) +
+                               " mm bore inside it. Stay above " + diameter + mm((opposite_radius + min_wall) * 2) + " mm.");
+    }
+  }
+
+  // The annulus overlaps existing material or reaches past the old face, avoiding tangent booleans.
+  constexpr const char *failure = "The resize operation did not succeed on this geometry. Try adjusting the inputs slightly.";
+  const double overlap = cylinder.radius + (cylinder.internal == adding ? radial_margin : -radial_margin);
+  const auto [inner, outer] = std::minmax(radius, overlap);
+  TopoDS_Shape ring = BRepPrimAPI_MakeCylinder(outer, cylinder.length).Shape();
+  if (inner > 1e-6) {
+    ring = boolean<BRepAlgoAPI_Cut>(ring, BRepPrimAPI_MakeCylinder(inner, cylinder.length).Shape(), failure);
+  }
+  gp_Trsf placement;
+  placement.SetDisplacement(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), gp_Ax3(gp_Pnt(origin), gp_Dir(axis)));
+  ring = transformed_copy(ring, placement);
+  const TopoDS_Shape result = adding ? boolean<BRepAlgoAPI_Fuse>(shape.shape, ring, failure)
+                                    : boolean<BRepAlgoAPI_Cut>(shape.shape, ring, failure);
+  if (result.IsNull() || count_solids(result) == 0) {
+    throw std::runtime_error("That would leave nothing behind. Take less off, or delete the body instead.");
+  }
+  return owned(unified(result), "resize");
 }
 
 namespace {
