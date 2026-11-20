@@ -161,6 +161,22 @@ pub struct Pulled {
     pub shape: Shape,
 }
 
+#[napi(object)]
+pub struct StackRequest {
+    pub moving_name: String,
+    pub moving_face: u32,
+    pub target_name: String,
+    pub target_face: u32,
+    pub operation: String,
+    pub offset: f64,
+    pub rotation: f64,
+    pub flip: bool,
+    pub horizontal: String,
+    pub vertical: String,
+    pub horizontal_gap: f64,
+    pub vertical_gap: f64,
+}
+
 /// A distance as the Pull tool stores it: the number as typed (`50.75`, `5`).
 fn expression(distance: f64) -> String {
     format!("{distance}")
@@ -168,6 +184,45 @@ fn expression(distance: f64) -> String {
 
 #[napi]
 impl Project {
+    #[napi]
+    pub fn place(&self, moving: &Shape, target: &Shape, edit: StackRequest) -> Result<Pulled> {
+        use scad::align::PickedFace;
+        let mut model = self.model.clone();
+        let mut inputs = serde_json::json!({
+            "operation": edit.operation, "offset": expression(edit.offset),
+            "rotation": expression(edit.rotation), "flip": edit.flip,
+        });
+        if edit.operation != "concentric" {
+            inputs["placement_mode"] = serde_json::json!("edge_gap");
+            inputs["horizontal"] = serde_json::json!(edit.horizontal);
+            inputs["vertical"] = serde_json::json!(edit.vertical);
+            inputs["horizontal_gap"] = serde_json::json!(expression(edit.horizontal_gap));
+            inputs["vertical_gap"] = serde_json::json!(expression(edit.vertical_gap));
+        }
+        let placed = scad::align::place(
+            &mut model,
+            PickedFace {
+                name: &edit.moving_name,
+                shape: &moving.inner,
+                index: edit.moving_face,
+            },
+            PickedFace {
+                name: &edit.target_name,
+                shape: &target.inner,
+                index: edit.target_face,
+            },
+            inputs,
+        )
+        .map_err(Error::from_reason)?;
+        Ok(Pulled {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            shape: Shape { inner: placed },
+        })
+    }
+
     /// Push/pull face `face` of `shape` (the body `body` as shown) by `distance`
     /// mm: the new shape, and this project with the step recorded as the Pull tool would.
     #[napi]

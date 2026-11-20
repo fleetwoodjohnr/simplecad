@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
-import type { BodyInfo, DisplayShape, FaceInfo, ModelResult } from '@/shared/engine-protocol'
-import { applyPull, markSaved, onEngineConnected, openProject, openSession, previewPull, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import type { BodyInfo, DisplayShape, FaceInfo, ModelResult, StackEdit, StackSettings } from '@/shared/engine-protocol'
+import { applyPull, applyStack, cancelQueuedStackPreview, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -33,6 +33,10 @@ function useTheme(): [boolean, () => void] {
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
 const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Failed', needs_attention: 'Needs attention' }
+const defaultStack: StackSettings = {
+  operation: 'stack', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
+  horizontalGap: 0, verticalGap: 0
+}
 
 function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
   const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
@@ -41,12 +45,52 @@ function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
   return `${several ? `${bodies[face.body].name} · ` : ''}${side} · ${format.format(face.area)} mm²`
 }
 
+function StackOptions({ settings, onChange }: { settings: StackSettings; onChange: (next: StackSettings) => void }) {
+  const number = (key: 'offset' | 'rotation' | 'horizontalGap' | 'verticalGap', label: string) => (
+    <label className="grid min-w-0 gap-1">{label}
+      <input type="number" step="any" className={`${inputCls} w-full`} value={settings[key]}
+        onChange={(e) => onChange({ ...settings, [key]: Number(e.target.value) })} />
+    </label>
+  )
+  return <>
+    <label className="grid gap-1">Placement
+      <select className={inputCls} value={settings.operation}
+        onChange={(e) => onChange({ ...settings, operation: e.target.value as StackSettings['operation'] })}>
+        <option value="stack">Stack</option><option value="center">Center</option><option value="concentric">Concentric</option>
+      </select>
+    </label>
+    {settings.operation !== 'concentric' && <div className="grid grid-cols-2 gap-2">
+      <label className="grid gap-1">Horizontal
+        <select className={inputCls} value={settings.horizontal}
+          onChange={(e) => onChange({ ...settings, horizontal: e.target.value as StackSettings['horizontal'] })}>
+          <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+        </select>
+      </label>
+      <label className="grid gap-1">Vertical
+        <select className={inputCls} value={settings.vertical}
+          onChange={(e) => onChange({ ...settings, vertical: e.target.value as StackSettings['vertical'] })}>
+          <option value="bottom">Bottom</option><option value="center">Center</option><option value="top">Top</option>
+        </select>
+      </label>
+      {number('horizontalGap', 'Horizontal gap')}
+      {number('verticalGap', 'Vertical gap')}
+    </div>}
+    <div className="grid grid-cols-2 gap-2">{number('offset', 'Offset (mm)')}{number('rotation', 'Rotation (°)')}</div>
+    <label className="flex items-center gap-2"><input type="checkbox" checked={settings.flip}
+      onChange={(e) => onChange({ ...settings, flip: e.target.checked })} />Flip</label>
+  </>
+}
+
 export function App() {
   const [dark, toggle] = useTheme()
   const [model, setModel] = useState<ModelResult>()
   const [fileName, setFileName] = useState('Untitled')
   const [preview, setPreview] = useState<DisplayShape>()
   const [selected, setSelected] = useState<number>()
+  const [stack, setStack] = useState(false)
+  const [target, setTarget] = useState<number>()
+  const [stackSettings, setStackSettings] = useState(defaultStack)
+  const [stackPrepared, setStackPrepared] = useState<{ edit: StackEdit; revision: number }>()
   const [distance, setDistance] = useState('')
   const [showEdges, setShowEdges] = useState(true)
   const [frame, setFrame] = useState(0)
@@ -71,6 +115,14 @@ export function App() {
     setPreview(undefined)
     setDistance('')
     setError('')
+    if (face === undefined) cancelPlacement()
+  }
+  const cancelPlacement = () => {
+    setStack(false)
+    setTarget(undefined)
+    setStackPrepared(undefined)
+    setPreview(undefined)
+    cancelQueuedStackPreview()
   }
 
   useEffect(() => onEngineConnected(() => {
@@ -80,6 +132,7 @@ export function App() {
     setPreview(undefined)
     setSelected(undefined)
     setDistance('')
+    cancelPlacement()
     setError('')
     void openSession(generation > 1).then(
       (next) => {
@@ -97,7 +150,11 @@ export function App() {
 
   const value = distance === '' ? NaN : Number(distance)
   const revision = model?.revision
+  const placement = useMemo<StackEdit | undefined>(() =>
+    stack && selected !== undefined && target !== undefined ? { moving: selected, target, settings: stackSettings } : undefined,
+  [stack, selected, target, stackSettings])
   useEffect(() => {
+    if (stack) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -108,7 +165,27 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value])
+  }, [busy, selected, revision, value, stack])
+
+  useEffect(() => {
+    if (!stack) return
+    setStackPrepared(undefined)
+    if (!placement || busy || revision === undefined) return
+    setError('')
+    let active = true
+    const timer = window.setTimeout(() => {
+      void previewStack(revision, placement).then((next) => {
+        if (!active || !next) return
+        setPreview(next)
+        setStackPrepared({ edit: placement, revision })
+      }, (failure: Error) => {
+        if (!active) return
+        setPreview(undefined)
+        setError(failure.message)
+      })
+    }, 48)
+    return () => { active = false; window.clearTimeout(timer); cancelQueuedStackPreview() }
+  }, [stack, placement, busy, revision])
 
   const mutate = (run: () => Promise<ModelResult | undefined>, reframe = false) => {
     if (busyRef.current) return
@@ -127,7 +204,7 @@ export function App() {
   }
 
   const pull = (amount: number) => {
-    if (revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
+    if (stack || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
@@ -217,6 +294,9 @@ export function App() {
   const canUndo = !!model && model.checkpoint.cursor > 0 && !busy
   const canRedo = !!model && model.checkpoint.cursor < model.checkpoint.edits.length && !busy
   const ready = !!model && !busy
+  const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
+  const canStack = ready && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
     save: { enabled: ready, run: () => save(false) },
@@ -238,6 +318,12 @@ export function App() {
         return
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
+      if (stack && event.key === 'Escape') {
+        event.preventDefault()
+        cancelPlacement()
+        setError('')
+        return
+      }
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
       for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit'] as const) {
         if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit'].includes(id))) continue
@@ -269,6 +355,12 @@ export function App() {
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
+          <Btn size="sm" disabled={!canStack || stack} onClick={() => {
+            setStackSettings(defaultStack)
+            setDistance('')
+            setPreview(undefined)
+            setStack(true)
+          }}>Stack &amp; Place</Btn>
           <div className="ml-auto">
             <IconBtn label={commands.fit.label} shortcut={commands.fit.shortcut} disabled={!actions.fit.enabled} onClick={actions.fit.run}><Focus className="size-4" /></IconBtn>
             <IconBtn label="Command search" shortcut="Mod-K" onClick={() => setSearchOpen(true)}><Search className="size-4" /></IconBtn>
@@ -284,7 +376,15 @@ export function App() {
         <div className="flex min-h-0 flex-1">
           <Viewport
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
-            canPull={ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => { if (ready) select(face) }}
+            placingBody={stack ? movingBody : undefined}
+            canPull={!stack && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
+              if (!ready) return
+              if (!stack) select(face)
+              else if (face !== undefined && face !== target && model.shape.faces[face]?.body !== movingBody) {
+                setPreview(undefined)
+                setTarget(face)
+              }
+            }}
             onDrag={(next, commit) => {
               setDistance(String(next))
               if (commit) pull(next)
@@ -308,12 +408,30 @@ export function App() {
             </ul>
             <label className="grid gap-1 text-xs text-text-2">
               Planar face
-              <select value={selected ?? ''} disabled={!ready} className={`${inputCls} w-full`}
+              <select value={selected ?? ''} disabled={!ready || stack} className={`${inputCls} w-full`}
                 onChange={(e) => select(e.target.value === '' ? undefined : Number(e.target.value))}>
                 <option value="">Select a face</option>
                 {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies)}</option>)}
               </select>
             </label>
+            {stack && model && (
+              <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
+                <label className="grid gap-1">Target face
+                  <select value={target ?? ''} className={inputCls} disabled={busy}
+                    onChange={(e) => { setPreview(undefined); setTarget(e.target.value === '' ? undefined : Number(e.target.value)) }}>
+                    <option value="">Select a target face</option>
+                    {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies)}</option>)}
+                  </select>
+                </label>
+                <StackOptions settings={stackSettings} onChange={setStackSettings} />
+                <div className="flex gap-2">
+                  <Btn size="sm" variant="primary" disabled={!canPlace} onClick={() => {
+                    if (canPlace) mutate(() => applyStack(revision, placement))
+                  }}>Place</Btn>
+                  <Btn size="sm" disabled={busy} onClick={() => { cancelPlacement(); setError('') }}>Cancel</Btn>
+                </div>
+              </section>
+            )}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
               {model?.steps.map((step, index) => (
@@ -336,10 +454,10 @@ export function App() {
           </div>
           <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
             <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={selected === undefined || busy} className={`${inputCls} w-24`}
+              disabled={stack || selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={!ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={stack || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>

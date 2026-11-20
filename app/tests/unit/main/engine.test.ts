@@ -31,6 +31,10 @@ class FakeProject implements Project {
   pushPull(body: string, shape: Shape, face: number, distance: number) {
     return { project: new FakeProject([...this.made, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
   }
+  place(...[moving, , request]: Parameters<Project['place']>) {
+    const name = `${request.movingName} ${request.movingFace} to ${request.targetName} ${request.targetFace}`
+    return { project: new FakeProject([...this.made, name]), shape: moving }
+  }
   steps() {
     return this.made.map((name) => ({ name, kind: 'push_pull', state: 'ok' }))
   }
@@ -94,6 +98,25 @@ describe('EngineDocument', () => {
     expect(model.shape.faces.map((f) => f.body)).toEqual([0, 0, 1, 2, 2, 2])
     expect(model.checkpoint.edits).toEqual([])
     expect(model.checkpoint.shown).toEqual([[1, true]])
+  })
+
+  it('places the current shape after undo, and replays the accepted placement after restart', () => {
+    const doc = new EngineDocument(box, opened)
+    let model = doc.open(new Uint8Array(1), 'Atlas.scad3', doc.model().revision)
+    model = doc.apply({ face: 0, distance: 3 }, model.revision)
+    model = doc.step(-1, model.revision)
+    const edit = {
+      moving: 0, target: 2, settings: {
+        operation: 'stack', horizontal: 'center', vertical: 'center',
+        horizontalGap: 0, verticalGap: 0, offset: 0, rotation: 0, flip: false
+      }
+    } as const
+    expect(doc.preview(edit, model.revision).volume).toBe(15)
+    expect(() => doc.apply(edit, model.revision - 1)).toThrow('The model changed')
+    model = doc.apply(edit, model.revision)
+    expect(model.steps.map((s) => s.name)).toEqual(['A 0 to B 0'])
+    const restored = new EngineDocument(box, opened).restore(model.checkpoint, new Uint8Array(1))
+    expect(restored.steps.map((s) => s.name)).toEqual(['A 0 to B 0'])
   })
 
   it('replays a checkpoint after a restart, whatever has been shown or hidden since', () => {

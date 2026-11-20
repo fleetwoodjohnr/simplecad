@@ -12,6 +12,7 @@ interface Props {
   shape?: DisplayShape
   shown?: DisplayShape
   selected?: number
+  placingBody?: number
   showEdges: boolean
   canPull: boolean
   frame: number
@@ -63,6 +64,8 @@ export function Viewport(props: Props) {
     const body = new Mesh(new BufferGeometry(), new MeshStandardMaterial({
       color: 0x9aa1ab, roughness: 0.7, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
     }))
+    const committed = new Mesh(new BufferGeometry(), body.material)
+    let committedShape: DisplayShape | undefined
     const highlight = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: 0xe8a33a, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }))
     const hover = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
       color: 0xe8a33a, transparent: true, opacity: 0.35, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
@@ -122,7 +125,7 @@ export function Viewport(props: Props) {
     }
 
     sync.current = () => {
-      const { shape, shown, selected, showEdges } = current.current
+      const { shape, shown, selected, showEdges, placingBody } = current.current
       const next = shown ?? shape
       if (displayed !== next) {
         hovered = undefined
@@ -134,6 +137,12 @@ export function Viewport(props: Props) {
         body.geometry = next ? surfaceGeometry(next) : new BufferGeometry()
         edges.geometry = next ? edgeGeometry(next) : new BufferGeometry()
         displayed = next
+      }
+      const pickShape = placingBody !== undefined && shown ? shape : undefined
+      if (pickShape !== committedShape) {
+        committed.geometry.dispose()
+        committed.geometry = pickShape ? surfaceGeometry(pickShape) : new BufferGeometry()
+        committedShape = pickShape
       }
       edges.visible = showEdges
       highlight.visible = !!shape && selected !== undefined && displayed === shape
@@ -172,16 +181,21 @@ export function Viewport(props: Props) {
     const press = (e: PointerEvent) => down.set(e.clientX, e.clientY)
     /** The model face under a window point, or undefined. */
     const faceAt = (x: number, y: number) => {
-      const shape = current.current.shape
-      if (!shape || displayed !== shape) return
+      const { shape, placingBody } = current.current
+      if (!shape || (displayed !== shape && committedShape !== shape)) return
       const rect = canvas.getBoundingClientRect()
       camera.updateMatrixWorld()
       ray.setFromCamera(new Vector2((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2), camera)
-      const hit = ray.intersectObject(body)[0]?.faceIndex
-      return hit == null ? undefined : faceAtTriangle(shape.faceTriStart, hit)
+      for (const hit of ray.intersectObject(displayed === shape ? body : committed)) {
+        if (hit.faceIndex == null) continue
+        const face = faceAtTriangle(shape.faceTriStart, hit.faceIndex)
+        if (face !== undefined && shape.faces[face]?.body !== placingBody) return face
+      }
     }
     const pick = (e: PointerEvent) => {
-      if (e.button !== 0 || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 || current.current.shape !== displayed) return
+      const shape = current.current.shape
+      if (e.button !== 0 || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
+        (shape !== displayed && shape !== committedShape)) return
       current.current.onSelect(faceAt(e.clientX, e.clientY))
     }
     // Hover: at most one pick per frame, and none while a button is held (orbiting).
@@ -221,13 +235,14 @@ export function Viewport(props: Props) {
         object.geometry.dispose()
         object.material.dispose()
       }
+      committed.geometry.dispose()
       renderer.dispose()
       canvas.remove()
       sync.current = () => {}
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody])
 
   const move = (e: ReactPointerEvent<HTMLButtonElement>, commit: boolean) => {
     const active = drag.current

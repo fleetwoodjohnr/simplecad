@@ -1,4 +1,4 @@
-import { MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type ModelResult, type PullEdit, type Source, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_EDITS, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ModelResult, type PullEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -12,6 +12,9 @@ export interface Body { name: string; shape: Shape | null }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
+  place(moving: Shape, target: Shape, request: StackSettings & {
+    movingName: string; movingFace: number; targetName: string; targetFace: number
+  }): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
   steps(): Omit<StepInfo, 'undone'>[]
@@ -111,7 +114,7 @@ export class EngineDocument {
     const opened = checkpoint.source.kind === 'box' ? this.newBox() : this.read(data!)
     for (const [body, shown] of checkpoint.shown) if (body < opened.visible.length) opened.visible[body] = shown
     const states: State[] = [{ bodies: opened.bodies, project: opened.project }]
-    for (const step of checkpoint.edits) states.push(this.pushPull(states[states.length - 1], step))
+    for (const step of checkpoint.edits) states.push(this.execute(states[states.length - 1], step))
     return this.install(checkpoint.source, opened, checkpoint.edits, checkpoint.cursor, states, checkpoint.saved)
   }
 
@@ -129,7 +132,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     return this.show(this.prepare(this.resolve(edit)).bodies)
   }
@@ -158,9 +161,9 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit, revision: number): ModelResult {
     this.checkRevision(revision)
-    if (edit.distance === 0) return this.model()
+    if ('distance' in edit && edit.distance === 0) return this.model()
     if (this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
     const step = this.resolve(edit)
     const state = this.prepare(step)
@@ -227,22 +230,42 @@ export class EngineDocument {
   }
 
   /** Which body a face of the shown model belongs to, and its number within that body. */
-  private resolve({ face, distance }: PullEdit): Step {
+  private resolve(edit: PullEdit | StackEdit): Step {
+    if ('distance' in edit) return { ...this.pick(edit.face), distance: edit.distance }
+    const moving = this.pick(edit.moving)
+    const target = this.pick(edit.target)
+    if (moving.body === target.body) throw new Error('Pick a face on each of two different parts.')
+    return { moving, target, settings: edit.settings }
+  }
+
+  private pick(face: number): FacePick {
     let local = face
     for (const { body, shape } of this.shown(this.states[this.cursor].bodies)) {
       const count = this.display(shape).faces.length
-      if (local < count) return { body, face: local, distance }
+      if (local < count) return { body, face: local }
       local -= count
     }
     throw new Error('Select a face of the model.')
   }
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
-  private pushPull({ bodies, project }: State, { body, face, distance }: Step): State {
+  private execute({ bodies, project }: State, step: Step): State {
+    const body = 'target' in step ? step.moving.body : step.body
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
-    const next = project.pushPull(bodies[body].name, shape, face, distance)
+    const next = 'target' in step
+      ? this.place(project, bodies, shape, step)
+      : project.pushPull(bodies[body].name, shape, step.face, step.distance)
     return { bodies: bodies.map((b, i) => i === body ? { name: b.name, shape: next.shape } : b), project: next.project }
+  }
+
+  private place(project: Project, bodies: Body[], shape: Shape, step: StackStep) {
+    const target = bodies[step.target.body]
+    if (!target?.shape) throw new Error('The target body has no geometry to place against.')
+    return project.place(shape, target.shape, {
+      ...step.settings, movingName: bodies[step.moving.body].name, movingFace: step.moving.face,
+      targetName: target.name, targetFace: step.target.face
+    })
   }
 
   private advance() {
@@ -255,9 +278,9 @@ export class EngineDocument {
   }
 
   private prepare(step: Step): State {
-    const cached = this.previewResult?.step
-    if (cached?.body === step.body && cached.face === step.face && cached.distance === step.distance) return this.previewResult!.state
-    const state = this.pushPull(this.states[this.cursor], step)
+    const cached = this.previewResult
+    if (cached && JSON.stringify(cached.step) === JSON.stringify(step)) return cached.state
+    const state = this.execute(this.states[this.cursor], step)
     this.previewResult = { step, state }
     return state
   }

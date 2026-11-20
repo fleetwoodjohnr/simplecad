@@ -320,6 +320,53 @@ impl Model {
             "suppressed": false,
             "dropped": [],
         });
+        self.append_body_step(body, id, feature);
+        self.record(id, "Pull", &object, brep, before, "")
+    }
+
+    pub(crate) fn record_align(
+        &mut self,
+        moving: &str,
+        target: &str,
+        inputs: Value,
+        brep: Vec<u8>,
+        message: &str,
+    ) -> Result<(), String> {
+        let latest = self.latest();
+        let binding = |body| {
+            latest
+                .get(body)
+                .ok_or_else(|| format!("No step writes the body \"{body}\"."))
+        };
+        let (moving_producer, object) = binding(moving)?;
+        let (target_producer, target_object) = binding(target)?;
+        for (name, producer) in [(moving, moving_producer), (target, target_producer)] {
+            if matches!(
+                self.payload["diagnostics"][producer]["state"].as_str(),
+                Some("failed" | "needs_attention")
+            ) {
+                return Err(format!(
+                    "Repair the step that made \"{name}\" before placing this part."
+                ));
+            }
+        }
+        let before = self.document();
+        let id = new_feature_id();
+        let name = self.unique_name("Align");
+        let feature = json!({
+            "id": id, "type": "align", "name": name, "inputs": inputs,
+            "outputs": [moving], "output_ids": { moving: object },
+            "bindings": {
+                moving: { "feature_id": moving_producer, "object_id": object },
+                target: { "feature_id": target_producer, "object_id": target_object },
+            },
+            "suppressed": false, "dropped": [],
+        });
+        self.append_body_step(moving, &id, feature);
+        self.record(&id, "Align", object, brep, before, message)
+    }
+
+    fn append_body_step(&mut self, body: &str, id: &str, feature: Value) {
         let payload = self.payload.as_object_mut().unwrap();
         payload
             .entry("features")
@@ -337,8 +384,6 @@ impl Model {
                 entry["producer"] = json!(id);
             }
         }
-
-        self.record(id, "Pull", &object, brep, before)
     }
 
     /// `History.undo` on the saved history: the newest step taken back, and its
@@ -654,7 +699,7 @@ impl Model {
         payload["bodies"].as_array_mut().unwrap().push(json!({
             "id": object, "name": name, "visible": true, "color": null, "producer": id, "metadata": {},
         }));
-        model.record(id, "Box", &object, brep, before)?;
+        model.record(id, "Box", &object, brep, before, "")?;
         Ok(model)
     }
 
@@ -668,6 +713,7 @@ impl Model {
         object: &str,
         brep: Vec<u8>,
         before: Value,
+        message: &str,
     ) -> Result<(), String> {
         let signature = signatures(&self.payload)
             .and_then(|s| s.get(id).cloned())
@@ -679,12 +725,12 @@ impl Model {
             .or_insert_with(|| json!({ "version": CACHE_VERSION, "entries": {} }));
         cache["entries"][&signature] = json!({
             "feature_id": id, "outputs": { object: { "kind": "brep", "sha256": sha } },
-            "message": "", "version": CACHE_VERSION,
+            "message": message, "version": CACHE_VERSION,
         });
         payload.entry("geometry").or_insert_with(|| json!({}))[object] =
             json!({ "sha256": sha, "feature_id": id, "signature": signature, "current": true });
         payload.entry("diagnostics").or_insert_with(|| json!({}))[id] =
-            json!({ "state": "ok", "message": "" });
+            json!({ "state": "ok", "message": message });
         self.blobs.insert(sha, brep);
 
         let patch = make_patch(&self.document(), &before);

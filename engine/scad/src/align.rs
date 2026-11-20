@@ -151,6 +151,12 @@ struct Face {
 }
 
 impl Face {
+    fn read(shape: &occt::Shape, index: u32) -> Result<Self, StepError> {
+        let shape = occt::sub_face(shape, index).map_err(kernel)?;
+        let plane = occt::plane_frame(&shape).map_err(kernel)?;
+        Ok(Self { shape, plane })
+    }
+
     fn planar(&self) -> Option<Planar> {
         self.plane.planar.then_some(Planar {
             center: self.plane.center,
@@ -458,15 +464,21 @@ pub struct Placement {
 
 /// `AlignFeature.execute`'s solve: where the step puts its body.
 pub fn solve(ctx: &Context) -> Result<(Shape, String, Placement), StepError> {
+    let (moving, moving_index) = ctx.face("moving_face")?;
+    let (target, target_index) = ctx.face("target_face")?;
+    solve_faces(
+        ctx,
+        Face::read(&moving, moving_index)?,
+        Face::read(&target, target_index)?,
+    )
+}
+
+fn solve_faces(
+    ctx: &Context,
+    moving_face: Face,
+    target_face: Face,
+) -> Result<(Shape, String, Placement), StepError> {
     let body = ctx.shape("body")?;
-    let face = |key: &str| -> Result<Face, StepError> {
-        let (shape, index) = ctx.face(key)?;
-        let face = occt::sub_face(&shape, index).map_err(kernel)?;
-        let plane = occt::plane_frame(&face).map_err(kernel)?;
-        Ok(Face { shape: face, plane })
-    };
-    let moving_face = face("moving_face")?;
-    let target_face = face("target_face")?;
     let value = |key: &str| ctx.value(key, 0.0, Dimension::Length);
     let input = |key: &str| ctx.input(key);
     let operation = match input("operation") {
@@ -648,6 +660,78 @@ pub fn solve(ctx: &Context) -> Result<(Shape, String, Placement), StepError> {
         format!("Stacked face to face{gap}.")
     };
     done(then(&rotate, &shift), description)
+}
+
+/// The current body and the face the user picked on it.
+pub struct PickedFace<'a> {
+    pub name: &'a str,
+    pub shape: &'a occt::Shape,
+    pub index: u32,
+}
+
+/// Solve a new placement directly on picked faces and record its editable recipe.
+pub fn place(
+    model: &mut crate::document::Model,
+    moving: PickedFace<'_>,
+    target: PickedFace<'_>,
+    mut inputs: Value,
+) -> Result<UniquePtr<occt::Shape>, String> {
+    if moving.name == target.name {
+        return Err("Pick a face on each of two different parts.".into());
+    }
+    let error = |e: StepError| e.message;
+    let moving_face = Face::read(moving.shape, moving.index).map_err(error)?;
+    let target_face = Face::read(target.shape, target.index).map_err(error)?;
+    if inputs["placement_mode"] == "edge_gap" {
+        let base = planar_frame(&target_face).map_err(error)?;
+        let frame = reference_frame(&target_face).map_err(error)?;
+        let snapped = |value: f64| {
+            [0.0, 1.0, -1.0]
+                .into_iter()
+                .find(|v| (value - v).abs() <= 1e-9)
+                .unwrap_or(value)
+        };
+        inputs["target_basis"] = serde_json::json!([
+            snapped(dot(frame.x_axis, base.x_axis)),
+            snapped(dot(frame.x_axis, base.y_axis)),
+            snapped(dot(frame.y_axis, base.x_axis)),
+            snapped(dot(frame.y_axis, base.y_axis)),
+        ]);
+        inputs["target_u"] = serde_json::json!(frame.x_axis);
+        inputs["target_normal"] = serde_json::json!(frame.normal);
+    }
+    let reference = |picked: &PickedFace<'_>| -> Result<Value, String> {
+        let f =
+            occt::face_fingerprint(picked.shape, picked.index).map_err(|e| e.what().to_string())?;
+        let direction = f.has_direction.then_some(f.direction);
+        let radius = f.has_radius.then_some(f.radius);
+        Ok(
+            serde_json::json!({ "__ref__": model.face_ref(picked.name, picked.index, serde_json::json!({
+            "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
+            "direction": direction, "radius": radius, "neighbours": [],
+        })) }),
+        )
+    };
+    inputs["body"] = serde_json::json!({ "__body__": moving.name });
+    inputs["moving_face"] = reference(&moving)?;
+    inputs["target_face"] = reference(&target)?;
+    let feature = serde_json::json!({ "inputs": inputs });
+    let shape = occt::transform_shape(moving.shape, &identity(), false)
+        .map_err(|e| e.what().to_string())?;
+    let parameters = std::collections::HashMap::new();
+    let context = Context::placement(&feature, moving.name, Rc::new(shape), &parameters);
+    let (body, _, placement) = solve_faces(&context, moving_face, target_face).map_err(error)?;
+    let placed = occt::transform_shape(&body, &placement.transform, true)
+        .map_err(|e| e.what().to_string())?;
+    let brep = occt::write_brep(&placed).map_err(|e| e.what().to_string())?;
+    model.record_align(
+        moving.name,
+        target.name,
+        inputs,
+        brep,
+        &placement.description,
+    )?;
+    Ok(placed)
 }
 
 /// The step itself: the body placed, geometry copied (`occ.transformed`).

@@ -38,8 +38,10 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'reset': result = document.reset(req.revision); break
       case 'restore': result = document.restore(req.checkpoint, req.data); break
       case 'open': result = document.open(req.data, req.name, req.revision, req.recovered); break
-      case 'preview': result = document.preview(req, req.revision); break
-      case 'apply': result = document.apply(req, req.revision); break
+      case 'preview':
+      case 'previewStack': result = document.preview(req, req.revision); break
+      case 'apply':
+      case 'applyStack': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'saved': result = document.markSaved(req.revision); break

@@ -83,6 +83,20 @@ pub struct Context<'a> {
 }
 
 impl Context<'_> {
+    pub(crate) fn placement<'a>(
+        feature: &'a Value,
+        name: &str,
+        body: Shape,
+        parameters: &'a HashMap<String, f64>,
+    ) -> Context<'a> {
+        Context {
+            feature,
+            bodies: HashMap::from([(name.into(), body)]),
+            parameters,
+            message: Default::default(),
+        }
+    }
+
     pub(crate) fn input(&self, key: &str) -> Option<&Value> {
         self.feature["inputs"].get(key)
     }

@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ModelResult, PullEdit, RendererCommand } from '@/shared/engine-protocol'
+import type { Checkpoint, DisplayShape, EngineResponse, ModelResult, PullEdit, RendererCommand, StackEdit } from '@/shared/engine-protocol'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -77,6 +77,35 @@ export const openProject = (revision: number, data: Uint8Array, name: string, re
   })
 export const previewPull = (revision: number, edit: PullEdit) => send<DisplayShape>({ op: 'preview', revision, ...edit })
 export const applyPull = (revision: number, edit: PullEdit) => send<ModelResult>({ op: 'apply', revision, ...edit }).then(accept)
+let stackPreviewRunning = false
+let nextStackPreview: { run: () => void; cancel: () => void } | undefined
+
+export function cancelQueuedStackPreview() {
+  nextStackPreview?.cancel()
+  nextStackPreview = undefined
+}
+
+export function previewStack(revision: number, edit: StackEdit): Promise<DisplayShape | undefined> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      stackPreviewRunning = true
+      void send<DisplayShape>({ op: 'previewStack', revision, ...edit }).then(resolve, reject).finally(() => {
+        stackPreviewRunning = false
+        const next = nextStackPreview
+        nextStackPreview = undefined
+        next?.run()
+      })
+    }
+    if (stackPreviewRunning) {
+      cancelQueuedStackPreview()
+      nextStackPreview = { run, cancel: () => resolve(undefined) }
+    } else {
+      run()
+    }
+  })
+}
+
+export const applyStack = (revision: number, edit: StackEdit) => send<ModelResult>({ op: 'applyStack', revision, ...edit }).then(accept)
 export const saveModel = (revision: number) => send<Uint8Array>({ op: 'save', revision })
 export const markSaved = (revision: number) => send<ModelResult>({ op: 'saved', revision }).then(accept)
 export const showBody = (revision: number, body: number, visible: boolean) =>

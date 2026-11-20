@@ -36,7 +36,20 @@ export type Source = { kind: 'box' } | { kind: 'file'; name: string }
 /** A push/pull as the window asks for it: a face as the viewport numbers it. */
 export interface PullEdit { face: number; distance: number }
 /** A push/pull as the history keeps it: the body, and the face as that body numbers it, so showing or hiding bodies doesn't change it. */
-export interface Step { body: number; face: number; distance: number }
+export interface FacePick { body: number; face: number }
+export interface StackSettings {
+  operation: 'stack' | 'center' | 'concentric'
+  offset: number
+  rotation: number
+  flip: boolean
+  horizontal: 'left' | 'center' | 'right'
+  vertical: 'bottom' | 'center' | 'top'
+  horizontalGap: number
+  verticalGap: number
+}
+export interface StackEdit { moving: number; target: number; settings: StackSettings }
+export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
+export type Step = (FacePick & PullEdit) | StackStep
 
 export interface Checkpoint {
   source: Source
@@ -78,6 +91,7 @@ export type RendererCommand =
   /** `recovered`: work from a session that crashed, opened as unsaved. */
   | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
+  | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
   | { op: 'undo' | 'redo'; revision: number }
@@ -117,7 +131,24 @@ function isEdit(value: unknown): value is PullEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  return isEdit(value) && isIndex((value as Partial<Step>).body) && (value as Step).body < MAX_BODIES
+  if (isEdit(value)) return isPick(value)
+  if (!value || typeof value !== 'object') return false
+  const step = value as Partial<StackStep>
+  return isPick(step.moving) && isPick(step.target) && step.moving.body !== step.target.body && isStackSettings(step.settings)
+}
+
+function isPick(value: unknown): value is FacePick {
+  if (!value || typeof value !== 'object') return false
+  const pick = value as Partial<FacePick>
+  return isIndex(pick.body) && pick.body! < MAX_BODIES && isIndex(pick.face) && pick.face! <= 0xffffffff
+}
+
+function isStackSettings(value: unknown): value is StackSettings {
+  if (!value || typeof value !== 'object') return false
+  const s = value as Partial<StackSettings>
+  return ['stack', 'center', 'concentric'].includes(s.operation ?? '') && typeof s.flip === 'boolean' &&
+    ['left', 'center', 'right'].includes(s.horizontal ?? '') && ['bottom', 'center', 'top'].includes(s.vertical ?? '') &&
+    [s.offset, s.rotation, s.horizontalGap, s.verticalGap].every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9)
 }
 
 export function isCheckpoint(value: unknown): value is Checkpoint {
@@ -139,7 +170,9 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
-        ((m.op === 'preview' || m.op === 'apply') && isEdit(m))
+        ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||
+        ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
+          m.moving !== m.target && isStackSettings(m.settings))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')
 }
