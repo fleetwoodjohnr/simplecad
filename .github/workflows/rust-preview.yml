@@ -104,6 +104,23 @@ jobs:
                 test -f "$lib/$dll"
               done ;;
           esac
+      - name: Packaged desktop window and geometry
+        if: runner.os != 'Linux'
+        working-directory: app
+        run: |
+          case "$RUNNER_OS" in
+            macOS) executable="$(find "$PWD/release" -type f -path '*/SimpleCAD.app/Contents/MacOS/SimpleCAD' -print -quit)" ;;
+            Windows) executable="$(pwd -W)/release/win-unpacked/SimpleCAD.exe" ;;
+          esac
+          test -f "$executable"
+          SCAD_PACKAGED="$executable" npx playwright test --fail-on-flaky-tests
+      - name: Save packaged desktop test failures
+        if: failure() && runner.os != 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaged-window-${{ matrix.os }}
+          path: app/test-results
+          if-no-files-found: ignore
       - name: The Linux app, for the upgrade drills
         if: runner.os == 'Linux'
         working-directory: app
