@@ -3,6 +3,34 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.4.4 (2026-11-20)
+
+Installing updates works again on Linux, and Stack & Place keeps up on large
+projects.
+
+### Fixed
+
+- **"Downloaded", then nothing happened.** After downloading and checking an
+  update, SimpleCAD hands the package to your system's software installer. It
+  started that hand-over with its own bundled libraries in the way, so the
+  system could not tell what the file was and silently gave up, while the
+  window said it had been handed over. System programs now start with the
+  system's own libraries, and if the system still won't open the package you
+  are told where it is and the one command that installs it. **0.4.1 to 0.4.3
+  can't install this update themselves:** let the app download it, then run
+  `sudo dnf install ~/.local/share/simplecad/updates/SimpleCAD-0.4.4-linux-x86_64.rpm`
+  (or `sudo apt install …deb` on Ubuntu) once. Later updates install from
+  inside the app.
+- **Stack & Place froze on detailed parts.** Every change in the panel
+  measured the whole moving part again, which took about five seconds for a
+  part with a few thousand faces. It now measures only the faces that can reach
+  the edges, with exactly the same result.
+- **Stack & Place placed a part from the wrong position after Undo.** In a
+  project just opened from a file, undoing past a change to a part could leave
+  the window showing the part as it was before the undo. The panel then
+  previewed and placed it from where it was drawn, not where it was. The window
+  now always shows the result undo returns to.
+
 ## 0.4.3 (2026-11-19)
 
 Closing SimpleCAD works the first time, and never loses unsaved work. (0.4.2
