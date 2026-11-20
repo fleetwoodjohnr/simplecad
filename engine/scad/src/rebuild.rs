@@ -54,7 +54,7 @@ fn lost(message: impl Into<String>) -> StepError {
     }
 }
 
-fn kernel(e: occt::Exception) -> StepError {
+pub(crate) fn kernel(e: occt::Exception) -> StepError {
     failed(e.what())
 }
 
@@ -381,6 +381,7 @@ pub const PORTED: &[&str] = &[
     "boolean",
     "split",
     "hole",
+    "thread",
     "draft",
     "mirror",
     "rectangular_pattern",
@@ -774,6 +775,7 @@ fn execute(
             }
             "arrange" => crate::advanced::arrange_row(ctx),
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
+            "thread" => Ok(BTreeMap::from([(body_name()?, crate::thread::build(ctx)?)])),
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
                 [(body_name()?, crate::advanced::build(kind, ctx)?)],
             )),
@@ -928,11 +930,12 @@ fn drill(ctx: &Context) -> Result<Shape, StepError> {
         .input("style")
         .and_then(Value::as_str)
         .unwrap_or("simple");
-    if style == "threaded" {
-        return Err(failed(
-            "This threaded hole has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
-        ));
-    }
+    let thread = (style == "threaded")
+        .then(|| crate::thread::Thread::read(ctx, diameter, true))
+        .transpose()?;
+    let diameter = thread
+        .as_ref()
+        .map_or(diameter, |thread| diameter.max(thread.bore_diameter()));
     let position = if let Some(values) = ctx
         .input("position")
         .and_then(Value::as_array)
@@ -1005,7 +1008,10 @@ fn drill(ctx: &Context) -> Result<Shape, StepError> {
         tapered,
     };
     let cut = occt::hole_cut(&shape, &spec).map_err(kernel)?;
-    Ok(Rc::new(cut))
+    match thread {
+        Some(thread) => thread.drill(ctx, &cut, &spec),
+        None => Ok(Rc::new(cut)),
+    }
 }
 
 /// `BooleanFeature`: Join, Cut or Intersect, one target body against one or more tools.
@@ -2017,6 +2023,55 @@ pub fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_shaft_and_through_hole_rebuild_as_physical_threads() {
+        let cases = [
+            (
+                "thread",
+                occt::make_cylinder(15.0, 30.0).unwrap(),
+                "cylinder",
+                json!({"designation": "M30", "length": "10 mm", "from_end": "top"}),
+                20_578.554_906,
+                18,
+            ),
+            (
+                "hole",
+                occt::make_box(40.0, 40.0, 12.0).unwrap(),
+                "plane",
+                json!({"designation": "M30", "diameter": 30.0, "style": "threaded",
+                    "depth_mode": "through", "position": [20.0, 20.0, 12.0]}),
+                11_534.333_073,
+                25,
+            ),
+        ];
+        for (kind, blank, geometry, mut inputs, volume, faces) in cases {
+            let (index, print) = (0..occt::faces(&blank).unwrap().len() as u32)
+                .map(|index| (index, occt::face_fingerprint(&blank, index).unwrap()))
+                .filter(|(_, print)| print.geometry == geometry)
+                .max_by(|(_, a), (_, b)| a.center[2].total_cmp(&b.center[2]))
+                .unwrap();
+            inputs["body"] = json!({"__body__": "Blank"});
+            inputs["face"] = json!({"__ref__": {
+                "body": "Blank", "kind": "face", "index_hint": index,
+                "fingerprint": {"kind": "face", "geometry": print.geometry, "center": print.center,
+                    "direction": print.direction, "measure": print.measure,
+                    "radius": print.has_radius.then_some(print.radius)}
+            }});
+            let feature =
+                json!({"id": "test", "type": kind, "outputs": ["Blank"], "inputs": inputs});
+            let parameters = HashMap::new();
+            let ctx = Context::placement(&feature, "Blank", Rc::new(blank), &parameters);
+            let result = execute(kind, &ctx, None).unwrap().unwrap();
+            let built = &result["Blank"];
+            let actual = occt::volume(built);
+            assert!(
+                (actual - volume).abs() < 0.001,
+                "{kind}: {actual} vs {volume}"
+            );
+            assert_eq!(occt::face_occurrences(built), faces, "{kind}");
+        }
+    }
 
     #[test]
     fn vents_cut_the_same_hex_grid_into_a_plate_and_a_picked_face() {

@@ -31,6 +31,7 @@ fn main() {
     cxx_build::bridge("src/lib.rs")
         .file("cpp/shim.cpp")
         .file("cpp/step.cpp")
+        .file("cpp/thread.cpp")
         .include("cpp")
         .include(format!("{dir}/include/opencascade"))
         .std("c++17")
@@ -48,5 +49,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OCCT_DIR");
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
     println!("cargo:rerun-if-changed=cpp/step.cpp");
+    println!("cargo:rerun-if-changed=cpp/thread.cpp");
     println!("cargo:rerun-if-changed=cpp/shim.hpp");
 }

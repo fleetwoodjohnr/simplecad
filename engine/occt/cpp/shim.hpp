@@ -67,6 +67,8 @@ public:
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 std::unique_ptr<Shape> make_cylinder(double radius, double height);
+std::unique_ptr<Shape> sweep_thread_tooth(double radius, double pitch, double length,
+                                         bool left_hand, rust::Slice<const double> profile);
 std::unique_ptr<Shape> make_sphere(double radius);
 std::unique_ptr<Shape> make_cone(double bottom, double top, double height);
 std::unique_ptr<Shape> make_torus(double major, double minor);

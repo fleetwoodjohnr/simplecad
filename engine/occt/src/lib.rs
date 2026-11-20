@@ -133,6 +133,14 @@ pub mod ffi {
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+        /// Sweep the closed radial/axial profile along a cylindrical helix.
+        fn sweep_thread_tooth(
+            radius: f64,
+            pitch: f64,
+            length: f64,
+            left_hand: bool,
+            profile: &[f64],
+        ) -> Result<UniquePtr<Shape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<Shape>>;
         fn make_cone(bottom: f64, top: f64, height: f64) -> Result<UniquePtr<Shape>>;
         fn make_torus(major: f64, minor: f64) -> Result<UniquePtr<Shape>>;
