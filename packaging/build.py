@@ -25,6 +25,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -242,7 +243,8 @@ def macos() -> None:
     stage = os.path.join(BUILD, "dmg")
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
-    shutil.copytree(os.path.join(DIST, "SimpleCAD.app"), os.path.join(stage, "SimpleCAD.app"),
+    selected = os.environ.get("SIMPLECAD_BUNDLE") or os.path.join(DIST, "SimpleCAD.app")
+    shutil.copytree(selected, os.path.join(stage, "SimpleCAD.app"),
                     symlinks=True)
     os.symlink("/Applications", os.path.join(stage, "Applications"))
     run(tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder", stage,
@@ -251,9 +253,10 @@ def macos() -> None:
 
 def flatpak_tarball() -> None:
     """The bundle as a tarball, for the Flatpak manifest to wrap."""
-    os.makedirs(RELEASE, exist_ok=True)
-    shutil.make_archive(os.path.join(BUILD, f"simplecad-bundle-{arch()}"), "gztar",
-                        root_dir=DIST, base_dir="SimpleCAD")
+    os.makedirs(BUILD, exist_ok=True)
+    output = os.path.join(BUILD, f"simplecad-bundle-{arch()}.tar.gz")
+    with tarfile.open(output, "w:gz") as archive:
+        archive.add(BUNDLE, arcname="SimpleCAD")
 
 
 STEPS = {"icons": icons, "bundle": bundle, "appimage": appimage,
