@@ -6,7 +6,11 @@ and dragged through 120 steps. Reports the median and 95th-percentile time of
 ``gizmo.drag`` (solve + snap filter + preview transform; the repaint itself is
 scheduled, not timed) and of the press that starts the drag.
 
-    xvfb-run -a .venv/bin/python scripts/benchmark_gizmo.py
+    xvfb-run -a .venv/bin/python scripts/benchmark_gizmo.py [COPY.scad3 BODY]
+
+With a project (a scratch copy) and one of its bodies, that body is dragged
+instead, among the project's own. ``frame`` also times the repaint each step
+causes, which is what decides whether the part visibly keeps up with the mouse.
 """
 
 from __future__ import annotations
@@ -45,17 +49,24 @@ def main() -> int:
         from simplecad.kernel.primitives import BoxFeature
         from simplecad.ui.selection import Picked
 
-        for index in range(40):
-            window.add_feature(BoxFeature(inputs={
-                "width": 10, "depth": 10, "height": 10,
-                "x": (index % 8) * 16.0, "y": (index // 8) * 16.0,
-            }, outputs=[f"B{index}"]))
+        name = "B0"
+        if len(sys.argv) > 2:
+            window._open_path(sys.argv[1])
+            name = sys.argv[2]
+            if not window.document.body(name).visible:
+                window._set_body_visible(name, True)
+        else:
+            for index in range(40):
+                window.add_feature(BoxFeature(inputs={
+                    "width": 10, "depth": 10, "height": 10,
+                    "x": (index % 8) * 16.0, "y": (index // 8) * 16.0,
+                }, outputs=[f"B{index}"]))
         window.wait_for_rebuild()
         viewport = window.stage.viewport
         viewport.fit_all()
         QApplication.processEvents()
-        shape = window.document.body("B0").shape
-        window.selection.picks = [Picked("B0", "body", shape, window._presentations["B0"])]
+        shape = window.document.body(name).shape
+        window.selection.picks = [Picked(name, "body", shape, window._presentations[name])]
         window.activate_tool("move")
         QApplication.processEvents()
         gizmo = viewport.gizmo
@@ -75,7 +86,7 @@ def main() -> int:
         if handle is None:
             RESULT["error"] = "X arrow not found"
             return
-        presses, drags = [], []
+        presses, drags, frames = [], [], []
         for _round in range(3):
             start = time.perf_counter()
             assert gizmo.press(*handle)
@@ -85,6 +96,9 @@ def main() -> int:
                 gizmo.drag(round(handle[0] + screen[0] * step * 2),
                            round(handle[1] + screen[1] * step * 2))
                 drags.append((time.perf_counter() - start) * 1000.0)
+                viewport.repaint()
+                QApplication.processEvents()
+                frames.append((time.perf_counter() - start) * 1000.0)
             gizmo.release()
         # Letting go commits a Move; the gizmo detaches and comes back once
         # the rebuild lands. How long is the user without a handle to grab?
@@ -108,6 +122,9 @@ def main() -> int:
         RESULT["reattach_median_ms"] = round(statistics.median(gaps), 1)
         RESULT["reattach_max_ms"] = round(max(gaps), 1)
         drags.sort()
+        frames.sort()
+        RESULT["frame_median_ms"] = round(statistics.median(frames), 2)
+        RESULT["frame_p95_ms"] = round(frames[int(len(frames) * 0.95)], 2)
         RESULT["press_ms"] = round(statistics.median(presses), 2)
         RESULT["drag_median_ms"] = round(statistics.median(drags), 3)
         RESULT["drag_p95_ms"] = round(drags[int(len(drags) * 0.95)], 3)

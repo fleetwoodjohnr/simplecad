@@ -960,7 +960,6 @@ def apply_result(document, message: dict) -> list[str]:
     if document._geometry_store is None:
         document._geometry_store = ResultStore()
     document._geometry_store.merge(message.get("cache"))
-    previous_signatures = getattr(document, "_geometry_signatures", {})
     document._geometry_signatures = dict(message.get("report", {}).get("signatures", {}))
 
     changed: list[str] = []
@@ -977,13 +976,13 @@ def apply_result(document, message: dict) -> list[str]:
         # the body back to an earlier producer whose signature never changed
         # -- and undo restores the body's producer field before this reply
         # lands -- so neither of those alone says the geometry is current.
+        # A body opened from a file is keyed by ``project.load``; one without
+        # a key is never assumed current (that guess kept a reopened part's
+        # newest placement on screen through a hundred undos).
         current = (producer, document._geometry_signatures.get(producer))
         shown = getattr(body, "_shape_key", None) if body is not None else None
         if (body is not None and body.shape is not None and producer
-                and body.id == metadata.get("id") and current[1]
-                and (shown == current if shown is not None else (
-                    body.producer == producer
-                    and previous_signatures.get(producer) == current[1]))):
+                and body.id == metadata.get("id") and current[1] and shown == current):
             continue
         shape = body_from_wire(blob)
         if shape is None:

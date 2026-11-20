@@ -247,6 +247,9 @@ def load(path: str) -> tuple[Document, bool]:
                     body.shape = shape
                     if valid:
                         accepted[entry["feature_id"]] = entry["signature"]
+                        # Which result is on screen, so a reply carrying the
+                        # same one is not decoded again (geometry_client).
+                        body._shape_key = (entry["feature_id"], entry["signature"])
                         cached = True
                     else:
                         document._pending_changes.add(entry.get("feature_id", ""))
@@ -277,6 +280,9 @@ def load(path: str) -> tuple[Document, bool]:
                 builder = Rebuilder(document)
                 if builder.adopt_baseline():
                     accepted = signatures(document)
+                    for body in document.bodies.values():
+                        if body.shape is not None and body.producer in accepted:
+                            body._shape_key = (body.producer, accepted[body.producer])
         document._geometry_signatures = accepted
         document._geometry_store.adopt_display(document)
         document._cache_complete = all(

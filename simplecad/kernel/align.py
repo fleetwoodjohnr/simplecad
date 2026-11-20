@@ -185,15 +185,73 @@ def _projected_bounds(shape, axis, center):
     """Exact bounds along *axis*, expressed relative to *center*.
 
     OCCT's UV bounds inherit arbitrary surface parameter directions.  Rotating
-    a copy so the requested axis becomes world X lets its geometry-aware bounder
-    provide stable face extents for lines, arcs, and splines alike.
+    the shape so the requested axis becomes world X lets its geometry-aware
+    bounder provide stable face extents for lines, arcs, and splines alike.
+    The rotation is a location, not a copy, and only the faces that can reach
+    an extreme are bounded exactly (:func:`_x_extent`).
     """
-    from .occ import bounding_box, transformed
+    from .occ import transformed
 
     rotate = rotation_between(axis, (1.0, 0.0, 0.0), center)
-    low, high = bounding_box(transformed(shape, rotate))
+    low, high = _x_extent(transformed(shape, rotate, copy_geometry=False))
     point = _transformed_point(rotate, center)
-    return (low[0] - point[0], high[0] - point[0])
+    return (low - point[0], high - point[0])
+
+
+def _x_extent(shape) -> tuple[float, float]:
+    """The X range of ``BRepBndLib.AddOptimal(shape)`` on exact geometry, faster.
+
+    ``AddOptimal`` is each face's optimal box, merged by plain min and max
+    (BRepBndLib.cxx), so the extremes come from the few faces that reach them.
+    A face's cheap box, widened by the largest tolerance in the shape, always
+    contains its optimal one; faces whose cheap box cannot pass the extreme
+    found so far are skipped: the same answer as bounding every face, which on
+    a 2944-face part took Stack & Place five seconds per change on the GUI
+    thread. Against the rotated deep copy measured before, the worst difference
+    over every body in the sample projects was 2e-13 mm.
+    """
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    def optimal(part):
+        box = Bnd_Box()
+        BRepBndLib.AddOptimal_s(part, box, False, True)
+        return None if box.IsVoid() else (box.CornerMin().X(), box.CornerMax().X())
+
+    loose = (TopExp_Explorer(shape, TopAbs_EDGE, TopAbs_FACE).More()
+             or TopExp_Explorer(shape, TopAbs_VERTEX, TopAbs_EDGE).More())
+    faces = []
+    # The largest face, edge or vertex tolerance: what either bounder may add.
+    margin = ShapeAnalysis_ShapeTolerance().Tolerance(shape, 1)
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face(explorer.Current())
+        cheap = Bnd_Box()
+        BRepBndLib.Add_s(face, cheap, False)
+        if not cheap.IsVoid():
+            faces.append((cheap.CornerMin().X(), cheap.CornerMax().X(), face))
+        explorer.Next()
+    if loose or not faces:
+        whole = optimal(shape)
+        return whole if whole is not None else (0.0, 0.0)
+    margin = 2.0 * margin + 1e-9
+    low, high, done = math.inf, -math.inf, set()
+    for index in sorted(range(len(faces)), key=lambda i: -faces[i][1]):
+        if faces[index][1] + margin < high:
+            break
+        if (found := optimal(faces[index][2])) is not None:
+            done.add(index)
+            low, high = min(low, found[0]), max(high, found[1])
+    for index in sorted(range(len(faces)), key=lambda i: faces[i][0]):
+        if faces[index][0] - margin > low:
+            break
+        if index not in done and (found := optimal(faces[index][2])) is not None:
+            low, high = min(low, found[0]), max(high, found[1])
+    return (low, high) if low <= high else (0.0, 0.0)
 
 
 def _transformed_point(transform, point):
@@ -394,7 +452,8 @@ def moving_bounds_for_frame(target_frame, moving_body, moving_face, *, operation
         raise CadError("Edge distances need a flat mounting face.")
     rotate = seating_rotation(moving, target_frame.normal, flip=flip, rotation=rotation,
                               seat=operation == "stack")
-    outline = transformed(moving_body, rotate)
+    # Only measured, never kept: a location, not a deep copy of the part.
+    outline = transformed(moving_body, rotate, copy_geometry=False)
     rotated_center = _transformed_point(rotate, moving.center)
     moving_u = _projected_bounds(outline, target_frame.x_axis, rotated_center)
     moving_v = _projected_bounds(outline, target_frame.y_axis, rotated_center)
