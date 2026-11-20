@@ -1,5 +1,6 @@
 //! SimpleCAD's core, being ported from the Python app's `simplecad/core`.
 
+mod advanced;
 pub mod align;
 pub mod document;
 pub mod evaluate;

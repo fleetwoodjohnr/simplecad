@@ -201,6 +201,7 @@ pub mod ffi {
         /// A `gp_Trsf`, composed in C++ as OCP composes it.
         type Trsf;
         fn trsf_identity() -> UniquePtr<Trsf>;
+        fn trsf_mirror(origin: &[f64], normal: &[f64]) -> Result<UniquePtr<Trsf>>;
         /// A turn of `angle` radians about the axis through `pivot`.
         fn trsf_rotation(pivot: &[f64], axis: &[f64], angle: f64) -> Result<UniquePtr<Trsf>>;
         fn trsf_translation(by: &[f64]) -> UniquePtr<Trsf>;
@@ -221,6 +222,14 @@ pub mod ffi {
         type Shapes;
         fn shapes_new() -> UniquePtr<Shapes>;
         fn shapes_push(shapes: Pin<&mut Shapes>, shape: &Shape);
+        fn fuse_copies(shape: &Shape, copies: &Shapes) -> Result<UniquePtr<Shape>>;
+        fn draft_angle(
+            shape: &Shape,
+            faces: &[u32],
+            origin: &[f64],
+            pull: &[f64],
+            radians: f64,
+        ) -> Result<UniquePtr<Shape>>;
         /// `BooleanFeature`'s boolean: join (0), cut (1) or intersect (2) of
         /// `target` with `tools`, with an optional fuzzy value.
         fn combine(

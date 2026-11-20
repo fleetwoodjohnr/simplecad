@@ -32,6 +32,7 @@
 #include <BRepLProp_SLProps.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -957,6 +958,38 @@ std::unique_ptr<Shape> shell(const Shape &shape, rust::Slice<const uint32_t> ind
   return owned(result, "shell");
 }
 
+// `DraftFeature`: taper the selected faces relative to a fixed neutral plane.
+std::unique_ptr<Shape> draft_angle(const Shape &shape, rust::Slice<const uint32_t> indices,
+                                   rust::Slice<const double> origin, rust::Slice<const double> pull,
+                                   double radians) {
+  if (origin.size() != 3 || pull.size() != 3) {
+    throw std::runtime_error("A draft needs a three-coordinate origin and pull direction.");
+  }
+  if (!std::isfinite(radians) || std::abs(radians) < 1e-9 * M_PI / 180.0) {
+    throw std::runtime_error("A draft needs an angle greater than zero.");
+  }
+  constexpr const char *failure = "That draft angle does not fit this geometry. Try a smaller angle, or fewer faces.";
+  const gp_Dir direction(pull[0], pull[1], pull[2]);
+  const gp_Pln plane(gp_Pnt(origin[0], origin[1], origin[2]), direction);
+  ShapeMap faces;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+  BRepOffsetAPI_DraftAngle builder(shape.shape);
+  for (const uint32_t face : indices) {
+    if (face >= static_cast<uint32_t>(faces.Extent())) {
+      throw std::runtime_error("Select a face of this body.");
+    }
+    builder.Add(TopoDS::Face(faces.FindKey(static_cast<int>(face) + 1)), direction, radians, plane);
+    if (!builder.AddDone()) {
+      throw std::runtime_error(failure);
+    }
+  }
+  builder.Build();
+  if (!builder.IsDone()) {
+    throw std::runtime_error(failure);
+  }
+  return owned(unified(builder.Shape()), "draft");
+}
+
 std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b) {
   BRepAlgoAPI_Fuse builder(a.shape, b.shape);
   if (!builder.IsDone()) {
@@ -1122,6 +1155,16 @@ std::unique_ptr<Trsf> trsf_translation(rust::Slice<const double> v) {
   gp_Trsf trsf;
   trsf.SetTranslation(gp_Vec(v[0], v[1], v[2]));
   return std::make_unique<Trsf>(trsf);
+}
+
+std::unique_ptr<Trsf> trsf_mirror(rust::Slice<const double> origin, rust::Slice<const double> normal) {
+  if (origin.size() != 3 || normal.size() != 3) {
+    throw std::runtime_error("A mirror plane needs a three-coordinate origin and normal.");
+  }
+  gp_Trsf transform;
+  transform.SetMirror(gp_Ax2(gp_Pnt(origin[0], origin[1], origin[2]),
+                             gp_Dir(normal[0], normal[1], normal[2])));
+  return std::make_unique<Trsf>(transform);
 }
 
 std::unique_ptr<Trsf> trsf_multiplied(const Trsf &a, const Trsf &b) {
@@ -1431,6 +1474,18 @@ rust::Vec<double> x_extent(const Shape &shape_in) {
 std::unique_ptr<Shapes> shapes_new() { return std::make_unique<Shapes>(); }
 
 void shapes_push(Shapes &shapes, const Shape &shape) { shapes.list.Append(shape.shape); }
+
+// Python's `_fuse_all`: fuse each copy in order and unify the completed pattern.
+std::unique_ptr<Shape> fuse_copies(const Shape &shape, const Shapes &copies) {
+  if (copies.list.IsEmpty()) {
+    return owned(shape.shape, "pattern");
+  }
+  TopoDS_Shape result = shape.shape;
+  for (const auto &copy : copies.list) {
+    result = boolean<BRepAlgoAPI_Fuse>(result, copy, "The pattern operation did not succeed on this geometry.");
+  }
+  return owned(unified(result), "pattern");
+}
 
 namespace {
 template <class Operation>

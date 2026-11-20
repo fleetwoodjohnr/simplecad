@@ -368,6 +368,10 @@ pub const PORTED: &[&str] = &[
     "boolean",
     "split",
     "hole",
+    "draft",
+    "mirror",
+    "rectangular_pattern",
+    "circular_pattern",
 ];
 
 /// The Shape panel creates the same recipe that the evaluator can rebuild.
@@ -709,6 +713,9 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
                 Ok(BTreeMap::from([(name, placed)]))
             }
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
+            "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
+                [(body_name()?, crate::advanced::build(kind, ctx)?)],
+            )),
             "boolean" => combine(ctx),
             "split" => {
                 let coordinates = |key, default| -> Result<[f64; 3], StepError> {

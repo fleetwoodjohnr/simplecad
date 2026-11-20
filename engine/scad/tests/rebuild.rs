@@ -265,3 +265,44 @@ fn a_saved_through_hole_uses_the_inward_direction_of_the_face() {
     let expected = 24_000.0 - std::f64::consts::PI * 9.0 * 20.0;
     assert!((occt::volume(report.bodies[0].shape.as_ref().unwrap()) - expected).abs() < 1e-6);
 }
+
+#[test]
+fn saved_mirror_and_patterns_apply_their_recipe_to_the_whole_body() {
+    let box_shape = occt::make_box(40.0, 30.0, 20.0).unwrap();
+    for (kind, mut inputs, volume, x_min, x_max) in [
+        ("mirror", json!({"keep": false}), 24_000.0, -40.0, 0.0),
+        (
+            "rectangular_pattern",
+            json!({"count_x": "2", "spacing_x": "50 mm"}),
+            48_000.0,
+            0.0,
+            90.0,
+        ),
+        (
+            "circular_pattern",
+            json!({"count": "4", "total_angle": "360 deg"}),
+            96_000.0,
+            -40.0,
+            40.0,
+        ),
+    ] {
+        let mut model = Model::new_box(occt::write_brep(&box_shape).unwrap()).unwrap();
+        let producer = model.payload["features"][0]["id"].clone();
+        let body = model.payload["bodies"][0]["id"].clone();
+        inputs["body"] = json!({"__body__": "Box"});
+        model.payload["features"].as_array_mut().unwrap().push(json!({
+            "id": "pattern", "type": kind, "name": "Pattern", "outputs": ["Box"], "output_ids": { "Box": body },
+            "inputs": inputs, "bindings": { "Box": { "feature_id": producer, "object_id": body } },
+            "suppressed": false, "dropped": [],
+        }));
+        let report = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+        assert!(report.failures.is_empty(), "{kind}: {:?}", report.failures);
+        let moved = report.bodies[0].shape.as_ref().unwrap();
+        assert!((occt::volume(moved) - volume).abs() < 1e-6, "{kind}");
+        let bounds = occt::bounds(moved).unwrap();
+        assert!(
+            (bounds[0] - x_min).abs() < 1e-6 && (bounds[3] - x_max).abs() < 1e-6,
+            "{kind}: {bounds:?}"
+        );
+    }
+}

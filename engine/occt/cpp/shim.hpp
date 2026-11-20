@@ -80,6 +80,9 @@ std::unique_ptr<Shape> move_shape(const Shape &shape, rust::Slice<const double> 
 std::unique_ptr<Shape> scale_shape(const Shape &shape, rust::Slice<const double> pivot,
                                    rust::Slice<const double> factors, bool uniform);
 std::unique_ptr<Shape> shell(const Shape &shape, rust::Slice<const uint32_t> faces, double thickness);
+std::unique_ptr<Shape> draft_angle(const Shape &shape, rust::Slice<const uint32_t> faces,
+                                   rust::Slice<const double> origin, rust::Slice<const double> pull,
+                                   double radians);
 std::unique_ptr<Shape> fuse(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> unify(const Shape &shape);
 std::unique_ptr<Shape> read_brep(rust::Slice<const uint8_t> bytes);
@@ -107,6 +110,7 @@ MeshBuffers mesh(const Shape &shape, double deflection, double angle);
 std::unique_ptr<Trsf> trsf_identity();
 std::unique_ptr<Trsf> trsf_rotation(rust::Slice<const double> pivot, rust::Slice<const double> axis, double angle);
 std::unique_ptr<Trsf> trsf_translation(rust::Slice<const double> by);
+std::unique_ptr<Trsf> trsf_mirror(rust::Slice<const double> origin, rust::Slice<const double> normal);
 std::unique_ptr<Trsf> trsf_multiplied(const Trsf &a, const Trsf &b);
 rust::Vec<double> trsf_point(const Trsf &trsf, rust::Slice<const double> point);
 rust::Vec<double> trsf_values(const Trsf &trsf);
@@ -117,6 +121,7 @@ CylinderData cylinder_data(const Shape &face);
 rust::Vec<double> x_extent(const Shape &shape);
 std::unique_ptr<Shapes> shapes_new();
 void shapes_push(Shapes &shapes, const Shape &shape);
+std::unique_ptr<Shape> fuse_copies(const Shape &shape, const Shapes &copies);
 std::unique_ptr<Shape> combine(uint8_t operation, const Shape &target, const Shapes &tools, double fuzzy);
 uint32_t distinct_solids(const Shape &shape);
 double join_bridge_gap(const Shape &shape);
