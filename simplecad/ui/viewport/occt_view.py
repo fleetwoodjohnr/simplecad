@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import math
+import sys
 from contextlib import contextmanager
 from enum import Enum, IntEnum
 
@@ -199,8 +200,6 @@ def _current_gl_context_pointer() -> int | None:
     native-interface accessor for any of them, so each is read from the
     platform's own "current context" call.
     """
-    import sys
-
     try:
         if sys.platform == "win32":
             get_context = ctypes.windll.opengl32.wglGetCurrentContext
@@ -226,19 +225,24 @@ def _current_gl_context_pointer() -> int | None:
         return None
 
 
-def _current_gl_context_capsule():
-    """Box the current native GL context in a PyCapsule for OCCT.
-
-    ``Aspect_RenderingContext`` is a ``void*`` and OCP binds it as a capsule, so
-    the pointer is read while Qt's context is current.
-    """
-    pointer = _current_gl_context_pointer()
-    if not pointer:
-        return None
+def _pointer_capsule(pointer: int):
     new_capsule = ctypes.pythonapi.PyCapsule_New
     new_capsule.restype = ctypes.py_object
     new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
     return new_capsule(pointer, None, None)
+
+
+def _current_occt_context():
+    """Read Qt's current context in the type accepted by this OCP build."""
+    if sys.platform == "darwin":
+        from OCP.OpenGl import OpenGl_Context
+
+        # OCCT exposes a typed NSOpenGLContext* on macOS. Let its own context
+        # wrapper obtain it from the current Qt context for OCP to return.
+        context = OpenGl_Context()
+        return context.RenderingContext() if context.Init(True) else None
+    pointer = _current_gl_context_pointer()
+    return _pointer_capsule(pointer) if pointer is not None else None
 
 
 class OcctViewport(QOpenGLWidget):
@@ -1364,10 +1368,8 @@ class OcctViewport(QOpenGLWidget):
 
         init_fonts()
 
-        capsule = _current_gl_context_capsule()
-        if capsule is None:
-            import sys
-
+        context = _current_occt_context()
+        if context is None:
             raise RuntimeError(
                 "No OpenGL context is current"
                 + ("; SimpleCAD needs QT_QPA_PLATFORM=xcb" if sys.platform.startswith("linux")
@@ -1412,12 +1414,12 @@ class OcctViewport(QOpenGLWidget):
         # their physical XWayland pointer events. See docs/architecture.md.
         self._window = Aspect_NeutralWindow()
         self._window.SetVirtual(True)
-        self._window.SetNativeHandle(self._native_window_handle())
+        self._window.SetNativeHandle(self._occt_window_handle())
         width, height = self._device_size()
         self._window.SetSize(width, height)
 
         self._view = self._viewer.CreateView()
-        self._view.SetWindow(self._window, capsule)
+        self._view.SetWindow(self._window, context)
         self._remember_binding()
 
         params = self._view.ChangeRenderingParams()
@@ -1466,6 +1468,11 @@ class OcctViewport(QOpenGLWidget):
         if not handle:
             raise RuntimeError("No native ancestor is available for the 3D view")
         return handle
+
+    def _occt_window_handle(self):
+        handle = self._native_window_handle()
+        # HWND is bound as a pointer, while X11 and Cocoa use integer handles.
+        return _pointer_capsule(handle) if sys.platform == "win32" else handle
 
     def _check_health(self) -> None:
         """Keep asking for a frame while a repair is outstanding.
@@ -1525,16 +1532,16 @@ class OcctViewport(QOpenGLWidget):
         """
         if self._view is None or self._window is None or self._failure is not None:
             return False
-        capsule = _current_gl_context_capsule()
-        if capsule is None:
+        context = _current_occt_context()
+        if context is None:
             self._rebind_pending = True
             return False
         try:
             # The framebuffer wrapper is re-adopted from Qt on the next paint.
             self._fbo = None
-            self._window.SetNativeHandle(self._native_window_handle())
+            self._window.SetNativeHandle(self._occt_window_handle())
             self._window.SetSize(*self._device_size())
-            self._view.SetWindow(self._window, capsule)
+            self._view.SetWindow(self._window, context)
         except Exception as exc:  # noqa: BLE001 - report, never crash the app
             self._rebind_pending = True
             log.error("could not re-point the 3D view at its new window: %s", exc)
@@ -1596,7 +1603,7 @@ class OcctViewport(QOpenGLWidget):
         """
         if not self._initialised or self._failure is not None:
             return False
-        if _current_gl_context_capsule() is None:
+        if _current_gl_context_pointer() is None:
             # Nothing current to build against yet; the next paint will have one.
             self._rebind_pending = True
             return False
