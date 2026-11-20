@@ -224,7 +224,18 @@ fn planar_frame(face: &Face) -> Result<Frame, StepError> {
 /// `reference_frame`: V nearest world up (world Y for a level face), U right-handed.
 fn reference_frame(face: &Face) -> Result<Frame, StepError> {
     let legacy = planar_frame(face)?;
-    let candidates = [legacy.x_axis, legacy.y_axis];
+    let (u_axis, v_axis) = reference_axes(&legacy)?;
+    Ok(Frame {
+        x_axis: u_axis,
+        y_axis: v_axis,
+        x_bounds: projected_bounds(&face.shape, u_axis, legacy.center)?,
+        y_bounds: projected_bounds(&face.shape, v_axis, legacy.center)?,
+        ..legacy
+    })
+}
+
+fn reference_axes(frame: &Frame) -> Result<(V, V), StepError> {
+    let candidates = [frame.x_axis, frame.y_axis];
     let mut guide = [0.0, 0.0, 1.0];
     let reach = |guide: V| candidates.iter().map(move |a| dot(*a, guide).abs());
     if reach(guide).fold(f64::NEG_INFINITY, f64::max) < 0.25 {
@@ -238,14 +249,58 @@ fn reference_frame(face: &Face) -> Result<Frame, StepError> {
     if dot(v_axis, guide) < 0.0 {
         v_axis = scale(v_axis, -1.0);
     }
-    let u_axis = unit(cross(v_axis, legacy.normal))?;
-    Ok(Frame {
-        x_axis: u_axis,
-        y_axis: v_axis,
-        x_bounds: projected_bounds(&face.shape, u_axis, legacy.center)?,
-        y_bounds: projected_bounds(&face.shape, v_axis, legacy.center)?,
-        ..legacy
-    })
+    Ok((unit(cross(v_axis, frame.normal))?, v_axis))
+}
+
+/// `view_frame` chooses signed, authored face axes from the projected view.
+/// Quantizing the axes keeps edge gaps and the saved recipe tied to the face.
+fn view_axes(base: &Frame, direction: V, up: V) -> Option<(V, V)> {
+    let normalize = |v| {
+        let magnitude = length(v);
+        (magnitude.is_finite() && magnitude >= 1e-12).then(|| scale(v, 1.0 / magnitude))
+    };
+    let normal = base.normal;
+    let up = normalize(up)?;
+    let right = normalize(cross(normalize(direction)?, up))?;
+    let flatten = |v| sub(v, scale(normal, dot(v, normal)));
+    let mut screen_up = flatten(up);
+    let mut screen_right = flatten(right);
+    if length(screen_up) < 1e-5 {
+        screen_up = cross(normal, screen_right);
+    }
+    if length(screen_right) < 1e-5 {
+        screen_right = cross(screen_up, normal);
+    }
+    if length(screen_up) < 1e-5 || length(screen_right) < 1e-5 {
+        return None;
+    }
+    let screen_up = normalize(screen_up)?;
+    let screen_right = normalize(screen_right)?;
+    let axes = [
+        base.x_axis,
+        scale(base.x_axis, -1.0),
+        base.y_axis,
+        scale(base.y_axis, -1.0),
+    ];
+    let nearest = |axis, best, guide| {
+        // Python's max keeps the first of equals.
+        if dot(axis, guide) > dot(best, guide) {
+            axis
+        } else {
+            best
+        }
+    };
+    let v = axes
+        .into_iter()
+        .fold(axes[0], |best, axis| nearest(axis, best, screen_up));
+    let mut u = axes
+        .into_iter()
+        .filter(|axis| dot(*axis, v).abs() < 0.5)
+        .reduce(|best, axis| nearest(axis, best, screen_right))?;
+    if dot(cross(u, v), normal) < 0.0 {
+        u = scale(u, -1.0);
+    }
+    Some((u, v))
 }
 
 fn numbers(value: &Value) -> Option<Vec<f64>> {
@@ -682,9 +737,21 @@ pub fn place(
     let error = |e: StepError| e.message;
     let moving_face = Face::read(moving.shape, moving.index).map_err(error)?;
     let target_face = Face::read(target.shape, target.index).map_err(error)?;
+    let view = inputs.as_object_mut().and_then(|inputs| {
+        let direction = inputs.shift_remove("view_direction");
+        let up = inputs.shift_remove("view_up");
+        vector(direction.as_ref())
+            .ok()
+            .flatten()
+            .zip(vector(up.as_ref()).ok().flatten())
+    });
     if inputs["placement_mode"] == "edge_gap" {
         let base = planar_frame(&target_face).map_err(error)?;
-        let frame = reference_frame(&target_face).map_err(error)?;
+        let (u_axis, v_axis) =
+            match view.and_then(|(direction, up)| view_axes(&base, direction, up)) {
+                Some(axes) => axes,
+                None => reference_axes(&base).map_err(error)?,
+            };
         let snapped = |value: f64| {
             [0.0, 1.0, -1.0]
                 .into_iter()
@@ -692,13 +759,13 @@ pub fn place(
                 .unwrap_or(value)
         };
         inputs["target_basis"] = serde_json::json!([
-            snapped(dot(frame.x_axis, base.x_axis)),
-            snapped(dot(frame.x_axis, base.y_axis)),
-            snapped(dot(frame.y_axis, base.x_axis)),
-            snapped(dot(frame.y_axis, base.y_axis)),
+            snapped(dot(u_axis, base.x_axis)),
+            snapped(dot(u_axis, base.y_axis)),
+            snapped(dot(v_axis, base.x_axis)),
+            snapped(dot(v_axis, base.y_axis)),
         ]);
-        inputs["target_u"] = serde_json::json!(frame.x_axis);
-        inputs["target_normal"] = serde_json::json!(frame.normal);
+        inputs["target_u"] = serde_json::json!(u_axis);
+        inputs["target_normal"] = serde_json::json!(base.normal);
     }
     let reference = |picked: &PickedFace<'_>| -> Result<Value, String> {
         let f =
@@ -746,7 +813,9 @@ pub fn execute(ctx: &Context) -> Result<(String, Shape), StepError> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_g;
+    use super::{PickedFace, format_g, place};
+    use crate::document::Model;
+    use serde_json::json;
 
     #[test]
     fn numbers_read_as_python_formats_them_with_g() {
@@ -764,5 +833,75 @@ mod tests {
         ] {
             assert_eq!(format_g(value), python, "{value}");
         }
+    }
+
+    #[test]
+    fn stacking_uses_the_views_nearest_face_axes_and_saves_only_the_basis() {
+        let target = occt::make_box(40.0, 30.0, 20.0).unwrap();
+        let moving = occt::make_box(10.0, 8.0, 5.0).unwrap();
+        let mut model = Model::new_box(occt::write_brep(&target).unwrap()).unwrap();
+        model
+            .add_primitive(
+                "box",
+                "Box",
+                json!({ "width": "10", "depth": "8", "height": "5" }),
+                occt::write_brep(&moving).unwrap(),
+            )
+            .unwrap();
+        let pick = |shape: &occt::Shape, sign| {
+            occt::faces(shape)
+                .unwrap()
+                .iter()
+                .position(|face| face.planar && face.normal[2] * sign > 0.99)
+                .unwrap() as u32
+        };
+        let stack = |model: &mut Model, settings| {
+            place(
+                model,
+                PickedFace {
+                    name: "Box2",
+                    shape: &moving,
+                    index: pick(&moving, -1.0),
+                },
+                PickedFace {
+                    name: "Box",
+                    shape: &target,
+                    index: pick(&target, 1.0),
+                },
+                settings,
+            )
+            .unwrap()
+        };
+        let settings = json!({
+            "operation": "stack", "placement_mode": "edge_gap", "horizontal": "left",
+            "view_direction": [0.0, 0.0, -1.0], "view_up": [-1.0, 0.28, 0.0],
+        });
+        let mut fallback = model.clone();
+        let placed = stack(&mut model, settings);
+        let recipe = &model.payload["features"][2]["inputs"];
+        assert!((recipe["target_u"][1].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!(recipe["target_u"][0].as_f64().unwrap().abs() < 1e-9);
+        assert!(
+            recipe["target_basis"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| {
+                    entry
+                        .as_f64()
+                        .is_some_and(|v| [0.0, -1.0, 1.0].contains(&v))
+                })
+        );
+        assert!(recipe.get("view_direction").is_none());
+        assert!(recipe.get("view_up").is_none());
+        let min_y = |shape| occt::bounds(shape).unwrap()[1];
+        assert!((min_y(&placed) - min_y(&target)).abs() < 1e-6);
+
+        let placed = stack(
+            &mut fallback,
+            json!({ "operation": "stack", "placement_mode": "edge_gap", "horizontal": "left" }),
+        );
+        let min_x = |shape| occt::bounds(shape).unwrap()[0];
+        assert!((min_x(&placed) - min_x(&target)).abs() < 1e-6);
     }
 }

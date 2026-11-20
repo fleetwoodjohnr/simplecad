@@ -5,6 +5,8 @@
 
 /// The OCCT toolkits the shim calls into, dependencies after dependents.
 const TOOLKITS: &[&str] = &[
+    "TKDESTEP",
+    "TKXSBase",
     "TKOffset",
     "TKFillet",
     "TKMesh",
@@ -28,6 +30,7 @@ fn main() {
 
     cxx_build::bridge("src/lib.rs")
         .file("cpp/shim.cpp")
+        .file("cpp/step.cpp")
         .include("cpp")
         .include(format!("{dir}/include/opencascade"))
         .std("c++17")
@@ -44,5 +47,6 @@ fn main() {
     println!("cargo:lib_dir={lib}");
     println!("cargo:rerun-if-env-changed=OCCT_DIR");
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
+    println!("cargo:rerun-if-changed=cpp/step.cpp");
     println!("cargo:rerun-if-changed=cpp/shim.hpp");
 }

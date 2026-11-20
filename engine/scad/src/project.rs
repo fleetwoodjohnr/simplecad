@@ -285,6 +285,9 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    const EMBEDDED_IMPORTS: &[u8] =
+        include_bytes!("../../../app/tests/e2e/fixtures/features.scad3");
+
     fn archive(model: &str, entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
@@ -337,6 +340,77 @@ mod tests {
         let read: Vec<_> = project.bodies.iter().map(|b| b.brep.is_some()).collect();
         assert_eq!(read, [false, false, true]);
         assert_eq!(project.notes.len(), 2);
+    }
+
+    #[test]
+    fn embedded_import_rebuilds_its_archive_asset_at_the_edited_offset() {
+        let opened = read(EMBEDDED_IMPORTS).unwrap();
+        let original = opened
+            .bodies
+            .iter()
+            .find(|body| body.name == "Plate")
+            .unwrap();
+        let shape = occt::read_brep(original.brep.as_ref().unwrap()).unwrap();
+        let bounds = occt::bounds(&shape).unwrap();
+        let mut model = crate::document::Model::open(&opened);
+        model.payload["features"][0]["inputs"]["dx"] = json!("2 cm");
+        let rerun = model.payload["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|feature| feature["id"].as_str().unwrap().to_string())
+            .collect();
+
+        let report =
+            crate::rebuild::rebuild(&mut model, EMBEDDED_IMPORTS, &Default::default(), &rerun)
+                .unwrap();
+
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        assert_eq!(report.rebuilt.len(), 2);
+        let saved = model.save(EMBEDDED_IMPORTS).unwrap();
+        let reopened = read(&saved).unwrap();
+        let plate = reopened
+            .bodies
+            .iter()
+            .find(|body| body.name == "Plate")
+            .unwrap();
+        let placed = occt::read_brep(plate.brep.as_ref().unwrap()).unwrap();
+        let moved = occt::bounds(&placed).unwrap();
+        assert!((occt::volume(&placed) - occt::volume(&shape)).abs() < 1e-6);
+        for (axis, (old, new)) in bounds.into_iter().zip(moved).enumerate() {
+            let offset = if axis % 3 == 0 { 20.0 } else { 0.0 };
+            assert!((new - old - offset).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_missing_embedded_asset_reports_failure_and_keeps_the_cached_body() {
+        let opened = read(EMBEDDED_IMPORTS).unwrap();
+        let mut model = crate::document::Model::open(&opened);
+        let fid = model.payload["features"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        model.payload["features"][0]["inputs"]["asset"] = json!("0".repeat(64));
+        let report = crate::rebuild::rebuild(
+            &mut model,
+            EMBEDDED_IMPORTS,
+            &Default::default(),
+            &[fid.clone()].into(),
+        )
+        .unwrap();
+
+        assert!(
+            report.failures[&fid]
+                .contains("The embedded geometry for 'Imported solid' is missing.")
+        );
+        let plate = report
+            .bodies
+            .iter()
+            .find(|body| body.name == "Plate")
+            .unwrap();
+        let shape = plate.shape.as_ref().unwrap();
+        assert!((occt::volume(shape) - 71016.32).abs() < 0.01);
     }
 
     #[test]

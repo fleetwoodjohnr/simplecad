@@ -2,7 +2,12 @@
 //! JSON, for `scripts/compare_projects.py --rust` to hold against the Python app.
 //! Raw numbers: the comparison rounds both sides the same way.
 
+use scad::document::Model;
+use scad::project::Project;
+use scad::rebuild::{Report, Shape};
 use serde_json::{Map, Value, json};
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 fn signature(brep: &[u8], location: Option<&[f64; 12]>) -> Result<Value, String> {
     let mut shape = occt::read_brep(brep).map_err(|e| e.what().to_string())?;
@@ -139,53 +144,36 @@ fn rebuild(args: &[String]) -> Result<(), String> {
     let original = std::fs::read(path).map_err(|e| e.to_string())?;
     let project = scad::project::read(&original)?;
     let mut model = scad::document::Model::open(&project);
-    let ids: std::collections::HashMap<String, String> = model.payload["bodies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|b| {
-            Some((
-                b["name"].as_str()?.to_string(),
-                b["id"].as_str()?.to_string(),
-            ))
-        })
-        .collect();
-    let mut shown = std::collections::HashMap::new();
-    let mut stale = std::collections::BTreeSet::new();
-    if recipe {
-        stale = model.payload["features"]
+    let (shown, stale) = if recipe {
+        let stale = model.payload["features"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|f| f["id"].as_str().map(String::from))
             .collect();
+        (HashMap::new(), stale)
     } else {
         model.adopt_baseline(&project.bodies);
-        for body in &project.bodies {
-            let (Some(brep), Some(id)) = (&body.brep, ids.get(&body.name)) else {
-                continue;
-            };
-            let mut shape = occt::read_brep(brep).map_err(|e| e.what().to_string())?;
-            if let Some(m) = &body.location {
-                shape = occt::located(&shape, m).map_err(|e| e.what().to_string())?;
-            }
-            shown.insert(id.clone(), std::rc::Rc::new(shape));
-        }
-    }
+        (saved_shapes(&project)?, BTreeSet::new())
+    };
     let report = scad::rebuild::rebuild(&mut model, &original, &shown, &stale)?;
-    let mut bodies = Map::new();
-    for body in &report.bodies {
-        let value = match &body.shape {
-            Some(shape) => json!({
-                "volume": occt::volume(shape).abs(),
-                "box": occt::bounds(shape).map_err(|e| e.what().to_string())?,
-                "faces": occt::face_occurrences(shape),
-            }),
-            None => Value::Null,
-        };
-        bodies.insert(body.name.clone(), value);
-    }
-    let unported: std::collections::BTreeSet<&str> = report
+    let bodies = report_signatures(&report)?;
+    let unported = unported_steps(&model, &report);
+    let stage = if recipe { "recipe" } else { "cached" };
+    println!(
+        "{}",
+        json!({
+            format!("{stage}_rebuild"): bodies,
+            format!("{stage}_failed"): report.failures.len(),
+            format!("{stage}_diagnostics"): failure_states(&model, &report),
+            "unported": unported,
+        })
+    );
+    Ok(())
+}
+
+fn unported_steps<'a>(model: &'a Model, report: &Report) -> BTreeSet<&'a str> {
+    report
         .failures
         .iter()
         .filter(|(_, message)| message.contains("cannot build it yet"))
@@ -196,11 +184,116 @@ fn rebuild(args: &[String]) -> Result<(), String> {
                 .find(|f| f["id"] == json!(fid))?["type"]
                 .as_str()
         })
+        .collect()
+}
+
+fn failure_states(model: &Model, report: &Report) -> Map<String, Value> {
+    report
+        .failures
+        .keys()
+        .map(|id| {
+            (
+                id.clone(),
+                model.payload["diagnostics"][id]["state"].clone(),
+            )
+        })
+        .collect()
+}
+
+fn saved_shapes(project: &Project) -> Result<HashMap<String, Shape>, String> {
+    let ids: HashMap<&str, &str> = project.model["bodies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|body| Some((body["name"].as_str()?, body["id"].as_str()?)))
         .collect();
-    let stage = if recipe { "recipe" } else { "cached" };
+    let mut shown = HashMap::new();
+    for body in &project.bodies {
+        let (Some(brep), Some(id)) = (&body.brep, ids.get(body.name.as_str())) else {
+            continue;
+        };
+        let mut shape = occt::read_brep(brep).map_err(|e| e.what().to_string())?;
+        if let Some(matrix) = &body.location {
+            shape = occt::located(&shape, matrix).map_err(|e| e.what().to_string())?;
+        }
+        shown.insert((*id).into(), Rc::new(shape));
+    }
+    Ok(shown)
+}
+
+fn report_signatures(report: &Report) -> Result<Map<String, Value>, String> {
+    report
+        .bodies
+        .iter()
+        .map(|body| {
+            let value = match &body.shape {
+                Some(shape) => json!({
+                    "volume": occt::volume(shape).abs(),
+                    "box": occt::bounds(shape).map_err(|e| e.what().to_string())?,
+                    "faces": occt::face_occurrences(shape),
+                }),
+                None => Value::Null,
+            };
+            Ok((body.name.clone(), value))
+        })
+        .collect()
+}
+
+/// Compare saved history's fully undone and redone states with Python's.
+fn history(args: &[String]) -> Result<(), String> {
+    let [path] = args else {
+        return Err("usage: scad history <file.scad3>".into());
+    };
+    let original = std::fs::read(path).map_err(|e| e.to_string())?;
+    let project = scad::project::read(&original)?;
+    let mut model = Model::open(&project);
+    let mut stale = BTreeSet::new();
+    let shown = saved_shapes(&project)?;
+    let initial = scad::rebuild::rebuild(&mut model, &original, &shown, &stale)?;
+    let shapes = |report: &Report| -> HashMap<_, _> {
+        report
+            .bodies
+            .iter()
+            .filter_map(|body| Some((body.id.clone(), body.shape.clone()?)))
+            .collect()
+    };
+    let mut undo_steps = 0;
+    while model.can_undo() {
+        stale.extend(model.move_history(false)?);
+        undo_steps += 1;
+    }
+    let undone = scad::rebuild::rebuild(&mut model, &original, &shapes(&initial), &stale)?;
+    let undo_diagnostics = failure_states(&model, &undone);
+    let undo_unported: BTreeSet<_> = unported_steps(&model, &undone)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let mut redo_steps = 0;
+    stale.clear();
+    while model.can_redo() {
+        stale.extend(model.move_history(true)?);
+        redo_steps += 1;
+    }
+    let redone = scad::rebuild::rebuild(&mut model, &original, &shapes(&undone), &stale)?;
+    let unported: BTreeSet<_> = undo_unported
+        .into_iter()
+        .chain(
+            unported_steps(&model, &redone)
+                .into_iter()
+                .map(String::from),
+        )
+        .collect();
     println!(
         "{}",
-        json!({ format!("{stage}_rebuild"): bodies, format!("{stage}_failed"): report.failures.len(), "unported": unported })
+        json!({
+            "undo_all": report_signatures(&undone)?,
+            "redo_all": report_signatures(&redone)?,
+            "undo_steps": undo_steps,
+            "redo_steps": redo_steps,
+        "undo_diagnostics": undo_diagnostics,
+        "redo_diagnostics": failure_states(&model, &redone),
+            "unported": unported,
+        })
     );
     Ok(())
 }
@@ -228,6 +321,7 @@ fn main() {
         Some("pull") => Some(pull),
         Some("save") => Some(save),
         Some("rebuild") => Some(rebuild),
+        Some("history") => Some(history),
         Some("steps") => Some(steps),
         _ => None,
     };

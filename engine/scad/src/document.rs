@@ -10,6 +10,13 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Cursor, Read, Write};
+use std::sync::Arc;
+
+pub struct ImportedPart {
+    pub name: String,
+    pub asset: Vec<u8>,
+    pub placed: Vec<u8>,
+}
 
 /// The parts of `model.json` that are the document (`Document.to_dict`); the rest
 /// (format, history, cache, geometry, diagnostics) is what saving adds.
@@ -37,7 +44,8 @@ const COLLECTIONS: &[(&str, &str)] = &[
 pub struct Model {
     pub payload: Value,
     /// New `geometry/<sha>.brep` entries, by sha.
-    pub blobs: BTreeMap<String, Vec<u8>>,
+    pub blobs: BTreeMap<String, Arc<[u8]>>,
+    new_assets: BTreeSet<String>,
 }
 
 impl Model {
@@ -45,6 +53,7 @@ impl Model {
         Self {
             payload,
             blobs: BTreeMap::new(),
+            new_assets: BTreeSet::new(),
         }
     }
 
@@ -60,7 +69,12 @@ impl Model {
             .unwrap_or(1)
             >= 2
         {
-            model.blobs.clone_from(&project.recovered_blobs);
+            model.blobs.extend(
+                project
+                    .recovered_blobs
+                    .iter()
+                    .map(|(sha, bytes)| (sha.clone(), Arc::from(bytes.as_slice()))),
+            );
             return model;
         }
         let latest = model.latest();
@@ -77,7 +91,7 @@ impl Model {
                 json!({ "sha256": sha, "feature_id": feature,
                 "signature": signature, "current": signature.is_some() }),
             );
-            model.blobs.insert(sha, brep.clone());
+            model.blobs.insert(sha, Arc::from(brep.as_slice()));
         }
         let payload = model.payload.as_object_mut().unwrap();
         // Saved results only where the bodies were adopted, as the Python app's load.
@@ -218,7 +232,7 @@ impl Model {
                 .entry(feature.clone())
                 .or_default()
                 .insert(object.clone(), output);
-            self.blobs.insert(sha, brep.clone());
+            self.blobs.insert(sha, Arc::from(brep.as_slice()));
         }
         let features = self.list("features");
         let payload = self.payload.as_object_mut().unwrap();
@@ -386,36 +400,98 @@ impl Model {
         }
     }
 
-    /// `History.undo` on the saved history: the newest step taken back, and its
-    /// redo step written as the Python app writes it. Each body shows its new
-    /// producer's cached result, as after the Python app's rebuild.
+    pub fn can_undo(&self) -> bool {
+        self.has_history("undo")
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.has_history("redo")
+    }
+
+    fn has_history(&self, stack: &str) -> bool {
+        self.payload["history"][stack]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty())
+    }
+
     pub fn undo(&mut self) -> Result<(), String> {
-        let unreadable = || "This project's history could not be read.".to_string();
-        let action = self.payload["history"]["undo"]
-            .as_array_mut()
-            .and_then(Vec::pop)
-            .ok_or("There is nothing to undo.")?;
-        let patch = &action["patch"];
-        let current = signatures(&self.payload).ok_or_else(unreadable)?;
-        let redo = self.inverse_patch(patch);
-        let old = self.payload.clone();
+        self.move_cached_history(false)
+    }
+
+    pub fn redo(&mut self) -> Result<(), String> {
+        self.move_cached_history(true)
+    }
+
+    fn move_cached_history(&mut self, redo: bool) -> Result<(), String> {
+        let previous = self.payload.clone();
         let producers = self.latest();
+        let before =
+            signatures(&self.payload).ok_or("This project's steps could not be fingerprinted.")?;
+        let result = self
+            .move_history(redo)
+            .and_then(|_| self.show_cached_results(&producers, &before));
+        if result.is_err() {
+            self.payload = previous;
+        }
+        result
+    }
+
+    /// Move a saved patch between the history stacks. The caller rebuilds at
+    /// the desired history point, reusing cached outputs for its signatures.
+    pub fn move_history(&mut self, redo: bool) -> Result<BTreeSet<String>, String> {
+        let unreadable = || "This project's history could not be read.".to_string();
+        let (source, destination) = if redo {
+            ("redo", "undo")
+        } else {
+            ("undo", "redo")
+        };
+        let history = &self.payload["history"];
+        let action = history[source]
+            .as_array()
+            .and_then(|stack| stack.last())
+            .cloned()
+            .ok_or_else(|| format!("There is nothing to {source}."))?;
+        if !action["patch"].is_object()
+            || !action["label"].is_string()
+            || !(history[destination].is_array() || history.get(destination).is_none())
+        {
+            return Err(unreadable());
+        }
+        let current = signatures(&self.payload).ok_or_else(unreadable)?;
+        let patch = &action["patch"];
+        let inverse = self.inverse_patch(patch);
+        let old = self.payload.clone();
         let stale = self.apply_patch(patch);
         let mut stale_all = dependents(&old, &stale);
         stale_all.extend(dependents(&self.payload, &stale));
+        let Some(next) = signatures(&self.payload) else {
+            self.payload = old;
+            return Err(unreadable());
+        };
+        stale_all.extend(
+            current
+                .keys()
+                .filter(|id| current.get(*id) != next.get(*id))
+                .cloned(),
+        );
         let mut cache_keys: Vec<&String> =
             stale_all.iter().filter_map(|f| current.get(f)).collect();
         cache_keys.sort();
-        let entry = json!({ "label": action["label"], "patch": redo, "cache_keys": cache_keys });
+        cache_keys.dedup();
+        let entry = json!({ "label": action["label"], "patch": inverse, "cache_keys": cache_keys });
+        self.payload["history"][source]
+            .as_array_mut()
+            .unwrap()
+            .pop();
         self.payload["history"]
             .as_object_mut()
-            .ok_or_else(unreadable)?
-            .entry("redo")
+            .unwrap()
+            .entry(destination)
             .or_insert_with(|| json!([]))
             .as_array_mut()
-            .ok_or_else(unreadable)?
+            .unwrap()
             .push(entry);
-        self.show_cached_results(&producers)
+        Ok(stale_all)
     }
 
     /// `History._inverse_patch`: what puts back the entities `patch` names, as they are now.
@@ -585,7 +661,7 @@ impl Model {
         }
         let payload = self.payload.as_object_mut().unwrap();
         for (key, value) in patch["values"].as_object().into_iter().flatten() {
-            if ["title", "counters", "retired_ids", "metadata"].contains(&key.as_str()) {
+            if ["title", "counters", "retired_ids", "metadata", "assets"].contains(&key.as_str()) {
                 payload.insert(key.clone(), value.clone());
             }
         }
@@ -629,6 +705,7 @@ impl Model {
     fn show_cached_results(
         &mut self,
         before: &BTreeMap<String, (String, String)>,
+        previous_signatures: &BTreeMap<String, String>,
     ) -> Result<(), String> {
         let current =
             signatures(&self.payload).ok_or("This project's steps could not be fingerprinted.")?;
@@ -638,7 +715,9 @@ impl Model {
                 continue;
             }
             let signature = current.get(&producer).cloned().unwrap_or_default();
-            if before.get(&name) == Some(&(producer.clone(), object.clone())) {
+            if before.get(&name) == Some(&(producer.clone(), object.clone()))
+                && previous_signatures.get(&producer) == current.get(&producer)
+            {
                 if let Some(saved) = self.payload["geometry"].get(&object) {
                     geometry.insert(object, saved.clone());
                 }
@@ -652,7 +731,7 @@ impl Model {
                 .filter(|_| output["kind"] == "brep")
             else {
                 return Err(format!(
-                    "\"{name}\" has to be rebuilt to undo this; undo it in SimpleCAD 0.4."
+                    "\"{name}\" must be rebuilt to restore this history step."
                 ));
             };
             geometry.insert(object, json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true }));
@@ -703,6 +782,62 @@ impl Model {
         brep: Vec<u8>,
     ) -> Result<String, String> {
         self.record_primitive(&new_feature_id(), kind, label, inputs, brep)
+    }
+
+    /// Import each solid as its own editable feature, keeping all solids in
+    /// one undo action. The asset remains available if that action is redone.
+    pub fn add_imports(
+        &mut self,
+        parts: Vec<ImportedPart>,
+        offset: [f64; 3],
+    ) -> Result<Vec<String>, String> {
+        let before = self.document();
+        let undo_len = self.payload["history"]["undo"]
+            .as_array()
+            .map_or(0, Vec::len);
+        let mut names = Vec::with_capacity(parts.len());
+        for ImportedPart {
+            name: label,
+            asset: brep,
+            placed,
+        } in parts
+        {
+            let asset = format!("{:x}", Sha256::digest(&brep));
+            let assets = self
+                .payload
+                .as_object_mut()
+                .ok_or("Invalid project.")?
+                .entry("assets")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or("This project's assets could not be read.")?;
+            if !assets.iter().any(|other| other == &asset) {
+                assets.push(json!(&asset));
+                assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
+            }
+            let [dx, dy, dz] = offset;
+            let inputs = json!({ "asset": asset, "dx": dx, "dy": dy, "dz": dz });
+            let name = self.record_primitive(
+                &new_feature_id(),
+                "embedded_import",
+                &label,
+                inputs,
+                placed,
+            )?;
+            self.blobs
+                .entry(asset.clone())
+                .or_insert_with(|| brep.into());
+            self.new_assets.insert(asset);
+            names.push(name);
+        }
+        if !names.is_empty() {
+            self.payload["history"]["undo"]
+                .as_array_mut()
+                .unwrap()
+                .truncate(undo_len);
+            self.push_undo("Import", before)?;
+        }
+        Ok(names)
     }
 
     fn record_primitive(
@@ -758,8 +893,12 @@ impl Model {
             json!({ "sha256": sha, "feature_id": id, "signature": signature, "current": true });
         payload.entry("diagnostics").or_insert_with(|| json!({}))[id] =
             json!({ "state": "ok", "message": message });
-        self.blobs.insert(sha, brep);
+        self.blobs.insert(sha, brep.into());
 
+        self.push_undo(label, before)
+    }
+
+    fn push_undo(&mut self, label: &str, before: Value) -> Result<(), String> {
         let patch = make_patch(&self.document(), &before);
         let history = self
             .payload
@@ -814,7 +953,11 @@ impl Model {
             let replaced = name
                 .strip_prefix("geometry/")
                 .and_then(|name| name.strip_suffix(".brep"))
-                .is_some_and(|sha| self.blobs.contains_key(sha));
+                .is_some_and(|sha| self.blobs.contains_key(sha))
+                || name
+                    .strip_prefix("assets/")
+                    .and_then(|name| name.strip_suffix(".brep"))
+                    .is_some_and(|sha| self.new_assets.contains(sha));
             if name == "model.json" || name.starts_with("bodies/") || entry.is_dir() || replaced {
                 continue;
             }
@@ -826,6 +969,15 @@ impl Model {
         for (sha, blob) in &self.blobs {
             let name = format!("geometry/{sha}.brep");
             out.start_file(name, options).map_err(|e| damaged(&e))?;
+            out.write_all(blob).map_err(|e| damaged(&e))?;
+        }
+        for sha in &self.new_assets {
+            let blob = self
+                .blobs
+                .get(sha)
+                .ok_or("This project's imported geometry is missing.")?;
+            out.start_file(format!("assets/{sha}.brep"), options)
+                .map_err(|e| damaged(&e))?;
             out.write_all(blob).map_err(|e| damaged(&e))?;
         }
         Ok(out.finish().map_err(|e| damaged(&e))?.into_inner())

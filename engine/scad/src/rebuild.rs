@@ -15,8 +15,11 @@ use crate::signatures::{signatures, upstream};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::File;
 use std::io::{Cursor, Read};
+use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A shape, shared between the steps and bodies that hold it.
 pub type Shape = Rc<occt::UniquePtr<occt::Shape>>;
@@ -372,6 +375,8 @@ pub const PORTED: &[&str] = &[
     "mirror",
     "rectangular_pattern",
     "circular_pattern",
+    "embedded_import",
+    "import",
 ];
 
 /// The Shape panel creates the same recipe that the evaluator can rebuild.
@@ -421,7 +426,7 @@ pub fn create_primitive(
         parameters: &parameters,
         message: Default::default(),
     };
-    let shape = execute(kind, &ctx)
+    let shape = execute(kind, &ctx, None)
         .ok_or("This shape cannot be created yet.")?
         .map_err(|e| e.message)?
         .remove(label)
@@ -433,7 +438,11 @@ pub fn create_primitive(
 }
 
 /// The steps this build can run, by type; `None` for the others.
-fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, StepError>> {
+fn execute(
+    kind: &str,
+    ctx: &Context,
+    store: Option<&mut Store<'_>>,
+) -> Option<Result<BTreeMap<String, Shape>, StepError>> {
     let name = || -> Result<String, StepError> {
         let outputs = ctx.feature["outputs"].as_array();
         let first = outputs.and_then(|o| o.first()).and_then(Value::as_str);
@@ -455,6 +464,42 @@ fn execute(kind: &str, ctx: &Context) -> Option<Result<BTreeMap<String, Shape>, 
     };
     let run = || -> Result<BTreeMap<String, Shape>, StepError> {
         match kind {
+            "import" => {
+                let path = ctx
+                    .input("path")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| failed("This import has no file to read."))?;
+                let index = ctx.input("index").and_then(Value::as_u64).unwrap_or(0);
+                let parts = store
+                    .ok_or_else(|| failed("The import source is unavailable."))?
+                    .step_source(path)?;
+                let index = usize::try_from(index).unwrap_or(usize::MAX);
+                let body = parts.get(index).ok_or_else(|| {
+                    failed(format!(
+                        "'{}' no longer has a body {} — it now holds {}.",
+                        source_name(path),
+                        index.saturating_add(1),
+                        parts.len()
+                    ))
+                })?;
+                Ok(BTreeMap::from([(name()?, import_offset(ctx, body)?)]))
+            }
+            "embedded_import" => {
+                let asset = ctx.input("asset").and_then(Value::as_str).unwrap_or("");
+                let feature = ctx.feature["name"].as_str().unwrap_or("");
+                let blob = store.and_then(|store| store.model_blobs.get(asset).cloned()
+                    .or_else(|| store.archive_blob("assets", asset))).ok_or_else(|| {
+                    failed(format!("The embedded geometry for '{feature}' is missing. Restore the project from a complete .scad3 file."))
+                })?;
+                let shape = occt::read_brep(&blob).map_err(|_| {
+                    failed(format!("The embedded geometry for '{feature}' is damaged."))
+                })?;
+                Ok(BTreeMap::from([(
+                    name()?,
+                    import_offset(ctx, &Rc::new(shape))?,
+                )]))
+            }
             "box" | "cylinder" | "sphere" | "cone" | "torus" | "tube" | "wedge" => {
                 // `_Primitive._positive`: the input, refused unless above zero.
                 let positive = |key: &str, default: f64, what: &str| -> Result<f64, StepError> {
@@ -1116,23 +1161,67 @@ fn consumed_bodies(feature: &Value) -> Vec<String> {
     }
 }
 
-/// Where saved results are read from: the model's cache and the file's blobs.
+fn source_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn import_offset(ctx: &Context<'_>, shape: &Shape) -> Result<Shape, StepError> {
+    let offset = [
+        ctx.value("dx", 0.0, Dimension::Length)?,
+        ctx.value("dy", 0.0, Dimension::Length)?,
+        ctx.value("dz", 0.0, Dimension::Length)?,
+    ];
+    if offset.iter().all(|value| value.abs() <= 1e-12) {
+        return Ok(shape.clone());
+    }
+    occt::transform_shape(shape, &occt::trsf_translation(&offset), true)
+        .map(Rc::new)
+        .map_err(kernel)
+}
+
+/// Where saved results and import sources are read from during a rebuild.
 struct Store<'a> {
     original: Option<zip::ZipArchive<Cursor<&'a [u8]>>>,
-    model_blobs: &'a BTreeMap<String, Vec<u8>>,
+    model_blobs: &'a BTreeMap<String, Arc<[u8]>>,
     decoded: HashMap<String, Shape>,
+    step_sources: HashMap<String, Vec<Shape>>,
 }
 
 impl Store<'_> {
-    fn blob(&mut self, sha: &str) -> Option<Vec<u8>> {
+    fn step_source(&mut self, path: &str) -> Result<&[Shape], StepError> {
+        if !self.step_sources.contains_key(path) {
+            let parts = read_step_source(path)?;
+            if self.step_sources.len() >= 4 {
+                self.step_sources.clear();
+            }
+            self.step_sources.insert(path.into(), parts);
+        }
+        Ok(&self.step_sources[path])
+    }
+
+    fn blob(&mut self, sha: &str) -> Option<Arc<[u8]>> {
         if let Some(blob) = self.model_blobs.get(sha) {
             return Some(blob.clone());
         }
+        self.archive_blob("geometry", sha)
+    }
+
+    fn archive_blob(&mut self, folder: &str, sha: &str) -> Option<Arc<[u8]>> {
+        if sha.len() != 64
+            || !sha
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return None;
+        }
         let archive = self.original.as_mut()?;
-        let mut entry = archive.by_name(&format!("geometry/{sha}.brep")).ok()?;
+        let mut entry = archive.by_name(&format!("{folder}/{sha}.brep")).ok()?;
+        if entry.size() > MAX_IMPORT_BYTES {
+            return None;
+        }
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).ok()?;
-        (format!("{:x}", Sha256::digest(&bytes)) == sha).then_some(bytes)
+        (format!("{:x}", Sha256::digest(&bytes)) == sha).then(|| bytes.into())
     }
 
     fn decode(&mut self, sha: &str) -> Option<Shape> {
@@ -1190,6 +1279,55 @@ impl Store<'_> {
     }
 }
 
+const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+
+fn read_step_source(path: &str) -> Result<Vec<Shape>, StepError> {
+    let name = source_name(path);
+    let disk_path = Path::new(path);
+    if !disk_path.exists() {
+        return Err(failed(format!(
+            "The imported file '{name}' is no longer there."
+        )));
+    }
+    let extension = disk_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+    if !["step", "stp"]
+        .iter()
+        .any(|ext| extension.eq_ignore_ascii_case(ext))
+    {
+        return Err(failed(format!(
+            "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
+        )));
+    }
+    let unreadable = |_| failed(format!("'{name}' is not a readable STEP file."));
+    let info = disk_path.metadata().map_err(unreadable)?;
+    if !info.is_file() || info.len() > MAX_IMPORT_BYTES {
+        return Err(failed(format!(
+            "The imported file '{name}' must be a regular STEP file no larger than 256 MB."
+        )));
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(unreadable)?
+        .take(MAX_IMPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(failed(format!(
+            "The imported file '{name}' exceeds 256 MB."
+        )));
+    }
+    let fallback = disk_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Imported");
+    occt::ffi::read_step(&bytes, fallback)
+        .map(|parts| parts.into_iter().map(|part| Rc::new(part.shape)).collect())
+        .map_err(|_| failed(format!("'{name}' is not a readable STEP file.")))
+}
+
 struct Rebuilder<'a> {
     features: HashMap<String, Value>,
     signatures: BTreeMap<String, String>,
@@ -1204,7 +1342,7 @@ struct Rebuilder<'a> {
     failures: BTreeMap<String, String>,
     rebuilt: Vec<String>,
     new_entries: Map<String, Value>,
-    new_blobs: BTreeMap<String, Vec<u8>>,
+    new_blobs: BTreeMap<String, Arc<[u8]>>,
 }
 
 impl Rebuilder<'_> {
@@ -1393,7 +1531,7 @@ impl Rebuilder<'_> {
                 parameters: &self.parameters,
                 message: Default::default(),
             };
-            let made = execute(kind, &ctx).ok_or_else(|| {
+            let made = execute(kind, &ctx, Some(&mut self.store)).ok_or_else(|| {
                 failed("This step has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.")
             })??;
             if made.is_empty() {
@@ -1439,7 +1577,7 @@ impl Rebuilder<'_> {
                 output_ids[&name].as_str().unwrap_or("").to_string(),
                 json!({ "kind": "brep", "sha256": sha }),
             );
-            self.new_blobs.insert(sha.clone(), blob);
+            self.new_blobs.insert(sha.clone(), blob.into());
             parts.insert(
                 name,
                 Part {
@@ -1469,7 +1607,7 @@ fn setup<'a>(
     payload: &Value,
     signatures_now: BTreeMap<String, String>,
     parameters: HashMap<String, f64>,
-    blobs: &'a BTreeMap<String, Vec<u8>>,
+    blobs: &'a BTreeMap<String, Arc<[u8]>>,
     original: &'a [u8],
     stale: &BTreeSet<String>,
 ) -> Rebuilder<'a> {
@@ -1492,6 +1630,7 @@ fn setup<'a>(
             original: archive,
             model_blobs: blobs,
             decoded: HashMap::new(),
+            step_sources: HashMap::new(),
         },
         parameters,
         invalid: stale.iter().cloned().collect(),
@@ -1573,8 +1712,8 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
             }
         });
         found.push(match outcome {
-            Ok(value) => json!({ "name": name, "result": value }),
-            Err(error) => json!({ "name": name, "error": error.message }),
+            Ok(value) => json!({ "id": feature["id"], "name": name, "result": value }),
+            Err(error) => json!({ "id": feature["id"], "name": name, "error": error.message }),
         });
     }
     Ok(found)
@@ -1835,7 +1974,7 @@ pub fn rebuild(
                 _ => {
                     let blob = occt::write_brep(shape).map_err(|e| e.what().to_string())?;
                     let sha = format!("{:x}", Sha256::digest(&blob));
-                    model.blobs.insert(sha.clone(), blob);
+                    model.blobs.insert(sha.clone(), blob.into());
                     sha
                 }
             },

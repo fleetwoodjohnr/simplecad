@@ -4,6 +4,7 @@ mod advanced;
 pub mod align;
 pub mod document;
 pub mod evaluate;
+pub mod export;
 pub mod graph;
 pub mod params;
 mod profiles;

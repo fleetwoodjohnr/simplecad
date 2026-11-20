@@ -38,6 +38,37 @@ pub struct DisplayShape {
     pub edge_start: Uint32Array,
 }
 
+#[napi(object)]
+pub struct MeshPart {
+    pub name: String,
+    pub positions: Float32Array,
+    pub indices: Uint32Array,
+}
+
+#[napi]
+pub fn export_mesh(format: String, parts: Vec<MeshPart>) -> Result<Buffer> {
+    let parts: Vec<_> = parts
+        .iter()
+        .map(|part| scad::export::Part {
+            name: &part.name,
+            positions: &part.positions,
+            indices: &part.indices,
+        })
+        .collect();
+    scad::export::encode(&format, &parts)
+        .map(Buffer::from)
+        .map_err(Error::from_reason)
+}
+
+#[napi]
+pub fn export_step(parts: Vec<ClassInstance<Shape>>) -> Result<Buffer> {
+    let mut shapes = ffi::shapes_new();
+    for part in parts {
+        ffi::shapes_push(shapes.pin_mut(), &part.inner);
+    }
+    ffi::write_step(&shapes).map(Buffer::from).map_err(reason)
+}
+
 fn wrap(
     result: std::result::Result<occt::UniquePtr<ffi::Shape>, occt::Exception>,
 ) -> Result<Shape> {
@@ -168,6 +199,12 @@ pub struct CreatedShape {
     pub shape: Shape,
 }
 
+#[napi(object, object_from_js = false)]
+pub struct ImportedStep {
+    pub project: Project,
+    pub bodies: Vec<OpenedBody>,
+}
+
 #[napi(object)]
 pub struct StackRequest {
     pub moving_name: String,
@@ -182,6 +219,8 @@ pub struct StackRequest {
     pub vertical: String,
     pub horizontal_gap: f64,
     pub vertical_gap: f64,
+    pub view_direction: Option<Vec<f64>>,
+    pub view_up: Option<Vec<f64>>,
 }
 
 /// A distance as the Pull tool stores it: the number as typed (`50.75`, `5`).
@@ -189,8 +228,88 @@ fn expression(distance: f64) -> String {
     format!("{distance}")
 }
 
+fn bounds_for<'a>(shapes: impl IntoIterator<Item = &'a ffi::Shape>) -> Result<[f64; 6]> {
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for shape in shapes {
+        let bounds = ffi::bounds(shape).map_err(reason)?;
+        for axis in 0..3 {
+            low[axis] = low[axis].min(bounds[axis]);
+            high[axis] = high[axis].max(bounds[axis + 3]);
+        }
+    }
+    Ok([low[0], low[1], low[2], high[0], high[1], high[2]])
+}
+
 #[napi]
 impl Project {
+    #[napi]
+    pub fn import_step(
+        &self,
+        bytes: Uint8Array,
+        name: String,
+        limit: u32,
+        visible: Vec<ClassInstance<Shape>>,
+    ) -> Result<ImportedStep> {
+        let mut parts = ffi::read_step(&bytes, &name).map_err(reason)?;
+        if parts.len() > limit as usize {
+            return Err(Error::from_reason(
+                "This import would exceed the project's body limit.",
+            ));
+        }
+        let offset = if visible.is_empty() {
+            [0.0; 3]
+        } else {
+            let current = bounds_for(visible.iter().map(|part| &*part.inner))?;
+            let incoming = bounds_for(parts.iter().map(|part| &*part.shape))?;
+            let gap = ((incoming[3] - incoming[0]) * 0.15).max(10.0);
+            [
+                current[3] + gap - incoming[0],
+                current[1] - incoming[1],
+                current[2] - incoming[2],
+            ]
+            .map(|axis| (axis * 10_000.0).round() / 10_000.0)
+        };
+        let shift = ffi::trsf_translation(&offset);
+        let assets = parts
+            .iter_mut()
+            .map(|part| {
+                let asset = ffi::write_brep(&part.shape).map_err(reason)?;
+                let placed = if offset == [0.0; 3] {
+                    asset.clone()
+                } else {
+                    part.shape = ffi::transform_shape(&part.shape, &shift, true).map_err(reason)?;
+                    ffi::write_brep(&part.shape).map_err(reason)?
+                };
+                Ok(scad::document::ImportedPart {
+                    name: part.name.clone(),
+                    asset,
+                    placed,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut model = self.model.clone();
+        let names = model
+            .add_imports(assets, offset)
+            .map_err(Error::from_reason)?;
+        let bodies = names
+            .into_iter()
+            .zip(parts)
+            .map(|(name, part)| OpenedBody {
+                name,
+                visible: true,
+                shape: Some(Shape { inner: part.shape }),
+            })
+            .collect();
+        Ok(ImportedStep {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            bodies,
+        })
+    }
+
     #[napi]
     pub fn add_shape(
         &self,
@@ -224,6 +343,10 @@ impl Project {
             inputs["vertical"] = serde_json::json!(edit.vertical);
             inputs["horizontal_gap"] = serde_json::json!(expression(edit.horizontal_gap));
             inputs["vertical_gap"] = serde_json::json!(expression(edit.vertical_gap));
+            if let (Some(direction), Some(up)) = (edit.view_direction, edit.view_up) {
+                inputs["view_direction"] = serde_json::json!(direction);
+                inputs["view_up"] = serde_json::json!(up);
+            }
         }
         let placed = scad::align::place(
             &mut model,

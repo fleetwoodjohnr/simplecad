@@ -4,11 +4,10 @@
 #
 #   engine/occt/build-occt.sh <install-prefix> [work-dir]
 #
-# The engine models and meshes; three.js draws. So only the modelling modules
-# are built, with no third-party dependencies. Text (Visualization's
-# TKService/TKV3d, with FreeType) and STEP/glTF (DataExchange, with RapidJSON)
-# are switched on when those tools are ported; the CI cache key hashes this
-# file, so changing it rebuilds OCCT.
+# The engine models and meshes; three.js draws. Build the modelling modules
+# and STEP with their dependencies. Adding TKDESTEP alone keeps the unrelated
+# DataExchange toolkits and their third-party dependencies out of the bundle.
+# The CI cache key hashes this file, so changing it rebuilds OCCT.
 set -euo pipefail
 
 VERSION=8_0_1
@@ -51,6 +50,7 @@ cmake -S "OCCT-$VERSION" -B build ${CMAKE_GENERATOR:+-G "$CMAKE_GENERATOR"} \
   -DBUILD_MODULE_Visualization=OFF \
   -DBUILD_MODULE_ApplicationFramework=OFF \
   -DBUILD_MODULE_DataExchange=OFF \
+  -DBUILD_ADDITIONAL_TOOLKITS=TKDESTEP \
   -DBUILD_MODULE_Draw=OFF \
   -DUSE_OPENGL=OFF -DUSE_GLES2=OFF -DUSE_D3D=OFF -DUSE_XLIB=OFF \
   -DUSE_FREETYPE=OFF -DUSE_RAPIDJSON=OFF \

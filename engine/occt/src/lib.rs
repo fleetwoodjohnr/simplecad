@@ -79,6 +79,11 @@ pub mod ffi {
         pub above: UniquePtr<Shape>,
     }
 
+    pub struct StepBody {
+        pub name: String,
+        pub shape: UniquePtr<Shape>,
+    }
+
     pub struct HoleCut {
         pub position: [f64; 3],
         pub inward: [f64; 3],
@@ -160,6 +165,10 @@ pub mod ffi {
         /// OCCT's text B-Rep format, as `.scad3` files store it.
         fn read_brep(bytes: &[u8]) -> Result<UniquePtr<Shape>>;
         fn write_brep(shape: &Shape) -> Result<Vec<u8>>;
+        /// Read independently editable solids or shells, in STEP root order, in mm.
+        fn read_step(bytes: &[u8], fallback_name: &str) -> Result<Vec<StepBody>>;
+        /// Write one analytic STEP transfer root per object in order, as AP214 in mm.
+        fn write_step(shapes: &Shapes) -> Result<Vec<u8>>;
         /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
         /// the Python app places a cached "located" output).
         fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;
@@ -272,6 +281,36 @@ mod tests {
         assert!(bytes.trim_ascii_start().starts_with(b"CASCADE Topology"));
         let back = ffi::read_brep(&bytes).unwrap();
         assert!((ffi::volume(&back) - 6000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_round_trip_preserves_body_order_size_and_placement() {
+        let first = ffi::make_box(10.0, 20.0, 30.0).unwrap();
+        let box_at_origin = ffi::make_box(4.0, 5.0, 6.0).unwrap();
+        let second = ffi::place(&box_at_origin, &[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        let mut shapes = ffi::shapes_new();
+        ffi::shapes_push(shapes.pin_mut(), &first);
+        ffi::shapes_push(shapes.pin_mut(), &second);
+
+        let bytes = ffi::write_step(&shapes).unwrap();
+        assert!(bytes.starts_with(b"ISO-10303-21;"));
+        let bodies = ffi::read_step(&bytes, "Assembly").unwrap();
+
+        assert_eq!(bodies.len(), 2);
+        for (body, (source, name)) in bodies
+            .iter()
+            .zip([(&first, "Assembly 1"), (&second, "Assembly 2")])
+        {
+            assert_eq!(body.name, name);
+            assert!((ffi::volume(&body.shape) - ffi::volume(source)).abs() < 1e-6);
+            for (actual, expected) in ffi::bounds(&body.shape)
+                .unwrap()
+                .into_iter()
+                .zip(ffi::bounds(source).unwrap())
+            {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
     }
 
     #[test]
