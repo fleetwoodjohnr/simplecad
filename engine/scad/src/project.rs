@@ -66,6 +66,9 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
     let raw = entry("model.json")
         .ok_or("This file has no SimpleCAD model in it. The file may be damaged.")?;
     let mut model: Value = serde_json::from_slice(&raw).map_err(|_| DAMAGED.to_string())?;
+    if !model.is_object() {
+        return Err(DAMAGED.into());
+    }
     let format = match model.get("format") {
         None => 1,
         Some(v) => v.as_i64().filter(|f| *f >= 1).ok_or(DAMAGED)?,
@@ -195,7 +198,7 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
             model["geometry"] = Value::Object(manifest);
         }
     }
-    if bodies.iter().all(|b| b.brep.is_none()) {
+    if !bodies.is_empty() && bodies.iter().all(|b| b.brep.is_none()) {
         return Err(
             "This project has no saved bodies this build can show. Open it in SimpleCAD 0.4."
                 .into(),
@@ -340,6 +343,17 @@ mod tests {
         let read: Vec<_> = project.bodies.iter().map(|b| b.brep.is_some()).collect();
         assert_eq!(read, [false, false, true]);
         assert_eq!(project.notes.len(), 2);
+    }
+
+    #[test]
+    fn reopens_an_empty_project_with_redo_history() {
+        let shape = occt::make_box(40.0, 30.0, 20.0).unwrap();
+        let mut model = crate::document::Model::new_box(occt::write_brep(&shape).unwrap()).unwrap();
+        model.undo().unwrap();
+        let project = read(&model.save(&[]).unwrap()).unwrap();
+        assert!(project.bodies.is_empty());
+        assert!(crate::document::Model::open(&project).can_redo());
+        assert_eq!(read(&archive("null", &[])).err().as_deref(), Some(DAMAGED));
     }
 
     #[test]
