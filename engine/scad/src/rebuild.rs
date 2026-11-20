@@ -1851,7 +1851,8 @@ pub fn rebuild(
                      last: &mut Vec<(String, Final)>,
                      oid: &str,
                      fid: &str,
-                     name: &str| {
+                     name: &str,
+                     still_consumed: bool| {
         keep_previous(last, oid);
         if shown.contains_key(oid) && previous.contains_key(oid) {
             return;
@@ -1863,7 +1864,7 @@ pub fn rebuild(
                 (head.as_str(), output.as_str())
             });
         if !previous.contains_key(oid)
-            && (consumed.contains(oid)
+            && (still_consumed
                 || rebuilder.features[producer]["dropped"]
                     .as_array()
                     .is_some_and(|dropped| dropped.iter().any(|name| name == output)))
@@ -1898,7 +1899,7 @@ pub fn rebuild(
                 }
             }
             Err(_) => {
-                keep_last(&mut rebuilder, &mut last, oid, fid, name);
+                keep_last(&mut rebuilder, &mut last, oid, fid, name, false);
             }
         }
     }
@@ -1909,6 +1910,7 @@ pub fn rebuild(
     }
     let failed_ids = rebuilder.failed.clone();
     let protected = dependents(&order, &failed_ids);
+    let mut still_consumed = consumed;
     for feature in &order {
         if feature["suppressed"].as_bool().unwrap_or(false) {
             continue;
@@ -1919,6 +1921,11 @@ pub fn rebuild(
             let Some(oid) = feature["bindings"][&name]["object_id"].as_str() else {
                 continue;
             };
+            if blocked {
+                still_consumed.remove(oid);
+            } else {
+                still_consumed.insert(oid.to_string());
+            }
             if blocked && previous.contains_key(oid) {
                 keep_previous(&mut last, oid);
             } else {
@@ -1943,7 +1950,14 @@ pub fn rebuild(
             .filter_map(|(name, oid)| Some((name.clone(), oid.as_str()?.into())))
             .collect();
         for (name, oid) in outputs {
-            keep_last(&mut rebuilder, &mut last, &oid, fid, &name);
+            keep_last(
+                &mut rebuilder,
+                &mut last,
+                &oid,
+                fid,
+                &name,
+                still_consumed.contains(&oid),
+            );
         }
     }
 

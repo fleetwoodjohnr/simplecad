@@ -148,3 +148,44 @@ fn a_missing_cut_result_falls_back_to_the_plates_preceding_step() {
         "needs_attention"
     );
 }
+
+#[test]
+fn interrupted_consumption_keeps_the_tools_last_good_result() {
+    let project = read(ORIGINAL).unwrap();
+    let mut model = Model::open(&project);
+    let features = model.payload["features"].as_array_mut().unwrap();
+    let cut = features
+        .iter_mut()
+        .find(|f| f["name"] == "Combine2")
+        .unwrap();
+    let cut_id = cut["id"].as_str().unwrap().to_owned();
+    let plate_id = cut["output_ids"]["Plate"].clone();
+    let peg_id = cut["output_ids"]["Peg"].as_str().unwrap().to_owned();
+    // A formerly successful cut is now blocked. The next cut cannot consume
+    // its peg, even though the last saved document had the peg consumed.
+    cut["bindings"]["Plate"]["feature_id"] = json!("removed");
+    features.push(json!({
+        "id": "last-cut", "type": "boolean", "name": "Last cut",
+        "inputs": {"body": {"__body__": "Plate"}, "tools": [{"__body__": "Peg"}], "operation": "cut"},
+        "outputs": ["Plate"], "output_ids": {"Plate": plate_id},
+        "bindings": {
+            "Plate": {"feature_id": cut_id, "object_id": plate_id},
+            "Peg": {"feature_id": cut_id, "object_id": peg_id},
+        },
+        "suppressed": false, "dropped": [],
+    }));
+    model.payload["bodies"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|body| body["id"] != peg_id);
+    model.payload["geometry"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&peg_id);
+    let expected = cached_plate(&model, &cut_id, &peg_id);
+    let report = rebuild(&mut model, ORIGINAL, &HashMap::new(), &BTreeSet::new()).unwrap();
+    assert!(report.failures.contains_key("last-cut"));
+    let peg = report.bodies.iter().find(|body| body.id == peg_id).unwrap();
+    assert_plates_match(peg.shape.as_ref().unwrap(), &expected);
+    assert!(!report.bodies.iter().any(|body| body.name == "Block"));
+}
