@@ -755,6 +755,50 @@ struct Rebuilder<'a> {
 }
 
 impl Rebuilder<'_> {
+    /// Display fallback only. These results never enter the evaluator's cache.
+    fn last_good(&mut self, fid: &str, oid: &str) -> Option<Shape> {
+        let mut feature = self.features.get(fid)?;
+        let output = |feature: &Value| {
+            feature["output_ids"]
+                .as_object()?
+                .iter()
+                .find(|(_, id)| id.as_str() == Some(oid))
+                .map(|(name, _)| name.clone())
+        };
+        if let Some(name) = output(feature) {
+            for entry in self.entries.values().rev() {
+                if entry["feature_id"] == fid
+                    && let Some(part) = self
+                        .store
+                        .get(entry, feature)
+                        .and_then(|mut outputs| outputs.remove(&name))
+                {
+                    return Some(part.shape);
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        while seen.insert(feature["id"].as_str()?) {
+            let binding = feature["bindings"]
+                .as_object()?
+                .values()
+                .find(|r| r["object_id"].as_str() == Some(oid))?;
+            let source = binding["feature_id"].as_str()?;
+            feature = self.features.get(source)?;
+            let saved = self.cache.get(source).cloned().or_else(|| {
+                if self.failed.contains(source) {
+                    return None;
+                }
+                let entry = self.entries.get(self.signatures.get(source)?)?;
+                self.store.get(entry, feature)
+            });
+            if let Some(part) = saved.and_then(|mut outputs| outputs.remove(&output(feature)?)) {
+                return Some(part.shape);
+            }
+        }
+        None
+    }
+
     /// `_get`: the step's outputs, its uncached ancestors run first, without recursion.
     fn get(&mut self, fid: &str) -> Result<Outputs, StepError> {
         let mut pending = vec![(fid.to_string(), false)];
@@ -1009,6 +1053,34 @@ fn setup<'a>(
     }
 }
 
+/// Recover only already-built geometry for bodies whose saved steps failed.
+pub(crate) fn recover_saved(
+    model: &Value,
+    original: &[u8],
+    bodies: &[(&str, &str)],
+) -> HashMap<String, Vec<u8>> {
+    let Some(order) = model["features"].as_array() else {
+        return HashMap::new();
+    };
+    let blobs = BTreeMap::new();
+    let mut rebuilder = setup(
+        order,
+        model,
+        signatures(model).unwrap_or_default(),
+        HashMap::new(),
+        &blobs,
+        original,
+        &BTreeSet::new(),
+    );
+    bodies
+        .iter()
+        .filter_map(|&(oid, fid)| {
+            let shape = rebuilder.last_good(fid, oid)?;
+            Some((oid.to_string(), occt::write_brep(&shape).ok()?))
+        })
+        .collect()
+}
+
 /// Each step of type `kind` solved again on its saved inputs, for checking a
 /// port against the Python app: Align's transform (3×4, row by row) and
 /// description, or the error it gives.
@@ -1153,6 +1225,35 @@ pub fn rebuild(
             last.push((oid.to_string(), body));
         }
     };
+    let keep_last = |rebuilder: &mut Rebuilder,
+                     last: &mut Vec<(String, Final)>,
+                     oid: &str,
+                     fid: &str,
+                     name: &str| {
+        keep_previous(last, oid);
+        if shown.contains_key(oid) && previous.contains_key(oid) {
+            return;
+        }
+        let (producer, output) = heads
+            .iter()
+            .find(|(object, _, _)| object == oid)
+            .map_or((fid, name), |(_, head, output)| {
+                (head.as_str(), output.as_str())
+            });
+        if !previous.contains_key(oid)
+            && (consumed.contains(oid)
+                || rebuilder.features[producer]["dropped"]
+                    .as_array()
+                    .is_some_and(|dropped| dropped.iter().any(|name| name == output)))
+        {
+            return;
+        }
+        if let Some(shape) = rebuilder.last_good(producer, oid) {
+            last.retain(|(object, _)| object != oid);
+            let name = previous.get(oid).map_or(name, |(old_name, _)| old_name);
+            last.push((oid.into(), (name.into(), Some(shape), producer.into())));
+        }
+    };
     for (oid, fid, name) in &heads {
         if name.starts_with("__") || consumed.contains(oid) {
             continue;
@@ -1175,9 +1276,7 @@ pub fn rebuild(
                 }
             }
             Err(_) => {
-                if previous.contains_key(oid) {
-                    keep_previous(&mut last, oid);
-                }
+                keep_last(&mut rebuilder, &mut last, oid, fid, name);
             }
         }
     }
@@ -1215,18 +1314,14 @@ pub fn rebuild(
                 ),
             );
         }
-        let ids: Vec<String> = rebuilder.features[fid]["output_ids"]
+        let outputs: Vec<(String, String)> = rebuilder.features[fid]["output_ids"]
             .as_object()
             .into_iter()
             .flatten()
-            .filter_map(|(_, o)| o.as_str().map(String::from))
+            .filter_map(|(name, oid)| Some((name.clone(), oid.as_str()?.into())))
             .collect();
-        for oid in ids {
-            if previous.contains_key(&oid) {
-                keep_previous(&mut last, &oid);
-            } else {
-                last.retain(|(o, _)| o != &oid);
-            }
+        for (name, oid) in outputs {
+            keep_last(&mut rebuilder, &mut last, &oid, fid, &name);
         }
     }
 

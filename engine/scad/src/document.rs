@@ -60,6 +60,7 @@ impl Model {
             .unwrap_or(1)
             >= 2
         {
+            model.blobs.clone_from(&project.recovered_blobs);
             return model;
         }
         let latest = model.latest();
@@ -200,6 +201,12 @@ impl Model {
             let (Some(brep), Some((feature, object))) = (&body.brep, latest.get(&body.name)) else {
                 continue;
             };
+            if matches!(
+                self.payload["diagnostics"][feature]["state"].as_str(),
+                Some("failed" | "needs_attention")
+            ) {
+                continue;
+            }
             let sha = format!("{:x}", Sha256::digest(brep));
             let output = match &body.location {
                 Some(matrix) => {
@@ -731,7 +738,11 @@ impl Model {
             let mut entry = source.by_index(i).map_err(|e| damaged(&e))?;
             let name = entry.name().map_err(|e| damaged(&e))?.to_string();
             // `bodies/` is format 1's geometry, now under `geometry/`.
-            if name == "model.json" || name.starts_with("bodies/") || entry.is_dir() {
+            let replaced = name
+                .strip_prefix("geometry/")
+                .and_then(|name| name.strip_suffix(".brep"))
+                .is_some_and(|sha| self.blobs.contains_key(sha));
+            if name == "model.json" || name.starts_with("bodies/") || entry.is_dir() || replaced {
                 continue;
             }
             let mut bytes = Vec::new();
@@ -741,9 +752,6 @@ impl Model {
         }
         for (sha, blob) in &self.blobs {
             let name = format!("geometry/{sha}.brep");
-            if source.by_name(&name).is_ok() {
-                continue;
-            }
             out.start_file(name, options).map_err(|e| damaged(&e))?;
             out.write_all(blob).map_err(|e| damaged(&e))?;
         }

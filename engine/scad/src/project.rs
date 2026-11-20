@@ -2,8 +2,9 @@
 //! a zip holding `model.json` and each body's B-Rep. Format 1 stores a body at
 //! `bodies/<name>.brep`; formats 2–4 at `geometry/<sha256>.brep`, named in `model.json`.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 
 /// The newest format this build reads; the Python app refuses newer files the same way.
@@ -25,6 +26,7 @@ pub struct Project {
     pub bodies: Vec<SavedBody>,
     /// What could not be read, in words.
     pub notes: Vec<String>,
+    pub(crate) recovered_blobs: BTreeMap<String, Vec<u8>>,
 }
 
 const DAMAGED: &str = "This project could not be read. The file may be damaged.";
@@ -110,20 +112,10 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
                         && s.bytes()
                             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
                 });
-            match sha {
-                None => {
-                    notes.push(format!(
-                        "\"{name}\" has no saved geometry; open it in SimpleCAD 0.4 to rebuild it."
-                    ));
-                    None
-                }
-                Some(sha) => entry(&format!("geometry/{sha}.brep"))
+            sha.and_then(|sha| {
+                entry(&format!("geometry/{sha}.brep"))
                     .filter(|blob| format!("{:x}", Sha256::digest(blob)) == sha)
-                    .or_else(|| {
-                        notes.push(format!("\"{name}\" could not be read from this file."));
-                        None
-                    }),
-            }
+            })
         } else {
             // Two bodies whose names map to one entry can't be told apart, so neither is read.
             let path = legacy_entry(name);
@@ -151,6 +143,58 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
             location: None,
         });
     }
+    let mut recovered_blobs = BTreeMap::new();
+    if format >= 2 {
+        let missing: Vec<_> = bodies
+            .iter()
+            .zip(&named)
+            .filter(|(body, _)| body.brep.is_none())
+            .filter_map(|(_, (_, saved))| {
+                let oid = saved["id"].as_str()?;
+                let producer = saved["producer"].as_str()?;
+                matches!(
+                    model["diagnostics"][producer]["state"].as_str(),
+                    Some("needs_attention" | "failed")
+                )
+                .then_some((oid, producer))
+            })
+            .collect();
+        let mut recovered = if missing.is_empty() {
+            Default::default()
+        } else {
+            crate::rebuild::recover_saved(&model, data, &missing)
+        };
+        let mut geometry = Vec::new();
+        for (body, (_, saved)) in bodies.iter_mut().zip(&named) {
+            if body.brep.is_some() {
+                continue;
+            }
+            let oid = saved["id"].as_str().unwrap_or_default();
+            if let Some(blob) = recovered.remove(oid) {
+                let sha = format!("{:x}", Sha256::digest(&blob));
+                geometry.push((oid.to_string(), json!({
+                    "sha256": sha, "feature_id": saved["producer"], "signature": null, "current": false,
+                })));
+                recovered_blobs.insert(sha, blob.clone());
+                body.brep = Some(blob);
+            } else if model["geometry"][oid]["sha256"].is_string() {
+                notes.push(format!(
+                    "\"{}\" could not be read from this file.",
+                    body.name
+                ));
+            } else {
+                notes.push(format!(
+                    "\"{}\" has no saved geometry; open it in SimpleCAD 0.4 to rebuild it.",
+                    body.name
+                ));
+            }
+        }
+        if !geometry.is_empty() {
+            let mut manifest = model["geometry"].as_object().cloned().unwrap_or_default();
+            manifest.extend(geometry);
+            model["geometry"] = Value::Object(manifest);
+        }
+    }
     if bodies.iter().all(|b| b.brep.is_none()) {
         return Err(
             "This project has no saved bodies this build can show. Open it in SimpleCAD 0.4."
@@ -161,6 +205,7 @@ pub fn read(data: &[u8]) -> Result<Project, String> {
         model,
         bodies,
         notes,
+        recovered_blobs,
     })
 }
 
