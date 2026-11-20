@@ -1494,14 +1494,22 @@ impl Rebuilder<'_> {
 
     /// `_input_context`: each bound name, from the step that wrote it.
     fn inputs(&mut self, feature: &Value) -> Result<HashMap<String, Shape>, StepError> {
+        let Some(bindings) = feature["bindings"].as_object() else {
+            return Ok(HashMap::new());
+        };
+        // A deleted input blocks this step even if another input also fails.
+        // Name the deleted object so the user can repair the saved reference.
+        if let Some((name, _)) = bindings.iter().find(|(_, reference)| {
+            let source = reference["feature_id"].as_str().unwrap_or("");
+            !self.features.contains_key(source)
+        }) {
+            return Err(lost(format!(
+                "The object '{name}' this feature needs was deleted. Undo the deletion or re-select its input."
+            )));
+        }
         let mut bodies = HashMap::new();
-        for (name, reference) in feature["bindings"].as_object().into_iter().flatten() {
+        for (name, reference) in bindings {
             let source_id = reference["feature_id"].as_str().unwrap_or("");
-            if !self.features.contains_key(source_id) {
-                return Err(lost(format!(
-                    "The object '{name}' this feature needs was deleted. Undo the deletion or re-select its input."
-                )));
-            }
             let outputs = self.get(source_id)?;
             let source = &self.features[source_id];
             let object = reference["object_id"].as_str().unwrap_or("");
@@ -2023,6 +2031,32 @@ pub fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explicitly_deleted_input_remains_actionable_when_another_input_failed() {
+        let upstream = json!({"id": "upstream"});
+        let align = json!({"id": "align", "bindings": {
+            "Moving": {"feature_id": "upstream", "object_id": "moving"},
+            "Deleted tool": {"feature_id": "", "object_id": "deleted"},
+        }});
+        let blobs = BTreeMap::new();
+        let mut rebuilder = setup(
+            &[upstream, align.clone()],
+            &Value::Null,
+            BTreeMap::new(),
+            HashMap::new(),
+            &blobs,
+            &[],
+            &BTreeSet::new(),
+        );
+        rebuilder.failed.insert("upstream".into());
+        let error = rebuilder.inputs(&align).err().unwrap();
+        assert!(error.lost);
+        assert_eq!(
+            error.message,
+            "The object 'Deleted tool' this feature needs was deleted. Undo the deletion or re-select its input."
+        );
+    }
 
     #[test]
     fn saved_shaft_and_through_hole_rebuild_as_physical_threads() {
