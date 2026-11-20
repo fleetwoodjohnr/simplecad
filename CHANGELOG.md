@@ -33,6 +33,12 @@ project opens, and Stack & Place keeps up on large projects.
   -- its own, or failing that the newest one before it -- whether the project
   was saved that way or not. Re-select the missing input to bring the step up
   to date.
+- **Large projects slowly filled memory between sessions.** On a big project
+  the geometry engine keeps part of its working cache in a temporary folder,
+  which on most Linux systems is held in memory. The engine is stopped rather
+  than closed, so the folder was never deleted: a few hundred megabytes left
+  behind each session. Folders left by a stopped engine are now cleared the
+  next time one is needed.
 - **Stack & Place placed a part from the wrong position after Undo.** In a
   project just opened from a file, undoing past a change to a part could leave
   the window showing the part as it was before the undo. The panel then

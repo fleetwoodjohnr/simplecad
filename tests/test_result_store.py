@@ -1,4 +1,8 @@
 """Geometry caches remain portable and bounded during long sessions."""
+import sys
+
+import pytest
+
 from simplecad.core.document import Document
 from simplecad.core.project import load, save
 from simplecad.core.rebuild import Rebuilder
@@ -42,3 +46,29 @@ def test_blob_mapping_iteration_and_replacement(monkeypatch):
     assert not old.exists()
     assert blobs.memory_bytes <= 4
     assert dict(blobs) == {"a": b"a", "b": b"bb"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="not swept on Windows")
+def test_spill_folders_a_gone_process_left_are_removed(tmp_path):
+    """A killed geometry worker never deleted its spill folder: ~340 MB of a
+    /tmp held in memory, every session on the Atlas Box."""
+    import os
+    import subprocess
+
+    from simplecad.core.result_store import SPILL_PREFIX, sweep_spills
+
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    paths = {name: tmp_path / f"{SPILL_PREFIX}{name}" for name in (
+        f"{gone.pid}-abc", f"{os.getpid()}-def", f"{os.getppid()}-ghi", "legacy_old", "legacy_new")}
+    for path in paths.values():
+        path.mkdir()
+        (path / "blob").write_bytes(b"x")
+    os.utime(paths["legacy_old"], (0, 0))
+    unrelated = tmp_path / "something-else"
+    unrelated.mkdir()
+
+    removed = sweep_spills(str(tmp_path), now=10 * 86400)
+    assert sorted(removed) == sorted([str(paths[f"{gone.pid}-abc"]), str(paths["legacy_old"])])
+    assert all(p.exists() for n, p in paths.items() if n not in (f"{gone.pid}-abc", "legacy_old"))
+    assert unrelated.exists()

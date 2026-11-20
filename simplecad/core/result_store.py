@@ -8,8 +8,12 @@ from collections.abc import MutableMapping
 from dataclasses import asdict, is_dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import sys
 import tempfile
+import time
 
 
 #: Deliberately *not* bumped for OCCT 8.0: results cached by 7.9 are valid
@@ -19,6 +23,52 @@ import tempfile
 CACHE_VERSION = "simplecad-feature-cache-2-occt-7.9"
 DECODED_BUDGET = 512 * 1024 * 1024
 BLOB_BUDGET = 64 * 1024 * 1024
+SPILL_PREFIX = "simplecad-cache-"
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True         # someone else's process: alive
+    return True
+
+
+def sweep_spills(root: str | None = None, now: float | None = None) -> list[str]:
+    """Remove spill folders their process left behind; returns what went.
+
+    The geometry worker is killed, not closed, so its folder was never
+    deleted: about 340 MB a session on the Atlas Box, on a /tmp that lives in
+    memory. A folder named for a process that has gone is removed, and one
+    from before folders were named (0.4.3 and earlier) once it is a day old.
+    Not on Windows, where asking whether a process is alive this way ends it.
+    """
+    if sys.platform == "win32":
+        return []
+    root = root or tempfile.gettempdir()
+    now = time.time() if now is None else now
+    removed = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return removed
+    for entry in entries:
+        if not entry.name.startswith(SPILL_PREFIX) or not entry.is_dir(follow_symlinks=False):
+            continue
+        owner = entry.name[len(SPILL_PREFIX):].split("-", 1)[0]
+        try:
+            if owner.isdigit():
+                stale = int(owner) != os.getpid() and not _process_alive(int(owner))
+            else:
+                stale = now - entry.stat(follow_symlinks=False).st_mtime > 86400
+        except OSError:
+            continue
+        if stale:
+            shutil.rmtree(entry.path, ignore_errors=True)
+            removed.append(entry.path)
+    return removed
 
 
 class BlobStore(MutableMapping):
@@ -59,7 +109,8 @@ class BlobStore(MutableMapping):
             cold, blob = next(iter(self.memory.items()))
             try:
                 if self._directory is None:
-                    self._directory = tempfile.TemporaryDirectory(prefix="simplecad-cache-")
+                    sweep_spills()
+                    self._directory = tempfile.TemporaryDirectory(prefix=f"{SPILL_PREFIX}{os.getpid()}-")
                 path = Path(self._directory.name) / hashlib.sha256(cold.encode()).hexdigest()
                 path.write_bytes(blob)
             except OSError:
