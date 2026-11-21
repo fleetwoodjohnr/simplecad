@@ -5,12 +5,18 @@ import { Btn, inputCls } from '../ui'
 const axes = ['X', 'Y', 'Z'] as const
 type Entries = [string, string, string]
 const origin: Vec3 = [0, 0, 0]
+type PivotMode = 'center' | 'origin' | 'custom'
+const pivotAt = (mode: PivotMode, point: Entries) => mode === 'center' ? undefined : mode === 'origin' ? origin : point.map(Number) as Vec3
+const validPivot = (point: Vec3) => point.every((value) => Number.isFinite(value) && Math.abs(value) <= 1e9)
 
 interface Props {
   kind: Transform['kind']
   bodies: BodyInfo[]
   body?: number
   busy: boolean
+  snap: number
+  onSnap: (step: number) => void
+  onPivot: (pivot?: Vec3) => void
   onBody: (body?: number) => void
   onChange: () => void
   onPreview: (body: number, transform: Transform) => void
@@ -18,15 +24,19 @@ interface Props {
   onCancel: () => void
 }
 
-export function TransformPanel({ kind, bodies, body, busy, onBody, onChange, onPreview, onApply, onCancel }: Props) {
+export function TransformPanel({ kind, bodies, body, busy, snap, onSnap, onPivot, onBody, onChange, onPreview, onApply, onCancel }: Props) {
   const [values, setValues] = useState<Entries>(['', '', ''])
-  const [pivotMode, setPivotMode] = useState<'center' | 'origin' | 'custom'>('center')
+  const [pivotMode, setPivotMode] = useState<PivotMode>('center')
   const [custom, setCustom] = useState<Entries>(['0', '0', '0'])
   const rotation = kind === 'rotate'
   const name = rotation ? 'Rotate' : 'Move'
-  const pivot = pivotMode === 'center' ? undefined : pivotMode === 'origin' ? origin : custom.map(Number) as Vec3
+  const pivot = pivotAt(pivotMode, custom)
+  const setDragPivot = (mode: PivotMode, point: Entries) => {
+    const next = pivotAt(mode, point)
+    onPivot(next && validPivot(next) ? next : undefined)
+  }
   const entered = values.some((value) => value.trim() !== '' && Number(value) !== 0)
-  const valid = body !== undefined && entered && (!pivot || pivot.every((n) => Number.isFinite(n) && Math.abs(n) <= 1e9))
+  const valid = body !== undefined && entered && (!pivot || validPivot(pivot))
   const submit = (commit: boolean) => {
     if (!valid || busy) return
     const expressions = values.map((value) => value.trim() || '0') as Entries
@@ -59,7 +69,9 @@ export function TransformPanel({ kind, bodies, body, busy, onBody, onChange, onP
       {rotation && <>
         <label className="grid gap-1">Turn about
           <select className={inputCls} disabled={busy} value={pivotMode} onChange={(event) => {
-            setPivotMode(event.target.value as typeof pivotMode)
+            const next = event.target.value as typeof pivotMode
+            setPivotMode(next)
+            setDragPivot(next, custom)
             onChange()
           }}>
             <option value="center">Body center</option>
@@ -74,11 +86,19 @@ export function TransformPanel({ kind, bodies, body, busy, onBody, onChange, onP
                 const next = [...custom] as Entries
                 next[index] = event.target.value
                 setCustom(next)
+                setDragPivot(pivotMode, next)
                 onChange()
               }} />
           </label>)}
         </fieldset>}
       </>}
+      <label className="grid gap-1">Drag snapping
+        <select className={inputCls} disabled={busy} value={snap} onChange={(event) => onSnap(Number(event.target.value))}>
+          <option value={0}>Off</option>
+          {(rotation ? [5, 15, 45, 90] : [0.1, 0.5, 1, 5, 10]).map((step) =>
+            <option key={step} value={step}>{step} {rotation ? '°' : 'mm'}</option>)}
+        </select>
+      </label>
       <div className="flex gap-2">
         <Btn size="sm" variant="primary" type="submit" disabled={busy || !valid}>Apply</Btn>
         <Btn size="sm" type="button" disabled={busy || !valid} onClick={() => submit(false)}>Preview</Btn>

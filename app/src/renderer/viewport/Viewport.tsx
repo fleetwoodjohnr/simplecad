@@ -7,12 +7,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
 import type { DisplayShape, ViewFrame } from '@/shared/engine-protocol'
 import { edgeGeometry, faceAtTriangle, surfaceGeometry } from './geometry'
+import { viewportTransform, type TransformView } from './transform'
 
 interface Props {
   shape?: DisplayShape
   shown?: DisplayShape
   selected?: number
   placingBody?: number
+  transform?: TransformView
   showEdges: boolean
   canPull: boolean
   frame: number
@@ -118,6 +120,8 @@ export function Viewport(props: Props) {
       })
     }
     controls.addEventListener('change', draw)
+    const transform = viewportTransform(canvas, camera, scene, body.material, edges.material, draw,
+      (enabled) => { controls.enabled = enabled })
 
     /** Light up face `face` of the displayed shape under the pointer; undefined clears it. */
     const showHover = (face?: number) => {
@@ -135,7 +139,7 @@ export function Viewport(props: Props) {
     }
 
     sync.current = () => {
-      const { shape, shown, selected, showEdges, placingBody } = current.current
+      const { shape, shown, selected, showEdges, placingBody, transform: tool } = current.current
       const next = shown ?? shape
       if (displayed !== next) {
         hovered = undefined
@@ -154,7 +158,9 @@ export function Viewport(props: Props) {
         committed.geometry = pickShape ? surfaceGeometry(pickShape) : new BufferGeometry()
         committedShape = pickShape
       }
-      edges.visible = showEdges
+      const transforming = transform.set(shown ? undefined : shape, body.geometry, tool, showEdges)
+      body.visible = !transforming
+      edges.visible = showEdges && !transforming
       highlight.visible = !!shape && selected !== undefined && displayed === shape
       highlight.geometry.dispose()
       highlight.geometry = new BufferGeometry()
@@ -204,7 +210,7 @@ export function Viewport(props: Props) {
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
-      if (e.button !== 0 || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
+      if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
       current.current.onSelect(faceAt(e.clientX, e.clientY))
     }
@@ -212,7 +218,7 @@ export function Viewport(props: Props) {
     let pointer: { x: number; y: number } | null = null
     let hoverFrame = 0
     const move = (e: PointerEvent) => {
-      pointer = e.buttons ? null : { x: e.clientX, y: e.clientY }
+      pointer = e.buttons || current.current.transform ? null : { x: e.clientX, y: e.clientY }
       if (!pointer) return showHover(undefined)
       hoverFrame ||= requestAnimationFrame(() => {
         hoverFrame = 0
@@ -235,6 +241,7 @@ export function Viewport(props: Props) {
     return () => {
       observer.disconnect()
       cancelAnimationFrame(animation)
+      transform.dispose()
       controls.dispose()
       canvas.removeEventListener('pointerdown', press)
       canvas.removeEventListener('pointerup', pick)
@@ -253,7 +260,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform])
 
   const move = (e: ReactPointerEvent<HTMLButtonElement>, commit: boolean) => {
     const active = drag.current

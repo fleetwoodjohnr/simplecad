@@ -1,7 +1,7 @@
 import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedFaceEdit, type SavedFaceStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
-export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
+export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
 
 export interface Shape {
   display(): PartDisplay
@@ -44,7 +44,7 @@ export function combine(parts: { body: number; display: PartDisplay }[]): Displa
   const faceCount = sum((d) => d.faceTriStart.length - 1)
   const edgeCount = sum((d) => d.edgeStart.length - 1)
   const out: DisplayShape = {
-    volume: 0, faces: [],
+    volume: 0, faces: [], ranges: [],
     positions: new Float32Array(sum((d) => d.positions.length)),
     normals: new Float32Array(sum((d) => d.normals.length)),
     indices: new Uint32Array(sum((d) => d.indices.length)),
@@ -54,6 +54,8 @@ export function combine(parts: { body: number; display: PartDisplay }[]): Displa
   }
   let vertex = 0, index = 0, triangle = 0, face = 0, point = 0, edge = 0
   for (const { body, display: d } of parts) {
+    out.ranges.push({ body, indices: [index, index + d.indices.length],
+      edges: [edge, edge + d.edgeStart.length - 1] })
     out.volume += d.volume
     out.positions.set(d.positions, vertex * 3)
     out.normals.set(d.normals, vertex * 3)

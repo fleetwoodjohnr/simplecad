@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
-import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, ModelResult, StackEdit, StackSettings, Transform, ViewFrame } from '@/shared/engine-protocol'
+import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
 import { applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedFace, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedFace, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
@@ -96,6 +96,8 @@ export function App() {
   const [shapePanel, setShapePanel] = useState(false)
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
   const [transformBody, setTransformBody] = useState<number>()
+  const [transformSnap, setTransformSnap] = useState(0)
+  const [transformPivot, setTransformPivot] = useState<Vec3>()
   const [faceTool, setFaceTool] = useState<FaceOperation['faceOperation']>()
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
@@ -423,6 +425,8 @@ export function App() {
     const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
+    setTransformSnap(0)
+    setTransformPivot(undefined)
     setTransformKind(kind)
   }
   const openFaceTool = (tool: FaceOperation['faceOperation']) => {
@@ -534,6 +538,10 @@ export function App() {
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
             readViewFrame={readViewFrame}
             placingBody={stack ? movingBody : undefined}
+            transform={transformKind && transformBody !== undefined && revision !== undefined ? {
+              kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
+              onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
+            } : undefined}
             canPull={!stack && !faceTool && !transformKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
               if (!ready) return
               if (transformKind) {
@@ -595,6 +603,7 @@ export function App() {
             )}
             {model && transformKind && revision !== undefined && <TransformPanel key={transformKind}
               kind={transformKind} body={transformBody} bodies={model.bodies} busy={busy}
+              snap={transformSnap} onSnap={setTransformSnap} onPivot={setTransformPivot}
               onBody={(body) => { clearFacePreview(); setTransformBody(body) }}
               onChange={clearFacePreview} onPreview={(body, transform) => void showTransformPreview(body, transform)}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}

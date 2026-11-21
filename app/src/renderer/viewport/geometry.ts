@@ -1,6 +1,6 @@
 // Turns an engine mesh into three.js geometry: one indexed surface for the faces, and line segments for the edges.
 
-import { BufferAttribute, BufferGeometry } from 'three'
+import { Box3, BufferAttribute, BufferGeometry, Sphere, Vector3 } from 'three'
 import type { MeshData } from '@/shared/engine-protocol'
 
 export function surfaceGeometry(mesh: MeshData): BufferGeometry {
@@ -18,21 +18,38 @@ export function surfaceGeometry(mesh: MeshData): BufferGeometry {
 }
 
 /** Every edge polyline as segment pairs, for `LineSegments`. */
-export function edgeGeometry(mesh: MeshData): BufferGeometry {
+export function edgeGeometry(mesh: MeshData, ranges = [[0, mesh.edgeStart.length - 1]]): BufferGeometry {
   let segments = 0
-  for (let edge = 0; edge + 1 < mesh.edgeStart.length; edge++) {
-    segments += Math.max(0, mesh.edgeStart[edge + 1] - mesh.edgeStart[edge] - 1)
+  for (const [start, end] of ranges) {
+    for (let edge = start; edge < end; edge++) segments += Math.max(0, mesh.edgeStart[edge + 1] - mesh.edgeStart[edge] - 1)
   }
   const out = new Float32Array(segments * 6)
   let o = 0
-  for (let edge = 0; edge + 1 < mesh.edgeStart.length; edge++) {
-    for (let p = mesh.edgeStart[edge]; p + 1 < mesh.edgeStart[edge + 1]; p++) {
-      out.set(mesh.edgePoints.subarray(p * 3, p * 3 + 6), o)
-      o += 6
+  for (const [start, end] of ranges) {
+    for (let edge = start; edge < end; edge++) {
+      for (let p = mesh.edgeStart[edge]; p + 1 < mesh.edgeStart[edge + 1]; p++) {
+        out.set(mesh.edgePoints.subarray(p * 3, p * 3 + 6), o)
+        o += 6
+      }
     }
   }
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(out, 3))
+  return geometry
+}
+
+/** Share the model's vertex buffers, supplying a separate index list per part. */
+export function indexedGeometry(model: BufferGeometry, indices: Uint32Array) {
+  const geometry = new BufferGeometry()
+  const position = model.getAttribute('position')
+  geometry.setAttribute('position', position)
+  geometry.setAttribute('normal', model.getAttribute('normal'))
+  geometry.setIndex(new BufferAttribute(indices, 1))
+  const bounds = new Box3()
+  const point = new Vector3()
+  for (const index of indices) bounds.expandByPoint(point.fromBufferAttribute(position, index))
+  geometry.boundingBox = bounds
+  geometry.boundingSphere = bounds.getBoundingSphere(new Sphere())
   return geometry
 }
 

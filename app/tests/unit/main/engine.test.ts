@@ -70,6 +70,10 @@ describe('combine', () => {
     // The second body's first triangle points at its first vertex, after the first body's 6.
     expect(Array.from(shown.indices.subarray(6, 9))).toEqual([6, 7, 8])
     expect(Array.from(shown.edgeStart)).toEqual([0, 2, 4])
+    expect(shown.ranges).toEqual([
+      { body: 0, indices: [0, 6], edges: [0, 1] },
+      { body: 2, indices: [6, 15], edges: [1, 2] }
+    ])
   })
 })
 

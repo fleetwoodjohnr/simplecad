@@ -18,10 +18,18 @@ export interface FaceInfo {
   body: number
 }
 
+/** Half-open ranges in the combined display buffers. */
+export interface BodyRange {
+  body: number
+  indices: [number, number]
+  edges: [number, number]
+}
+
 /** Every shown body as one mesh; faces are numbered across them, body by body. */
 export interface DisplayShape extends MeshData {
   volume: number
   faces: FaceInfo[]
+  ranges: BodyRange[]
 }
 
 export interface BodyInfo {
