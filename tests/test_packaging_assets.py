@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
@@ -52,6 +53,37 @@ def test_metainfo_is_valid_xml_with_this_version():
     assert root.findtext("id") == build.APP_ID
     versions = [release.get("version") for release in root.iter("release")]
     assert __version__ in versions, "add this version to the metainfo <releases>"
+
+
+@pytest.mark.parametrize(("error", "attempts"), [
+    ("Resource busy", 2),
+    ("Operation not permitted", 1),
+])
+def test_macos_disk_image_retries_only_a_busy_device(tmp_path, monkeypatch, error, attempts):
+    build = _build_module()
+    bundle = tmp_path / "SimpleCAD.app"
+    bundle.mkdir()
+    commands = []
+
+    def create(*command, **kwargs):
+        commands.append(command)
+        if len(commands) == 1:
+            raise subprocess.CalledProcessError(1, command, stderr=f"hdiutil: create failed - {error}\n")
+
+    monkeypatch.setenv("SIMPLECAD_BUNDLE", str(bundle))
+    monkeypatch.setattr(build, "BUILD", str(tmp_path / "build"))
+    monkeypatch.setattr(build, "RELEASE", str(tmp_path / "dist"))
+    monkeypatch.setattr(build, "tool", lambda name: name)
+    monkeypatch.setattr(build, "run", create)
+    monkeypatch.setattr(build.time, "sleep", lambda _: None)
+
+    if attempts > 1:
+        build.macos()
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            build.macos()
+    assert len(commands) == attempts
+    assert all(command == commands[0] for command in commands)
 
 
 def test_window_icon_resolves_from_the_package():

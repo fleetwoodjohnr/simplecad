@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -247,8 +248,17 @@ def macos() -> None:
     shutil.copytree(selected, os.path.join(stage, "SimpleCAD.app"),
                     symlinks=True)
     os.symlink("/Applications", os.path.join(stage, "Applications"))
-    run(tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder", stage,
-        "-ov", "-format", "UDZO", out)
+    command = (tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder", stage,
+               "-ov", "-format", "UDZO", out)
+    for delay in (1, 3, None):
+        try:
+            run(*command, stderr=subprocess.PIPE, text=True, env={**os.environ, "LC_ALL": "C"})
+            return
+        except subprocess.CalledProcessError as error:
+            print(error.stderr, file=sys.stderr, end="", flush=True)
+            if delay is None or "Resource busy" not in error.stderr:
+                raise
+            time.sleep(delay)
 
 
 def flatpak_tarball() -> None:
