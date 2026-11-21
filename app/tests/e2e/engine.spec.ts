@@ -429,6 +429,11 @@ test('stacks two parts after undo and records the new placement as one step', as
 
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   await moving.selectOption({ label: 'Spare · Bottom · 100 mm²' })
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    window.setSize(960, 600)
+    window.webContents.setZoomFactor(1.5)
+  })
   await page.getByRole('button', { name: 'Stack & Place', exact: true }).click()
   await page.getByLabel('Target face').selectOption({ label: 'Plate · Top · 3251.73 mm²' })
   const place = page.getByRole('button', { name: 'Place', exact: true })

@@ -514,7 +514,7 @@ export function App() {
             onDragCancel={() => setDistance('')}
             onError={setError}
           />
-          <aside aria-label="Model inspector" className="flex w-56 shrink-0 flex-col gap-3 border-l border-border bg-panel p-3">
+          <aside aria-label="Model inspector" className="flex min-h-0 w-56 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-panel p-3">
             <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
             <ul aria-label="Bodies" className="grid max-h-[40%] min-h-16 shrink-0 auto-rows-min gap-1 overflow-auto">
               {model?.bodies.map((body, index) => (
@@ -590,7 +590,7 @@ export function App() {
               </div>
             </form>}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
+            <ol ref={historyList} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
               {model?.steps.map((step) => (
                 <li key={step.id} className={`px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
                   <div className="flex justify-between gap-2">
