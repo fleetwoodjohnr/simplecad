@@ -4,6 +4,8 @@
 //! Python app reopens the file, finds its cached result current, rebuilds it if
 //! asked, and can undo it.
 
+mod project_import;
+
 use crate::project::CACHE_VERSION;
 use crate::signatures::signatures;
 use serde_json::{Map, Value, json};

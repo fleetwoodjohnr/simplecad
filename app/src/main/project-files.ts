@@ -33,13 +33,14 @@ export function acceptProjectFile(token: unknown) {
 
 export async function openModelFile(window: BrowserWindow): Promise<ModelImport | undefined> {
   const formats = new Map<string, ImportFormat>([
-    ['step', 'step'], ['stp', 'step'], ['brep', 'brep'],
+    ['step', 'step'], ['stp', 'step'], ['brep', 'brep'], ['scad3', 'scad3'],
     ['igs', 'iges'], ['iges', 'iges'], ['stl', 'stl'], ['obj', 'obj'], ['3mf', '3mf']
   ])
   const choice = await dialog.showOpenDialog(window, {
     properties: ['openFile'],
     filters: [
       { name: 'Supported models', extensions: [...formats.keys()] },
+      { name: 'SimpleCAD project', extensions: ['scad3'] },
       { name: 'STEP', extensions: ['step', 'stp'] },
       { name: 'B-Rep', extensions: ['brep'] },
       { name: 'IGES', extensions: ['igs', 'iges'] },

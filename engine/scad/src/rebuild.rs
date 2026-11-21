@@ -1428,7 +1428,7 @@ impl Store<'_> {
     }
 }
 
-const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
 
 fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
     let name = source_name(path);

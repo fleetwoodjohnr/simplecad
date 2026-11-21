@@ -293,7 +293,90 @@ fn bounds_for<'a>(shapes: impl IntoIterator<Item = &'a ffi::Shape>) -> Result<[f
     Ok([low[0], low[1], low[2], high[0], high[1], high[2]])
 }
 
+fn import_offset(current: [f64; 6], incoming: [f64; 6]) -> [f64; 3] {
+    let gap = ((incoming[3] - incoming[0]) * 0.15).max(10.0);
+    [
+        current[3] + gap - incoming[0],
+        current[1] - incoming[1],
+        current[2] - incoming[2],
+    ]
+    .map(|axis| (axis * 10_000.0).round() / 10_000.0)
+}
+
 impl Project {
+    fn import_native(
+        &self,
+        bytes: &[u8],
+        limit: u32,
+        visible: &[ClassInstance<Shape>],
+    ) -> Result<ImportedModel> {
+        let source = scad::project::read(bytes).map_err(Error::from_reason)?;
+        if source.bodies.is_empty() {
+            return Err(Error::from_reason("The source project contains no bodies."));
+        }
+        if source.bodies.len() > limit as usize {
+            return Err(Error::from_reason(
+                "This import would exceed the project's body limit.",
+            ));
+        }
+        let geometry = source
+            .bodies
+            .iter()
+            .map(|body| {
+                let brep = body.brep.as_deref().ok_or_else(|| {
+                    Error::from_reason(format!(
+                        "\"{}\" has no saved geometry. Repair the source project first.",
+                        body.name
+                    ))
+                })?;
+                let shape = ffi::read_brep(brep)
+                    .and_then(|shape| match &body.location {
+                        Some(matrix) => ffi::located(&shape, matrix),
+                        None => Ok(shape),
+                    })
+                    .map_err(reason)?;
+                Ok(scad::rebuild::Body {
+                    id: body.id.clone(),
+                    name: body.name.clone(),
+                    shape: Some(Rc::new(shape)),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let offset = if visible.is_empty() {
+            [0.0; 3]
+        } else {
+            import_offset(
+                bounds_for(visible.iter().map(|part| &**part.inner))?,
+                bounds_for(
+                    geometry
+                        .iter()
+                        .filter_map(|body| body.shape.as_ref().map(|shape| &***shape)),
+                )?,
+            )
+        };
+        let (model, parts) = self
+            .model
+            .import_project(&source, bytes, geometry, offset)
+            .map_err(Error::from_reason)?;
+        let bodies = parts
+            .into_iter()
+            .zip(&source.bodies)
+            .map(|(body, source)| OpenedBody {
+                id: None,
+                name: body.name,
+                visible: source.visible,
+                shape: body.shape.map(|inner| Shape { inner }),
+            })
+            .collect();
+        Ok(ImportedModel {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            bodies,
+        })
+    }
+
     fn shown_shapes(&self, shown: Vec<ShownBody>) -> HashMap<String, scad::rebuild::Shape> {
         let shown: HashMap<_, _> = shown
             .into_iter()
@@ -357,6 +440,9 @@ impl Project {
         limit: u32,
         visible: Vec<ClassInstance<Shape>>,
     ) -> Result<ImportedModel> {
+        if format == "scad3" {
+            return self.import_native(&bytes, limit, &visible);
+        }
         let mut parts = match format.as_str() {
             "step" => ffi::read_step(&bytes, &name).map_err(reason),
             "brep" => ffi::read_brep_parts(&bytes, &name).map_err(reason),
@@ -376,13 +462,7 @@ impl Project {
         } else {
             let current = bounds_for(visible.iter().map(|part| &**part.inner))?;
             let incoming = bounds_for(parts.iter().map(|part| &*part.shape))?;
-            let gap = ((incoming[3] - incoming[0]) * 0.15).max(10.0);
-            [
-                current[3] + gap - incoming[0],
-                current[1] - incoming[1],
-                current[2] - incoming[2],
-            ]
-            .map(|axis| (axis * 10_000.0).round() / 10_000.0)
+            import_offset(current, incoming)
         };
         let shift = ffi::trsf_translation(&offset);
         let assets = parts

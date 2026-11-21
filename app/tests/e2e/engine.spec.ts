@@ -486,6 +486,60 @@ for (const [format, imported] of [['stl', 'Model'], ['obj', 'Box2'], ['3mf', 'Bo
   })
 }
 
+test('imports a SimpleCAD project as editable history with embedded assets', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-native-import-'))
+  const source = path.join(scratch, 'Parts.scad3')
+  const target = path.join(scratch, 'Combined.scad3')
+  try {
+    await copyFile(fixture, source)
+    const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    const status = page.getByTestId('engine-status')
+    const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+    const file = page.getByRole('button', { name: 'File', exact: true })
+    await expect(status).toContainText('24000 mm³')
+    await app.evaluate(({ dialog }, source) => {
+      dialog.showOpenDialog = async () => ({ filePaths: [source], canceled: false })
+    }, source)
+    await file.click()
+    await page.getByRole('menuitem', { name: 'Import model' }).click()
+    await expect(status).toContainText('95016.32 mm³')
+    await expect(page.getByRole('button', { name: 'Show Spare' })).toBeEnabled()
+    await expect(steps).toHaveText(['Box', 'Imported solid', 'Imported solid2', 'Move', 'Move2'])
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(status).toContainText('24000 mm³')
+    await page.getByRole('button', { name: 'Redo', exact: true }).click()
+    await expect(status).toContainText('95016.32 mm³')
+    await rename(source, path.join(scratch, 'Moved.scad3'))
+    await page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().catch(() => {}))
+    await expect(page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(status).toContainText('95016.32 mm³')
+    await page.getByRole('button', { name: 'Show Spare' }).click()
+    await expect(status).toContainText('96016.32 mm³')
+    const face = page.getByLabel('Planar face')
+    await face.selectOption({ label: 'Spare · Top · 100 mm²' })
+    await page.getByLabel('Pull distance').fill('2')
+    await page.getByLabel('Pull distance').press('Enter')
+    await expect(status).toContainText('96216.32 mm³')
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await file.click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText('Combined.scad3', { exact: true })).toBeVisible()
+    await app.close()
+    const reopened = await launch({ args: [target] })
+    const reopenedStatus = reopened.page.getByTestId('engine-status')
+    await expect(reopenedStatus).toContainText('95016.32 mm³')
+    await reopened.page.getByRole('button', { name: 'Show Spare' }).click()
+    await expect(reopenedStatus).toContainText('96216.32 mm³')
+    await expect(reopened.page.getByRole('list', { name: 'Model history' }).locator('li'))
+      .toHaveText(['Box', 'Imported solid', 'Imported solid2', 'Move', 'Move2', 'Pull'])
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('stacks two parts after undo and records the new placement as one step', async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')
