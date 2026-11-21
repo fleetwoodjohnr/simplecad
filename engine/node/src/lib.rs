@@ -379,21 +379,23 @@ impl Project {
     }
 
     #[napi]
-    pub fn add_text(
+    pub fn add_face_feature(
         &self,
+        kind: String,
         shape: &Shape,
         body: String,
         face: u32,
         inputs: std::collections::HashMap<String, String>,
     ) -> Result<Pulled> {
         let mut model = self.model.clone();
-        let inner = scad::text::create(
+        let inner = scad::rebuild::create_face_feature(
             &mut model,
             scad::align::PickedFace {
                 name: &body,
                 shape: &shape.inner,
                 index: face,
             },
+            &kind,
             serde_json::json!(inputs),
         )
         .map_err(Error::from_reason)?;

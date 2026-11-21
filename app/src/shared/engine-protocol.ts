@@ -63,7 +63,24 @@ export interface TextSettings {
   offset_y: string
   rotation: string
 }
-export interface TextEdit { face: number; textSettings: TextSettings }
+export interface TextureSettings {
+  pattern: string
+  mode: 'raised' | 'recessed' | 'through'
+  size: string
+  spacing: string
+  depth: string
+  offset_u: string
+  offset_v: string
+  rotation: string
+  edge_clearance: string
+  hole_clearance: string
+  text_clearance: string
+  other_clearance: string
+}
+export type FaceOperation =
+  | { faceOperation: 'text'; settings: TextSettings }
+  | { faceOperation: 'face_texture'; settings: TextureSettings }
+export type FaceEdit = { face: number } & FaceOperation
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
 export type ImportFormat = 'step' | 'brep'
 export interface ModelImport { importName: string; data: Uint8Array; importFormat?: ImportFormat }
@@ -80,7 +97,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | TextEdit)) | StackStep | ShapeEdit | ImportRef
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef
 
 export interface Checkpoint {
   source: Source
@@ -123,7 +140,7 @@ export type RendererCommand =
   | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
-  | ({ op: 'previewText' | 'applyText'; revision: number } & TextEdit)
+  | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | { op: 'show'; body: number; visible: boolean; revision: number }
@@ -167,20 +184,30 @@ function isEdit(value: unknown): value is PullEdit {
 
 function isStep(value: unknown): value is Step {
   if (isShapeEdit(value) || isImportRef(value)) return true
-  if (isEdit(value) || isTextEdit(value)) return isPick(value)
+  if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
   return isPick(step.moving) && isPick(step.target) && step.moving.body !== step.target.body && isStackSettings(step.settings)
 }
 
-function isTextEdit(value: unknown): value is TextEdit {
+function isFaceEdit(value: unknown): value is FaceEdit {
   if (!value || typeof value !== 'object') return false
-  const { face, textSettings: settings } = value as Partial<TextEdit>
-  return isIndex(face) && face! <= 0xffffffff && !!settings && typeof settings === 'object' &&
-    (settings.font_family === 'sans-serif' || settings.font_family === 'serif' || settings.font_family === 'monospace') &&
-    (settings.mode === 'raised' || settings.mode === 'engraved') &&
-    [settings.text, settings.text_height, settings.depth, settings.offset_x, settings.offset_y, settings.rotation]
-      .every((entry) => typeof entry === 'string' && entry.length <= 256)
+  const edit = value as Partial<FaceEdit>
+  if (typeof edit.face !== 'number' || !isIndex(edit.face) || edit.face > 0xffffffff ||
+      !edit.settings || typeof edit.settings !== 'object') return false
+  const short = (entry: unknown) => typeof entry === 'string' && entry.length <= 256
+  if (edit.faceOperation === 'text') {
+    const { font_family: family, mode, text, text_height: height, depth, offset_x: x, offset_y: y, rotation } = edit.settings
+    return (family === 'sans-serif' || family === 'serif' || family === 'monospace') &&
+      (mode === 'raised' || mode === 'engraved') && [text, height, depth, x, y, rotation].every(short)
+  }
+  if (edit.faceOperation === 'face_texture') {
+    const s = edit.settings
+    return isName(s.pattern) && (s.mode === 'raised' || s.mode === 'recessed' || s.mode === 'through') &&
+      [s.size, s.spacing, s.depth, s.offset_u, s.offset_v, s.rotation,
+        s.edge_clearance, s.hole_clearance, s.text_clearance, s.other_clearance].every(short)
+  }
+  return false
 }
 
 function isImportRef(value: unknown): value is ImportRef {
@@ -256,7 +283,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||
-        ((m.op === 'previewText' || m.op === 'applyText') && isTextEdit(m)) ||
+        ((m.op === 'previewFace' || m.op === 'applyFace') && isFaceEdit(m)) ||
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||

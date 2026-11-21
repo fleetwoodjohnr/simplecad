@@ -47,6 +47,8 @@ struct ImportedBody;
 struct TextCharacter;
 struct TextSpec;
 struct TextResult;
+struct TextureSpec;
+struct TextureRegion;
 
 class Shape {
 public:
@@ -73,6 +75,9 @@ TextResult face_text(const Shape &body, const PlaneFrame &plane,
                      rust::Slice<const TextCharacter> text,
                      rust::Slice<const rust::String> font_paths,
                      rust::Str family, const TextSpec &settings);
+std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern,
+                                    rust::Str mode, const TextureSpec &settings,
+                                    rust::Slice<const TextureRegion> text_regions);
 std::unique_ptr<Shape> make_cylinder(double radius, double height);
 std::unique_ptr<Shape> sweep_thread_tooth(double radius, double pitch, double length,
                                          bool left_hand, rust::Slice<const double> profile);

@@ -36,6 +36,7 @@ export const commands = {
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
   text: { label: 'Text' },
+  faceTexture: { label: 'Face Texture' },
   updates: { label: 'Check for updates' }
 } satisfies Record<string, { label: string; shortcut?: string }>
 

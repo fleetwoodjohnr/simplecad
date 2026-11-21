@@ -1,11 +1,9 @@
 //! Solid text on a referenced planar face, using the same outlines and placements as 0.4.4.
 
-use crate::align::PickedFace;
-use crate::document::Model;
-use crate::evaluate::{Dimension, resolve};
+use crate::evaluate::Dimension;
 use crate::rebuild::{Context, Shape, StepError, failed};
 use occt::{PlaneFrame, TextCharacter, TextResult, TextSpec};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -174,42 +172,4 @@ pub(crate) fn build(ctx: &Context<'_>) -> Result<Shape, StepError> {
     };
     ctx.set_message(format!("{action} {text:?} in {}", result.font));
     Ok(Rc::new(result.shape))
-}
-
-/// Build solid text from a viewport face and record its editable recipe.
-pub fn create(
-    model: &mut Model,
-    picked: PickedFace<'_>,
-    mut inputs: Value,
-) -> Result<occt::UniquePtr<occt::Shape>, String> {
-    if !inputs.is_object() {
-        return Err("The text settings could not be read.".into());
-    }
-    let kernel = |error: occt::Exception| error.what().to_owned();
-    let f = occt::face_fingerprint(picked.shape, picked.index).map_err(kernel)?;
-    let face = model.face_ref(picked.name, picked.index, json!({
-        "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
-        "direction": f.has_direction.then_some(f.direction), "radius": f.has_radius.then_some(f.radius),
-        "neighbours": [],
-    }));
-    inputs["body"] = json!({ "__body__": picked.name });
-    inputs["face"] = json!({ "__ref__": face });
-    let feature = json!({ "inputs": inputs });
-    let parameters = model.payload["parameters"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let (parameters, _) = resolve(parameters);
-    let shape = occt::transform_shape(picked.shape, &occt::trsf_translation(&[0.0; 3]), false)
-        .map_err(kernel)?;
-    let ctx = Context::placement(&feature, picked.name, Rc::new(shape), &parameters);
-    let geometry = build(&ctx).map_err(|error| error.message)?;
-    let brep = occt::write_brep(&geometry).map_err(kernel)?;
-    model.record_text(
-        picked.name,
-        feature["inputs"].clone(),
-        brep,
-        &ctx.into_message(),
-    )?;
-    Rc::try_unwrap(geometry).map_err(|_| "The text shares its output shape.".to_owned())
 }

@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, ModelResult, PullEdit, RendererCommand, ShapeEdit, StackEdit, ModelImport, TextEdit } from '@/shared/engine-protocol'
+import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, ModelResult, PullEdit, RendererCommand, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -81,8 +81,8 @@ export const openProject = (revision: number, data: Uint8Array, name: string, re
   })
 export const previewPull = (revision: number, edit: PullEdit) => send<DisplayShape>({ op: 'preview', revision, ...edit })
 export const applyPull = (revision: number, edit: PullEdit) => send<ModelResult>({ op: 'apply', revision, ...edit }).then(accept)
-export const previewText = (revision: number, edit: TextEdit) => send<DisplayShape>({ op: 'previewText', revision, ...edit })
-export const applyText = (revision: number, edit: TextEdit) => send<ModelResult>({ op: 'applyText', revision, ...edit }).then(accept)
+export const previewFace = (revision: number, edit: FaceEdit) => send<DisplayShape>({ op: 'previewFace', revision, ...edit })
+export const applyFace = (revision: number, edit: FaceEdit) => send<ModelResult>({ op: 'applyFace', revision, ...edit }).then(accept)
 let stackPreviewRunning = false
 let nextStackPreview: { run: () => void; cancel: () => void } | undefined
 

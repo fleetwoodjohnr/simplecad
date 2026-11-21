@@ -380,10 +380,11 @@ impl Model {
         self.record(&id, "Align", object, brep, before, message)
     }
 
-    pub(crate) fn record_text(
+    pub(crate) fn record_face_feature(
         &mut self,
         body: &str,
-        inputs: Value,
+        mut feature: Value,
+        label: &str,
         brep: Vec<u8>,
         message: &str,
     ) -> Result<(), String> {
@@ -393,15 +394,15 @@ impl Model {
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
         let id = new_feature_id();
-        let name = self.unique_name("Text");
-        let feature = json!({
-            "id": id, "type": "text", "name": name, "inputs": inputs,
-            "outputs": [body], "output_ids": { body: object },
-            "bindings": { body: { "feature_id": producer, "object_id": object } },
-            "suppressed": false, "dropped": [],
-        });
+        feature["id"] = json!(id);
+        feature["name"] = json!(self.unique_name(label));
+        feature["outputs"] = json!([body]);
+        feature["output_ids"] = json!({ body: object });
+        feature["bindings"] = json!({ body: { "feature_id": producer, "object_id": object } });
+        feature["suppressed"] = json!(false);
+        feature["dropped"] = json!([]);
         self.append_body_step(body, &id, feature);
-        self.record(&id, "Text", &object, brep, before, message)
+        self.record(&id, label, &object, brep, before, message)
     }
 
     fn append_body_step(&mut self, body: &str, id: &str, feature: Value) {

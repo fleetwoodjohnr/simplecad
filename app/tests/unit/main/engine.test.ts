@@ -27,7 +27,7 @@ class FakeShape implements Shape {
 
 /** Stands in for the addon's Project: remembers the steps it was given. */
 class FakeProject implements Project {
-  addText(): never { throw new Error('Text is covered in the packaged app.') }
+  addFaceFeature(): never { throw new Error('Face tools are covered in the packaged app.') }
   constructor(readonly made: string[] = []) {}
   addShape(kind: string) {
     return { project: new FakeProject([...this.made, kind]), name: kind, shape: new FakeShape(3) }

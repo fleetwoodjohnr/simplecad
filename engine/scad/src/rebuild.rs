@@ -79,6 +79,7 @@ pub struct Report {
 /// What a step reads when it runs (`BuildContext`).
 pub struct Context<'a> {
     feature: &'a Value,
+    features: Option<&'a HashMap<String, Value>>,
     bodies: HashMap<String, Shape>,
     parameters: &'a HashMap<String, f64>,
     /// What the step says about its result (`feature.message`).
@@ -94,6 +95,7 @@ impl Context<'_> {
     ) -> Context<'a> {
         Context {
             feature,
+            features: None,
             bodies: HashMap::from([(name.into(), body)]),
             parameters,
             message: Default::default(),
@@ -141,7 +143,7 @@ impl Context<'_> {
         self.number(self.input(key), default, dimension)
     }
 
-    fn number(
+    pub(crate) fn number(
         &self,
         input: Option<&Value>,
         default: f64,
@@ -157,6 +159,25 @@ impl Context<'_> {
             Some(other) => evaluate(&other.to_string(), self.parameters, dimension)
                 .map_err(|e| failed(e.to_string())),
         }
+    }
+
+    pub(crate) fn ancestors(&self) -> Vec<&Value> {
+        let Some(features) = self.features else {
+            return Vec::new();
+        };
+        let mut seen = BTreeSet::new();
+        let id = self.feature["id"].as_str().unwrap_or("");
+        let mut pending: Vec<_> = upstream(self.feature, id).into_iter().collect();
+        let mut result = Vec::new();
+        while let Some(id) = pending.pop() {
+            if seen.insert(id.clone())
+                && let Some(feature) = features.get(&id)
+            {
+                pending.extend(upstream(feature, &id));
+                result.push(feature);
+            }
+        }
+        result
     }
 
     /// `ctx.resolve` of a list of face references: each one's body and index.
@@ -387,6 +408,7 @@ pub const PORTED: &[&str] = &[
     "hole",
     "thread",
     "text",
+    "face_texture",
     "draft",
     "mirror",
     "rectangular_pattern",
@@ -438,6 +460,7 @@ pub fn create_primitive(
     let feature = json!({ "inputs": inputs, "name": label });
     let ctx = Context {
         feature: &feature,
+        features: None,
         bodies: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
@@ -451,6 +474,59 @@ pub fn create_primitive(
     let brep = occt::write_brep(&shape).map_err(|e| e.what().to_string())?;
     let name = model.add_primitive(kind, label, inputs, brep)?;
     Ok((name, shape))
+}
+
+/// Build and record an operation picked on a viewport face.
+pub fn create_face_feature(
+    model: &mut Model,
+    picked: crate::align::PickedFace<'_>,
+    kind: &str,
+    mut inputs: Value,
+) -> Result<occt::UniquePtr<occt::Shape>, String> {
+    let label = match kind {
+        "text" => "Text",
+        "face_texture" => "Face Texture",
+        _ => return Err("Choose a face operation.".into()),
+    };
+    if !inputs.is_object() {
+        return Err("The face settings could not be read.".into());
+    }
+    let kernel = |error: occt::Exception| error.what().to_owned();
+    let mark = occt::face_fingerprint(picked.shape, picked.index).map_err(kernel)?;
+    let face = model.face_ref(picked.name, picked.index, json!({
+        "kind": "face", "geometry": mark.geometry, "measure": mark.measure, "center": mark.center,
+        "direction": mark.has_direction.then_some(mark.direction),
+        "radius": mark.has_radius.then_some(mark.radius), "neighbours": [],
+    }));
+    inputs["body"] = json!({ "__body__": picked.name });
+    inputs["face"] = json!({ "__ref__": face });
+    let feature = json!({ "type": kind, "inputs": inputs });
+    let parameters = model.payload["parameters"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let (parameters, _) = resolve(parameters);
+    let shape = occt::transform_shape(picked.shape, &occt::trsf_translation(&[0.0; 3]), false)
+        .map_err(kernel)?;
+    let features: HashMap<String, Value> = model.payload["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| Some((value["id"].as_str()?.into(), value.clone())))
+        .collect();
+    let mut ctx = Context::placement(&feature, picked.name, Rc::new(shape), &parameters);
+    ctx.features = Some(&features);
+    let mut outputs = execute(kind, &ctx, None)
+        .ok_or("This face operation is unavailable.")?
+        .map_err(|error| error.message)?;
+    let geometry = outputs
+        .remove(picked.name)
+        .and_then(|shape| Rc::try_unwrap(shape).ok())
+        .ok_or("The face operation produced no geometry.")?;
+    let brep = occt::write_brep(&geometry).map_err(kernel)?;
+    let message = ctx.into_message();
+    model.record_face_feature(picked.name, feature, label, brep, &message)?;
+    Ok(geometry)
 }
 
 /// The steps this build can run, by type; `None` for the others.
@@ -782,6 +858,11 @@ fn execute(
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
             "thread" => Ok(BTreeMap::from([(body_name()?, crate::thread::build(ctx)?)])),
             "text" => Ok(BTreeMap::from([(body_name()?, crate::text::build(ctx)?)])),
+            "face_texture" => {
+                let name = body_name()?;
+                let shape = crate::texture::build(ctx, &name)?;
+                Ok(BTreeMap::from([(name, shape)]))
+            }
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
                 [(body_name()?, crate::advanced::build(kind, ctx)?)],
             )),
@@ -1570,6 +1651,7 @@ impl Rebuilder<'_> {
             let kind = feature["type"].as_str().unwrap_or("");
             let ctx = Context {
                 feature: &feature,
+                features: Some(&self.features),
                 bodies,
                 parameters: &self.parameters,
                 message: Default::default(),
@@ -1746,7 +1828,7 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
     for feature in order.iter().filter(|f| f["type"] == kind) {
         let name = feature["name"].clone();
         let outcome = rebuilder.inputs(feature).and_then(|bodies| {
-            let ctx = Context { feature, bodies, parameters: &rebuilder.parameters, message: Default::default() };
+            let ctx = Context { feature, features: Some(&rebuilder.features), bodies, parameters: &rebuilder.parameters, message: Default::default() };
             match kind {
                 "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
                     json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
@@ -2166,6 +2248,7 @@ mod tests {
         }});
         let ctx = Context {
             feature: &feature,
+            features: None,
             bodies: HashMap::from([("Base".into(), base)]),
             parameters: &HashMap::new(),
             message: Default::default(),
@@ -2244,6 +2327,7 @@ mod tests {
                 }});
                 let ctx = Context {
                     feature: &feature,
+                    features: None,
                     bodies,
                     parameters: &HashMap::new(),
                     message: Default::default(),
@@ -2279,6 +2363,7 @@ mod tests {
             let feature = json!({"inputs": inputs});
             let ctx = Context {
                 feature: &feature,
+                features: None,
                 bodies: HashMap::new(),
                 parameters: &HashMap::new(),
                 message: Default::default(),

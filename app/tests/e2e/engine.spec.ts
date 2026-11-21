@@ -79,6 +79,31 @@ test('raises and engraves text through the geometry worker, then saves and reope
   }
 })
 
+test('previews and applies a planar face texture as one history action', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await page.getByRole('button', { name: 'Face Texture', exact: true }).click()
+  const texture = page.getByRole('form', { name: 'Face Texture settings' })
+  await texture.getByRole('combobox', { name: /^Pattern/ }).selectOption('crosshatch')
+  await texture.getByLabel('Size', { exact: true }).fill('5 mm')
+  await texture.getByLabel('Spacing', { exact: true }).fill('5 mm')
+  await texture.getByRole('button', { name: 'Preview' }).click()
+  await expect(texture.getByRole('button', { name: 'Apply' })).toBeEnabled()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(status).toHaveText(/24000 mm³/)
+  await texture.getByRole('button', { name: 'Apply' }).click()
+  await expect(texture).toBeHidden()
+  await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Face Texture'])
+  const applied = await status.textContent()
+  expect(Number(applied?.match(/([\d.]+) mm³/)?.[1])).toBeGreaterThan(24000)
+  await page.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+  await page.getByRole('button', { name: 'Redo', exact: true }).click()
+  await expect(status).toHaveText(applied!)
+})
+
 test('the more actions menu fits above its trigger and Escape restores focus', async () => {
   const { app, page } = await launch()
   await app.evaluate(({ BrowserWindow }) => {

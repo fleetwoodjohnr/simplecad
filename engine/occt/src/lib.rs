@@ -98,6 +98,24 @@ pub mod ffi {
         pub raised: bool,
     }
 
+    pub struct TextureSpec {
+        pub size: f64,
+        pub spacing: f64,
+        pub depth: f64,
+        pub rotation: f64,
+        pub offset_u: f64,
+        pub offset_v: f64,
+        pub edge_clearance: f64,
+        pub hole_clearance: f64,
+        pub text_clearance: f64,
+        pub other_clearance: f64,
+    }
+
+    pub struct TextureRegion {
+        /// Interleaved U, V polygon vertices in the selected face frame.
+        pub outline: Vec<f64>,
+    }
+
     pub struct TextResult {
         pub shape: UniquePtr<Shape>,
         pub font: String,
@@ -159,6 +177,14 @@ pub mod ffi {
             family: &str,
             settings: &TextSpec,
         ) -> Result<TextResult>;
+        fn face_texture(
+            body: &Shape,
+            face: &Shape,
+            pattern: &str,
+            mode: &str,
+            settings: &TextureSpec,
+            text_regions: &[TextureRegion],
+        ) -> Result<UniquePtr<Shape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// Sweep the closed radial/axial profile along a cylindrical helix.
         fn sweep_thread_tooth(
