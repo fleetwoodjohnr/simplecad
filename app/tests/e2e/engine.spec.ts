@@ -28,6 +28,20 @@ test('pushes a face in the native worker, rejects an invalid push, and undoes an
   await expect(status).toHaveText(/20400 mm³/)
 })
 
+test('reports an unavailable 3D view after the geometry worker becomes ready', async () => {
+  const { page } = await launch()
+  await page.addInitScript(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (type: string, options?: unknown) {
+      return /^webgl/.test(type) ? null : Reflect.apply(getContext, this, [type, options])
+    }
+  })
+  await page.reload()
+  await expect(page.locator('canvas')).toHaveCount(0)
+  await expect(page.getByTestId('engine-status')).toContainText('24000 mm³')
+  await expect(page.getByRole('alert')).toContainText('Unable to initialize the 3D view')
+})
+
 test('raises and engraves text through the geometry worker, then saves and reopens', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-text-'))
   const target = path.join(scratch, 'Text.scad3')

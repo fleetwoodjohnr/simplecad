@@ -43,6 +43,7 @@ export function Viewport(props: Props) {
       current.current.onError('Unable to initialize the 3D view. Check that WebGL is available.')
       return
     }
+    current.current.onError('')
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio))
     const canvas = renderer.domElement
     el.appendChild(canvas)

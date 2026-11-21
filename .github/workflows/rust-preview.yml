@@ -137,6 +137,9 @@ jobs:
       - name: Packaged desktop window and geometry
         if: runner.os != 'Linux'
         working-directory: app
+        env:
+          # The Intel CI VM has no working hardware WebGL context.
+          SCAD_TEST_SOFTWARE_WEBGL: ${{ matrix.os == 'macos-15-intel' && '1' || '' }}
         run: |
           case "$RUNNER_OS" in
             macOS) executable="$(find "$PWD/release" -type f -path '*/SimpleCAD.app/Contents/MacOS/SimpleCAD' -print -quit)" ;;

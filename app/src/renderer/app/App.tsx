@@ -142,6 +142,7 @@ export function App() {
   const [frame, setFrame] = useState(0)
   const [connections, setConnections] = useState(0)
   const [error, setError] = useState('')
+  const [viewportError, setViewportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [projectRequested, setProjectRequested] = useState(true)
@@ -702,7 +703,7 @@ export function App() {
               if (commit) pull(next)
             }}
             onDragCancel={() => setDistance('')}
-            onError={setError}
+            onError={setViewportError}
           />
           <aside aria-label="Model inspector" className="flex min-h-0 w-56 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-panel p-3">
             <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
@@ -874,6 +875,7 @@ export function App() {
               {model ? `Engine ready · ${format.format(displayLength(model.shape.volume, unit, 3))} ${unit}³` : 'Starting the geometry engine…'}
             </span>
             {model?.notes.map((note) => <div key={note}>{note}</div>)}
+            {viewportError && <div className="text-danger" role="alert">{viewportError}</div>}
             {error && <div className="text-danger" role="alert">{error}</div>}
             <span data-testid="engine-connections" className="sr-only">{connections}</span>
           </div>
