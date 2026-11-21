@@ -234,6 +234,13 @@ def _pointer_capsule(pointer: int):
 
 def _current_occt_context():
     """Read Qt's current context in the type accepted by this OCP build."""
+    if sys.platform == "darwin":
+        from OCP.OpenGl import OpenGl_Context
+
+        # OCP's Cocoa SetWindow overload takes a typed NSOpenGLContext.
+        # Let OCCT read Qt's bound context and return it through that binding.
+        context = OpenGl_Context()
+        return context.RenderingContext() if context.Init(True) else None
     pointer = _current_gl_context_pointer()
     return _pointer_capsule(pointer) if pointer is not None else None
 

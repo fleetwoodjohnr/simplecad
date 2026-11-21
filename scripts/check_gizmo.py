@@ -55,6 +55,16 @@ def _find_handle(viewport, centre, want_axis: int):
     return min(hits, key=lambda p: (p.x() - middle_x) ** 2 + (p.y() - middle_y) ** 2)
 
 
+def _x_drag_end(viewport, start, centre, millimetres: float):
+    """Project the full intended travel so pixel rounding is applied once."""
+    from PySide6.QtCore import QPoint
+
+    x, y, z = centre
+    before = viewport.project((x, y, z))
+    after = viewport.project((x + millimetres, y, z))
+    return start + QPoint(round(after[0] - before[0]), round(after[1] - before[1]))
+
+
 def main() -> int:
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtTest import QTest
@@ -97,8 +107,6 @@ def main() -> int:
             # Find the +X arrow on screen and drag it.
             ratio = viewport.devicePixelRatioF()
             centre = [(a + b) / 2 for a, b in zip(*bounding_box(shape))]
-            axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
-            REPORT["mm_per_pixel"] = round(mm_per_pixel, 4)
 
             # Find the X translation arrow rather than guessing where it is:
             # the manipulator sizes and orients itself, and in an isometric view
@@ -111,10 +119,7 @@ def main() -> int:
             QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
             REPORT["drag_started"] = viewport._nav.name == "GIZMO"
 
-            target_mm = 25.0
-            pixels = target_mm / mm_per_pixel / ratio
-            end = QPoint(round(handle.x() + axis[0] * pixels),
-                         round(handle.y() + axis[1] * pixels))
+            end = _x_drag_end(viewport, handle, centre, 25.0)
             QTest.mouseMove(viewport, end)
             QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
             window.wait_for_rebuild()
@@ -241,9 +246,7 @@ def main() -> int:
             handle = _find_handle(viewport, centre, want_axis=0)
             REPORT["two_bodies_handle"] = handle is not None
             if handle is not None:
-                axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
-                pixels = 15.0 / mm_per_pixel / ratio
-                end = QPoint(round(handle.x() + axis[0] * pixels), round(handle.y() + axis[1] * pixels))
+                end = _x_drag_end(viewport, handle, centre, 15.0)
                 QTest.mouseMove(viewport, handle)
                 QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
                 QTest.mouseMove(viewport, end)
