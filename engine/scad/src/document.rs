@@ -29,6 +29,7 @@ pub struct StepSummary {
     pub message: Option<String>,
     pub missing_input: Option<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
+    pub shape_settings: Option<HashMap<String, String>>,
 }
 
 pub struct MissingInput {
@@ -309,28 +310,16 @@ impl Model {
                     missing_input: (state == "needs_attention")
                         .then(|| missing_reference(f, &ids))
                         .flatten(),
-                    face_settings: face_edit_fields(&f["type"]).map(|fields| {
-                        fields
-                            .iter()
-                            .filter_map(|key| {
-                                let input = f["inputs"].get(*key)?;
-                                let value = match input {
-                                    Value::String(text) => text.clone(),
-                                    Value::Number(number) => number.to_string(),
-                                    _ => return None,
-                                };
-                                Some(((*key).into(), value))
-                            })
-                            .collect()
-                    }),
+                    face_settings: edit_values(f, face_edit_fields(&f["type"])),
+                    shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
                 }
             })
             .collect()
     }
 
-    /// Change settings on the saved source face, preserving its references and
-    /// every input the user left alone.
-    pub fn edit_face_settings(
+    /// Rebuild after changing a step's editable expressions. The source ID,
+    /// bindings and every input the user left alone are kept.
+    pub fn edit_step_settings(
         &mut self,
         step_id: &str,
         changes: HashMap<String, String>,
@@ -338,18 +327,19 @@ impl Model {
         shown: &HashMap<String, crate::rebuild::Shape>,
     ) -> Result<crate::rebuild::Report, String> {
         let (position, mut updated) = self.recipe(step_id)?;
-        let allowed =
-            face_edit_fields(&updated["type"]).ok_or("This step has no editable face settings.")?;
+        let allowed = face_edit_fields(&updated["type"])
+            .or_else(|| shape_edit_fields(&updated["type"]))
+            .ok_or("This history step has no editable settings.")?;
         if changes.is_empty() || changes.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err("Choose a setting to edit on this history step.".into());
         }
         let inputs = updated["inputs"]
             .as_object_mut()
-            .ok_or("The original face settings are missing.")?;
+            .ok_or("The original step settings are missing.")?;
         for (key, value) in changes {
             inputs.insert(key, Value::String(value));
         }
-        self.rebuild_recipe(position, updated, "Edit face settings", original, shown)
+        self.rebuild_recipe(position, updated, "Edit step", original, shown)
     }
 
     /// Rebind a deleted Combine tool or Align target to a selected object.
@@ -1232,6 +1222,40 @@ fn touched(change: &Value) -> BTreeSet<String> {
 }
 
 /// `DependencyGraph.dependents`: `ids` and every step downstream of them.
+fn edit_values(feature: &Value, fields: Option<&[&str]>) -> Option<HashMap<String, String>> {
+    Some(
+        fields?
+            .iter()
+            .filter_map(|key| {
+                let value = match feature["inputs"].get(*key)? {
+                    Value::String(text) => text.clone(),
+                    Value::Number(number) => number.to_string(),
+                    _ => return None,
+                };
+                Some(((*key).into(), value))
+            })
+            .collect(),
+    )
+}
+
+fn shape_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
+    Some(match kind.as_str()? {
+        "box" | "oval" | "pill" => &["width", "depth", "height"],
+        "cylinder" => &["radius", "height"],
+        "sphere" => &["radius"],
+        "cone" => &["bottom_radius", "top_radius", "height"],
+        "torus" => &["major_radius", "minor_radius"],
+        "tube" => &["outer_radius", "inner_radius", "height"],
+        "wedge" => &["width", "depth", "height", "top_width"],
+        "star" => &["size", "inner_ratio", "height"],
+        "heart" | "lightning" => &["size", "height"],
+        "cross" => &["size", "arm_width", "height"],
+        "crescent" => &["size", "thickness", "height"],
+        "polygon_prism" => &["sides", "across_corners", "across_flats", "height"],
+        _ => return None,
+    })
+}
+
 fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
         "text" => Some(&[

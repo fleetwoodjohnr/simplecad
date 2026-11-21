@@ -212,6 +212,7 @@ pub struct Step {
     pub message: Option<String>,
     pub missing_input: Option<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
+    pub shape_settings: Option<HashMap<String, String>>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -689,6 +690,7 @@ impl Project {
                     face: reference.face,
                 }),
                 face_settings: step.face_settings,
+                shape_settings: step.shape_settings,
             })
             .collect()
     }
@@ -760,7 +762,7 @@ impl Project {
     }
 
     #[napi]
-    pub fn edit_face_settings(
+    pub fn edit_step_settings(
         &self,
         step_id: String,
         changes: HashMap<String, String>,
@@ -769,7 +771,7 @@ impl Project {
         let old_shapes = self.shown_shapes(shown);
         let mut model = self.model.clone();
         let report = model
-            .edit_face_settings(&step_id, changes, &self.original, &old_shapes)
+            .edit_step_settings(&step_id, changes, &self.original, &old_shapes)
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }

@@ -51,7 +51,7 @@ class FakeProject implements Project {
   historyDepth() { return { undo: 0, redo: 0 } }
   moveHistory(): never { throw new Error('No saved history in this fixture.') }
   repairInput(): never { throw new Error('No missing inputs in this fixture.') }
-  editFaceSettings(): never { throw new Error('No face features in this fixture.') }
+  editStepSettings(): never { throw new Error('No face features in this fixture.') }
   save(undone: number) {
     const kept = this.made.length - undone
     return new TextEncoder().encode([...this.made.slice(0, kept), ...this.made.slice(kept).map((s) => `redo ${s}`)].join(';'))

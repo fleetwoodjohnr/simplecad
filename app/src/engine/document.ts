@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedFaceEdit, type SavedFaceStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -27,7 +27,7 @@ export interface Project {
   moveHistory(offset: number, shown: { id?: string; name: string; shape: Shape }[]): State
   repairInput(request: { stepId: string; missingId: string; replacementId?: string; replacementName: string; face?: number },
     shown: { id?: string; name: string; shape: Shape }[]): State
-  editFaceSettings(stepId: string, changes: Record<string, string>, shown: { id?: string; name: string; shape: Shape }[]): State
+  editStepSettings(stepId: string, changes: Record<string, string>, shown: { id?: string; name: string; shape: Shape }[]): State
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
@@ -166,10 +166,10 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedFaceEdit | TransformEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
-      'editFaceId' in edit ? this.resolveFaceSettings(edit) : this.resolve(edit)
+      'editStepId' in edit ? this.resolveStepSettings(edit) : this.resolve(edit)
     return this.show(this.prepare(step).bodies)
   }
 
@@ -195,7 +195,7 @@ export class EngineDocument {
   /** What `save` writes, whatever the window last saw: for autosave. */
   snapshot(): Uint8Array {
     const newest = this.states.length - 1
-    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editFaceId' in step))) {
+    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editStepId' in step))) {
       return this.moveInherited({ ...this.states[newest], bodies: this.current.bodies }, this.cursor - newest).project.save(0)
     }
     if (this.inherited) return this.current.project.save(0)
@@ -214,9 +214,9 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedFaceEdit | TransformEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit, revision: number): ModelResult {
     this.checkRevision(revision)
-    if (('distance' in edit && edit.distance === 0) || ('editFaceId' in edit && !Object.keys(edit.changes).length)) return this.model()
+    if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
     if (!fork && this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
     let step: Step
@@ -238,8 +238,8 @@ export class EngineDocument {
       const picked = replacementFace === undefined ? undefined : this.pick(replacementFace)
       if (picked && picked.body !== replacementBody) throw new Error('Select a face of the replacement body.')
       step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face }
-    } else if ('editFaceId' in edit) {
-      step = this.resolveFaceSettings(edit)
+    } else if ('editStepId' in edit) {
+      step = this.resolveStepSettings(edit)
     } else if ('transform' in edit) {
       step = { body: edit.body, transform: edit.transform }
     } else {
@@ -375,26 +375,26 @@ export class EngineDocument {
     throw new Error('Select a face of the model.')
   }
 
-  private resolveFaceSettings({ editFaceId, changes }: SavedFaceEdit): SavedFaceStep {
+  private resolveStepSettings({ editStepId, changes }: SavedStepEdit): SavedStep {
     const steps = this.current.project.steps()
-    const index = steps.findIndex((step) => step.id === editFaceId && step.faceSettings !== undefined)
+    const index = steps.findIndex((step) => step.id === editStepId && (step.faceSettings || step.shapeSettings))
     const step = steps[index]
-    if (!step) throw new Error('This step has no editable face settings.')
-    const fromFile = this.inherited || this.states[0].project.steps().some((step) => step.id === editFaceId)
+    if (!step) throw new Error('This history step has no editable settings.')
+    const fromFile = this.inherited || this.states[0].project.steps().some((step) => step.id === editStepId)
     // Replayed creations receive new native IDs. Use the recorded position only
     // for steps made in this session, checking their name and type as well.
-    return { editFaceId, changes, replay: fromFile ? undefined : { index, name: step.name, kind: step.kind } }
+    return { editStepId, changes, replay: fromFile ? undefined : { index, name: step.name, kind: step.kind } }
   }
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
   private execute({ bodies, project }: State, step: Step, sources = this.imports): State {
-    if ('editFaceId' in step) {
+    if ('editStepId' in step) {
       const steps = project.steps()
       const replacement = step.replay ? steps[step.replay.index] : undefined
-      const id = steps.find((feature) => feature.id === step.editFaceId)?.id ??
+      const id = steps.find((feature) => feature.id === step.editStepId)?.id ??
         (replacement && replacement.name === step.replay?.name && replacement.kind === step.replay?.kind ? replacement.id : undefined)
       if (!id) throw new Error('This history step is no longer available.')
-      return this.rebuiltState(project.editFaceSettings(id, step.changes, this.shapes(bodies)))
+      return this.rebuiltState(project.editStepSettings(id, step.changes, this.shapes(bodies)))
     }
     if ('repairStepId' in step) {
       const replacement = bodies[step.replacementBody]

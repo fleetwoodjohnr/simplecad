@@ -299,6 +299,58 @@ test('moves and rotates by expressions and preserves both steps through restart 
   }
 })
 
+test('edits a saved primitive from History and rebuilds the dependent Pull', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-edit-shape-'))
+  const target = path.join(scratch, 'Edited Box.scad3')
+  try {
+    const { app, page } = await launch()
+    const status = page.getByTestId('engine-status')
+    const file = page.getByRole('button', { name: 'File', exact: true })
+    await expect(status).toContainText('24000 mm³')
+    await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+    await page.getByLabel('Pull distance').fill('2')
+    await page.getByLabel('Pull distance').press('Enter')
+    await expect(status).toContainText('26400 mm³')
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await file.click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText('Edited Box.scad3', { exact: true })).toBeVisible()
+    await app.close()
+
+    const reopened = await launch({ args: [target], env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    const history = reopened.page.getByRole('list', { name: 'Model history' })
+    const reopenedStatus = reopened.page.getByTestId('engine-status')
+    await expect(reopenedStatus).toContainText('26400 mm³')
+    await history.getByRole('button', { name: 'Edit Box', exact: true }).click()
+    const editor = reopened.page.getByRole('form', { name: 'Edit Box' })
+    await expect(editor.getByLabel('Width', { exact: true })).toHaveValue('40 mm')
+    await editor.getByLabel('Width', { exact: true }).fill('40 mm + 2 mm')
+    await editor.getByRole('button', { name: 'Preview' }).click()
+    await expect(editor.getByRole('button', { name: 'Apply' })).toBeEnabled()
+    await expect(reopenedStatus).toContainText('26400 mm³')
+    await editor.getByRole('button', { name: 'Apply' }).click()
+    await expect(reopenedStatus).toContainText('27720 mm³')
+
+    const undo = reopened.page.getByRole('button', { name: 'Undo', exact: true })
+    const redo = reopened.page.getByRole('button', { name: 'Redo', exact: true })
+    await undo.click()
+    await expect(reopenedStatus).toContainText('26400 mm³')
+    await redo.click()
+    await expect(reopenedStatus).toContainText('27720 mm³')
+    await reopened.page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().catch(() => {}))
+    await expect(reopened.page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(reopenedStatus).toContainText('27720 mm³')
+    await history.getByRole('button', { name: 'Edit Box', exact: true }).click()
+    await expect(editor.getByLabel('Width', { exact: true })).toHaveValue('40 mm + 2 mm')
+    await expect(editor.getByLabel('Depth', { exact: true })).toHaveValue('30 mm')
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('creates a cylinder from expressions and undoes and redoes creation', async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
