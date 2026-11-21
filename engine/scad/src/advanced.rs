@@ -1,10 +1,11 @@
 //! Body-only draft, mirror, patterns and rows from Python's modeling tools.
 
+use crate::align::{Frame, arrangement_frame, rotation_between, truthy};
 use crate::evaluate::Dimension;
-use crate::rebuild::{Context, Shape, StepError, alias, failed};
+use crate::rebuild::{Context, Shape, StepError, alias, failed, kernel};
+use crate::vector::{V, add, dot, scale, sub};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
-use std::f64::consts::FRAC_PI_2;
 use std::rc::Rc;
 
 fn vector(ctx: &Context, key: &str, default: [f64; 3]) -> Result<[f64; 3], StepError> {
@@ -126,19 +127,62 @@ pub(crate) fn build(kind: &str, ctx: &Context) -> Result<Shape, StepError> {
         .map_err(kernel)
 }
 
-/// Distribute the saved row in world coordinates, retaining each separate body.
+const WORLD_AXES: [V; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+fn projected_extent(shape: &Shape, turn: &occt::Trsf) -> Result<(f64, f64), StepError> {
+    let turned = occt::transform_shape(shape, turn, true).map_err(kernel)?;
+    let bounds = occt::bounds(&turned).map_err(kernel)?;
+    Ok((bounds[0], bounds[3]))
+}
+
+fn translated(shape: &Shape, shift: V) -> Result<Shape, StepError> {
+    occt::transform_shape(shape, &occt::trsf_translation(&shift), true)
+        .map(Rc::new)
+        .map_err(kernel)
+}
+
+/// Bring the support face or lowest part of the body down to the target plane.
+fn seat_row_body(
+    shape: Shape,
+    frame: &Frame,
+    normal_turn: &occt::Trsf,
+    orient: bool,
+) -> Result<(Shape, bool), StepError> {
+    if orient {
+        let faces = occt::faces(&shape).map_err(kernel)?;
+        let distance = |f: &occt::FaceData| dot(sub(f.center, frame.center), frame.normal).abs();
+        let support = faces
+            .iter()
+            .enumerate()
+            .filter(|(_, face)| face.planar)
+            .min_by(|(i, a), (j, b)| {
+                b.area
+                    .total_cmp(&a.area)
+                    .then_with(|| distance(a).total_cmp(&distance(b)))
+                    .then_with(|| i.cmp(j))
+            });
+        if let Some((index, support)) = support {
+            let turn = rotation_between(support.normal, scale(frame.normal, -1.0), support.center)?;
+            let placed = Rc::new(occt::transform_shape(&shape, &turn, true).map_err(kernel)?);
+            let support_face = occt::sub_face(&shape, index as u32).map_err(kernel)?;
+            let seated_face = occt::transform_shape(&support_face, &turn, true).map_err(kernel)?;
+            let seated = occt::plane_frame(&seated_face).map_err(kernel)?;
+            let gap = dot(sub(frame.center, seated.center), frame.normal);
+            return Ok((translated(&placed, scale(frame.normal, gap))?, false));
+        }
+    }
+    let (low, _) = projected_extent(&shape, normal_turn)?;
+    let gap = dot(frame.center, frame.normal) - low;
+    Ok((translated(&shape, scale(frame.normal, gap))?, orient))
+}
+
+/// Distribute separately named bodies along an axis in world or target-face coordinates.
 pub(crate) fn arrange_row(ctx: &Context) -> Result<BTreeMap<String, Shape>, StepError> {
     if ctx.input("pattern").is_some_and(|pattern| pattern != "row") {
         return Err(failed(
             "This arrangement pattern must be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
         ));
     }
-    if ctx.input("target_face").is_some_and(|face| !face.is_null()) {
-        return Err(failed(
-            "This arrangement uses a target face, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
-        ));
-    }
-
     let inputs: Vec<_> = ctx
         .input("bodies")
         .and_then(Value::as_array)
@@ -151,16 +195,43 @@ pub(crate) fn arrange_row(ctx: &Context) -> Result<BTreeMap<String, Shape>, Step
         })
         .collect::<Result<_, StepError>>()?;
     let length = |key, default| ctx.value(key, default, Dimension::Length);
-    let offset = [length("dx", 0.0)?, length("dy", 0.0)?, length("dz", 0.0)?];
     let mode = ctx.input("mode").map_or(Some("equal_gaps"), Value::as_str);
-    let axis = match ctx.input("axis").and_then(Value::as_str) {
-        Some("y") => 1,
-        Some("z") => 2,
-        _ => 0,
+    let axis = ctx.input("axis").and_then(Value::as_str).unwrap_or("x");
+    let target = ctx
+        .input("target_face")
+        .filter(|selected| !selected.is_null())
+        .map(|_| {
+            let (body, index) = ctx.face("target_face")?;
+            let stable = ctx
+                .input("frame_mode")
+                .is_some_and(|mode| mode == "reference");
+            arrangement_frame(&body, index, stable)
+        })
+        .transpose()?;
+    let ([u, v, normal], axis, group_offset) = match target {
+        Some(frame) => (
+            [frame.x_axis, frame.y_axis, frame.normal],
+            usize::from(axis != "x"),
+            add(
+                add(
+                    scale(frame.x_axis, length("move_x", 0.0)?),
+                    scale(frame.y_axis, length("move_y", 0.0)?),
+                ),
+                scale(frame.normal, length("move_normal", 0.0)?),
+            ),
+        ),
+        None => (
+            WORLD_AXES,
+            match axis {
+                "y" => 1,
+                "z" => 2,
+                _ => 0,
+            },
+            [length("dx", 0.0)?, length("dy", 0.0)?, length("dz", 0.0)?],
+        ),
     };
     let mut gap = length("gap", 10.0)?;
-    // The Python row evaluates this saved input even for rows without a face.
-    length("normal_offset", 0.0)?;
+    let normal_offset = length("normal_offset", 0.0)?;
     let equal = mode == Some("equal_gaps");
     if inputs.len() < if equal { 3 } else { 2 } {
         return Err(failed(if equal {
@@ -176,19 +247,32 @@ pub(crate) fn arrange_row(ctx: &Context) -> Result<BTreeMap<String, Shape>, Step
         return Err(failed("The clear gap cannot be negative."));
     }
 
-    let kernel = |e: occt::Exception| failed(e.what());
+    let orient = ctx.input("orient").is_none_or(|value| truthy(Some(value)));
+    let axes = [u, v, normal];
     let turns = [
-        occt::trsf_identity(),
-        occt::trsf_rotation(&[0.0; 3], &[0.0, 0.0, -1.0], FRAC_PI_2).map_err(kernel)?,
-        occt::trsf_rotation(&[0.0; 3], &[0.0, 1.0, 0.0], FRAC_PI_2).map_err(kernel)?,
+        rotation_between(u, WORLD_AXES[0], [0.0; 3])?,
+        rotation_between(v, WORLD_AXES[0], [0.0; 3])?,
+        rotation_between(normal, WORLD_AXES[0], [0.0; 3])?,
     ];
     let mut items = Vec::with_capacity(inputs.len());
-    for (name, shape) in inputs {
+    let mut warnings = Vec::new();
+    for (name, mut shape) in inputs {
+        if let Some(frame) = &target {
+            let (placed, warn) = seat_row_body(shape, frame, &turns[2], orient)?;
+            shape = if normal_offset == 0.0 {
+                placed
+            } else {
+                translated(&placed, scale(normal, normal_offset))?
+            };
+            if warn {
+                warnings.push(format!(
+                    "{name} has no flat support face; its rotation was preserved."
+                ));
+            }
+        }
         let mut ends = [(0.0, 0.0); 3];
-        for (bounds, turn) in ends.iter_mut().zip(&turns) {
-            let turned = occt::transform_shape(&shape, turn, true).map_err(kernel)?;
-            let box_bounds = occt::bounds(&turned).map_err(kernel)?;
-            *bounds = (box_bounds[0], box_bounds[3]);
+        for (extent, turn) in ends.iter_mut().zip(&turns) {
+            *extent = projected_extent(&shape, turn)?;
         }
         items.push((name, shape, ends));
     }
@@ -213,7 +297,7 @@ pub(crate) fn arrange_row(ctx: &Context) -> Result<BTreeMap<String, Shape>, Step
         gap = clear.max(0.0);
     }
     let count = items.len();
-    let centerline: [f64; 3] = std::array::from_fn(|cross| {
+    let centerline: V = std::array::from_fn(|cross| {
         items
             .iter()
             .map(|(_, _, ends)| center(ends[cross]))
@@ -227,14 +311,38 @@ pub(crate) fn arrange_row(ctx: &Context) -> Result<BTreeMap<String, Shape>, Step
         desired[axis] = cursor + width / 2.0;
         cursor += width;
         cursor += gap;
-        let shift: [f64; 3] = std::array::from_fn(|i| desired[i] - center(ends[i]) + offset[i]);
-        let shape =
-            occt::transform_shape(&shape, &occt::trsf_translation(&shift), true).map_err(kernel)?;
-        outputs.insert(name, Rc::new(shape));
+        let dimensions = if target.is_some() { 2 } else { 3 };
+        let mut shift = [0.0; 3];
+        for i in 0..dimensions {
+            shift = add(shift, scale(axes[i], desired[i] - center(ends[i])));
+        }
+        outputs.insert(name, translated(&shape, add(shift, group_offset))?);
     }
-    ctx.set_message(format!(
+    if let Some(frame) = target {
+        let mut worst = 0.0_f64;
+        let surface = [frame.x_bounds, frame.y_bounds];
+        for shape in outputs.values() {
+            for i in 0..2 {
+                let (start, end) = projected_extent(shape, &turns[i])?;
+                let (low, high) = surface[i];
+                let middle = dot(frame.center, axes[i]);
+                worst = worst.max(middle + low - start).max(end - middle - high);
+            }
+        }
+        if worst > 1e-3 {
+            warnings.push(format!(
+                "The row runs {worst:.1} mm past the edge of the target face."
+            ));
+        }
+    }
+    let summary = format!(
         "Arranged {count} objects with {} mm gaps.",
         crate::align::format_g(gap)
-    ));
+    );
+    if warnings.is_empty() {
+        ctx.set_message(summary);
+    } else {
+        ctx.set_message(format!("{summary} {}", warnings.join(" ")));
+    }
     Ok(outputs)
 }

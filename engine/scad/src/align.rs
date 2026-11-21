@@ -38,7 +38,11 @@ fn point(trsf: &Trsf, p: V) -> V {
 }
 
 /// `rotation_between`: turns `source` onto `target` about `pivot`.
-fn rotation_between(source: V, target: V, pivot: V) -> Result<UniquePtr<Trsf>, StepError> {
+pub(crate) fn rotation_between(
+    source: V,
+    target: V,
+    pivot: V,
+) -> Result<UniquePtr<Trsf>, StepError> {
     let source = unit(source)?;
     let target = unit(target)?;
     let mut axis = cross(source, target);
@@ -121,13 +125,13 @@ impl Face {
 }
 
 #[derive(Clone, Copy)]
-struct Frame {
-    center: V,
-    normal: V,
-    x_axis: V,
-    y_axis: V,
-    x_bounds: (f64, f64),
-    y_bounds: (f64, f64),
+pub(crate) struct Frame {
+    pub(crate) center: V,
+    pub(crate) normal: V,
+    pub(crate) x_axis: V,
+    pub(crate) y_axis: V,
+    pub(crate) x_bounds: (f64, f64),
+    pub(crate) y_bounds: (f64, f64),
 }
 
 impl Frame {
@@ -564,6 +568,19 @@ pub(crate) fn seat_section(
         0.0,
         true,
     )
+}
+
+pub(crate) fn arrangement_frame(
+    body: &occt::Shape,
+    index: u32,
+    stable: bool,
+) -> Result<Frame, StepError> {
+    let face = Face::read(body, index)?;
+    if stable {
+        reference_frame(&face)
+    } else {
+        planar_frame(&face)
+    }
 }
 
 fn solve_faces(

@@ -2661,25 +2661,20 @@ mod tests {
     }
 
     #[test]
-    fn arrange_patterns_and_target_rows_still_report_unported() {
-        for inputs in [
-            json!({"pattern": "grid"}),
-            json!({"target_face": {"__ref__": {}}}),
-        ] {
-            let feature = json!({"inputs": inputs});
-            let ctx = Context {
-                feature: &feature,
-                features: None,
-                bodies: HashMap::new(),
-                sketches: HashMap::new(),
-                parameters: &HashMap::new(),
-                message: Default::default(),
-            };
-            let error = execute("arrange", &ctx, None)
-                .expect("Arrange dispatch")
-                .err()
-                .unwrap();
-            assert!(error.message.contains("cannot build it yet"));
-        }
+    fn arrange_patterns_still_report_unported() {
+        let feature = json!({"inputs": {"pattern": "grid"}});
+        let ctx = Context {
+            feature: &feature,
+            features: None,
+            bodies: HashMap::new(),
+            sketches: HashMap::new(),
+            parameters: &HashMap::new(),
+            message: Default::default(),
+        };
+        let error = execute("arrange", &ctx, None)
+            .expect("Arrange dispatch")
+            .err()
+            .unwrap();
+        assert!(error.message.contains("cannot build it yet"));
     }
 }
