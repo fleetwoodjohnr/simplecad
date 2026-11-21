@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -128,6 +128,8 @@ export const importModel = (revision: number, edit: ModelImport) => {
   })
 }
 export const saveModel = (revision: number) => send<Uint8Array>({ op: 'save', revision })
+export const measure = (revision: number, picks: MeasurePick[]) =>
+  send<Measurement[]>({ op: 'measure', revision, picks })
 export const exportModel = (revision: number, format: ExportFormat) =>
   send<Uint8Array>({ op: 'export', revision, format })
 export const markSaved = (revision: number) => send<ModelResult>({ op: 'saved', revision }).then(accept)

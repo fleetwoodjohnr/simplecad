@@ -118,6 +118,9 @@ MeshImport import_mesh(rust::Slice<const double> points, rust::Slice<const uint3
 rust::Vec<uint8_t> write_step(const Shapes &shapes);
 std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> matrix);
 double volume(const Shape &shape);
+double surface_area(const Shape &shape);
+rust::Vec<double> volume_center(const Shape &shape);
+double minimum_distance(const Shape &first, const Shape &second);
 uint32_t solid_count(const Shape &shape);
 uint32_t face_occurrences(const Shape &shape);
 bool is_valid(const Shape &shape);

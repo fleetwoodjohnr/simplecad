@@ -827,6 +827,36 @@ impl Project {
     }
 }
 
+#[napi(object, object_to_js = false)]
+pub struct MeasureSelection<'a> {
+    pub shape: ClassInstance<'a, Shape>,
+    pub face: Option<u32>,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct Measurement {
+    pub label: String,
+    pub values: Vec<f64>,
+    pub unit: String,
+}
+
+#[napi]
+pub fn measure_shapes(picks: Vec<MeasureSelection>) -> Result<Vec<Measurement>> {
+    let choices: Vec<_> = picks
+        .iter()
+        .map(|pick| (&**pick.shape.inner, pick.face))
+        .collect();
+    Ok(scad::measure::measure(&choices)
+        .map_err(reason)?
+        .into_iter()
+        .map(|reading| Measurement {
+            label: reading.label.into(),
+            values: reading.values,
+            unit: reading.unit.into(),
+        })
+        .collect())
+}
+
 /// Every body of a `.scad3`, shown or hidden, as the Python app loads it.
 #[napi]
 pub fn open_project(data: Buffer) -> Result<OpenedProject> {

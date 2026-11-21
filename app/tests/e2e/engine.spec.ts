@@ -226,6 +226,32 @@ test('creates a threaded through hole from the standard size picker', async () =
   await expect(status).toContainText('11534.33 mm³')
 })
 
+test('measures a body and the spacing between two faces without changing history', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const history = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(status).toContainText('24000 mm³')
+  await toolbar.getByRole('button', { name: 'Measure', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Measure' })
+  const reading = (label: string) => panel.getByText(label, { exact: true }).locator('..').locator('dd')
+  await panel.getByLabel('Measure selection').selectOption('body')
+  await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+  await expect(reading('Volume')).toHaveText('24000 mm³')
+  await expect(reading('Surface area')).toHaveText('5200 mm²')
+  await expect(reading('Bounding box')).toHaveText('40 × 30 × 20 mm')
+  await expect(reading('Centre of mass')).toHaveText('20, 15, 10 mm')
+  await panel.getByRole('button', { name: 'Remove Box' }).click()
+  await panel.getByLabel('Measure selection').selectOption('face')
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await expect(reading('Area')).toHaveText('1200 mm²')
+  await page.getByLabel('Planar face').selectOption({ label: 'Bottom · 1200 mm²' })
+  await expect(reading('Minimum distance')).toHaveText('20 mm')
+  await expect(reading('Angle')).toHaveText('0 °')
+  await expect(history).toHaveText(['Box'])
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled()
+})
+
 test('the more actions menu fits above its trigger and Escape restores focus', async () => {
   const { app, page } = await launch()
   await app.evaluate(({ BrowserWindow }) => {

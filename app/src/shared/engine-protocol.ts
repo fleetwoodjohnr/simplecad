@@ -59,6 +59,8 @@ export type Transform = { kind: 'move'; values: Expressions } |
   { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
   { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
 export interface TransformEdit { body: number; transform: Transform }
+export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number }
+export interface Measurement { label: string; values: number[]; unit: string }
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]
@@ -196,6 +198,7 @@ export type RendererCommand =
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
+  | { op: 'measure'; revision: number; picks: MeasurePick[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
@@ -208,7 +211,7 @@ export type RendererCommand =
 
 export type RendererRequest = RendererCommand & { id: number }
 export type EngineResponse =
-  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array }
+  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] }
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
@@ -379,6 +382,12 @@ export function isCheckpoint(value: unknown): value is Checkpoint {
     (model.saved === null || offset(model.saved))
 }
 
+function isMeasurePick(value: unknown): value is MeasurePick {
+  if (!value || typeof value !== 'object') return false
+  const pick = value as Partial<MeasurePick>
+  return pick.kind === 'body' ? isIndex(pick.body) && pick.body < MAX_BODIES :
+    pick.kind === 'face' && isIndex(pick.face) && pick.face <= 0xffffffff
+}
 export function checkRendererRequest(data: unknown): RendererRequest {
   const m = data as Record<string, unknown> | null
   if (!m || typeof m !== 'object' || !isIndex(m.id)) throw new Error('Malformed engine request.')
@@ -388,6 +397,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
       (isIndex(m.revision) && (
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
         (m.op === 'export' && isExportFormat(m.format)) ||
+        (m.op === 'measure' && Array.isArray(m.picks) && m.picks.length <= MAX_BODIES && m.picks.every(isMeasurePick)) ||
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||

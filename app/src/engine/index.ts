@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { checkRendererRequest, type EngineResponse, type MeshFormat } from '../shared/engine-protocol'
+import { checkRendererRequest, type EngineResponse, type Measurement, type MeshFormat } from '../shared/engine-protocol'
 import { EngineDocument, type Project, type Shape } from './document'
 
 interface PortLike {
@@ -16,6 +16,7 @@ interface Addon {
   openProject(data: Buffer): AddonProject
   exportMesh(format: MeshFormat, parts: ReturnType<EngineDocument['meshParts']>): Buffer
   exportStep(parts: Shape[]): Buffer
+  measureShapes(parts: ReturnType<EngineDocument['measurementPicks']>): Measurement[]
   crash(): void
 }
 
@@ -55,6 +56,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'createShape': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
+      case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
       case 'export': result = new Uint8Array(req.format === 'step'
         ? addon.exportStep(document.exportShapes(req.revision).map(({ shape }) => shape))
         : addon.exportMesh(req.format, document.meshParts(req.revision))); break

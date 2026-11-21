@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -172,6 +172,16 @@ export class EngineDocument {
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'editStepId' in edit ? this.resolveStepSettings(edit) : this.resolve(edit)
     return this.show(this.prepare(step).bodies)
+  }
+
+  measurementPicks(revision: number, selection: MeasurePick[]) {
+    this.checkRevision(revision)
+    return selection.map((entry) => {
+      const pick = entry.kind === 'face' ? this.pick(entry.face) : entry
+      const shape = this.current.bodies[pick.body]?.shape
+      if (!shape) throw new Error('Select a body with geometry.')
+      return { shape, face: 'face' in pick ? pick.face : undefined }
+    })
   }
 
   exportShapes(revision: number) {

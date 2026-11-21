@@ -284,6 +284,9 @@ pub mod ffi {
         /// the Python app places a cached "located" output).
         fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;
         fn volume(shape: &Shape) -> f64;
+        fn surface_area(shape: &Shape) -> Result<f64>;
+        fn volume_center(shape: &Shape) -> Result<Vec<f64>>;
+        fn minimum_distance(first: &Shape, second: &Shape) -> Result<f64>;
         fn solid_count(shape: &Shape) -> u32;
         /// Faces as `TopExp_Explorer` visits them, a face used twice counted
         /// twice: how the Python app's project comparison counts.

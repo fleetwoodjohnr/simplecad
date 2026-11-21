@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
-import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
 import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
+import { MeasurePanel } from './MeasurePanel'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
@@ -49,6 +50,10 @@ function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
   const side = !face.planar ? 'Curved' : axis < 0 ? 'Slanted' : labels[axis][Number(face.normal[axis] > 0)]
   const several = bodies.filter((b) => b.visible && !b.empty).length > 1
   return `${several ? `${bodies[face.body].name} · ` : ''}${side} · ${format.format(face.area)} mm²`
+}
+
+function pickKey(pick: MeasurePick) {
+  return pick.kind === 'body' ? `body:${pick.body}` : `face:${pick.face}`
 }
 
 function StackOptions({ settings, onChange }: { settings: StackSettings; onChange: (next: StackSettings) => void }) {
@@ -95,6 +100,10 @@ export function App() {
   const [selected, setSelected] = useState<number>()
   const [holePosition, setHolePosition] = useState<Vec3>()
   const [stack, setStack] = useState(false)
+  const [measureKind, setMeasureKind] = useState<MeasurePick['kind']>()
+  const [measurePicks, setMeasurePicks] = useState<MeasurePick[]>([])
+  const [measurements, setMeasurements] = useState<Measurement[]>([])
+  const [measuring, setMeasuring] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
   const [editingShape, setEditingShape] = useState<string>()
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
@@ -135,6 +144,18 @@ export function App() {
     busyRef.current = active
     setBusy(active)
   }
+  const closeMeasure = () => {
+    setMeasureKind(undefined)
+    setMeasurePicks([])
+    setMeasurements([])
+    setMeasuring(false)
+  }
+  const pickMeasure = (pick: MeasurePick) => {
+    const key = pickKey(pick)
+    setMeasurePicks((items) => items.some((entry) => pickKey(entry) === key)
+      ? items.filter((entry) => pickKey(entry) !== key) : [...items, pick])
+    setError('')
+  }
   const select = (face?: number, position?: Vec3) => {
     setSelected(face)
     setHolePosition(position)
@@ -143,6 +164,7 @@ export function App() {
     setError('')
     if (face === undefined) {
       cancelPlacement()
+      closeMeasure()
       setTransformKind(undefined)
       setShapePanel(false)
       setEditingShape(undefined)
@@ -174,6 +196,7 @@ export function App() {
     setHolePosition(undefined)
     setDistance('')
     cancelPlacement()
+    closeMeasure()
     setTransformKind(undefined)
     setShapePanel(false)
     setEditingShape(undefined)
@@ -203,7 +226,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack || shapePanel || faceTool || transformKind) return
+    if (stack || shapePanel || faceTool || transformKind || measureKind) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -214,7 +237,7 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind])
+  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, measureKind])
 
   useEffect(() => {
     if (!stack) return
@@ -235,6 +258,25 @@ export function App() {
     }, 48)
     return () => { active = false; window.clearTimeout(timer); cancelQueuedStackPreview() }
   }, [stack, placement, busy, revision])
+
+  useEffect(() => {
+    if (!measureKind || revision === undefined || !measurePicks.length) {
+      setMeasurements([])
+      setMeasuring(false)
+      return
+    }
+    let active = true
+    setMeasuring(true)
+    void measure(revision, measurePicks).then((values) => {
+      if (active) setMeasurements(values)
+    }, (failure: Error) => {
+      if (active) {
+        setMeasurements([])
+        setError(failure.message)
+      }
+    }).finally(() => { if (active) setMeasuring(false) })
+    return () => { active = false }
+  }, [measureKind, measurePicks, revision])
 
   const mutate = (run: () => Promise<ModelResult | undefined>, reframe = false) => {
     if (busyRef.current) return
@@ -303,7 +345,7 @@ export function App() {
   const cancelTransform = () => { setTransformKind(undefined); clearPreview() }
 
   const pull = (amount: number) => {
-    if (stack || shapePanel || faceTool || transformKind || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
+    if (stack || shapePanel || faceTool || transformKind || measureKind || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
@@ -421,8 +463,8 @@ export function App() {
   const canRedo = !!model?.canRedo && !busy
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
-  const canStack = ready && !shapePanel && !faceTool && !transformKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
-  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind
+  const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !measureKind
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
@@ -451,6 +493,13 @@ export function App() {
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
     hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
+    measure: { enabled: canUseFaceTool, run: () => {
+      setMeasureKind('face')
+      setPreview(undefined)
+      setDistance('')
+      setError('')
+      setMeasurePicks(selected === undefined ? [] : [{ kind: 'face', face: selected }])
+    } },
     move: { enabled: canTransform, run: () => openTransform('move') },
     rotate: { enabled: canTransform, run: () => openTransform('rotate') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
@@ -467,12 +516,13 @@ export function App() {
         return
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
-      if (!busy && (stack || shapePanel || faceTool || transformKind) && event.key === 'Escape') {
+      if (!busy && (stack || shapePanel || faceTool || transformKind || measureKind) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         cancelShapePanel()
         cancelFaceTool()
         cancelTransform()
+        closeMeasure()
         setError('')
         return
       }
@@ -515,6 +565,7 @@ export function App() {
             select()
             setShapePanel(true)
           }}>Shape</Btn>
+          <Btn size="sm" disabled={!actions.measure.enabled} onClick={actions.measure.run}>{commands.measure.label}</Btn>
           <Btn size="sm" disabled={!actions.move.enabled} onClick={actions.move.run}>{commands.move.label}</Btn>
           <Btn size="sm" disabled={!actions.rotate.enabled} onClick={actions.rotate.run}>{commands.rotate.label}</Btn>
           <Btn size="sm" disabled={!actions.hole.enabled} onClick={actions.hole.run}>{commands.hole.label}</Btn>
@@ -550,9 +601,17 @@ export function App() {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
-            canPull={!stack && !shapePanel && !faceTool && !transformKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
+            canPull={!stack && !shapePanel && !faceTool && !transformKind && !measureKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
               if (!ready || shapePanel) return
-              if (transformKind) {
+              if (measureKind) {
+                if (face !== undefined) {
+                  if (measureKind === 'body') pickMeasure({ kind: 'body', body: model.shape.faces[face].body })
+                  else {
+                    setSelected(face)
+                    pickMeasure({ kind: 'face', face })
+                  }
+                }
+              } else if (transformKind) {
                 if (face !== undefined) {
                   clearPreview()
                   setTransformBody(model.shape.faces[face]?.body)
@@ -575,7 +634,10 @@ export function App() {
               {model?.bodies.map((body, index) => (
                 <li key={index} className={`flex items-center gap-2 rounded-md px-2 py-1 ${body.visible ? 'bg-hover' : 'text-text-3'}`}>
                   <Box className="size-4 shrink-0 text-text-2" />
-                  <span className="min-w-0 flex-1 truncate" title={body.empty ? 'No saved geometry' : undefined}>{body.name}</span>
+                  {measureKind === 'body' && !body.empty
+                    ? <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={measurePicks.some((pick) => pick.kind === 'body' && pick.body === index)}
+                        disabled={!ready} onClick={() => pickMeasure({ kind: 'body', body: index })}>{body.name}</button>
+                    : <span className="min-w-0 flex-1 truncate" title={body.empty ? 'No saved geometry' : undefined}>{body.name}</span>}
                   <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
                     disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
                     {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
@@ -586,11 +648,24 @@ export function App() {
             <label className="grid gap-1 text-xs text-text-2">
               Planar face
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
-                onChange={(e) => select(e.target.value === '' ? undefined : Number(e.target.value))}>
+                onChange={(e) => {
+                  const face = e.target.value === '' ? undefined : Number(e.target.value)
+                  if (measureKind === 'face') {
+                    setSelected(face)
+                    if (face !== undefined) pickMeasure({ kind: 'face', face })
+                  } else select(face)
+                }}>
                 <option value="">Select a face</option>
                 {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies)}</option>)}
               </select>
             </label>
+            {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring}
+              selections={measurePicks.map((pick) => ({
+                key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
+                  model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies) : 'Face'
+              }))}
+              onKind={setMeasureKind} onRemove={(key) => setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
+              onClose={closeMeasure} />}
             {stack && model && (
               <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
                 <label className="grid gap-1">Target face
@@ -711,10 +786,10 @@ export function App() {
           </div>
           <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
             <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={stack || shapePanel || !!faceTool || !!transformKind || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
+              disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={stack || shapePanel || !!faceTool || !!transformKind || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>

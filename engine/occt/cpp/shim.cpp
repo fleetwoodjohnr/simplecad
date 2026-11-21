@@ -1051,6 +1051,39 @@ std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> m) 
   return owned(shape.shape.Located(TopLoc_Location(trsf)), "placing a shape");
 }
 
+double surface_area(const Shape &shape) {
+  GProp_GProps properties;
+  BRepGProp::SurfaceProperties(shape.shape, properties, false, display_mesh(shape.shape));
+  return properties.Mass();
+}
+
+rust::Vec<double> volume_center(const Shape &shape) {
+  GProp_GProps properties;
+  rust::Vec<double> out;
+  if (display_mesh(shape.shape)) return out;
+  BRepGProp::VolumeProperties(shape.shape, properties, true, false, false);
+  if (std::abs(properties.Mass()) <= 1.0e-12) return out;
+  const gp_Pnt center = properties.CentreOfMass();
+  out.push_back(center.X());
+  out.push_back(center.Y());
+  out.push_back(center.Z());
+  return out;
+}
+
+double minimum_distance(const Shape &first, const Shape &second) {
+  if (display_mesh(first.shape) || display_mesh(second.shape)) {
+    throw std::runtime_error("Exact distance needs editable geometry.");
+  }
+  BRepExtrema_DistShapeShape measure;
+  measure.LoadS1(first.shape);
+  measure.LoadS2(second.shape);
+  measure.Perform();
+  if (!measure.IsDone()) {
+    throw std::runtime_error("No minimum distance could be measured.");
+  }
+  return measure.Value();
+}
+
 double volume(const Shape &shape) {
   if (display_mesh(shape.shape)) return 0.0;
   GProp_GProps props;
