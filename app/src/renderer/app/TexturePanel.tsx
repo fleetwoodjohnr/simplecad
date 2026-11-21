@@ -11,7 +11,7 @@ const patterns = [
   ['geometric', 'Geometric pattern'], ['vent', 'Vent-style pattern'], ['grip', 'Grip texture']
 ] as const
 
-const initial: TextureSettings = {
+export const defaultTextureSettings: TextureSettings = {
   pattern: 'horizontal_lines', mode: 'raised', size: '3 mm', spacing: '2 mm', depth: '0.6 mm',
   offset_u: '0 mm', offset_v: '0 mm', rotation: '0°', edge_clearance: '3 mm',
   hole_clearance: '2 mm', text_clearance: '1.5 mm', other_clearance: '2 mm'
@@ -20,14 +20,15 @@ const initial: TextureSettings = {
 interface Props {
   busy: boolean
   selected: boolean
+  preset?: Record<string, string>
   onChange: () => void
   onPreview: (settings: TextureSettings) => void
   onApply: (settings: TextureSettings) => void
   onCancel: () => void
 }
 
-export function TexturePanel({ busy, selected, onChange, onPreview, onApply, onCancel }: Props) {
-  const [settings, setSettings] = useState(initial)
+export function TexturePanel({ busy, selected, preset, onChange, onPreview, onApply, onCancel }: Props) {
+  const [settings, setSettings] = useState<TextureSettings>(() => ({ ...defaultTextureSettings, ...preset }))
   const enabled = !busy && selected
   const field = <K extends keyof TextureSettings>(key: K, value: TextureSettings[K]) => {
     setSettings((previous) => ({ ...previous, [key]: value }))

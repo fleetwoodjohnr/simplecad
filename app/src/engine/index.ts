@@ -42,12 +42,14 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'open': result = document.open(req.data, req.name, req.revision, req.recovered); break
       case 'preview':
       case 'previewFace':
+      case 'previewSavedFace':
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
       case 'applyFace':
       case 'applyStack':
       case 'importModel':
       case 'repairInput':
+      case 'editSavedFace':
       case 'createShape': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break

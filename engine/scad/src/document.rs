@@ -25,6 +25,7 @@ pub struct StepSummary {
     pub state: String,
     pub message: Option<String>,
     pub missing_input: Option<MissingInput>,
+    pub face_settings: Option<HashMap<String, String>>,
 }
 
 pub struct MissingInput {
@@ -305,9 +306,47 @@ impl Model {
                     missing_input: (state == "needs_attention")
                         .then(|| missing_reference(f, &ids))
                         .flatten(),
+                    face_settings: face_edit_fields(&f["type"]).map(|fields| {
+                        fields
+                            .iter()
+                            .filter_map(|key| {
+                                let input = f["inputs"].get(*key)?;
+                                let value = match input {
+                                    Value::String(text) => text.clone(),
+                                    Value::Number(number) => number.to_string(),
+                                    _ => return None,
+                                };
+                                Some(((*key).into(), value))
+                            })
+                            .collect()
+                    }),
                 }
             })
             .collect()
+    }
+
+    /// Change settings on the saved source face, preserving its references and
+    /// every input the user left alone.
+    pub fn edit_face_settings(
+        &mut self,
+        step_id: &str,
+        changes: HashMap<String, String>,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (position, mut updated) = self.recipe(step_id)?;
+        let allowed =
+            face_edit_fields(&updated["type"]).ok_or("This step has no editable face settings.")?;
+        if changes.is_empty() || changes.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err("Choose a setting to edit on this history step.".into());
+        }
+        let inputs = updated["inputs"]
+            .as_object_mut()
+            .ok_or("The original face settings are missing.")?;
+        for (key, value) in changes {
+            inputs.insert(key, Value::String(value));
+        }
+        self.rebuild_recipe(position, updated, "Edit face settings", original, shown)
     }
 
     /// Rebind a deleted Combine tool or Align target to a selected object.
@@ -321,15 +360,13 @@ impl Model {
         original: &[u8],
         shown: &HashMap<String, crate::rebuild::Shape>,
     ) -> Result<crate::rebuild::Report, String> {
-        let features = self.payload["features"]
+        let (position, mut updated) = self.recipe(step_id)?;
+        let ids: HashSet<_> = self.payload["features"]
             .as_array()
-            .ok_or("The project has no steps.")?;
-        let position = features
-            .iter()
-            .position(|f| f["id"] == step_id)
-            .ok_or("This history step is no longer available.")?;
-        let mut updated = features[position].clone();
-        let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["id"].as_str())
+            .collect();
         let lost = missing_reference(&updated, &ids)
             .filter(|reference| reference.object_id == missing_id)
             .ok_or("This step's missing input has changed.")?;
@@ -400,6 +437,32 @@ impl Model {
             json!({"feature_id": producer, "object_id": body_id}),
         );
 
+        self.rebuild_recipe(position, updated, "Repair input", original, shown)
+    }
+
+    fn recipe(&self, step_id: &str) -> Result<(usize, Value), String> {
+        self.payload["features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .find(|(_, feature)| feature["id"] == step_id)
+            .map(|(position, feature)| (position, feature.clone()))
+            .ok_or_else(|| "This history step is no longer available.".into())
+    }
+
+    fn rebuild_recipe(
+        &mut self,
+        position: usize,
+        updated: Value,
+        label: &str,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let step_id = updated["id"]
+            .as_str()
+            .ok_or("This step has no identity.")?
+            .to_owned();
         let before = self.document();
         let mut candidate = self.clone();
         candidate.payload["features"][position] = updated;
@@ -408,12 +471,12 @@ impl Model {
                 "That input depends on the step you are repairing. Choose a different body.".into(),
             );
         }
-        let stale = dependents(&candidate.payload, &BTreeSet::from([step_id.into()]));
+        let stale = dependents(&candidate.payload, &BTreeSet::from([step_id.clone()]));
         let report = crate::rebuild::rebuild(&mut candidate, original, shown, &stale)?;
-        if let Some(error) = report.failures.get(step_id) {
+        if let Some(error) = report.failures.get(&step_id) {
             return Err(error.clone());
         }
-        candidate.push_undo("Repair input", before)?;
+        candidate.push_undo(label, before)?;
         *self = candidate;
         Ok(report)
     }
@@ -1161,6 +1224,36 @@ fn touched(change: &Value) -> BTreeSet<String> {
 }
 
 /// `DependencyGraph.dependents`: `ids` and every step downstream of them.
+fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
+    match kind.as_str()? {
+        "text" => Some(&[
+            "text",
+            "font_family",
+            "mode",
+            "text_height",
+            "depth",
+            "offset_x",
+            "offset_y",
+            "rotation",
+        ]),
+        "face_texture" => Some(&[
+            "pattern",
+            "mode",
+            "size",
+            "spacing",
+            "depth",
+            "offset_u",
+            "offset_v",
+            "rotation",
+            "edge_clearance",
+            "hole_clearance",
+            "text_clearance",
+            "other_clearance",
+        ]),
+        _ => None,
+    }
+}
+
 fn tools_key(step: &Value) -> &'static str {
     if step["inputs"]["tools"]
         .as_array()

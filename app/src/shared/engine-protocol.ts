@@ -43,6 +43,8 @@ export interface ReferenceRepair {
   replacementBody: number
   replacementFace?: number
 }
+export interface SavedFaceEdit { editFaceId: string; changes: Record<string, string> }
+export type SavedFaceStep = SavedFaceEdit & { replay?: { index: number; name: string; kind: string } }
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]
@@ -103,7 +105,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedFaceStep
 
 export interface Checkpoint {
   source: Source
@@ -127,6 +129,7 @@ export interface StepInfo {
   state: string
   message?: string
   missingInput?: { name: string; objectId: string; face: boolean }
+  faceSettings?: Record<string, string>
   /** Undone in this session; redo brings it back. */
   undone: boolean
 }
@@ -158,6 +161,7 @@ export type RendererCommand =
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
+  | ({ op: 'previewSavedFace' | 'editSavedFace'; revision: number } & SavedFaceEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
   | { op: 'export'; revision: number; format: ExportFormat }
@@ -204,8 +208,17 @@ function isReferenceRepair(value: unknown): value is ReferenceRepair {
     (edit.replacementFace === undefined || (isIndex(edit.replacementFace) && edit.replacementFace <= 0xffffffff))
 }
 
+function isSavedFaceStep(value: unknown): value is SavedFaceStep {
+  if (!value || typeof value !== 'object') return false
+  const { editFaceId, changes, replay } = value as Partial<SavedFaceStep>
+  if (!isName(editFaceId) || !changes || typeof changes !== 'object' || Array.isArray(changes)) return false
+  const entries = Object.entries(changes)
+  return entries.length <= 12 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && typeof value === 'string' && value.length <= 256) &&
+    (replay === undefined || (!!replay && typeof replay === 'object' && isIndex(replay.index) && isName(replay.name) && isName(replay.kind)))
+}
+
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedFaceStep(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -313,6 +326,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
           m.moving !== m.target && isStackSettings(m.settings)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||
         (m.op === 'repairInput' && isReferenceRepair(m)) ||
+        ((m.op === 'previewSavedFace' || m.op === 'editSavedFace') && isSavedFaceStep(m) && m.replay === undefined) ||
         (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')

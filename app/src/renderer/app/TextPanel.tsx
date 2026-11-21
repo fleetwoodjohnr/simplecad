@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { TextSettings } from '@/shared/engine-protocol'
 import { Btn, inputCls } from '../ui'
 
-const initial: TextSettings = {
+export const defaultTextSettings: TextSettings = {
   text: '', font_family: 'sans-serif', mode: 'raised',
   text_height: '8 mm', depth: '1 mm', offset_x: '0 mm', offset_y: '0 mm', rotation: '0°'
 }
@@ -10,14 +10,15 @@ const initial: TextSettings = {
 interface Props {
   busy: boolean
   planar: boolean
+  preset?: Record<string, string>
   onChange: () => void
   onPreview: (settings: TextSettings) => void
   onApply: (settings: TextSettings) => void
   onCancel: () => void
 }
 
-export function TextPanel({ busy, planar, onChange, onPreview, onApply, onCancel }: Props) {
-  const [settings, setSettings] = useState(initial)
+export function TextPanel({ busy, planar, preset, onChange, onPreview, onApply, onCancel }: Props) {
+  const [settings, setSettings] = useState<TextSettings>(() => ({ ...defaultTextSettings, ...preset }))
   const enabled = !busy && planar && settings.text.trim().length > 0
   const field = <K extends keyof TextSettings>(key: K, value: TextSettings[K]) => {
     setSettings((previous) => ({ ...previous, [key]: value }))

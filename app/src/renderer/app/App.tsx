@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, ModelResult, StackEdit, StackSettings, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyFace, applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewStack, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyFace, applyPull, applyStack, cancelQueuedStackPreview, createShape, editSavedFace, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedFace, previewStack, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
-import { TextPanel } from './TextPanel'
-import { TexturePanel } from './TexturePanel'
+import { defaultTextSettings, TextPanel } from './TextPanel'
+import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
 function useTheme(): [boolean, () => void] {
@@ -94,6 +94,7 @@ export function App() {
   const [stack, setStack] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
   const [faceTool, setFaceTool] = useState<FaceOperation['faceOperation']>()
+  const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
   const [repairBody, setRepairBody] = useState<number>()
   const [target, setTarget] = useState<number>()
@@ -118,6 +119,7 @@ export function App() {
   const connection = useRef(0)
   const repairStep = model?.steps.find((step) => step.id === repairing && !step.undone)
   const missingInput = repairStep?.missingInput
+  const faceStep = model?.steps.find((step) => step.id === editingFace && !step.undone)
 
   const updateBusy = (active: boolean) => {
     busyRef.current = active
@@ -132,6 +134,7 @@ export function App() {
       cancelPlacement()
       setShapePanel(false)
       setFaceTool(undefined)
+      setEditingFace(undefined)
       setRepairing(undefined)
     }
   }
@@ -159,6 +162,7 @@ export function App() {
     cancelPlacement()
     setShapePanel(false)
     setFaceTool(undefined)
+    setEditingFace(undefined)
     setRepairing(undefined)
     setError('')
     void openSession(generation > 1).then(
@@ -232,14 +236,24 @@ export function App() {
     ).finally(() => { if (connection.current === generation) updateBusy(false) })
   }
 
+  const savedFaceRequest = (operation: FaceOperation) => {
+    if (!faceStep?.faceSettings) return
+    const defaults = operation.faceOperation === 'text' ? defaultTextSettings : defaultTextureSettings
+    const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
+    const changes = Object.fromEntries(Object.entries(operation.settings).filter(([key, value]) => original[key] !== value))
+    return { editFaceId: faceStep.id, changes }
+  }
+
   const showFacePreview = async (operation: FaceOperation) => {
-    if (busyRef.current || selected === undefined || revision === undefined) return
+    if (busyRef.current || revision === undefined) return
+    const saved = savedFaceRequest(operation)
+    if (saved ? !Object.keys(saved.changes).length : selected === undefined) return
     const generation = connection.current
     setError('')
     setPreview(undefined)
     updateBusy(true)
     try {
-      const next = await previewFace(revision, { face: selected, ...operation })
+      const next = saved ? await previewSavedFace(revision, saved) : await previewFace(revision, { face: selected!, ...operation })
       if (connection.current === generation) setPreview(next)
     } catch (failure) {
       if (connection.current === generation) setError((failure as Error).message)
@@ -249,13 +263,17 @@ export function App() {
   }
 
   const commitFace = (operation: FaceOperation) => {
-    if (revision !== undefined && selected !== undefined) {
+    if (revision === undefined) return
+    const saved = savedFaceRequest(operation)
+    if (saved) {
+      mutate(() => editSavedFace(revision, saved))
+    } else if (selected !== undefined) {
       mutate(() => applyFace(revision, { face: selected, ...operation }))
     }
   }
 
   const clearFacePreview = () => { setPreview(undefined); setError('') }
-  const cancelFaceTool = () => { setFaceTool(undefined); clearFacePreview() }
+  const cancelFaceTool = () => { setFaceTool(undefined); setEditingFace(undefined); clearFacePreview() }
 
   const pull = (amount: number) => {
     if (stack || faceTool || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
@@ -381,6 +399,7 @@ export function App() {
   const openFaceTool = (tool: FaceOperation['faceOperation']) => {
     setDistance('')
     clearFacePreview()
+    setEditingFace(undefined)
     setFaceTool(tool)
   }
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
@@ -411,7 +430,7 @@ export function App() {
         event.preventDefault()
         cancelPlacement()
         setShapePanel(false)
-        setFaceTool(undefined)
+        cancelFaceTool()
         setError('')
         return
       }
@@ -538,11 +557,13 @@ export function App() {
             {shapePanel && revision !== undefined && <ShapePanel busy={busy}
               onCreate={(edit) => mutate(() => createShape(revision, edit), true)}
               onCancel={() => { setShapePanel(false); setError('') }} />}
-            {faceTool === 'text' && <TextPanel busy={busy} planar={selected !== undefined && !!model?.shape.faces[selected]?.planar}
+            {faceTool === 'text' && <TextPanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
               onChange={clearFacePreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
-            {faceTool === 'face_texture' && <TexturePanel busy={busy} selected={selected !== undefined}
+            {faceTool === 'face_texture' && <TexturePanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
+              selected={!!faceStep || selected !== undefined}
               onChange={clearFacePreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
@@ -575,6 +596,10 @@ export function App() {
                   <div className="flex justify-between gap-2">
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
+                    {!step.undone && step.faceSettings && <IconBtn label={`Edit ${step.name}`} disabled={busy || editingFace === step.id}
+                      onClick={() => { select(); setEditingFace(step.id); setFaceTool(step.kind === 'text' ? 'text' : 'face_texture') }}>
+                      <Pencil className="size-3.5" />
+                    </IconBtn>}
                   </div>
                   {!step.undone && (step.state === 'failed' || step.state === 'needs_attention') && step.message &&
                     <p className="mt-1 break-words text-text-2">{step.message}</p>}
