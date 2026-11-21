@@ -290,7 +290,6 @@ fn rename(entry: &mut Value, key: &str, names: &HashMap<String, String>) {
 struct Assets<'a> {
     archive: zip::ZipArchive<Cursor<&'a [u8]>>,
     blobs: BTreeMap<String, Arc<[u8]>>,
-    size: u64,
 }
 
 impl Assets<'_> {
@@ -310,16 +309,16 @@ impl Assets<'_> {
             .by_name(&format!("{folder}/{sha}.brep"))
             .map_err(|_| "The source project is missing saved geometry.")?;
         let limit = crate::rebuild::MAX_IMPORT_BYTES;
-        if file.size() > limit.saturating_sub(self.size) {
+        if file.size() > limit {
             return Err(
                 "The source project's saved geometry exceeds the import size limit.".into(),
             );
         }
         let mut bytes = Vec::new();
-        file.take(limit.saturating_sub(self.size) + 1)
+        file.take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| "The source project's saved geometry could not be read.")?;
-        if bytes.len() as u64 > limit.saturating_sub(self.size) {
+        if bytes.len() as u64 > limit {
             return Err(
                 "The source project's saved geometry exceeds the import size limit.".into(),
             );
@@ -327,7 +326,6 @@ impl Assets<'_> {
         if format!("{:x}", Sha256::digest(&bytes)) != sha {
             return Err("The source project's saved geometry is damaged.".into());
         }
-        self.size += bytes.len() as u64;
         let bytes: Arc<[u8]> = bytes.into();
         self.blobs.insert(sha.into(), bytes.clone());
         Ok(bytes)
@@ -357,11 +355,6 @@ impl Model {
                 .iter()
                 .map(|(sha, bytes)| (sha.clone(), Arc::from(bytes.as_slice())))
                 .collect(),
-            size: source
-                .recovered_blobs
-                .values()
-                .map(|bytes| bytes.len() as u64)
-                .sum(),
         };
         let mut saved_steps = Vec::new();
         let mut states = Map::new();
@@ -377,7 +370,7 @@ impl Model {
                 "embedded_import" => {
                     let sha = field(&step["inputs"], "asset")?;
                     assets.read("assets", sha)?;
-                    candidate.add_project_asset(sha);
+                    candidate.add_project_asset(sha)?;
                 }
                 "import" => {
                     // The legacy recipe may point at a file already moved. Use the exact
@@ -402,7 +395,7 @@ impl Model {
                     };
                     let sha = format!("{:x}", Sha256::digest(&baked));
                     assets.blobs.insert(sha.clone(), baked);
-                    candidate.add_project_asset(&sha);
+                    candidate.add_project_asset(&sha)?;
                     clone["type"] = json!("embedded_import");
                     clone["inputs"] = json!({ "asset": sha });
                     cached = None;
@@ -541,20 +534,14 @@ impl Model {
         Ok(())
     }
 
-    fn add_project_asset(&mut self, key: &str) {
+    fn add_project_asset(&mut self, key: &str) -> Result<(), String> {
         if !array(&self.payload, "assets")
             .iter()
             .any(|other| other == key)
         {
-            self.payload
-                .as_object_mut()
-                .unwrap()
-                .entry("assets")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .unwrap()
-                .push(json!(key));
+            self.push_import_entry("assets", json!(key))?;
         }
         self.new_assets.insert(key.into());
+        Ok(())
     }
 }
