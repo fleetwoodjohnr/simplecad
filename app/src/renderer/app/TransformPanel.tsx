@@ -15,6 +15,7 @@ interface Props {
   body?: number
   busy: boolean
   snap: number
+  preferredSnap: number
   onSnap: (step: number) => void
   onPivot: (pivot?: Vec3) => void
   onBody: (body?: number) => void
@@ -24,12 +25,13 @@ interface Props {
   onCancel: () => void
 }
 
-export function TransformPanel({ kind, bodies, body, busy, snap, onSnap, onPivot, onBody, onChange, onPreview, onApply, onCancel }: Props) {
+export function TransformPanel({ kind, bodies, body, busy, snap, preferredSnap, onSnap, onPivot, onBody, onChange, onPreview, onApply, onCancel }: Props) {
   const [values, setValues] = useState<Entries>(['', '', ''])
   const [pivotMode, setPivotMode] = useState<PivotMode>('center')
   const [custom, setCustom] = useState<Entries>(['0', '0', '0'])
   const rotation = kind === 'rotate'
   const name = rotation ? 'Rotate' : 'Move'
+  const increments = [...new Set([preferredSnap, ...(rotation ? [5, 15, 45, 90] : [0.1, 0.5, 1, 5, 10])])].sort((a, b) => a - b)
   const pivot = pivotAt(pivotMode, custom)
   const setDragPivot = (mode: PivotMode, point: Entries) => {
     const next = pivotAt(mode, point)
@@ -95,7 +97,7 @@ export function TransformPanel({ kind, bodies, body, busy, snap, onSnap, onPivot
       <label className="grid gap-1">Drag snapping
         <select className={inputCls} disabled={busy} value={snap} onChange={(event) => onSnap(Number(event.target.value))}>
           <option value={0}>Off</option>
-          {(rotation ? [5, 15, 45, 90] : [0.1, 0.5, 1, 5, 10]).map((step) =>
+          {increments.map((step) =>
             <option key={step} value={step}>{step} {rotation ? '°' : 'mm'}</option>)}
         </select>
       </label>

@@ -28,6 +28,7 @@ const api: SimpleCadApi = {
     ipcRenderer.on('app:save-and-close', listener)
     return () => ipcRenderer.removeListener('app:save-and-close', listener)
   },
+  legacyPreferences: () => ipcRenderer.invoke('preferences:legacy'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),

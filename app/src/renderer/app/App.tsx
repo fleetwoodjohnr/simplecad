@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import type { OfferedProject } from '@/shared/ipc-types'
 import { applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
@@ -10,31 +11,24 @@ import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
 import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
 import { MeasurePanel } from './MeasurePanel'
+import { PreferencesDialog } from './PreferencesDialog'
+import { usePreferences } from './preferences'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
-function useTheme(): [boolean, () => void] {
+function useTheme(chosen: Theme) {
   const [query] = useState(() => window.matchMedia('(prefers-color-scheme: dark)'))
-  const [chosen, setChosen] = useState<boolean | null>(() => {
-    const value = localStorage.getItem('simplecad.theme')
-    return value === null ? null : value === 'dark'
-  })
   const [system, setSystem] = useState(query.matches)
   useEffect(() => {
     const update = () => setSystem(query.matches)
     query.addEventListener('change', update)
     return () => query.removeEventListener('change', update)
   }, [query])
-  const dark = chosen ?? system
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark)
-  }, [dark])
-  return [dark, () => {
-    localStorage.setItem('simplecad.theme', dark ? 'light' : 'dark')
-    setChosen(!dark)
-  }]
+  const dark = chosen === 'system' ? system : chosen === 'dark'
+  useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
+  return dark
 }
 
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
@@ -45,11 +39,11 @@ const defaultStack: StackSettings = {
   horizontalGap: 0, verticalGap: 0
 }
 
-function faceLabel(face: FaceInfo, bodies: BodyInfo[]) {
+function faceLabel(face: FaceInfo, bodies: BodyInfo[], unit: DisplayUnit) {
   const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
   const side = !face.planar ? 'Curved' : axis < 0 ? 'Slanted' : labels[axis][Number(face.normal[axis] > 0)]
   const several = bodies.filter((b) => b.visible && !b.empty).length > 1
-  return `${several ? `${bodies[face.body].name} · ` : ''}${side} · ${format.format(face.area)} mm²`
+  return `${several ? `${bodies[face.body].name} · ` : ''}${side} · ${format.format(displayLength(face.area, unit, 2))} ${unit}²`
 }
 
 function pickKey(pick: MeasurePick) {
@@ -93,7 +87,11 @@ function StackOptions({ settings, onChange }: { settings: StackSettings; onChang
 }
 
 export function App() {
-  const [dark, toggle] = useTheme()
+  const { preferences, apply: applyPreferences, loaded: preferencesLoaded } = usePreferences()
+  const unit = preferences.displayUnit
+  const dark = useTheme(preferences.theme)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const toggle = () => applyPreferences({ ...preferences, theme: dark ? 'light' : 'dark' })
   const [model, setModel] = useState<ModelResult>()
   const [fileName, setFileName] = useState('Untitled')
   const [preview, setPreview] = useState<DisplayShape>()
@@ -471,7 +469,7 @@ export function App() {
     const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
-    setTransformSnap(0)
+    setTransformSnap(preferences.snap ? kind === 'move' ? preferences.moveStep : preferences.rotationSnap : 0)
     setTransformPivot(undefined)
     setTransformKind(kind)
   }
@@ -504,6 +502,7 @@ export function App() {
     rotate: { enabled: canTransform, run: () => openTransform('rotate') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
+    settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
   }
 
@@ -515,7 +514,7 @@ export function App() {
         setSearchOpen((shown) => !shown)
         return
       }
-      if (searchOpen || document.querySelector('[role="menu"]')) return
+      if (searchOpen || settingsOpen || document.querySelector('[role="menu"]')) return
       if (!busy && (stack || shapePanel || faceTool || transformKind || measureKind) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
@@ -547,7 +546,7 @@ export function App() {
           <Menu>
             <MenuTrigger asChild><Btn variant="primary" size="sm">File</Btn></MenuTrigger>
             <MenuContent>
-              {(['newBox', 'open', 'save', 'saveAs', 'updates'] as CommandId[]).map((id) => {
+              {(['newBox', 'open', 'save', 'saveAs', 'settings', 'updates'] as CommandId[]).map((id) => {
                 const command = commands[id]
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
@@ -656,13 +655,13 @@ export function App() {
                   } else select(face)
                 }}>
                 <option value="">Select a face</option>
-                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies)}</option>)}
+                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>)}
               </select>
             </label>
-            {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring}
+            {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
               selections={measurePicks.map((pick) => ({
                 key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
-                  model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies) : 'Face'
+                  model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies, unit) : 'Face'
               }))}
               onKind={setMeasureKind} onRemove={(key) => setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
               onClose={closeMeasure} />}
@@ -672,7 +671,7 @@ export function App() {
                   <select value={target ?? ''} className={inputCls} disabled={busy}
                     onChange={(e) => pickTarget(e.target.value === '' ? undefined : Number(e.target.value))}>
                     <option value="">Select a target face</option>
-                    {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies)}</option>)}
+                    {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies, unit)}</option>)}
                   </select>
                 </label>
                 <StackOptions settings={stackSettings} onChange={setStackSettings} />
@@ -686,7 +685,8 @@ export function App() {
             )}
             {model && transformKind && revision !== undefined && <TransformPanel key={transformKind}
               kind={transformKind} body={transformBody} bodies={model.bodies} busy={busy}
-              snap={transformSnap} onSnap={setTransformSnap} onPivot={setTransformPivot}
+              snap={transformSnap} onSnap={setTransformSnap}
+              preferredSnap={transformKind === 'move' ? preferences.moveStep : preferences.rotationSnap} onPivot={setTransformPivot}
               onBody={(body) => { clearPreview(); setTransformBody(body) }}
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
@@ -778,7 +778,7 @@ export function App() {
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">
           <div className="min-w-0 text-xs text-text-2">
             <span data-testid="engine-status" role="status">
-              {model ? `Engine ready · ${format.format(model.shape.volume)} mm³` : 'Starting the geometry engine…'}
+              {model ? `Engine ready · ${format.format(displayLength(model.shape.volume, unit, 3))} ${unit}³` : 'Starting the geometry engine…'}
             </span>
             {model?.notes.map((note) => <div key={note}>{note}</div>)}
             {error && <div className="text-danger" role="alert">{error}</div>}
@@ -802,6 +802,8 @@ export function App() {
             </Menu>
           </form>
         </footer>
+        {settingsOpen && <PreferencesDialog current={preferences} onClose={() => setSettingsOpen(false)}
+          onApply={(next) => { applyPreferences(next); setSettingsOpen(false) }} />}
         {searchOpen && <CommandSearch actions={actions} close={() => setSearchOpen(false)} />}
       </main>
     </TooltipProvider>

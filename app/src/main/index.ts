@@ -5,6 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
+import { readLegacyPreferences } from './preferences'
 import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, saveExportFile, saveProjectFile } from './project-files'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
@@ -146,6 +147,7 @@ function registerIpc() {
     })
     return response === 1
   })
+  handle('preferences:legacy', () => readLegacyPreferences())
   handle('updates:check', () => mainWindow ? checkForUpdates(mainWindow) : undefined)
   handle('window:minimize', () => mainWindow?.minimize())
   handle('window:toggle-maximize', () => (mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize()))

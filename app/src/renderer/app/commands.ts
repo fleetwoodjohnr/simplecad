@@ -42,6 +42,7 @@ export const commands = {
   thread: { label: 'Thread' },
   text: { label: 'Text' },
   faceTexture: { label: 'Face Texture' },
+  settings: { label: 'Settings' },
   updates: { label: 'Check for updates' }
 } satisfies Record<string, { label: string; shortcut?: string }>
 

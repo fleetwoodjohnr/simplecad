@@ -1,3 +1,4 @@
+import type { Preferences } from './preferences'
 import type { ExportFormat, ModelImport } from './engine-protocol'
 
 export interface OfferedProject { name: string; data: Uint8Array; token: string }
@@ -23,6 +24,7 @@ export interface SimpleCadApi {
   discardRecovery(): Promise<void>
   /** Closing with unsaved work, the user chose Save: save, then close. Returns the unsubscribe. */
   onSaveAndClose(run: () => void): () => void
+  legacyPreferences(): Promise<Preferences | undefined>
   checkForUpdates(): Promise<void>
   windowMinimize(): Promise<void>
   windowToggleMaximize(): Promise<void>
