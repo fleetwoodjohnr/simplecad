@@ -43,6 +43,7 @@ export const commands = {
   revolve: { label: 'Revolve' },
   sweep: { label: 'Sweep' },
   loft: { label: 'Loft' },
+  path_pattern: { label: 'Pattern Along Path' },
   hole: { label: 'Hole' },
   thread: { label: 'Thread' },
   matchingPart: { label: 'Matching Part' },

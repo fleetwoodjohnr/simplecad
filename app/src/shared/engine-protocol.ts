@@ -290,7 +290,7 @@ function isSketchDraft(value: unknown): value is SketchDraftEdit {
 
 function isSketchSolid(value: unknown): value is SketchSolidEdit {
   const solid = (value as Partial<SketchSolidEdit> | null)?.sketchSolid
-  return !!solid && ['extrude', 'revolve', 'sweep', 'loft'].includes(solid.kind) &&
+  return !!solid && ['extrude', 'revolve', 'sweep', 'loft', 'path_pattern'].includes(solid.kind) &&
     Array.isArray(solid.profiles) && solid.profiles.length <= MAX_BODIES && solid.profiles.every(isName) &&
     isRecipe(solid.inputs)
 }

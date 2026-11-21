@@ -30,7 +30,7 @@ export interface SketchDraftEdit {
 }
 
 export interface SketchSolidEdit {
-  sketchSolid: { kind: 'extrude' | 'revolve' | 'sweep' | 'loft'; profiles: string[]; inputs: string }
+  sketchSolid: { kind: 'extrude' | 'revolve' | 'sweep' | 'loft' | 'path_pattern'; profiles: string[]; inputs: string }
 }
 
 export interface SketchSolution {

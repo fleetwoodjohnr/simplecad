@@ -77,6 +77,7 @@ impl Model {
             ("revolve", 1) => "Revolve",
             ("sweep", 2) => "Sweep",
             ("loft", 2..) => "Loft",
+            ("path_pattern", 1) => "Pattern Along Path",
             _ => return Err("Select the sketches this operation needs.".into()),
         };
         if !inputs.is_object() {
@@ -106,15 +107,38 @@ impl Model {
                 inputs["path"] = json!(names[1]);
             }
             "loft" => inputs["sketches"] = json!(names),
+            "path_pattern" => inputs["path"] = json!(names[0]),
             _ => inputs["sketch"] = json!(names[0]),
         }
         let mut candidate = self.clone();
         let name = candidate.unique_name(label);
         let id = new_feature_id();
-        let object = output_id(&id, &name);
+        let (output, object) = if kind == "path_pattern" {
+            let body = inputs["body"]
+                .as_str()
+                .filter(|body| {
+                    self.payload["bodies"]
+                        .as_array()
+                        .is_some_and(|bodies| bodies.iter().any(|entry| entry["name"] == *body))
+                })
+                .ok_or("Select a body to repeat along the path.")?
+                .to_owned();
+            let (producer, object) = self
+                .latest()
+                .remove(&body)
+                .ok_or("The selected body has no available modeling step.")?;
+            inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
+            bindings.insert(
+                body.clone(),
+                json!({"feature_id": producer, "object_id": object}),
+            );
+            (body, object)
+        } else {
+            (name.clone(), output_id(&id, &name))
+        };
         let feature = json!({
-            "id": id, "type": kind, "name": name, "outputs": [name],
-            "output_ids": { &name: object }, "inputs": inputs,
+            "id": id, "type": kind, "name": name, "outputs": [output],
+            "output_ids": { &output: object }, "inputs": inputs,
             "bindings": bindings, "dropped": [], "suppressed": false
         });
         self.add_sketch_recipe(candidate, feature, label, original, shown)

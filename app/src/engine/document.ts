@@ -435,7 +435,7 @@ export class EngineDocument {
       return this.rebuiltState(project.applySketchDraft(step.sketchDraft, this.shapes(bodies)))
     }
     if ('sketchSolid' in step) {
-      if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
+      if (step.sketchSolid.kind !== 'path_pattern' && bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
       return this.rebuiltState(project.applySketchSolid(step.sketchSolid, this.shapes(bodies)))
     }
     if ('editStepId' in step) {

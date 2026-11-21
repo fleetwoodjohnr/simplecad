@@ -485,6 +485,7 @@ export function App() {
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
   const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !sketchEditor && !matchingPart
+  const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
   const closeSketchTool = () => { setSketchTool(undefined); clearPreview() }
   const closeSketchEditor = () => { setSketchEditor(undefined); setError('') }
@@ -545,6 +546,7 @@ export function App() {
     revolve: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('revolve') },
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('sweep') },
     loft: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('loft') },
+    path_pattern: { enabled: canUseFaceTool && sketches.length > 0 && patternBodies.length > 0, run: () => openSketchTool('path_pattern') },
     hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
     matchingPart: { enabled: canUseFaceTool && matchable.length > 0, run: () => {
@@ -770,7 +772,7 @@ export function App() {
                 if (shapeStep) void requestPreview(() => previewSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
               }}
               onChange={clearPreview} onCancel={cancelShapePanel} />}
-            {sketchTool && revision !== undefined && <SketchSolidPanel key={sketchTool} kind={sketchTool} sketches={sketches}
+            {sketchTool && revision !== undefined && <SketchSolidPanel key={sketchTool} kind={sketchTool} sketches={sketches} bodies={patternBodies}
               busy={busy} onChange={clearPreview} onClose={closeSketchTool}
               onPreview={(edit) => void requestPreview(() => previewSketchSolid(revision, edit))}
               onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}

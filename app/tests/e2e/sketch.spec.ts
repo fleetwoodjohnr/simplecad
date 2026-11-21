@@ -62,7 +62,7 @@ test('draws and dimensions a sketch, then edits its extrusion through history an
   }
 })
 
-test('creates Loft, Sweep and Revolve solids from drawn sketches', async () => {
+test('creates Loft, Sweep, Revolve and a path pattern from drawn sketches', async () => {
   const { page } = await launch()
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
   const status = page.getByTestId('engine-status')
@@ -111,5 +111,14 @@ test('creates Loft, Sweep and Revolve solids from drawn sketches', async () => {
   await revolve.getByLabel('Profile sketch').selectOption({ label: 'Sketch4' })
   await revolve.getByRole('button', { name: 'Apply' }).click()
   const expected = Math.PI * 20 / 3 * 61 + Math.PI * 25 * 20 + 2 * Math.PI ** 2 * 15 * 16
+  await expect(status).toContainText(`${Number(expected.toFixed(2))} mm³`)
+
+  const pattern = await openTool('Pattern Along Path')
+  await pattern.getByLabel('Path sketch').selectOption({ label: 'Sketch3' })
+  await pattern.getByLabel('Body', { exact: true }).selectOption('Sweep')
+  await pattern.getByLabel('Instances').fill('2')
+  await pattern.getByRole('button', { name: 'Apply' }).click()
+  await expect(status).toContainText(`${Number((expected + Math.PI * 25 * 20).toFixed(2))} mm³`)
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toContainText(`${Number(expected.toFixed(2))} mm³`)
 })
