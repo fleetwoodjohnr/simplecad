@@ -273,11 +273,12 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference) 
             problems.append("pulled: not reopened from its cache")
         got = [reopened["bodies"].get(body, {}).get("volume"), reopened["redone"].get(body, {}).get("volume")]
         if reopened["rebuild_failed"]:
-            # The file's own recipe fails here before the redo (Spondge Holder's Combine5).
-            print(f"NOTE       {os.path.basename(path)}: redo not checked, {reopened['rebuild_failed']} steps "
-                  "of the reopened file fail to rebuild in this tree before it")
-            got[1] = round(abs(volumes[1]), 3)
-        if got != [round(abs(v), 3) for v in volumes] or reopened["redo_failed"] and not reopened["rebuild_failed"]:
+            problems.append(
+                "reference could not verify Redo after Rust Save As: "
+                f"{reopened['rebuild_failed']} steps failed to rebuild before Redo, "
+                f"{reopened['redo_failed']} after Redo"
+            )
+        elif got != [round(abs(v), 3) for v in volumes] or reopened["redo_failed"]:
             problems.append(f"pulled {body} face {face}: rust volumes {volumes}, python reopened then redone {got}")
     return problems
 
