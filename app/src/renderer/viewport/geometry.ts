@@ -1,7 +1,7 @@
 // Turns an engine mesh into three.js geometry: one indexed surface for the faces, and line segments for the edges.
 
 import { Box3, BufferAttribute, BufferGeometry, Sphere, Vector3 } from 'three'
-import type { MeshData } from '@/shared/engine-protocol'
+import type { MeshData, Vec3 } from '@/shared/engine-protocol'
 
 export function surfaceGeometry(mesh: MeshData): BufferGeometry {
   const geometry = new BufferGeometry()
@@ -64,4 +64,56 @@ export function faceAtTriangle(ranges: Uint32Array, triangle: number): number | 
     else high = mid
   }
   return low
+}
+
+/** What a planar face sweeps as it is pushed or pulled: its triangles as the moving cap, and a wall along each
+ * boundary edge (an edge of one triangle only, once corners shared by several triangles are welded by position). */
+export function facePrism(mesh: MeshData, face: number, normal: Vec3) {
+  const first = mesh.faceTriStart[face] * 3
+  const last = mesh.faceTriStart[face + 1] * 3
+  const welded = new Map<string, number>()
+  const weld = (vertex: number) => {
+    const p = mesh.positions.subarray(vertex * 3, vertex * 3 + 3)
+    const key = `${Math.round(p[0] * 1e5)},${Math.round(p[1] * 1e5)},${Math.round(p[2] * 1e5)}`
+    if (!welded.has(key)) welded.set(key, vertex)
+    return welded.get(key)!
+  }
+  // Directed edges keep the triangle's winding, so the walls face outward.
+  const edges = new Map<string, [number, number] | null>()
+  for (let i = first; i < last; i += 3) {
+    const corners = [weld(mesh.indices[i]), weld(mesh.indices[i + 1]), weld(mesh.indices[i + 2])]
+    for (let k = 0; k < 3; k++) {
+      const a = corners[k]
+      const b = corners[(k + 1) % 3]
+      const key = a < b ? `${a},${b}` : `${b},${a}`
+      edges.set(key, edges.has(key) ? null : [a, b])
+    }
+  }
+  const boundary = [...edges.values()].filter((edge): edge is [number, number] => edge !== null)
+  const triangles = (last - first) / 3
+  const base = new Float32Array((triangles * 3 + boundary.length * 6) * 3)
+  const moves = new Uint8Array(base.length / 3)
+  let v = 0
+  const put = (vertex: number, moving: boolean) => {
+    base.set(mesh.positions.subarray(vertex * 3, vertex * 3 + 3), v * 3)
+    moves[v++] = Number(moving)
+  }
+  for (let i = first; i < last; i++) put(mesh.indices[i], true)
+  for (const [a, b] of boundary) {
+    put(a, false); put(b, false); put(b, true)
+    put(a, false); put(b, true); put(a, true)
+  }
+  const geometry = new BufferGeometry()
+  const position = new BufferAttribute(base.slice(), 3)
+  geometry.setAttribute('position', position)
+  /** Sweep the cap `distance` along the normal. */
+  const update = (distance: number) => {
+    const array = position.array as Float32Array
+    for (let i = 0; i < moves.length; i++) {
+      for (let axis = 0; axis < 3; axis++) array[i * 3 + axis] = base[i * 3 + axis] + (moves[i] ? normal[axis] * distance : 0)
+    }
+    position.needsUpdate = true
+    geometry.computeBoundingSphere()
+  }
+  return { geometry, update, boundaryEdges: boundary.length }
 }

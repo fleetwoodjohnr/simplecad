@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
 import { applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
+import { Ribbon } from './Ribbon'
+import { ContextBar } from './ContextBar'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
@@ -152,6 +154,7 @@ export function App() {
   const closing = useRef(false)
   const busyRef = useRef(false)
   const historyList = useRef<HTMLOListElement>(null)
+  const distanceField = useRef<HTMLInputElement>(null)
   const connection = useRef(0)
   const repairStep = model?.steps.find((step) => step.id === repairing && !step.undone)
   const missingInput = repairStep?.missingInput
@@ -534,6 +537,15 @@ export function App() {
     setEditingFace(undefined)
     setFaceTool(tool)
   }
+  const idle = !stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !matchingPart && !missingInput
+  const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
+  const canPullFace = idle && ready && !!selectedFace?.planar
+  const startStack = () => {
+    setStackSettings(defaultStack)
+    setDistance('')
+    setPreview(undefined)
+    setStack(true)
+  }
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -544,16 +556,19 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
+    pushPull: { enabled: canPullFace, hint: 'Select a planar face', run: () => distanceField.current?.focus() },
+    stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
     offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
-    extrude: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('extrude') },
-    revolve: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('revolve') },
-    sweep: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('sweep') },
-    loft: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('loft') },
+    extrude: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('extrude') },
+    revolve: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('revolve') },
+    sweep: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw a profile and a path', run: () => openSketchTool('sweep') },
+    loft: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw two profiles', run: () => openSketchTool('loft') },
     path_pattern: { enabled: canUseFaceTool && sketches.length > 0 && patternBodies.length > 0, run: () => openSketchTool('path_pattern') },
     hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
-    matchingPart: { enabled: canUseFaceTool && matchable.length > 0, run: () => {
+    matchingPart: { enabled: canUseFaceTool && matchable.length > 0, hint: 'Model a thread first', run: () => {
       select()
       setMatchingPart(true)
     } },
@@ -610,9 +625,9 @@ export function App() {
     <TooltipProvider>
       <main className="flex h-screen flex-col bg-bg text-text">
         <TitleBar dark={dark} onToggleTheme={toggle} project={fileName} dirty={dirty} />
-        <div role="toolbar" aria-label="Modeling tools" className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-panel px-2">
+        <div role="toolbar" aria-label="Modeling tools" className="@container flex shrink-0 items-stretch gap-1 overflow-x-auto border-b border-border bg-panel px-2 py-1">
           <Menu>
-            <MenuTrigger asChild><Btn variant="primary" size="sm">File</Btn></MenuTrigger>
+            <MenuTrigger asChild><Btn variant="primary" size="sm" className="self-center">File</Btn></MenuTrigger>
             <MenuContent>
               {(['newBox', 'open', 'save', 'saveAs', 'settings', 'updates'] as CommandId[]).map((id) => {
                 const command = commands[id]
@@ -627,37 +642,14 @@ export function App() {
                   onSelect={() => exportProject(format)}>Export {format.toUpperCase()}</MenuItem>)}
             </MenuContent>
           </Menu>
-          <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
-          <Btn size="sm" disabled={!canUseFaceTool} onClick={() => {
-            select()
-            setShapePanel(true)
-          }}>Shape</Btn>
-          <Btn size="sm" disabled={!actions.sketch.enabled} onClick={actions.sketch.run}>{commands.sketch.label}</Btn>
-          <Menu>
-            <MenuTrigger asChild><Btn size="sm" disabled={!canUseFaceTool || !sketches.length}>From Sketch</Btn></MenuTrigger>
-            <MenuContent>
-              {(Object.keys(profileOperations) as ProfileTool[]).map((id) =>
-                <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}>{commands[id].label}</MenuItem>)}
-            </MenuContent>
-          </Menu>
-          <Btn size="sm" disabled={!actions.measure.enabled} onClick={actions.measure.run}>{commands.measure.label}</Btn>
-          <Btn size="sm" disabled={!actions.move.enabled} onClick={actions.move.run}>{commands.move.label}</Btn>
-          <Btn size="sm" disabled={!actions.rotate.enabled} onClick={actions.rotate.run}>{commands.rotate.label}</Btn>
-          <Btn size="sm" disabled={!actions.hole.enabled} onClick={actions.hole.run}>{commands.hole.label}</Btn>
-          <Btn size="sm" disabled={!actions.thread.enabled} onClick={actions.thread.run}>{commands.thread.label}</Btn>
-          <Btn size="sm" disabled={!actions.matchingPart.enabled} onClick={actions.matchingPart.run}>{commands.matchingPart.label}</Btn>
-          <Btn size="sm" disabled={!actions.text.enabled} onClick={actions.text.run}>{commands.text.label}</Btn>
-          <Btn size="sm" disabled={!actions.offsetPlane.enabled} onClick={actions.offsetPlane.run}>{commands.offsetPlane.label}</Btn>
-          <Btn size="sm" disabled={!actions.faceTexture.enabled} onClick={actions.faceTexture.run}>{commands.faceTexture.label}</Btn>
+          <Ribbon actions={actions} active={{
+            shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, measure: !!measureKind,
+            hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
+            offsetPlane: faceTool === 'offset_plane', matchingPart
+          }} />
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
-          <Btn size="sm" disabled={!canStack || stack} onClick={() => {
-            setStackSettings(defaultStack)
-            setDistance('')
-            setPreview(undefined)
-            setStack(true)
-          }}>Stack &amp; Place</Btn>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center">
             <IconBtn label={commands.fit.label} shortcut={commands.fit.shortcut} disabled={!actions.fit.enabled} onClick={actions.fit.run}><Focus className="size-4" /></IconBtn>
             <IconBtn label="Command search" shortcut="Mod-K" onClick={() => setSearchOpen(true)}><Search className="size-4" /></IconBtn>
           </div>
@@ -676,9 +668,14 @@ export function App() {
             placingBody={stack ? movingBody : undefined}
             transform={transformKind && transformBody !== undefined && revision !== undefined ? {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
+              formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
-            canPull={!stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !matchingPart && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
+            canPull={canPullFace}
+            overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
+              canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
+              onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
+            onSelect={(face, point) => {
               if (!ready || shapePanel || sketchTool || matchingPart) return
               if (measureKind) {
                 if (face !== undefined) {
@@ -879,14 +876,7 @@ export function App() {
             {error && <div className="text-danger" role="alert">{error}</div>}
             <span data-testid="engine-connections" className="sr-only">{connections}</span>
           </div>
-          <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
-            <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!sketchTool || matchingPart || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
-              onChange={(e) => { setDistance(e.target.value); setError('') }} />
-            <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!sketchTool || matchingPart || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
-              <Magnet className="size-3.5" /> Pull
-            </Btn>
+          <div className="flex items-center gap-1.5">
             <Menu>
               <MenuTrigger asChild><IconBtn label="More actions" tip={false}><Ellipsis className="size-4" /></IconBtn></MenuTrigger>
               <MenuContent side="top" align="end">
@@ -895,7 +885,7 @@ export function App() {
                 <MenuItem disabled={!actions.clear.enabled} onSelect={actions.clear.run}>{commands.clear.label}</MenuItem>
               </MenuContent>
             </Menu>
-          </form>
+          </div>
         </footer>
         {sketchEditor && revision !== undefined && <SketchEditor key={sketchEditor.id} revision={revision}
           initial={sketchEditor.recipe} facePlane={sketchEditor.facePlane} error={error} busy={busy} onClose={closeSketchEditor}

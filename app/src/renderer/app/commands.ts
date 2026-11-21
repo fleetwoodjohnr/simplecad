@@ -35,6 +35,9 @@ export const commands = {
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
+  shape: { label: 'Shape' },
+  pushPull: { label: 'Push/Pull' },
+  stack: { label: 'Stack & Place' },
   measure: { label: 'Measure' },
   move: { label: 'Move' },
   rotate: { label: 'Rotate' },
@@ -55,7 +58,8 @@ export const commands = {
 } satisfies Record<string, { label: string; shortcut?: string }>
 
 export type CommandId = keyof typeof commands
-export type CommandActions = Record<CommandId, { enabled: boolean; run: () => void }>
+/** `hint` says what a disabled command is waiting for. */
+export type CommandActions = Record<CommandId, { enabled: boolean; run: () => void; hint?: string }>
 
 export function matchesShortcut(event: KeyboardEvent, shortcut: string): boolean {
   const keys = shortcut.split('-')
