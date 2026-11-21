@@ -16,6 +16,7 @@ mod profiles;
 pub mod project;
 pub mod pyjson;
 pub mod rebuild;
+mod section_replace;
 pub mod signatures;
 pub mod sketch;
 mod text;

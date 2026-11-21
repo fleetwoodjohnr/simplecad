@@ -273,6 +273,12 @@ pub mod ffi {
             settings: &TextureSpec,
             text_regions: &[TextureRegion],
         ) -> Result<UniquePtr<Shape>>;
+        fn section_cutter(
+            face: &Shape,
+            normal: &[f64],
+            boundary: f64,
+            depth: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn clip_connectors(
             body_a: &Shape,
             body_b: &Shape,

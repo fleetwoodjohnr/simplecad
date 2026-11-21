@@ -98,8 +98,9 @@ public:
   }
 
   Geometry buffer(const GEOSGeometry *shape, double distance, int segments = 16,
-                  int cap = GEOSBUF_CAP_ROUND, int join = GEOSBUF_JOIN_ROUND) const {
-    return own(GEOSBufferWithStyle_r(context, shape, distance, segments, cap, join, 5.0));
+                  int cap = GEOSBUF_CAP_ROUND, int join = GEOSBUF_JOIN_ROUND,
+                  double mitre_limit = 5.0) const {
+    return own(GEOSBufferWithStyle_r(context, shape, distance, segments, cap, join, mitre_limit));
   }
 
   Geometry intersection(const GEOSGeometry *a, const GEOSGeometry *b) const {

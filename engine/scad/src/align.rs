@@ -139,7 +139,11 @@ impl Frame {
 }
 
 /// `_projected_bounds`: the shape's extent along `axis`, from `center`.
-fn projected_bounds(shape: &occt::Shape, axis: V, center: V) -> Result<(f64, f64), StepError> {
+pub(crate) fn projected_bounds(
+    shape: &occt::Shape,
+    axis: V,
+    center: V,
+) -> Result<(f64, f64), StepError> {
     let rotate = rotation_between(axis, [1.0, 0.0, 0.0], center)?;
     let turned = occt::transform_shape(shape, &rotate, false).map_err(kernel)?;
     let extent = occt::x_extent(&turned).map_err(kernel)?;
@@ -516,6 +520,52 @@ pub(crate) fn joint_anchors(
         .collect())
 }
 
+fn anchor_transform(
+    moving: &Face,
+    target: &Face,
+    [from, to]: [&str; 2],
+    [u, v, offset]: V,
+    flip: bool,
+    rotation: f64,
+    seat: bool,
+) -> Result<UniquePtr<Trsf>, StepError> {
+    let moving_frame = reference_frame(moving)?;
+    let target_frame = reference_frame(target)?;
+    let source = anchor_point(&moving_frame, from, 0.0)?;
+    let destination = add(
+        anchor_point(&target_frame, to, offset)?,
+        add(scale(target_frame.x_axis, u), scale(target_frame.y_axis, v)),
+    );
+    let moving = moving.planar().ok_or_else(flat_target)?;
+    let rotate = seating_rotation(moving, target.plane.normal, flip, rotation, seat)?;
+    let shift = translation(sub(destination, point(&rotate, source)));
+    Ok(then(&rotate, &shift))
+}
+
+pub(crate) fn seat_section(
+    replacement: (&occt::Shape, u32),
+    target: (&occt::Shape, u32),
+    anchors: [&str; 2],
+    offsets: [f64; 2],
+) -> Result<UniquePtr<Trsf>, StepError> {
+    let moving = Face::read(replacement.0, replacement.1)?;
+    let target = Face::read(target.0, target.1)?;
+    if !moving.plane.planar || !target.plane.planar {
+        return Err(failed(
+            "Section Replace needs one flat face on each object.",
+        ));
+    }
+    anchor_transform(
+        &moving,
+        &target,
+        anchors,
+        [offsets[0], offsets[1], 0.0],
+        false,
+        0.0,
+        true,
+    )
+}
+
 fn solve_faces(
     ctx: &Context,
     moving_face: Face,
@@ -659,28 +709,22 @@ fn solve_faces(
         return done(then(&rotate, &shift), "Placed from face edges.".into());
     }
     if moving_anchor.is_some() || target_anchor.is_some() || u.is_some() || v.is_some() {
-        let moving_frame = reference_frame(&moving_face)?;
-        let target_frame = reference_frame(&target_face)?;
         let pick = |a: &Option<String>| match a.as_deref() {
             Some(s) if !s.is_empty() => s.to_string(),
             _ => "center".to_string(),
         };
         let (from, to) = (pick(&moving_anchor), pick(&target_anchor));
-        let source = anchor_point(&moving_frame, &from, 0.0)?;
-        let mut destination = anchor_point(&target_frame, &to, offset)?;
-        destination = add(
-            destination,
-            add(
-                scale(target_frame.x_axis, u.unwrap_or(0.0)),
-                scale(target_frame.y_axis, v.unwrap_or(0.0)),
-            ),
-        );
-        let rotate =
-            seating_rotation(moving, target.normal, flip, rotation, operation != "center")?;
-        let rotated = point(&rotate, source);
-        let shift = translation(sub(destination, rotated));
+        let transform = anchor_transform(
+            &moving_face,
+            &target_face,
+            [&from, &to],
+            [u.unwrap_or(0.0), v.unwrap_or(0.0), offset],
+            flip,
+            rotation,
+            operation != "center",
+        )?;
         let description = format!("Placed {from} anchor on {to}{}.", offset_text(offset));
-        return done(then(&rotate, &shift), description);
+        return done(transform, description);
     }
     // Saved before anchors existed: edge distances in the face's own frame.
     let frame = planar_frame(&target_face)?;

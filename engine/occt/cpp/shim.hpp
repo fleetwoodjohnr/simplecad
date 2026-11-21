@@ -93,6 +93,8 @@ TextResult face_text(const Shape &body, const PlaneFrame &plane,
 std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern,
                                     rust::Str mode, const TextureSpec &settings,
                                     rust::Slice<const TextureRegion> text_regions);
+std::unique_ptr<Shape> section_cutter(const Shape &face, rust::Slice<const double> normal,
+                                      double boundary, double depth);
 ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
                            const Shape &face_a, const Shape &face_b,
                            const ClipSpec &clip, const ClipPlacementSpec &placement,

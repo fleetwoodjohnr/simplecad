@@ -88,11 +88,12 @@ Mapping mapping_of(const Shape &face) {
   return mapping;
 }
 
-Ring planar_edge(const TopoDS_Edge &edge, const TopoDS_Vertex &start, const Mapping &mapping) {
+Ring planar_edge(const TopoDS_Edge &edge, const TopoDS_Vertex &start, const Mapping &mapping,
+                 double deflection) {
   BRepAdaptor_Curve curve(edge);
   std::vector<gp_Pnt> samples;
   try {
-    GCPnts_QuasiUniformDeflection sample(curve, 0.035);
+    GCPnts_QuasiUniformDeflection sample(curve, deflection);
     if (sample.IsDone()) {
       for (int i = 1; i <= sample.NbPoints(); ++i) samples.push_back(sample.Value(i));
     }
@@ -129,7 +130,8 @@ Ring cylindrical_edge(const TopoDS_Edge &edge, const TopoDS_Face &face, const Ma
   return points;
 }
 
-Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mapping &mapping) {
+Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mapping &mapping,
+                      double deflection = 0.035) {
   const double tolerance = mapping.wrapped() ? 1e-7 : 1e-8;
   std::vector<Ring> rings;
   for (TopExp_Explorer wire(face, TopAbs_WIRE); wire.More(); wire.Next()) {
@@ -137,7 +139,7 @@ Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mappi
     for (BRepTools_WireExplorer edge(TopoDS::Wire(wire.Current()), face); edge.More(); edge.Next()) {
       auto samples = mapping.wrapped()
           ? cylindrical_edge(edge.Current(), face, mapping)
-          : planar_edge(edge.Current(), edge.CurrentVertex(), mapping);
+          : planar_edge(edge.Current(), edge.CurrentVertex(), mapping, deflection);
       if (mapping.wrapped() && !points.empty() &&
           distance(points.back(), samples.back()) < distance(points.back(), samples.front())) {
         std::reverse(samples.begin(), samples.end());
@@ -537,6 +539,32 @@ texture::Geometry texture::planar_profile(const Layout &layout, const Shape &fac
   const auto mapping = mapping_of(face);
   if (mapping.wrapped()) throw std::runtime_error("Select a planar face.");
   return face_profile(layout, TopoDS::Face(face.shape), mapping);
+}
+
+std::unique_ptr<Shape> section_cutter(const Shape &face, rust::Slice<const double> normal,
+                                      double boundary, double depth) {
+  const Layout layout;
+  auto mapping = mapping_of(face);
+  if (mapping.wrapped() || normal.size() != 3) {
+    throw std::runtime_error("Section Replace needs one flat face on each object.");
+  }
+  mapping.normal = gp_Dir(normal[0], normal[1], normal[2]);
+  const auto deflection = std::clamp(boundary == 0.0 ? 0.02 : boundary / 10.0, 0.005, 0.05);
+  const auto profile = face_profile(layout, TopoDS::Face(face.shape), mapping, deflection);
+  const auto *exterior = GEOSGetExteriorRing_r(layout.context, profile.get());
+  if (!exterior) throw std::runtime_error("The selected face has no single outside boundary.");
+  auto silhouette = layout.polygon(layout.coordinates(exterior));
+  if (boundary > 0.0) {
+    silhouette = layout.buffer(silhouette.get(), -boundary, 8, GEOSBUF_CAP_ROUND, GEOSBUF_JOIN_MITRE, 2.0);
+  }
+  const auto *ring = GEOSGetExteriorRing_r(layout.context, silhouette.get());
+  if (!ring || GEOSisEmpty_r(layout.context, silhouette.get()) == 1) {
+    throw std::runtime_error("The boundary closes the replacement opening. Use a smaller boundary value.");
+  }
+  const auto wire = mapped_ring(layout, ring, mapping, 0.1);
+  BRepPrimAPI_MakePrism prism(BRepBuilderAPI_MakeFace(wire).Face(), gp_Vec(mapping.normal) * -depth);
+  if (!prism.IsDone()) throw std::runtime_error("The section replacement boundary could not be built.");
+  return std::make_unique<Shape>(prism.Shape());
 }
 
 std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern_name,
