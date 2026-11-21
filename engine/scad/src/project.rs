@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
+use std::rc::Rc;
 
 /// The newest format this build reads; the Python app refuses newer files the same way.
 pub const FORMAT_VERSION: i64 = 4;
@@ -211,18 +212,81 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
             model["geometry"] = Value::Object(manifest);
         }
     }
-    if recover && !bodies.is_empty() && bodies.iter().all(|b| b.brep.is_none()) {
+    let mut project = Project {
+        model,
+        bodies,
+        notes,
+        recovered_blobs,
+    };
+    if recover
+        && format == 1
+        && project.model["features"]
+            .as_array()
+            .is_some_and(|steps| !steps.is_empty())
+        && project.bodies.iter().any(|body| body.brep.is_none())
+    {
+        rebuild_legacy_display(&mut project, data)?;
+    }
+    if recover && !project.bodies.is_empty() && project.bodies.iter().all(|b| b.brep.is_none()) {
         return Err(
             "This project has no saved bodies this build can show. Open it in SimpleCAD 0.4."
                 .into(),
         );
     }
-    Ok(Project {
-        model,
-        bodies,
-        notes,
-        recovered_blobs,
-    })
+    Ok(project)
+}
+
+/// A legacy archive used entry names derived from the body name. If it lacks
+/// some geometry, show the recipe's results, using any readable prior solids
+/// as fallbacks when a feature needs attention.
+fn rebuild_legacy_display(project: &mut Project, original: &[u8]) -> Result<(), String> {
+    let shown = project
+        .bodies
+        .iter()
+        .filter_map(|body| {
+            let shape = occt::read_brep(body.brep.as_deref()?).ok()?;
+            Some((body.id.clone(), Rc::new(shape)))
+        })
+        .collect();
+    let mut model = crate::document::Model::open(project);
+    crate::rebuild::rebuild(&mut model, original, &shown, &Default::default())?;
+    let mut notes = Vec::new();
+    project.bodies = model.payload["bodies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|body| {
+            let id = body["id"].as_str()?;
+            let name = body["name"].as_str()?;
+            let brep = model.payload["geometry"][id]["sha256"]
+                .as_str()
+                .and_then(|sha| model.blobs.get(sha))
+                .map(|blob| blob.to_vec());
+            if brep.is_none() {
+                notes.push(format!(
+                    "\"{name}\" has no readable saved or rebuilt geometry."
+                ));
+            }
+            Some(SavedBody {
+                id: id.into(),
+                name: name.into(),
+                visible: body["visible"] != false,
+                brep,
+                location: None,
+            })
+        })
+        .collect();
+    project.notes = notes;
+    // Open and Save As should keep the feature cache and the bodies this
+    // rebuild found, even though the original archive used format 1 paths.
+    model.payload["format"] = json!(FORMAT_VERSION);
+    project.model = model.payload;
+    project.recovered_blobs = model
+        .blobs
+        .into_iter()
+        .map(|(sha, blob)| (sha, blob.to_vec()))
+        .collect();
+    Ok(())
 }
 
 /// The cached result of the step that made `body`, which the Python app shows in
@@ -356,6 +420,36 @@ mod tests {
         let read: Vec<_> = project.bodies.iter().map(|b| b.brep.is_some()).collect();
         assert_eq!(read, [false, false, true]);
         assert_eq!(project.notes.len(), 2);
+    }
+
+    #[test]
+    fn opening_a_partial_legacy_archive_rebuilds_missing_bodies_and_saves_them() {
+        let model = json!({
+            "format": 1,
+            "features": [
+                {"id":"box", "type":"box", "name":"Box", "inputs":{"width":"10 mm", "depth":"10 mm", "height":"10 mm"}},
+                {"id":"lid", "type":"box", "name":"Lid", "inputs":{"width":"5 mm", "depth":"5 mm", "height":"4 mm"}},
+            ],
+            "bodies": [{"name":"Box"}, {"name":"Lid", "visible":false}]
+        });
+        let box_shape = occt::make_box(10.0, 10.0, 10.0).unwrap();
+        let brep = occt::write_brep(&box_shape).unwrap();
+        let original = archive(&model.to_string(), &[("bodies/Box.brep", &brep)]);
+        let raw = read_saved(&original).unwrap();
+        assert!(raw.bodies[1].brep.is_none());
+        let opened = read(&original).unwrap();
+        assert_eq!(opened.bodies[1].name, "Lid");
+        assert_eq!(opened.bodies[1].id, raw.bodies[1].id);
+        assert!(!opened.bodies[1].visible);
+        assert!(opened.notes.is_empty());
+        let saved = crate::document::Model::open(&opened)
+            .save(&original)
+            .unwrap();
+        let reopened = read_saved(&saved).unwrap();
+        for project in [&opened, &reopened] {
+            let lid = occt::read_brep(project.bodies[1].brep.as_deref().unwrap()).unwrap();
+            assert!((occt::volume(&lid) - 100.0).abs() < 1.0e-6);
+        }
     }
 
     #[test]
