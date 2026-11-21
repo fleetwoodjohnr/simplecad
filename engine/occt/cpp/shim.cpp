@@ -564,6 +564,37 @@ rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape) {
   return result;
 }
 
+EdgeAxis edge_axis(const Shape &shape, uint32_t index) {
+  ShapeMap edges;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
+  if (index >= static_cast<uint32_t>(edges.Extent())) {
+    throw std::runtime_error("There is no such edge.");
+  }
+  const BRepAdaptor_Curve curve(TopoDS::Edge(edges.FindKey(static_cast<int>(index) + 1)));
+  if (curve.GetType() != GeomAbs_Line) {
+    throw std::runtime_error("That edge is curved. Select a straight edge.");
+  }
+  const gp_Lin line = curve.Line();
+  const gp_Pnt &origin = line.Location();
+  const gp_Dir &direction = line.Direction();
+  return {{origin.X(), origin.Y(), origin.Z()}, {direction.X(), direction.Y(), direction.Z()}};
+}
+
+rust::Vec<FaceFingerprint> vertex_fingerprints(const Shape &shape) {
+  ShapeMap vertices;
+  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+  rust::Vec<FaceFingerprint> result;
+  result.reserve(vertices.Extent());
+  for (int i = 1; i <= vertices.Extent(); ++i) {
+    const gp_Pnt point = BRep_Tool::Pnt(TopoDS::Vertex(vertices.FindKey(i)));
+    FaceFingerprint data{};
+    data.geometry = "point";
+    data.center = {point.X(), point.Y(), point.Z()};
+    result.push_back(std::move(data));
+  }
+  return result;
+}
+
 std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
                                     double size, bool fillet) {
   std::vector<EdgeFinishSpec> specs;

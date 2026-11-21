@@ -38,6 +38,7 @@ struct MeshBuffers;
 struct FaceData;
 struct FaceFingerprint;
 struct EdgeFingerprint;
+struct EdgeAxis;
 struct EdgeFinishSpec;
 struct PlaneFrame;
 struct CylinderData;
@@ -138,6 +139,8 @@ rust::Vec<double> bounds(const Shape &shape);
 rust::Vec<FaceData> faces(const Shape &shape);
 FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
 rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape);
+EdgeAxis edge_axis(const Shape &shape, uint32_t index);
+rust::Vec<FaceFingerprint> vertex_fingerprints(const Shape &shape);
 std::unique_ptr<Shape> finish_edges(const Shape &shape, rust::Slice<const uint32_t> indices,
                                     double size, bool fillet);
 std::unique_ptr<Shape> finish_edge_specs(const Shape &shape, rust::Slice<const EdgeFinishSpec> specs,

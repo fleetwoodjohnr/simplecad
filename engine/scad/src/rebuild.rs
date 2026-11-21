@@ -35,13 +35,14 @@ struct Part {
 enum Geometry {
     Brep(Shape),
     Sketch(Rc<Value>),
+    Datum(Rc<Value>),
 }
 
 impl Part {
     fn shape(&self) -> Option<&Shape> {
         match &self.value {
             Geometry::Brep(shape) => Some(shape),
-            Geometry::Sketch(_) => None,
+            Geometry::Sketch(_) | Geometry::Datum(_) => None,
         }
     }
 }
@@ -249,15 +250,53 @@ impl Context<'_> {
 
     /// `ctx.resolve` of a face reference: its body, and the face's index there.
     pub fn face(&self, key: &str) -> Result<(Shape, u32), StepError> {
-        let reference = self.input(key).and_then(|v| v.get("__ref__")).ok_or_else(|| {
+        let (reference, shape) = self.referenced_shape(self.input(key))?;
+        let index = resolve_face(reference, &shape)?;
+        Ok((shape, index))
+    }
+
+    fn referenced_shape<'a>(
+        &self,
+        input: Option<&'a Value>,
+    ) -> Result<(&'a Value, Shape), StepError> {
+        let reference = input.and_then(|v| v.get("__ref__")).ok_or_else(|| {
             failed("This feature has lost the geometry it was built on. Re-select the face or edge for this feature.")
         })?;
         let body = reference["body"].as_str().unwrap_or("");
         let shape = self.bodies.get(body).cloned().ok_or_else(|| {
             failed(format!("The body '{body}' this feature needs is not available. It may have been deleted or renamed."))
         })?;
-        let index = resolve_face(reference, &shape)?;
-        Ok((shape, index))
+        Ok((reference, shape))
+    }
+
+    pub(crate) fn edge_axis(&self, key: &str) -> Result<occt::EdgeAxis, StepError> {
+        let (reference, shape) = self.referenced_shape(self.input(key))?;
+        let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
+        let index = resolve_edge(reference, &edges)?;
+        occt::edge_axis(&shape, index).map_err(kernel)
+    }
+
+    pub(crate) fn vertices(&self, key: &str) -> Result<Vec<[f64; 3]>, StepError> {
+        let input = self
+            .input(key)
+            .ok_or_else(|| failed("A plane needs three points."))?;
+        let references = input
+            .as_array()
+            .map_or_else(|| std::slice::from_ref(input), Vec::as_slice);
+        references
+            .iter()
+            .take(3)
+            .map(|input| {
+                let (reference, shape) = self.referenced_shape(Some(input))?;
+                let vertices = occt::vertex_fingerprints(&shape).map_err(kernel)?;
+                let scores: Vec<_> = vertices
+                    .iter()
+                    .map(|vertex| similarity(&reference["fingerprint"], vertex, "vertex", None))
+                    .collect();
+                let index = resolve_scores(reference, &scores, "vertex")?;
+                Ok(vertices[index as usize].center)
+            })
+            .collect()
     }
 }
 
@@ -1534,6 +1573,15 @@ impl Store<'_> {
                     value: Geometry::Sketch(Rc::new(output["data"].clone())),
                     sha: None,
                 },
+                kind if crate::construction::Kind::from_feature(feature["type"].as_str()?)
+                    .is_some_and(|feature_kind| kind == feature_kind.cache_kind())
+                    && output["data"].is_object() =>
+                {
+                    Part {
+                        value: Geometry::Datum(Rc::new(output.clone())),
+                        sha: None,
+                    }
+                }
                 _ => return None,
             };
             decoded.insert(oid.clone(), part);
@@ -1800,7 +1848,11 @@ impl Rebuilder<'_> {
                 }) => {
                     inputs.sketches.insert(name.clone(), sketch);
                 }
-                None => {
+                Some(Part {
+                    value: Geometry::Datum(_),
+                    ..
+                })
+                | None => {
                     return Err(lost(format!(
                         "The output '{name}' this feature needs is unavailable."
                     )));
@@ -1854,18 +1906,29 @@ impl Rebuilder<'_> {
                 parameters: &self.parameters,
                 message: Default::default(),
             };
-            let made = execute(kind, &ctx, Some(&mut self.store)).ok_or_else(|| {
-                failed("This step has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.")
-            })??;
-            if made.is_empty() {
-                return Err(failed("This feature produced no geometry."));
-            }
+            let made = if let Some(datum) = crate::construction::Kind::from_feature(kind) {
+                let name = feature["name"].as_str().unwrap_or_default();
+                let output = datum.execute(&ctx, name)?;
+                BTreeMap::from([(
+                    format!("__construction__{name}"),
+                    Geometry::Datum(Rc::new(output)),
+                )])
+            } else {
+                let shapes = execute(kind, &ctx, Some(&mut self.store)).ok_or_else(|| {
+                    failed("This step has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.")
+                })??;
+                if shapes.is_empty() {
+                    return Err(failed("This feature produced no geometry."));
+                }
+                shapes
+                    .into_iter()
+                    .map(|(name, shape)| (name, Geometry::Brep(shape)))
+                    .collect()
+            };
             self.states
                 .insert(fid.to_string(), ("ok".into(), ctx.message.take()));
             self.rebuilt.push(fid.to_string());
-            made.into_iter()
-                .map(|(name, shape)| (name, Geometry::Brep(shape)))
-                .collect()
+            made
         };
         // `keep`: what the user deleted is not emitted.
         let dropped: Vec<&str> = feature["dropped"]
@@ -1904,6 +1967,7 @@ impl Rebuilder<'_> {
                     (json!({ "kind": "brep", "sha256": sha }), Some(sha))
                 }
                 Geometry::Sketch(sketch) => (json!({ "kind": "sketch", "data": &**sketch }), None),
+                Geometry::Datum(datum) => ((**datum).clone(), None),
             };
             encoded.insert(output_ids[&name].as_str().unwrap_or("").to_string(), data);
             parts.insert(name, Part { value, sha });
@@ -1997,7 +2061,7 @@ pub(crate) fn recover_saved(
 
 /// Each step of type `kind` solved again on its saved inputs, for checking a
 /// port against the Python app: Align's transform (3×4, row by row) and
-/// description, or the error it gives.
+/// description, the definition of a construction datum, or the error it gives.
 pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Value>, String> {
     let unreadable = || "This project's steps could not be read.".to_string();
     let order: Vec<Value> = model.payload["features"]
@@ -2030,7 +2094,9 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
                 "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
                     json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
                 }),
-                _ => Err(failed("not a checked step type")),
+                _ => crate::construction::Kind::from_feature(kind)
+                    .ok_or_else(|| failed("not a checked step type"))?
+                    .execute(&ctx, name.as_str().unwrap_or_default()),
             }
         });
         found.push(match outcome {
@@ -2344,6 +2410,39 @@ pub fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn construction_planes_are_rebuilt_and_cached_without_display_bodies() {
+        let feature = json!({
+            "id": "plane", "type": "plane_through_points", "name": "Plane through Points",
+            "inputs": { "points": [[5, 0, 2], [5, 10, 2], [5, 0, 12]] },
+            "outputs": ["__construction__Plane through Points"],
+            "output_ids": { "__construction__Plane through Points": "plane-output" },
+            "bindings": {}, "suppressed": false, "dropped": []
+        });
+        let mut model = Model::new(json!({"features": [feature], "bodies": []}));
+        let report = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+        assert!(report.failures.is_empty());
+        assert!(report.bodies.is_empty());
+        assert_eq!(report.rebuilt, ["plane"]);
+        let signature = &signatures(&model.payload).unwrap()["plane"];
+        assert_eq!(
+            model.payload["cache"]["entries"][signature]["outputs"]["plane-output"],
+            json!({ "kind": "ConstructionPlane", "data": {
+                "name": "Plane through Points", "origin": [5.0, 0.0, 2.0],
+                "normal": [1.0, 0.0, 0.0], "x_axis": [0.0, 1.0, 0.0]
+            }})
+        );
+        let cached = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+        assert!(cached.rebuilt.is_empty());
+        assert!(cached.failures.is_empty());
+        model.payload["features"][0]["inputs"]["points"][2] = json!([5, 20, 2]);
+        let invalid = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+        assert_eq!(
+            invalid.failures["plane"],
+            "Those three points are in a line."
+        );
+    }
 
     #[test]
     fn an_explicitly_deleted_input_remains_actionable_when_another_input_failed() {

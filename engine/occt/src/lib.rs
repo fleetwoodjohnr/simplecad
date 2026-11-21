@@ -65,6 +65,11 @@ pub mod ffi {
         pub neighbours: Vec<FaceFingerprint>,
     }
 
+    pub struct EdgeAxis {
+        pub origin: [f64; 3],
+        pub direction: [f64; 3],
+    }
+
     pub struct EdgeFinishSpec {
         pub index: u32,
         pub first: f64,
@@ -347,6 +352,9 @@ pub mod ffi {
         /// Face `face` (a `faces` index) as the naming fingerprints it.
         fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
         fn edge_fingerprints(shape: &Shape) -> Result<Vec<EdgeFingerprint>>;
+        /// Origin and direction of a straight edge in the naming index order.
+        fn edge_axis(shape: &Shape, index: u32) -> Result<EdgeAxis>;
+        fn vertex_fingerprints(shape: &Shape) -> Result<Vec<FaceFingerprint>>;
         fn finish_edge_specs(
             shape: &Shape,
             specs: &[EdgeFinishSpec],

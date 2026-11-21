@@ -3,6 +3,7 @@
 mod advanced;
 pub mod align;
 mod clip;
+mod construction;
 pub mod document;
 pub mod evaluate;
 pub mod export;
@@ -20,4 +21,5 @@ pub mod sketch;
 mod text;
 mod texture;
 mod thread;
+mod vector;
 mod vent;
