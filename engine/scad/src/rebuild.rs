@@ -450,6 +450,10 @@ pub const PORTED: &[&str] = &[
     "split",
     "hole",
     "thread",
+    "matching_bolt",
+    "matching_nut",
+    "matching_thread",
+    "threaded_connection",
     "text",
     "face_texture",
     "clip_joint",
@@ -990,7 +994,15 @@ fn execute(
             }
             "arrange" => crate::advanced::arrange_row(ctx),
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
-            "thread" => Ok(BTreeMap::from([(body_name()?, crate::thread::build(ctx)?)])),
+            "thread" | "matching_thread" => Ok(BTreeMap::from([(
+                body_name()?,
+                crate::thread::build(ctx, kind == "matching_thread")?,
+            )])),
+            "matching_bolt" | "matching_nut" => Ok(BTreeMap::from([(
+                name()?,
+                crate::thread::fasteners::build(kind, ctx)?,
+            )])),
+            "threaded_connection" => crate::thread::fasteners::connection(ctx),
             "text" => Ok(BTreeMap::from([(body_name()?, crate::text::build(ctx)?)])),
             "face_texture" => {
                 let name = body_name()?;

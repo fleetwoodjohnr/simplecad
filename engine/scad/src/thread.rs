@@ -1,4 +1,6 @@
 //! Physical threads follow the v0.4.4 helical sweep, relief, and fit geometry.
+pub(crate) mod fasteners;
+
 use crate::evaluate::Dimension;
 use crate::rebuild::{Context, Shape, StepError, failed, kernel};
 use occt::{CylinderData, Shape as Solid, UniquePtr};
@@ -54,6 +56,13 @@ fn sizes() -> &'static [Size] {
     })
 }
 
+fn specified_size(ctx: &Context<'_>) -> Option<&'static Size> {
+    let name = ctx.input("designation")?.as_str()?;
+    sizes()
+        .iter()
+        .find(|size| size.name.eq_ignore_ascii_case(name))
+}
+
 pub(crate) struct Thread {
     size: &'static Size,
     iso: bool,
@@ -91,8 +100,7 @@ impl Thread {
     }
 
     pub(crate) fn read(ctx: &Context, diameter: f64, internal: bool) -> Result<Self, StepError> {
-        let name = ctx.input("designation").and_then(Value::as_str);
-        let size = name.and_then(|name| sizes().iter().find(|s| s.name.eq_ignore_ascii_case(name)))
+        let size = specified_size(ctx)
             .or_else(|| {
                 let rank = |size: &Size| {
                     (size.diameter - diameter).abs() + size.preference as f64 * 0.25
@@ -105,6 +113,10 @@ impl Thread {
             .ok_or_else(|| failed(format!(
                 "No standard thread matches ⌀{diameter:.2} mm. Change the diameter or choose a standard size."
             )))?;
+        Self::with_size(ctx, size, internal)
+    }
+
+    fn with_size(ctx: &Context, size: &'static Size, internal: bool) -> Result<Self, StepError> {
         let iso = ctx.input("form").and_then(Value::as_str) == Some("iso");
         let tooth = depth(size.pitch, size.angle, iso);
         let overhang = 90.0 - (size.pitch * 5.0 / 16.0).atan2(tooth).to_degrees();
@@ -293,7 +305,7 @@ impl Thread {
     }
 }
 
-pub(crate) fn build(ctx: &Context) -> Result<Shape, StepError> {
+pub(crate) fn build(ctx: &Context, matching: bool) -> Result<Shape, StepError> {
     let body = ctx.shape("body")?;
     let (source, index) = ctx.face("face")?;
     let face = occt::sub_face(&source, index).map_err(kernel)?;
@@ -304,9 +316,22 @@ pub(crate) fn build(ctx: &Context) -> Result<Shape, StepError> {
         ));
     }
     let length = thread_length(ctx, "length", info.length)?;
-    let origin = thread_origin(ctx, info, length);
     let diameter = info.radius * 2.0;
-    let thread = Thread::read(ctx, diameter, info.internal)?;
+    let (thread, origin) = if matching {
+        let thread = Thread::with_size(ctx, fasteners::matching_size(ctx)?, info.internal)?;
+        let side = if info.internal {
+            "internal"
+        } else {
+            "external"
+        };
+        ctx.set_message(format!("{} {side} thread to match", thread.designation()));
+        (thread, info.origin)
+    } else {
+        (
+            Thread::read(ctx, diameter, info.internal)?,
+            thread_origin(ctx, info, length),
+        )
+    };
     let wanted = if info.internal {
         thread.bore_diameter()
     } else {
