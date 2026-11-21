@@ -2,7 +2,7 @@ import type { ElectronApplication } from '@playwright/test'
 import path from 'node:path'
 import os from 'node:os'
 import { copyFile, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { expect, launch, test } from './helpers'
+import { expect, launch, quitCleanly, test } from './helpers'
 
 test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
   const { app, page } = await launch()
@@ -195,7 +195,12 @@ test('models a physical thread on a shaft and undoes it in one step', async () =
   await thread.getByLabel('Thread size').selectOption('M30')
   await thread.getByLabel('Threaded length').fill('10 mm')
   await thread.getByRole('button', { name: 'Apply' }).click()
-  await expect(status).toContainText('20578.55 mm³')
+  // The native thread test uses the same 1 mm³ bound for compiler-dependent
+  // B-spline integration outside Linux. Keep the Fedora result to display precision.
+  await expect.poll(async () => {
+    const volume = Number((await status.textContent())?.match(/([\d.]+) mm³/)?.[1])
+    return Math.abs(volume - 20578.55)
+  }).toBeLessThan(process.platform === 'linux' ? 0.005 : 1)
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toContainText('21205.75 mm³')
 })
@@ -892,7 +897,7 @@ test('preserves saved and new history through worker restart and Save As', async
     await pull(first.page, '2')
     await expect(volume(first.page)).toHaveText(/26400 mm³/)
     await saveAs(first.app, first.page, original)
-    await first.app.close()
+    await quitCleanly(first.app)
 
     const second = await launch({ args: [original], env: { SIMPLECAD_ENGINE_DRILL: '1' } })
     const { app, page } = second
@@ -910,7 +915,7 @@ test('preserves saved and new history through worker restart and Save As', async
     await expect(volume(page)).toHaveText(/24000 mm³/)
     await expect(history(page, 'Redo')).toBeEnabled()
     await saveAs(app, page, copied)
-    await app.close()
+    await quitCleanly(app)
 
     const last = await launch({ args: [copied], env: { SIMPLECAD_ENGINE_DRILL: '1' } })
     await expect(volume(last.page)).toHaveText(/24000 mm³/)

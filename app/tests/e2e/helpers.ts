@@ -1,7 +1,9 @@
 import { _electron as electron, test as base, type ElectronApplication, type Page } from '@playwright/test'
+import { once } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const open = new Set<ElectronApplication>()
 
@@ -28,6 +30,30 @@ export { expect } from '@playwright/test'
 export interface Launched {
   app: ElectronApplication
   page: Page
+}
+
+/** Quit through the app's lifecycle and wait for the OS process, which can exit
+ * before Electron's debug connection reports that the browser context closed. */
+export async function quitCleanly(application: ElectronApplication) {
+  const child = application.process()
+  const timeout = new AbortController()
+  try {
+    const [code] = await Promise.race([
+      Promise.all([
+        once(child, 'exit', { signal: timeout.signal }),
+        application.evaluate(({ app }) => { setImmediate(() => app.quit()) }).catch((error: Error) => {
+          if (!error.message.includes('has been closed')) throw error
+        })
+      ]).then(([exit]) => exit),
+      delay(12000, undefined, { signal: timeout.signal }).then(() => {
+        throw new Error('SimpleCAD did not exit after Quit.')
+      })
+    ])
+    if (code !== 0) throw new Error(`SimpleCAD exited with code ${code}.`)
+    open.delete(application)
+  } finally {
+    timeout.abort()
+  }
 }
 
 export async function launch(opts: { env?: Record<string, string>; args?: string[]; userData?: string } = {}): Promise<Launched> {
