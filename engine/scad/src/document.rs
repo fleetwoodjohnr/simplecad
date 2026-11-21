@@ -31,6 +31,7 @@ pub struct StepSummary {
     pub missing_input: Option<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
+    pub matching_thread: Option<HashMap<String, String>>,
 }
 
 pub struct MissingInput {
@@ -288,6 +289,36 @@ impl Model {
         Some(signatures)
     }
 
+    fn matching_thread(feature: &Value) -> Option<HashMap<String, String>> {
+        let inputs = &feature["inputs"];
+        if inputs["thread_modelled"] != true
+            || !matches!(
+                feature["type"].as_str(),
+                Some("hole" | "thread" | "matching_bolt" | "matching_nut" | "matching_thread")
+            )
+        {
+            return None;
+        }
+        let designation = inputs["designation"]
+            .as_str()
+            .filter(|value| !value.is_empty())?;
+        let internal = inputs["thread_internal"].as_bool()?;
+        let form = inputs["form"].as_str().unwrap_or("printed");
+        let left_hand = inputs["left_hand"].as_bool().unwrap_or(false);
+        let clearance = inputs["clearance"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| inputs["clearance"].as_f64().map(|value| value.to_string()))
+            .unwrap_or_else(|| "normal".into());
+        Some(HashMap::from([
+            ("designation".into(), designation.into()),
+            ("internal".into(), internal.to_string()),
+            ("form".into(), form.into()),
+            ("left_hand".into(), left_hand.to_string()),
+            ("clearance".into(), clearance),
+        ]))
+    }
+
     /// Every step and its most recent diagnostic, in recipe order.
     pub fn steps(&self) -> Vec<StepSummary> {
         let features = self.list("features");
@@ -313,6 +344,7 @@ impl Model {
                         .flatten(),
                     face_settings: edit_values(f, face_edit_fields(&f["type"])),
                     shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
+                    matching_thread: (state == "ok").then(|| Self::matching_thread(f)).flatten(),
                 }
             })
             .collect()

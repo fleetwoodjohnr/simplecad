@@ -45,6 +45,7 @@ export const commands = {
   loft: { label: 'Loft' },
   hole: { label: 'Hole' },
   thread: { label: 'Thread' },
+  matchingPart: { label: 'Matching Part' },
   text: { label: 'Text' },
   faceTexture: { label: 'Face Texture' },
   settings: { label: 'Settings' },

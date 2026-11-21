@@ -213,6 +213,7 @@ pub struct Step {
     pub missing_input: Option<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
+    pub matching_thread: Option<HashMap<String, String>>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -748,6 +749,7 @@ impl Project {
                 }),
                 face_settings: step.face_settings,
                 shape_settings: step.shape_settings,
+                matching_thread: step.matching_thread,
             })
             .collect()
     }

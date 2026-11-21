@@ -85,6 +85,7 @@ export const previewPull = (revision: number, edit: PullEdit) => send<DisplaySha
 export const applyPull = (revision: number, edit: PullEdit) => send<ModelResult>({ op: 'apply', revision, ...edit }).then(accept)
 export const previewFace = (revision: number, edit: FaceEdit) => send<DisplayShape>({ op: 'previewFace', revision, ...edit })
 export const applyFace = (revision: number, edit: FaceEdit) => send<ModelResult>({ op: 'applyFace', revision, ...edit }).then(accept)
+export const previewShape = (revision: number, edit: ShapeEdit) => send<DisplayShape>({ op: 'previewShape', revision, ...edit })
 export const previewSavedStep = (revision: number, edit: SavedStepEdit) => send<DisplayShape>({ op: 'previewSavedStep', revision, ...edit })
 export const editSavedStep = (revision: number, edit: SavedStepEdit) => send<ModelResult>({ op: 'editSavedStep', revision, ...edit }).then(accept)
 export const previewTransform = (revision: number, edit: TransformEdit) =>

@@ -477,6 +477,8 @@ pub fn create_primitive(
     mut inputs: Value,
 ) -> Result<(String, occt::UniquePtr<occt::Shape>), String> {
     let (kind, label, sides) = match kind {
+        "matching_bolt" => (kind, "Bolt", None),
+        "matching_nut" => (kind, "Nut", None),
         "box" => (kind, "Box", None),
         "cylinder" => (kind, "Cylinder", None),
         "sphere" => (kind, "Sphere", None),
@@ -503,6 +505,18 @@ pub fn create_primitive(
     }
     if let Some(sides) = sides {
         inputs["sides"] = json!(sides);
+    }
+    if matches!(kind, "matching_bolt" | "matching_nut") {
+        inputs["thread_modelled"] = json!(true);
+        inputs["thread_internal"] = json!(kind == "matching_nut");
+        inputs["left_hand"] = json!(inputs["left_hand"] == "true");
+        if let Some(clearance) = inputs["clearance"]
+            .as_str()
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+        {
+            inputs["clearance"] = json!(clearance);
+        }
     }
     let (parameters, _) = resolve(
         model.payload["parameters"]

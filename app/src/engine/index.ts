@@ -43,6 +43,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'open': result = document.open(req.data, req.name, req.revision, req.recovered); break
       case 'preview':
       case 'previewFace':
+      case 'previewShape':
       case 'previewSavedStep':
       case 'previewTransform':
       case 'previewSketchSolid':

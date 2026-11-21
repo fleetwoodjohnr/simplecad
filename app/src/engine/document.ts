@@ -173,11 +173,12 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
-      'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } : this.resolve(edit)
+      'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } :
+      'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     return this.show(this.prepare(step).bodies)
   }
 

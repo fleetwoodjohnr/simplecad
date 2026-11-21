@@ -172,6 +172,7 @@ export interface StepInfo {
   missingInput?: { name: string; objectId: string; face: boolean }
   faceSettings?: Record<string, string>
   shapeSettings?: Record<string, string>
+  matchingThread?: Record<string, string>
   /** Undone in this session; redo brings it back. */
   undone: boolean
 }
@@ -202,7 +203,7 @@ export type RendererCommand =
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
   | { op: 'measure'; revision: number; picks: MeasurePick[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
-  | ({ op: 'createShape'; revision: number } & ShapeEdit)
+  | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
   | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
   | { op: 'readSketch'; revision: number; sketchId: string }
@@ -426,7 +427,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
-        (m.op === 'createShape' && isShapeEdit(m)) ||
+        ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||
         (m.op === 'applySketchDraft' && isSketchDraft(m)) ||
