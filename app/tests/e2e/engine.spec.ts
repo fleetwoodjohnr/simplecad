@@ -538,6 +538,86 @@ for (const [format, imported] of [['stl', 'Model'], ['obj', 'Box2'], ['3mf', 'Bo
   })
 }
 
+for (const format of ['gltf', 'glb'] as const) {
+  test(`imports ${format.toUpperCase()} with millimetre geometry and embeds its resources`, async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-gltf-'))
+    const source = path.join(scratch, `Cube.${format}`)
+    const bufferFile = path.join(scratch, 'box data.bin')
+    const target = path.join(scratch, 'Imported.scad3')
+    try {
+      const vertices = [
+        0, 0, 0, 0.01, 0, 0, 0.01, 0.02, 0, 0, 0.02, 0,
+        0, 0, 0.03, 0.01, 0, 0.03, 0.01, 0.02, 0.03, 0, 0.02, 0.03
+      ]
+      const indices = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+        1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7]
+      const mesh = Buffer.alloc(vertices.length * 4 + indices.length * 2)
+      vertices.forEach((value, i) => mesh.writeFloatLE(value, i * 4))
+      indices.forEach((value, i) => mesh.writeUInt16LE(value, vertices.length * 4 + i * 2))
+      const model = Buffer.from(JSON.stringify({
+        asset: { version: '2.0' },
+        buffers: [{ byteLength: mesh.length, uri: format === 'gltf' ? 'box%20data.bin' : undefined }],
+        bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 96, target: 34962 },
+          { buffer: 0, byteOffset: 96, byteLength: 72, target: 34963 }],
+        accessors: [{ bufferView: 0, componentType: 5126, count: 8, type: 'VEC3', min: [0, 0, 0], max: [0.01, 0.02, 0.03] },
+          { bufferView: 1, componentType: 5123, count: 36, type: 'SCALAR' }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+        nodes: [{ mesh: 0, name: 'Imported cube' }], scenes: [{ nodes: [0] }], scene: 0
+      }))
+      if (format === 'gltf') {
+        await writeFile(bufferFile, mesh)
+        await writeFile(source, model)
+      } else {
+        const jsonLength = Math.ceil(model.length / 4) * 4
+        const container = Buffer.alloc(28 + jsonLength + mesh.length, 0x20)
+        container.write('glTF', 0, 'ascii')
+        container.writeUInt32LE(2, 4)
+        container.writeUInt32LE(container.length, 8)
+        container.writeUInt32LE(jsonLength, 12)
+        container.write('JSON', 16, 'ascii')
+        model.copy(container, 20)
+        container.writeUInt32LE(mesh.length, 20 + jsonLength)
+        container.writeUInt32LE(0x004e4942, 24 + jsonLength)
+        mesh.copy(container, 28 + jsonLength)
+        await writeFile(source, container)
+      }
+
+      const { app, page } = await launch()
+      const status = page.getByTestId('engine-status')
+      const file = page.getByRole('button', { name: 'File', exact: true })
+      await expect(status).toContainText('24000 mm³')
+      await app.evaluate(({ dialog }, source) => {
+        dialog.showOpenDialog = async () => ({ filePaths: [source], canceled: false })
+      }, source)
+      await file.click()
+      await page.getByRole('menuitem', { name: 'Import model' }).click()
+      await expect(status).toContainText('30000 mm³')
+      await expect(page.getByRole('list', { name: 'Bodies', exact: true })).toContainText('Imported cube')
+      await page.getByLabel('Planar face').selectOption({ label: 'Imported cube · Top · 200 mm²' })
+      await page.getByLabel('Pull distance').fill('2')
+      await page.getByLabel('Pull distance').press('Enter')
+      await expect(status).toContainText('30400 mm³')
+      await page.getByRole('button', { name: 'Undo', exact: true }).click()
+      await expect(status).toContainText('30000 mm³')
+      await page.getByRole('button', { name: 'Redo', exact: true }).click()
+      await expect(status).toContainText('30400 mm³')
+      await app.evaluate(({ dialog }, target) => {
+        dialog.showSaveDialog = async () => ({ filePath: target, canceled: false })
+      }, target)
+      await file.click()
+      await page.getByRole('menuitem', { name: /^Save As/ }).click()
+      await expect(page.getByText('Imported.scad3', { exact: true })).toBeVisible()
+      await rename(source, path.join(scratch, 'Moved.' + format))
+      await rm(bufferFile, {force: true})
+      await app.close()
+      const reopened = await launch({ args: [target] })
+      await expect(reopened.page.getByTestId('engine-status')).toContainText('30400 mm³')
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
+  })
+}
+
 test('imports a SimpleCAD project as editable history with embedded assets', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-native-import-'))
   const source = path.join(scratch, 'Parts.scad3')

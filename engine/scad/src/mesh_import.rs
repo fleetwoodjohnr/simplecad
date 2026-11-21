@@ -3,6 +3,7 @@
 use occt::ImportedBody;
 use std::collections::{BTreeSet, HashMap};
 
+mod gltf;
 mod three_mf;
 
 const REBUILD_TRIANGLE_LIMIT: usize = 40_000;
@@ -25,7 +26,8 @@ pub fn read(format: &str, bytes: &[u8], name: &str) -> Result<Vec<ImportedBody>,
         "stl" => Ok(vec![build(name.into(), read_stl(bytes)?)?]),
         "obj" => read_obj(bytes, name),
         "3mf" => three_mf::read(bytes, name),
-        _ => Err("Choose an STL, OBJ or 3MF file.".into()),
+        "gltf" | "glb" => gltf::read(bytes, name),
+        _ => Err("Choose a supported mesh file.".into()),
     }
 }
 

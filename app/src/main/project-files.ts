@@ -1,9 +1,13 @@
-import { dialog, type BrowserWindow } from 'electron'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { app, dialog, type BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { link, mkdtemp, open, rename, rm } from 'node:fs/promises'
+import { link, mkdtemp, open, realpath, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { isExportFormat, MAX_PROJECT_BYTES, type ImportFormat, type ModelImport } from '../shared/engine-protocol'
+
+const runProgram = promisify(execFile)
 
 const filters = [{ name: 'SimpleCAD project', extensions: ['scad3'] }]
 /** The file this window's session came from or was last saved to: where Save writes. */
@@ -32,9 +36,9 @@ export function acceptProjectFile(token: unknown) {
 }
 
 export async function openModelFile(window: BrowserWindow): Promise<ModelImport | undefined> {
-  const formats = new Map<string, ImportFormat>([
+  const formats = new Map<string, ImportFormat | 'scad'>([
     ['step', 'step'], ['stp', 'step'], ['brep', 'brep'], ['scad3', 'scad3'],
-    ['igs', 'iges'], ['iges', 'iges'], ['stl', 'stl'], ['obj', 'obj'], ['3mf', '3mf']
+    ['igs', 'iges'], ['iges', 'iges'], ['scad', 'scad'], ['gltf', 'gltf'], ['glb', 'glb'], ['stl', 'stl'], ['obj', 'obj'], ['3mf', '3mf']
   ])
   const choice = await dialog.showOpenDialog(window, {
     properties: ['openFile'],
@@ -46,7 +50,9 @@ export async function openModelFile(window: BrowserWindow): Promise<ModelImport 
       { name: 'IGES', extensions: ['igs', 'iges'] },
       { name: 'STL', extensions: ['stl'] },
       { name: 'OBJ', extensions: ['obj'] },
-      { name: '3MF', extensions: ['3mf'] }
+      { name: '3MF', extensions: ['3mf'] },
+      { name: 'glTF', extensions: ['gltf', 'glb'] },
+      { name: 'OpenSCAD', extensions: ['scad'] }
     ]
   })
   if (choice.canceled || !choice.filePaths.length) return
@@ -54,7 +60,100 @@ export async function openModelFile(window: BrowserWindow): Promise<ModelImport 
   const ext = path.extname(target)
   const importFormat = formats.get(ext.slice(1).toLowerCase())
   if (!importFormat) throw new Error('Choose a supported model file.')
-  return { importName: path.basename(target, ext), data: await readInputFile(target), importFormat }
+  const importName = path.basename(target, ext)
+  if (importFormat === 'scad') return { importName, data: await renderScad(window, target), importFormat: '3mf' }
+  const data = await readInputFile(target)
+  return { importName, data: importFormat === 'gltf' || importFormat === 'glb' ? await embedGltfBuffers(target, data) : data,
+    importFormat }
+}
+
+async function embedGltfBuffers(target: string, input: Uint8Array): Promise<Uint8Array> {
+  const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength)
+  const binary = bytes.length >= 20 && bytes.toString('ascii', 0, 4) === 'glTF'
+  const jsonEnd = binary ? 20 + bytes.readUInt32LE(12) : bytes.length
+  if (binary && (bytes.readUInt32LE(4) !== 2 || bytes.readUInt32LE(8) !== bytes.length ||
+      bytes.readUInt32LE(16) !== 0x4e4f534a || jsonEnd > bytes.length)) {
+    throw new Error('This GLB has an invalid header.')
+  }
+  let document: { buffers?: { uri?: string }[] }
+  try {
+    document = JSON.parse(bytes.toString('utf8', binary ? 20 : 0, jsonEnd).replace(/^\uFEFF/, ''))
+    if (!document || typeof document !== 'object' || (document.buffers !== undefined && !Array.isArray(document.buffers))) throw new Error()
+  } catch {
+    throw new Error('This glTF has an unreadable model.')
+  }
+  let size = bytes.byteLength
+  let changed = false
+  const base = await realpath(path.dirname(target))
+  const inside = (candidate: string) => {
+    const relative = path.relative(base, candidate)
+    return !!relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep)
+  }
+  for (const buffer of document.buffers ?? []) {
+    if (!buffer || typeof buffer !== 'object' || (buffer.uri !== undefined && typeof buffer.uri !== 'string')) {
+      throw new Error('This glTF has an unreadable buffer reference.')
+    }
+    if (!buffer.uri || buffer.uri.startsWith('data:')) continue
+    if (/[:?#\\]/.test(buffer.uri)) throw new Error('A glTF buffer must be a local relative file.')
+    let reference: string
+    try {
+      reference = decodeURIComponent(buffer.uri)
+      if (reference.includes('\\') || reference.includes('\0')) throw new Error()
+    } catch {
+      throw new Error('A glTF buffer has an invalid path.')
+    }
+    const candidate = path.resolve(base, reference)
+    if (!inside(candidate)) throw new Error('Keep the glTF and its buffers in the same model folder.')
+    const actual = await realpath(candidate).catch(() => { throw new Error(`The glTF buffer "${path.basename(candidate)}" is missing.`) })
+    if (!inside(actual)) throw new Error('Keep the glTF and its buffers in the same model folder.')
+    const data = await readInputFile(actual)
+    size += Math.ceil(data.byteLength / 3) * 4 + 48
+    if (size > MAX_PROJECT_BYTES) throw new Error('This glTF and its buffers are too large to open.')
+    buffer.uri = 'data:application/octet-stream;base64,' + Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('base64')
+    changed = true
+  }
+  if (!changed) return input
+  const json = Buffer.from(JSON.stringify(document))
+  if (!binary) {
+    if (json.length > MAX_PROJECT_BYTES) throw new Error('This glTF and its buffers are too large to open.')
+    return json
+  }
+  const jsonLength = Math.ceil(json.length / 4) * 4
+  const length = 20 + jsonLength + bytes.length - jsonEnd
+  if (length > MAX_PROJECT_BYTES) throw new Error('This glTF and its buffers are too large to open.')
+  const result = Buffer.alloc(length, 0x20)
+  bytes.copy(result, 0, 0, 20)
+  result.writeUInt32LE(length, 8)
+  result.writeUInt32LE(jsonLength, 12)
+  json.copy(result, 20)
+  bytes.copy(result, 20 + jsonLength, jsonEnd)
+  return result
+}
+
+async function renderScad(window: BrowserWindow, source: string): Promise<Uint8Array> {
+  const scratch = await mkdtemp(path.join(app.getPath('userData'), 'openscad-'))
+  const rendered = path.join(scratch, 'rendered.3mf')
+  const abort = new AbortController()
+  const stop = () => abort.abort()
+  window.once('closed', stop)
+  try {
+    try {
+      await runProgram('openscad', ['-o', rendered, source], {
+        signal: abort.signal, timeout: 300_000, maxBuffer: 1024 * 1024, windowsHide: true
+      })
+    } catch (failure) {
+      const error = failure as NodeJS.ErrnoException & { killed?: boolean; stderr?: string }
+      if (error.code === 'ENOENT') throw new Error('Install OpenSCAD and add it to PATH to import .scad files.')
+      if (error.code === 'ABORT_ERR') throw new Error('OpenSCAD import canceled.')
+      if (error.killed) throw new Error('OpenSCAD took too long to render this model.')
+      const detail = error.stderr?.trim().slice(-1000)
+      throw new Error(detail ? `OpenSCAD could not render this model. ${detail}` : 'OpenSCAD could not render this model.')
+    }
+    return await readInputFile(rendered)
+  } finally {
+    window.removeListener('closed', stop)
+    await rm(scratch, { recursive: true, force: true })
+  }
 }
 
 async function readInputFile(target: string): Promise<Uint8Array> {

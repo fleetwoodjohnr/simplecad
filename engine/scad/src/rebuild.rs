@@ -1450,6 +1450,7 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
         "stl" => "STL",
         "obj" => "OBJ",
         "3mf" => "3MF",
+        "gltf" | "glb" => "glTF",
         _ => {
             return Err(failed(format!(
                 "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
@@ -1482,7 +1483,7 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
     let parts = match extension.as_str() {
         "brep" => occt::read_brep_parts(&bytes, fallback).map_err(error)?,
         "iges" | "igs" => crate::iges::read(&bytes, fallback).map_err(failed)?,
-        "stl" | "obj" | "3mf" => {
+        "stl" | "obj" | "3mf" | "gltf" | "glb" => {
             crate::mesh_import::read(&extension, &bytes, fallback).map_err(failed)?
         }
         _ => occt::read_step(&bytes, fallback).map_err(error)?,

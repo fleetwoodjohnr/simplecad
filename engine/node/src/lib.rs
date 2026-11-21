@@ -448,7 +448,7 @@ impl Project {
             "step" => ffi::read_step(&bytes, &name).map_err(reason),
             "brep" => ffi::read_brep_parts(&bytes, &name).map_err(reason),
             "iges" => scad::iges::read(&bytes, &name).map_err(Error::from_reason),
-            "stl" | "obj" | "3mf" => {
+            "stl" | "obj" | "3mf" | "gltf" | "glb" => {
                 scad::mesh_import::read(&format, &bytes, &name).map_err(Error::from_reason)
             }
             _ => Err(Error::from_reason("Choose a supported model file.")),
