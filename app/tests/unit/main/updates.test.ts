@@ -67,10 +67,9 @@ it('refuses a corrupted installer and supports an atomic AppImage swap and rollb
     const slow: typeof fetch = async (url, options) => {
       if (!String(url).endsWith(name)) return fakeFetch(url, options)
       return new Response(new ReadableStream({
-        pull(controller) {
+        start(controller) {
           controller.enqueue(Buffer.from('new '))
-          cancel.abort()
-          controller.close()
+          setTimeout(() => cancel.abort(), 20)
         }
       }))
     }

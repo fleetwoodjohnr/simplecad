@@ -2,8 +2,9 @@ import { createHash, createPublicKey, verify } from 'node:crypto'
 import { constants, createReadStream, createWriteStream } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { Transform } from 'node:stream'
+import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import type { ReadableStream as NodeWebStream } from 'node:stream/web'
 
 const REPO = 'fleetwoodjohnr/simplecad'
 export const RELEASES = `https://github.com/${REPO}/releases`
@@ -101,7 +102,10 @@ export async function downloadUpdate(release: Release, name: string, folder: str
         callback(null, chunk)
       }
     })
-    await pipeline(response.body, digest, createWriteStream(partial, { flags: 'wx', mode: 0o600 }), { signal: cancel })
+    // Fetch and Node use the same WHATWG stream at runtime, with separate BYOB
+    // typings. Destroying the adapter also cancels a pending read on that stream.
+    const body = Readable.fromWeb(response.body as unknown as NodeWebStream<Uint8Array>)
+    await pipeline(body, digest, createWriteStream(partial, { flags: 'wx', mode: 0o600 }), { signal: cancel })
     cancel?.throwIfAborted()
     if (hash.digest('hex') !== expected) throw new Error('The package does not match its signed checksum.')
     return { installer: partial, expected }
