@@ -1,0 +1,183 @@
+name: Rust preview
+
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'engine/**'
+      - 'simplecad/update_key.pub'
+      - '.github/workflows/rust-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux builds on the oldest supported glibc, as the Python release does:
+        # OCCT built on a newer system needs a newer libm than Ubuntu 22.04 has.
+        os: [ubuntu-22.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    # The first run on each OS compiles OCCT (about an hour); later runs restore it from the cache.
+    timeout-minutes: 120
+    env:
+      RUSTUP_TOOLCHAIN: '1.99.0'
+      OCCT_DIR: ${{ github.workspace }}/occt-install
+      GEOS_DIR: ${{ github.workspace }}/geos-install
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt
+
+      - name: OCCT from the cache
+        id: occt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: occt-install
+          key: occt-8.0.1-${{ matrix.os }}-${{ hashFiles('engine/occt/build-occt.sh') }}
+      - name: Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libfontconfig1-dev
+      - name: Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+      - name: Build OCCT 8.0.1
+        if: steps.occt.outputs.cache-hit != 'true'
+        env:
+          CMAKE_GENERATOR: Ninja
+          JOBS: '4'
+        run: engine/occt/build-occt.sh "$OCCT_DIR" "$RUNNER_TEMP/occt-build"
+      # Saved at once, not at the end of the job: a later failing step must not throw away an hour of compiling.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.occt.outputs.cache-hit != 'true'
+        with:
+          path: occt-install
+          key: ${{ steps.occt.outputs.cache-primary-key }}
+
+      - name: GEOS from the cache
+        id: geos
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: geos-install
+          key: geos-3.13.1-${{ matrix.os }}-${{ hashFiles('engine/occt/build-geos.sh') }}
+      - name: Build GEOS 3.13.1
+        if: steps.geos.outputs.cache-hit != 'true'
+        env:
+          CMAKE_GENERATOR: Ninja
+          JOBS: '4'
+        run: engine/occt/build-geos.sh "$GEOS_DIR" "$RUNNER_TEMP/geos-build"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.geos.outputs.cache-hit != 'true'
+        with:
+          path: geos-install
+          key: ${{ steps.geos.outputs.cache-primary-key }}
+
+      - name: MSVC's linker, not Git's (Windows)
+        if: runner.os == 'Windows'
+        # Git Bash puts its coreutils link.exe ahead of MSVC's on PATH, and rustc ran it.
+        run: mv /usr/bin/link.exe /usr/bin/link-coreutils.exe
+      - run: cargo fmt --all --check
+        working-directory: engine
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        working-directory: engine
+      - name: cargo test
+        working-directory: engine
+        run: |
+          # Windows finds the OCCT DLLs on PATH; Linux and macOS through the test binaries' rpath.
+          [ "$RUNNER_OS" != Windows ] || export PATH="$OCCT_DIR/bin:$GEOS_DIR/bin:$PATH"
+          cargo test --locked --workspace
+      - run: npm ci
+        working-directory: app
+      - run: npm run typecheck
+        working-directory: app
+      - run: npm test
+        working-directory: app
+      - run: npm run dist
+        working-directory: app
+      - name: The packaged addon finds every library beside itself
+        working-directory: app
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              lib=release/linux-unpacked/resources/app.asar.unpacked/native
+              ! ldd "$lib/scad_engine.node" | grep 'not found'
+              ! ldd "$lib/scad_engine.node" | grep -F -e "$OCCT_DIR" -e "$GEOS_DIR" ;;
+            macOS)
+              lib=$(ls -d release/mac*/SimpleCAD.app/Contents/Resources/app.asar.unpacked/native)
+              ! otool -L "$lib/scad_engine.node" | grep -F -e "$OCCT_DIR" -e "$GEOS_DIR" ;;
+            Windows)
+              lib=release/win-unpacked/resources/app.asar.unpacked/native
+              for dll in $(dumpbin //dependents "$lib/scad_engine.node" | grep -ioE '(TK[A-Za-z0-9]+|geos(_c)?)\.dll'); do
+                test -f "$lib/$dll"
+              done ;;
+          esac
+      - name: Packaged desktop window and geometry
+        if: runner.os != 'Linux'
+        working-directory: app
+        run: |
+          case "$RUNNER_OS" in
+            macOS) executable="$(find "$PWD/release" -type f -path '*/SimpleCAD.app/Contents/MacOS/SimpleCAD' -print -quit)" ;;
+            Windows) executable="$(pwd -W)/release/win-unpacked/SimpleCAD.exe" ;;
+          esac
+          test -f "$executable"
+          SCAD_PACKAGED="$executable" npx playwright test --fail-on-flaky-tests
+      - name: Save packaged desktop test failures
+        if: failure() && runner.os != 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaged-window-${{ matrix.os }}
+          path: app/test-results
+          if-no-files-found: ignore
+      - name: The Linux app, for the upgrade drills
+        if: runner.os == 'Linux'
+        working-directory: app
+        # A tarball keeps the OCCT version symlinks and the executable bits.
+        run: tar -czf linux-unpacked.tar.gz -C release linux-unpacked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'Linux'
+        with:
+          name: simplecad-linux-unpacked
+          path: app/linux-unpacked.tar.gz
+          retention-days: 14
+
+  # The Linux app is built on 22.04 (oldest glibc) and driven on 24.04, whose
+  # runner image has the GL stack Chromium needs for WebGL under Xvfb; 22.04's
+  # does not. It also proves a 22.04 build runs on a newer system.
+  linux-window:
+    needs: build
+    # Run against the Linux artifact even if the Windows or macOS job fails.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: simplecad-linux-unpacked
+          path: app
+      - name: Packaged Linux window and geometry
+        working-directory: app
+        run: |
+          mkdir -p release && tar -xzf linux-unpacked.tar.gz -C release
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libgl1-mesa-dri libegl1 libgles2
+          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test --fail-on-flaky-tests

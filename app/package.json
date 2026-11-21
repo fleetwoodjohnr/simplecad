@@ -1,0 +1,47 @@
+{
+  "name": "simplecad",
+  "productName": "SimpleCAD",
+  "version": "0.5.0-dev",
+  "description": "Modern parametric CAD for functional 3D printing",
+  "main": "out/main/index.js",
+  "homepage": "https://github.com/fleetwoodjohnr/simplecad",
+  "author": {
+    "name": "SimpleCAD"
+  },
+  "private": true,
+  "scripts": {
+    "engine": "node scripts/build-engine.mjs",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "e2e": "npm run build && playwright test",
+    "e2e:headless": "npm run build && xvfb-run -a playwright test",
+    "dist": "npm run engine && npm run build && electron-builder --dir --publish never"
+  },
+  "desktopName": "simplecad.desktop",
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@playwright/test": "^1.64.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "lucide-react": "^1.61.0",
+    "radix-ui": "^1.8.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.3",
+    "three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "zustand": "^5.0.16"
+  }
+}

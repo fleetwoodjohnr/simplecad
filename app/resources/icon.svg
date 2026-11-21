@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- SimpleCAD: an isometric cube in the Graphite accent on a graphite tile.
+       Flat shapes only (no filters or blurs): Qt's SVG renderer ignores
+       filters, and the mark has to read at 16 px in a taskbar. -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#17181B"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1.5"/>
+  <!-- left and right faces in deeper ambers, the top face lit -->
+  <path d="M27 45 64 66 64 108 27 87Z" fill="#E0962A"/>
+  <path d="M64 66 101 45 101 87 64 108Z" fill="#B06A12"/>
+  <path d="M64 24 101 45 64 66 27 45Z" fill="#F7BC5E"/>
+  <!-- crisp edges between the faces -->
+  <path d="M27 45 64 66 101 45M64 66V108" fill="none" stroke="#17181B"
+        stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

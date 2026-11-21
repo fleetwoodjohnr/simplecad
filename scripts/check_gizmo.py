@@ -55,6 +55,16 @@ def _find_handle(viewport, centre, want_axis: int):
     return min(hits, key=lambda p: (p.x() - middle_x) ** 2 + (p.y() - middle_y) ** 2)
 
 
+def _x_drag_end(viewport, start, centre, millimetres: float):
+    """Project the full intended travel so pixel rounding is applied once."""
+    from PySide6.QtCore import QPoint
+
+    x, y, z = centre
+    before = viewport.project((x, y, z))
+    after = viewport.project((x + millimetres, y, z))
+    return start + QPoint(round(after[0] - before[0]), round(after[1] - before[1]))
+
+
 def main() -> int:
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtTest import QTest
@@ -62,8 +72,12 @@ def main() -> int:
     from simplecad.ui.main_window import MainWindow
     from simplecad.ui.theme import Mode
 
+    viewport = None
+
     def build(_app):
+        nonlocal viewport
         window = MainWindow(Mode.DARK)
+        viewport = window.stage.viewport
 
         def run() -> None:
             from simplecad.kernel.occ import bounding_box
@@ -93,8 +107,6 @@ def main() -> int:
             # Find the +X arrow on screen and drag it.
             ratio = viewport.devicePixelRatioF()
             centre = [(a + b) / 2 for a, b in zip(*bounding_box(shape))]
-            axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
-            REPORT["mm_per_pixel"] = round(mm_per_pixel, 4)
 
             # Find the X translation arrow rather than guessing where it is:
             # the manipulator sizes and orients itself, and in an isometric view
@@ -107,10 +119,7 @@ def main() -> int:
             QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
             REPORT["drag_started"] = viewport._nav.name == "GIZMO"
 
-            target_mm = 25.0
-            pixels = target_mm / mm_per_pixel / ratio
-            end = QPoint(round(handle.x() + axis[0] * pixels),
-                         round(handle.y() + axis[1] * pixels))
+            end = _x_drag_end(viewport, handle, centre, 25.0)
             QTest.mouseMove(viewport, end)
             QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
             window.wait_for_rebuild()
@@ -237,9 +246,7 @@ def main() -> int:
             handle = _find_handle(viewport, centre, want_axis=0)
             REPORT["two_bodies_handle"] = handle is not None
             if handle is not None:
-                axis, mm_per_pixel = viewport.screen_axis_for(centre, (1.0, 0.0, 0.0))
-                pixels = 15.0 / mm_per_pixel / ratio
-                end = QPoint(round(handle.x() + axis[0] * pixels), round(handle.y() + axis[1] * pixels))
+                end = _x_drag_end(viewport, handle, centre, 15.0)
                 QTest.mouseMove(viewport, handle)
                 QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, handle)
                 QTest.mouseMove(viewport, end)
@@ -255,8 +262,13 @@ def main() -> int:
         window.stage.viewport.ready.connect(lambda: QTimer.singleShot(500, run))
         return window
 
-    run_and_capture(build, "docs/shots/gizmo.png", settle_ms=5000, size=(1300, 860))
+    capture = run_and_capture(build, "docs/shots/gizmo.png", settle_ms=5000, size=(1300, 860))
     print("--- transform gizmo ---")
+    if not REPORT:
+        print(f"  viewport_ready: {viewport is not None and viewport.is_ready}")
+        print(f"  viewport_failure: {viewport.failure if viewport is not None else 'not created'}")
+        if capture.get("error"):
+            print(f"  capture_failure: {capture['error']}")
     for key, value in REPORT.items():
         print(f"  {key}: {value}")
     moved = REPORT.get("moved_x", 0)

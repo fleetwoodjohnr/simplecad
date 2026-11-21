@@ -1,0 +1,13 @@
+[package]
+name = "scad"
+description = "SimpleCAD's core: projects, and in time the document, history and features"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+occt = { path = "../occt" }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "v5"] }
+zip = { version = "9.7.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

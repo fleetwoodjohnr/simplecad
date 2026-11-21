@@ -1,0 +1,12 @@
+[workspace]
+members = ["occt", "scad", "node"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.5.0-dev"
+publish = false
+
+[profile.release]
+# The addon is loaded once per engine process; size matters less than speed.
+lto = "thin"

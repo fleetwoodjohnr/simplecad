@@ -8,6 +8,11 @@
     python packaging/build.py windows          Inno Setup installer (needs iscc)
     python packaging/build.py macos            .dmg              (needs hdiutil)
 
+SIMPLECAD_BUNDLE=<folder> packages another build of the app instead of the
+PyInstaller one: the Electron app's unpacked folder (electron-builder --dir),
+installed in the same places so either upgrades the other.
+SIMPLECAD_VERSION overrides the version, for upgrade drills.
+
 Everything lands in dist/release/ named the way the updater looks for it:
 SimpleCAD-<version>-<os>-<arch>.<ext>. See docs/release.md.
 """
@@ -20,13 +25,14 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 BUILD = os.path.join(ROOT, "build")
 DIST = os.path.join(ROOT, "dist")
 RELEASE = os.path.join(DIST, "release")
-BUNDLE = os.path.join(DIST, "SimpleCAD")
+BUNDLE = os.environ.get("SIMPLECAD_BUNDLE") or os.path.join(DIST, "SimpleCAD")
 APP_ID = "io.github.fleetwoodjohnr.SimpleCAD"
 METAINFO = os.path.join(ROOT, "packaging", f"{APP_ID}.metainfo.xml")
 
@@ -34,7 +40,12 @@ METAINFO = os.path.join(ROOT, "packaging", f"{APP_ID}.metainfo.xml")
 def version() -> str:
     from simplecad import __version__
 
-    return __version__
+    return os.environ.get("SIMPLECAD_VERSION") or __version__
+
+
+def electron() -> bool:
+    """True when BUNDLE is the Electron app rather than the PyInstaller one."""
+    return os.path.isfile(os.path.join(BUNDLE, "resources", "app.asar"))
 
 
 def arch() -> str:
@@ -58,6 +69,8 @@ def tool(name: str, env: str | None = None) -> str:
 def desktop_entry(executable: str) -> str:
     with open(os.path.join(ROOT, "simplecad.desktop")) as handle:
         text = handle.read()
+    if electron():
+        text = text.replace(";model/step;application/vnd.ms-package.3dmanufacturing-3dmodel+xml;model/stl;", ";")
     return text.replace("SIMPLECAD_LAUNCHER", executable)
 
 
@@ -128,6 +141,9 @@ def appimage() -> None:
     metainfo = os.path.join(appdir, "usr", "share", "metainfo")
     os.makedirs(metainfo, exist_ok=True)
     shutil.copy(METAINFO, metainfo)
+    mime = os.path.join(appdir, "usr", "share", "mime", "packages")
+    os.makedirs(mime, exist_ok=True)
+    shutil.copy(os.path.join(ROOT, "packaging", "simplecad-mime.xml"), mime)
     os.makedirs(RELEASE, exist_ok=True)
     out = os.path.join(RELEASE, f"SimpleCAD-{version()}-linux-{arch()}.AppImage")
     run(tool("appimagetool", "APPIMAGETOOL"), "--no-appstream", appdir, out,
@@ -146,6 +162,26 @@ SYSTEM_LIBRARIES = {
         "libxcb-shape.so.0", "libxcb-util.so.1", "libxcb-image.so.0", "libxcb-icccm.so.4",
         "libxcb-cursor.so.0", "libxcb-keysyms.so.1", "libxcb-render-util.so.0")],
 }
+#: The same for the Electron app: its binary's NEEDED entries (readelf -d),
+#: less glibc and the libffmpeg it carries.
+ELECTRON_LIBRARIES = {
+    # Ubuntu 24.04 renamed these with a t64 suffix and left the old names as
+    # virtual packages, which apt may satisfy with the wrong library: for
+    # libasound2 it chose liboss4-salsa-asound2, and the app failed to start.
+    "deb": [f"{name}t64 | {name}" for name in (
+        "libglib2.0-0", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libgtk-3-0",
+        "libasound2", "libatspi2.0-0")] + [
+        "libnss3", "libdbus-1-3", "libcairo2", "libpango-1.0-0", "libx11-6", "libxcomposite1",
+        "libxdamage1", "libxext6", "libxfixes3", "libxrandr2", "libgbm1", "libexpat1", "libxcb1",
+        "libxkbcommon0", "libudev1", "libgcc-s1", "libfontconfig1"],
+    "rpm": [f"{so}()(64bit)" for so in (
+        "libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0", "libnspr4.so", "libnss3.so",
+        "libnssutil3.so", "libsmime3.so", "libatk-1.0.so.0", "libatk-bridge-2.0.so.0",
+        "libcups.so.2", "libdbus-1.so.3", "libcairo.so.2", "libgtk-3.so.0", "libpango-1.0.so.0",
+        "libX11.so.6", "libXcomposite.so.1", "libXdamage.so.1", "libXext.so.6", "libXfixes.so.3",
+        "libXrandr.so.2", "libgbm.so.1", "libexpat.so.1", "libxcb.so.1", "libxkbcommon.so.0",
+        "libudev.so.1", "libasound.so.2", "libatspi.so.0", "libgcc_s.so.1", "libfontconfig.so.1")],
+}
 
 
 def linux_package(kind: str) -> None:
@@ -153,7 +189,9 @@ def linux_package(kind: str) -> None:
     stage = os.path.join(BUILD, f"pkg-{kind}")
     shutil.rmtree(stage, ignore_errors=True)
     shutil.copytree(BUNDLE, os.path.join(stage, "simplecad"), symlinks=True)
-    with open(os.path.join(stage, "simplecad", "install-kind"), "w") as handle:
+    # Where each app's updater looks: beside the binary, or in Electron's resources.
+    marker = os.path.join(stage, "simplecad", *(["resources"] if electron() else []), "install-kind")
+    with open(marker, "w") as handle:
         handle.write(kind + "\n")       # tells the updater to hand updates to the system
     with open(os.path.join(stage, "simplecad.desktop"), "w") as handle:
         handle.write(desktop_entry("/opt/simplecad/simplecad"))
@@ -167,7 +205,7 @@ description: Parametric CAD for mechanical design and 3D printing
 homepage: https://github.com/fleetwoodjohnr/simplecad
 license: Proprietary
 depends:
-""" + "".join(f'  - "{name}"\n' for name in SYSTEM_LIBRARIES[kind]) + f"""contents:
+""" + "".join(f'  - "{name}"\n' for name in (ELECTRON_LIBRARIES if electron() else SYSTEM_LIBRARIES)[kind]) + f"""contents:
   - src: {stage}/simplecad
     dst: /opt/simplecad
     type: tree
@@ -180,6 +218,8 @@ depends:
     dst: /usr/share/icons/hicolor/scalable/apps/simplecad.svg
   - src: {METAINFO}
     dst: /usr/share/metainfo/{APP_ID}.metainfo.xml
+  - src: {ROOT}/packaging/simplecad-mime.xml
+    dst: /usr/share/mime/packages/simplecad-mime.xml
 """ + "".join(f"""  - src: {BUILD}/icons/simplecad-{size}.png
     dst: /usr/share/icons/hicolor/{size}x{size}/apps/simplecad.png
 """ for size in (16, 24, 32, 48, 64, 128, 256, 512)))
@@ -203,7 +243,8 @@ def macos() -> None:
     stage = os.path.join(BUILD, "dmg")
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
-    shutil.copytree(os.path.join(DIST, "SimpleCAD.app"), os.path.join(stage, "SimpleCAD.app"),
+    selected = os.environ.get("SIMPLECAD_BUNDLE") or os.path.join(DIST, "SimpleCAD.app")
+    shutil.copytree(selected, os.path.join(stage, "SimpleCAD.app"),
                     symlinks=True)
     os.symlink("/Applications", os.path.join(stage, "Applications"))
     run(tool("hdiutil"), "create", "-volname", "SimpleCAD", "-srcfolder", stage,
@@ -212,9 +253,10 @@ def macos() -> None:
 
 def flatpak_tarball() -> None:
     """The bundle as a tarball, for the Flatpak manifest to wrap."""
-    os.makedirs(RELEASE, exist_ok=True)
-    shutil.make_archive(os.path.join(BUILD, f"simplecad-bundle-{arch()}"), "gztar",
-                        root_dir=DIST, base_dir="SimpleCAD")
+    os.makedirs(BUILD, exist_ok=True)
+    output = os.path.join(BUILD, f"simplecad-bundle-{arch()}.tar.gz")
+    with tarfile.open(output, "w:gz") as archive:
+        archive.add(BUNDLE, arcname="SimpleCAD")
 
 
 STEPS = {"icons": icons, "bundle": bundle, "appimage": appimage,

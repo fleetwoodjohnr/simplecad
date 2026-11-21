@@ -1,0 +1,202 @@
+[
+[
+[
+{
+"name": "w",
+"expression": "40 mm"
+},
+{
+"name": "h",
+"expression": "w / 2"
+},
+{
+"name": "a",
+"expression": "30",
+"dimension": "angle"
+},
+{
+"name": "n",
+"expression": "3",
+"dimension": "scalar"
+}
+],
+{
+"a": "30.0",
+"n": "3.0",
+"w": "40.0",
+"h": "20.0"
+},
+{}
+],
+[
+[
+{
+"name": "b",
+"expression": "a + 1"
+},
+{
+"name": "a",
+"expression": "2"
+},
+{
+"name": "c",
+"expression": "b * a"
+}
+],
+{
+"a": "2.0",
+"b": "3.0",
+"c": "6.0"
+},
+{}
+],
+[
+[
+{
+"name": "x",
+"expression": "y"
+},
+{
+"name": "y",
+"expression": "x"
+},
+{
+"name": "z",
+"expression": "1"
+}
+],
+{
+"z": "1.0"
+},
+{
+"y": "'y' refers back to itself through another parameter.",
+"x": "'x' refers back to itself through another parameter."
+}
+],
+[
+[
+{
+"name": "p",
+"expression": "q + 1"
+},
+{
+"name": "r",
+"expression": "1/0"
+},
+{
+"name": "s",
+"expression": "r + 1"
+},
+{
+"name": "t",
+"expression": "10 deg",
+"dimension": "length"
+},
+{
+"name": "u",
+"expression": "1 mm",
+"dimension": "angle"
+}
+],
+{
+"t": "10.0",
+"u": "1.0"
+},
+{
+"p": "Unknown name 'q'",
+"r": "Division by zero",
+"s": "Unknown name 'r'"
+}
+],
+[
+[
+{
+"name": "d",
+"expression": "1"
+},
+{
+"name": "d",
+"expression": "2"
+},
+{
+"name": "e2",
+"expression": "d * 10"
+}
+],
+{
+"d": "2.0",
+"e2": "20.0"
+},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+],
+[
+[],
+{},
+{}
+]
+]
