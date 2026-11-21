@@ -366,8 +366,8 @@ export function App() {
   const history = (direction: 'undo' | 'redo') => {
     if (revision !== undefined) mutate(() => stepHistory(revision, direction))
   }
-  const canUndo = !!model && model.checkpoint.cursor > 0 && !busy
-  const canRedo = !!model && model.checkpoint.cursor < model.checkpoint.edits.length && !busy
+  const canUndo = !!model?.canUndo && !busy
+  const canRedo = !!model?.canRedo && !busy
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)

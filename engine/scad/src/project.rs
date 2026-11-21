@@ -13,6 +13,7 @@ pub const FORMAT_VERSION: i64 = 4;
 pub const CACHE_VERSION: &str = "simplecad-feature-cache-2-occt-7.9";
 
 pub struct SavedBody {
+    pub id: String,
     pub name: String,
     pub visible: bool,
     /// The saved B-Rep; `None` when the file has none for this body or it is damaged.
@@ -102,11 +103,13 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
     let mut notes = Vec::new();
     let mut bodies = Vec::new();
     for &(name, body) in &named {
+        let id = body["id"].as_str().unwrap_or_default().to_owned();
         let visible = body.get("visible") != Some(&Value::Bool(false));
         if format >= 2
             && let Some((blob, location)) = cached_output(&model, body, &mut entry)
         {
             bodies.push(SavedBody {
+                id,
                 name: name.to_string(),
                 visible,
                 brep: Some(blob),
@@ -149,6 +152,7 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
             }
         };
         bodies.push(SavedBody {
+            id,
             name: name.to_string(),
             visible,
             brep,

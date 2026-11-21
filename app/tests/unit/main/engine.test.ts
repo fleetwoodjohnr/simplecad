@@ -45,6 +45,8 @@ class FakeProject implements Project {
   steps() {
     return this.made.map((name, index) => ({ id: String(index), name, kind: 'push_pull', state: 'ok' }))
   }
+  historyDepth() { return { undo: 0, redo: 0 } }
+  moveHistory(): never { throw new Error('No saved history in this fixture.') }
   save(undone: number) {
     const kept = this.made.length - undone
     return new TextEncoder().encode([...this.made.slice(0, kept), ...this.made.slice(kept).map((s) => `redo ${s}`)].join(';'))
@@ -104,7 +106,7 @@ describe('EngineDocument', () => {
     expect(model.shape.volume).toBe(115)
     expect(model.shape.faces.map((f) => f.body)).toEqual([0, 0, 1, 2, 2, 2])
     expect(model.checkpoint.edits).toEqual([])
-    expect(model.checkpoint.shown).toEqual([[1, true]])
+    expect(model.checkpoint.shown).toEqual([['C', true]])
   })
 
   it('places the current shape after undo, and replays the accepted placement after restart', () => {

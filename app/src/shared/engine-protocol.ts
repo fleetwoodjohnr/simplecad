@@ -102,11 +102,14 @@ export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | 
 export interface Checkpoint {
   source: Source
   edits: Step[]
+  /** The saved history position where this session's first edit was made, relative to open. */
+  historyOffset: number
+  /** Relative to historyOffset. Positions outside edits refer to the file's history. */
   cursor: number
-  /** Bodies the user has hidden or shown since opening: index and shown. */
-  shown: [number, boolean][]
-  /** The history point last saved; -1 when it is no longer in the history. */
-  saved: number
+  /** Bodies the user has hidden or shown since opening: identity and shown. */
+  shown: [string, boolean][]
+  /** The history point last saved, relative to historyOffset. */
+  saved: number | null
 }
 
 export interface StepInfo {
@@ -126,6 +129,8 @@ export interface ModelResult {
   bodies: BodyInfo[]
   /** The shown point of the history is not the one last saved. */
   unsaved: boolean
+  canUndo: boolean
+  canRedo: boolean
   revision: number
   checkpoint: Checkpoint
   /** The model's steps, oldest first, and after them this session's undone ones. */
@@ -266,11 +271,14 @@ function isViewFrame(value: unknown): value is ViewFrame {
 export function isCheckpoint(value: unknown): value is Checkpoint {
   if (!value || typeof value !== 'object') return false
   const model = value as Partial<Checkpoint>
+  const offset = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && Math.abs(n) <= 0x7fffffff
   return isSource(model.source) && Array.isArray(model.edits) && model.edits.length <= MAX_EDITS &&
-    model.edits.every(isStep) && isIndex(model.cursor) && model.cursor <= model.edits.length &&
+    model.edits.every(isStep) && offset(model.historyOffset) && offset(model.cursor) &&
+    (model.source.kind === 'file' || (model.historyOffset === 0 && isIndex(model.cursor) && model.cursor <= model.edits.length)) &&
+    (!model.edits.length || model.cursor! <= model.edits.length) &&
     Array.isArray(model.shown) && model.shown.length <= MAX_BODIES &&
-    model.shown.every((s) => Array.isArray(s) && s.length === 2 && isIndex(s[0]) && s[0] < MAX_BODIES && typeof s[1] === 'boolean') &&
-    Number.isSafeInteger(model.saved) && model.saved! >= -1 && model.saved! <= model.edits.length
+    model.shown.every((s) => Array.isArray(s) && s.length === 2 && isName(s[0]) && typeof s[1] === 'boolean') &&
+    (model.saved === null || offset(model.saved))
 }
 
 export function checkRendererRequest(data: unknown): RendererRequest {

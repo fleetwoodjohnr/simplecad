@@ -4,6 +4,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use occt::ffi;
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Chord deflection (mm) and angle (radians) the Python app meshes with.
@@ -12,7 +14,15 @@ const ANGLE: f64 = 0.35;
 
 #[napi]
 pub struct Shape {
-    inner: occt::UniquePtr<ffi::Shape>,
+    inner: scad::rebuild::Shape,
+}
+
+impl Shape {
+    fn new(inner: occt::UniquePtr<ffi::Shape>) -> Self {
+        Self {
+            inner: Rc::new(inner),
+        }
+    }
 }
 
 #[napi(object)]
@@ -73,7 +83,7 @@ fn wrap(
     result: std::result::Result<occt::UniquePtr<ffi::Shape>, occt::Exception>,
 ) -> Result<Shape> {
     result
-        .map(|inner| Shape { inner })
+        .map(Shape::new)
         .map_err(|e| Error::from_reason(e.what()))
 }
 
@@ -155,6 +165,7 @@ impl Shape {
 
 #[napi(object, object_from_js = false)]
 pub struct OpenedBody {
+    pub id: Option<String>,
     pub name: String,
     pub visible: bool,
     /// `None` when the file holds no readable geometry for this body.
@@ -167,6 +178,19 @@ pub struct OpenedProject {
     pub notes: Vec<String>,
     /// What saving edits.
     pub project: Option<Project>,
+}
+
+#[napi(object, object_to_js = false)]
+pub struct ShownBody<'a> {
+    pub id: Option<String>,
+    pub name: String,
+    pub shape: ClassInstance<'a, Shape>,
+}
+
+#[napi(object)]
+pub struct HistoryDepth {
+    pub undo: u32,
+    pub redo: u32,
 }
 
 /// A project at one point of the session: its model, and the file it came from,
@@ -268,7 +292,7 @@ impl Project {
         let offset = if visible.is_empty() {
             [0.0; 3]
         } else {
-            let current = bounds_for(visible.iter().map(|part| &*part.inner))?;
+            let current = bounds_for(visible.iter().map(|part| &**part.inner))?;
             let incoming = bounds_for(parts.iter().map(|part| &*part.shape))?;
             let gap = ((incoming[3] - incoming[0]) * 0.15).max(10.0);
             [
@@ -304,9 +328,10 @@ impl Project {
             .into_iter()
             .zip(parts)
             .map(|(name, part)| OpenedBody {
+                id: None,
                 name,
                 visible: true,
-                shape: Some(Shape { inner: part.shape }),
+                shape: Some(Shape::new(part.shape)),
             })
             .collect();
         Ok(ImportedModel {
@@ -334,7 +359,7 @@ impl Project {
                 original: self.original.clone(),
             },
             name,
-            shape: Shape { inner },
+            shape: Shape::new(inner),
         })
     }
     #[napi]
@@ -376,7 +401,7 @@ impl Project {
                 model,
                 original: self.original.clone(),
             },
-            shape: Shape { inner: placed },
+            shape: Shape::new(placed),
         })
     }
 
@@ -406,7 +431,7 @@ impl Project {
                 model,
                 original: self.original.clone(),
             },
-            shape: Shape { inner },
+            shape: Shape::new(inner),
         })
     }
 
@@ -439,7 +464,7 @@ impl Project {
                 model,
                 original: self.original.clone(),
             },
-            shape: Shape { inner: pulled },
+            shape: Shape::new(pulled),
         })
     }
 
@@ -457,6 +482,79 @@ impl Project {
                 message: step.message,
             })
             .collect()
+    }
+
+    #[napi]
+    pub fn history_depth(&self) -> HistoryDepth {
+        let count = |stack| {
+            self.model.payload["history"][stack]
+                .as_array()
+                .map_or(0, |actions| actions.len() as u32)
+        };
+        HistoryDepth {
+            undo: count("undo"),
+            redo: count("redo"),
+        }
+    }
+
+    /// Move through actions saved in the project, keeping the inverse patches
+    /// for redo and using the same rebuild as the CLI history check.
+    #[napi]
+    pub fn move_history(&self, offset: i32, shown: Vec<ShownBody>) -> Result<OpenedProject> {
+        let count = offset.unsigned_abs();
+        let depth = self.history_depth();
+        let redo = offset > 0;
+        if count == 0 || count > if redo { depth.redo } else { depth.undo } {
+            return Err(Error::from_reason("There is no such history point."));
+        }
+        let shown: HashMap<_, _> = shown
+            .into_iter()
+            .map(|body| (body.id.unwrap_or(body.name), body.shape.inner.clone()))
+            .collect();
+        let old_shapes = self.model.payload["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|body| {
+                let id = body["id"].as_str()?;
+                let prior = shown
+                    .get(id)
+                    .or_else(|| shown.get(body["name"].as_str()?))?;
+                Some((id.to_owned(), prior.clone()))
+            })
+            .collect();
+        let mut model = self.model.clone();
+        let mut stale = BTreeSet::new();
+        for _ in 0..count {
+            stale.extend(model.move_history(redo).map_err(Error::from_reason)?);
+        }
+        let report = scad::rebuild::rebuild(&mut model, &self.original, &old_shapes, &stale)
+            .map_err(Error::from_reason)?;
+        let hidden: std::collections::HashSet<_> = model.payload["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|body| body["visible"].as_bool() == Some(false))
+            .filter_map(|body| body["id"].as_str())
+            .collect();
+        let bodies = report
+            .bodies
+            .into_iter()
+            .map(|body| OpenedBody {
+                name: body.name,
+                visible: !hidden.contains(body.id.as_str()),
+                id: Some(body.id),
+                shape: body.shape.map(|inner| Shape { inner }),
+            })
+            .collect();
+        Ok(OpenedProject {
+            bodies,
+            notes: Vec::new(),
+            project: Some(Project {
+                model,
+                original: self.original.clone(),
+            }),
+        })
     }
 
     /// The `.scad3` of this point of the session with its newest `undone` steps
@@ -500,9 +598,10 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
                         ))
                     })
                     .ok()
-                    .map(|inner| Shape { inner })
+                    .map(Shape::new)
             });
             OpenedBody {
+                id: Some(body.id),
                 name: body.name,
                 visible: body.visible,
                 shape,
@@ -524,9 +623,10 @@ pub fn new_project() -> Result<OpenedProject> {
     let model = scad::document::Model::new_box(brep).map_err(Error::from_reason)?;
     Ok(OpenedProject {
         bodies: vec![OpenedBody {
+            id: None,
             name: "Box".into(),
             visible: true,
-            shape: Some(Shape { inner: shape }),
+            shape: Some(Shape::new(shape)),
         }],
         notes: vec![],
         project: Some(Project {

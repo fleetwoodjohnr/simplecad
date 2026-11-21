@@ -215,22 +215,16 @@ fn failure_states(model: &Model, report: &Report) -> Map<String, Value> {
 }
 
 fn saved_shapes(project: &Project) -> Result<HashMap<String, Shape>, String> {
-    let ids: HashMap<&str, &str> = project.model["bodies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|body| Some((body["name"].as_str()?, body["id"].as_str()?)))
-        .collect();
     let mut shown = HashMap::new();
     for body in &project.bodies {
-        let (Some(brep), Some(id)) = (&body.brep, ids.get(body.name.as_str())) else {
+        let Some(brep) = &body.brep else {
             continue;
         };
         let mut shape = occt::read_brep(brep).map_err(|e| e.what().to_string())?;
         if let Some(matrix) = &body.location {
             shape = occt::located(&shape, matrix).map_err(|e| e.what().to_string())?;
         }
-        shown.insert((*id).into(), Rc::new(shape));
+        shown.insert(body.id.clone(), Rc::new(shape));
     }
     Ok(shown)
 }

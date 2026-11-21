@@ -383,6 +383,75 @@ test('opens a .scad3 project and pulls a face with its recess and boss, through 
   await expect(status).toHaveText(/92371.27 mm³/)
 })
 
+test('preserves saved and new history through worker restart and Save As', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-history-'))
+  const original = path.join(scratch, 'Original.scad3')
+  const copied = path.join(scratch, 'Undone.scad3')
+  const volume = (page: Awaited<ReturnType<typeof launch>>['page']) => page.getByTestId('engine-status')
+  const pull = async (page: Awaited<ReturnType<typeof launch>>['page'], amount: string) => {
+    await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+    const distance = page.getByLabel('Pull distance')
+    await distance.fill(amount)
+    await distance.press('Enter')
+  }
+  const saveAs = async (app: ElectronApplication, page: Awaited<ReturnType<typeof launch>>['page'], filePath: string) => {
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, filePath)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText(path.basename(filePath), { exact: true })).toBeVisible()
+  }
+  const history = (page: Awaited<ReturnType<typeof launch>>['page'], name: 'Undo' | 'Redo') =>
+    page.getByRole('button', { name, exact: true })
+  try {
+    const first = await launch()
+    await expect(volume(first.page)).toHaveText(/24000 mm³/)
+    await pull(first.page, '2')
+    await expect(volume(first.page)).toHaveText(/26400 mm³/)
+    await saveAs(first.app, first.page, original)
+    await first.app.close()
+
+    const second = await launch({ args: [original], env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    const { app, page } = second
+    await expect(volume(page)).toHaveText(/26400 mm³/)
+    await pull(page, '3')
+    await expect(volume(page)).toHaveText(/30000 mm³/)
+    await history(page, 'Undo').click()
+    await expect(volume(page)).toHaveText(/26400 mm³/)
+    await history(page, 'Undo').click()
+    await expect(volume(page)).toHaveText(/24000 mm³/)
+    await page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } })
+        .simplecadDrill.crashEngine().catch(() => {}))
+    await expect(page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(volume(page)).toHaveText(/24000 mm³/)
+    await expect(history(page, 'Redo')).toBeEnabled()
+    await saveAs(app, page, copied)
+    await app.close()
+
+    const last = await launch({ args: [copied], env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    await expect(volume(last.page)).toHaveText(/24000 mm³/)
+    await history(last.page, 'Redo').click()
+    await expect(volume(last.page)).toHaveText(/26400 mm³/)
+    await history(last.page, 'Redo').click()
+    await expect(volume(last.page)).toHaveText(/30000 mm³/)
+    await history(last.page, 'Undo').click()
+    await expect(volume(last.page)).toHaveText(/26400 mm³/)
+    await pull(last.page, '1')
+    await expect(volume(last.page)).toHaveText(/27600 mm³/)
+    await expect(history(last.page, 'Redo')).toBeDisabled()
+    await last.page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } })
+        .simplecadDrill.crashEngine().catch(() => {}))
+    await expect(last.page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(volume(last.page)).toHaveText(/27600 mm³/)
+    await expect(history(last.page, 'Redo')).toBeDisabled()
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('saves a pull into the project and reopens it', async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')

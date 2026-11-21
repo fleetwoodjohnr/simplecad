@@ -10,7 +10,7 @@ interface PortLike {
   close(): void
 }
 
-type AddonProject = { bodies: { name: string; visible: boolean; shape: Shape | null }[]; notes: string[]; project: Project }
+type AddonProject = { bodies: { id?: string; name: string; visible: boolean; shape: Shape | null }[]; notes: string[]; project: Project }
 interface Addon {
   newProject(): AddonProject
   openProject(data: Buffer): AddonProject
@@ -23,7 +23,7 @@ const parent = (process as unknown as { parentPort: PortLike }).parentPort
 const addon = require(process.env.SIMPLECAD_ENGINE_ADDON!) as Addon
 const buffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength)
 const opened = ({ bodies, notes, project }: AddonProject) => ({
-  bodies: bodies.map(({ name, shape }) => ({ name, shape: shape ?? null })),
+  bodies: bodies.map(({ id, name, shape }) => ({ id, name, shape: shape ?? null })),
   visible: bodies.map((b) => b.visible), notes, project
 })
 const document = new EngineDocument(() => opened(addon.newProject()), (data) => opened(addon.openProject(buffer(data))))
