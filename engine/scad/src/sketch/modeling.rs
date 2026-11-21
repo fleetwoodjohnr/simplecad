@@ -3,7 +3,7 @@ use crate::evaluate::Dimension;
 use crate::rebuild::{Context, StepError, failed, kernel};
 use occt::{
     Shape, UniquePtr,
-    ffi::{SketchAxis, SketchCurve, SketchEdge, SketchPlane},
+    ffi::{SketchAxis, SketchCurve, SketchEdge, SketchPlane, SketchProfile},
 };
 use serde_json::Value;
 
@@ -98,35 +98,64 @@ fn read_edges(sketch: &Value) -> Result<Vec<SketchEdge>, StepError> {
     Ok(edges)
 }
 
+pub(crate) fn read_profile(value: &Value) -> Result<SketchProfile, StepError> {
+    Ok(SketchProfile {
+        plane: read_plane(&value["plane"])?,
+        edges: read_edges(value)?,
+    })
+}
+
 pub(crate) fn build(kind: &str, ctx: &Context<'_>) -> Result<UniquePtr<Shape>, StepError> {
-    let sketch = ctx.sketch("sketch")?;
-    let plane = read_plane(&sketch["plane"])?;
-    let edges = read_edges(sketch)?;
-    if kind == "extrude" {
-        let distance = ctx.value("distance", 10., Dimension::Length)?;
-        if distance.abs() < 1e-9 {
-            return Err(failed("An extrude needs a distance greater than zero."));
+    let option = |key, default| ctx.input(key).and_then(Value::as_bool).unwrap_or(default);
+    match kind {
+        "extrude" => {
+            let profile = read_profile(ctx.sketch("sketch")?)?;
+            let distance = ctx.value("distance", 10., Dimension::Length)?;
+            if distance.abs() < 1e-9 {
+                return Err(failed("An extrude needs a distance greater than zero."));
+            }
+            occt::extrude_sketch(&profile, distance, option("symmetric", false)).map_err(kernel)
         }
-        let symmetric = ctx
-            .input("symmetric")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        occt::extrude_sketch(&plane, &edges, distance, symmetric).map_err(kernel)
-    } else {
-        let angle = ctx.value("angle", 360., Dimension::Angle)?;
-        if angle.abs() < 1e-9 {
-            return Err(failed("A revolve needs an angle greater than zero."));
+        "revolve" => {
+            let profile = read_profile(ctx.sketch("sketch")?)?;
+            let angle = ctx.value("angle", 360., Dimension::Angle)?;
+            if angle.abs() < 1e-9 {
+                return Err(failed("A revolve needs an angle greater than zero."));
+            }
+            let axis = SketchAxis {
+                origin: vector(
+                    ctx.input("axis_origin").unwrap_or(&Value::Null),
+                    profile.plane.origin,
+                )?,
+                direction: vector(
+                    ctx.input("axis_direction").unwrap_or(&Value::Null),
+                    profile.plane.x_axis,
+                )?,
+            };
+            occt::revolve_sketch(&profile, &axis, angle.to_radians()).map_err(kernel)
         }
-        let axis = SketchAxis {
-            origin: vector(
-                ctx.input("axis_origin").unwrap_or(&Value::Null),
-                plane.origin,
-            )?,
-            direction: vector(
-                ctx.input("axis_direction").unwrap_or(&Value::Null),
-                plane.x_axis,
-            )?,
-        };
-        occt::revolve_sketch(&plane, &edges, &axis, angle.to_radians()).map_err(kernel)
+        "sweep" => {
+            let profile = read_profile(ctx.sketch("profile")?)?;
+            let path = read_profile(ctx.sketch("path")?)?;
+            occt::sweep_sketch(
+                &profile,
+                &path,
+                option("keep_orientation", false),
+                option("contact", true),
+            )
+            .map_err(kernel)
+        }
+        "loft" => {
+            let sections = ctx
+                .input("sketches")
+                .and_then(Value::as_array)
+                .ok_or_else(|| failed("A loft needs at least two profiles."))?;
+            let sections: Vec<_> = sections
+                .iter()
+                .map(|name| read_profile(ctx.named_sketch(text(name)?)?))
+                .collect::<Result<_, _>>()?;
+            occt::loft_sketches(&sections, option("ruled", false)).map_err(kernel)
+        }
+        _ => unreachable!("unknown sketch operation: {kind}"),
     }
 }

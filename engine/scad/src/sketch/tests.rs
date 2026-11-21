@@ -140,3 +140,59 @@ fn replays_a_saved_sketch_and_solids_without_a_geometry_cache() {
     let plate = report.bodies[0].shape.as_ref().unwrap();
     assert!((occt::volume(plate) - (1200. - PI * 31.) * 10.).abs() < 1e-5);
 }
+
+#[test]
+fn rebuilds_saved_sweep_loft_and_arc_length_pattern() {
+    use crate::document::Model;
+    use crate::rebuild::rebuild;
+    use std::collections::BTreeSet;
+    use std::f64::consts::PI;
+
+    let profile = |id: &str, name: &str, radius: f64, z: f64| {
+        json!({ "id": id, "name": name, "type": "sketch", "inputs": { "sketch": {
+            "name": name, "plane": { "origin": [0, 0, z] },
+            "points": [{ "id": "p", "x": 0, "y": 0 }],
+            "entities": [{ "id": "c", "kind": "circle", "center": "p", "radius": radius }]
+        }}})
+    };
+    let line = |id: &str, name: &str, end: [f64; 2]| {
+        json!({ "id": id, "name": name, "type": "sketch", "inputs": { "sketch": {
+            "name": name, "plane": { "x_axis": [1, 0, 0], "normal": [0, -1, 0] },
+            "points": [{ "id": "a", "x": 0, "y": 0 }, { "id": "b", "x": end[0], "y": end[1] }],
+            "entities": [{ "id": "l", "kind": "line", "start": "a", "end": "b" }]
+        }}})
+    };
+    let mut payload = json!({ "format": 4, "features": [
+        profile("start", "Large", 10., 0.),
+        profile("end", "Small", 4., 20.),
+        line("sweep-path", "Rise", [0., 40.]),
+        line("pattern-path", "Across", [40., 0.]),
+        {"id": "sweep", "type": "sweep", "name": "Sweep", "inputs": {"profile": "Small", "path": "Rise"}},
+        {"id": "loft", "type": "loft", "name": "Loft", "inputs": {"sketches": ["Large", "Small"], "ruled": true}},
+        {"id": "tile", "type": "box", "name": "Tile", "inputs": {"width": 2, "depth": 3, "height": 4}},
+        {"id": "pattern", "type": "path_pattern", "name": "Pattern", "inputs": {
+            "body": {"__body__": "Tile"}, "path": "Across", "count": 5
+        }}
+    ]});
+    crate::graph::normalise(&mut payload);
+    let mut model = Model::new(payload);
+    let report = rebuild(&mut model, &[], &HashMap::new(), &BTreeSet::new()).unwrap();
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    for (body, expected) in report
+        .bodies
+        .iter()
+        .zip([640. * PI, PI * 20. / 3. * 156., 120.])
+    {
+        let shape = body.shape.as_ref().unwrap();
+        assert!(occt::is_valid(shape).unwrap(), "{}", body.name);
+        let actual = occt::volume(shape);
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "{}: {actual} vs {expected}",
+            body.name
+        );
+    }
+    let pattern = report.bodies[2].shape.as_ref().unwrap();
+    assert_eq!(occt::solid_count(pattern), 5);
+    assert!((occt::bounds(pattern).unwrap()[3] - 42.).abs() < 1e-6);
+}

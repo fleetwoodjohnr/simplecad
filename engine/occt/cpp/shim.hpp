@@ -53,8 +53,7 @@ struct TextureRegion;
 struct ClipSpec;
 struct ClipPlacementSpec;
 struct ClipOutput;
-struct SketchPlane;
-struct SketchEdge;
+struct SketchProfile;
 struct SketchAxis;
 
 class Shape {
@@ -77,10 +76,14 @@ public:
   gp_Trsf trsf;
 };
 
-std::unique_ptr<Shape> extrude_sketch(const SketchPlane &plane, rust::Slice<const SketchEdge> edges,
+std::unique_ptr<Shape> extrude_sketch(const SketchProfile &profile,
                                       double distance, bool symmetric);
-std::unique_ptr<Shape> revolve_sketch(const SketchPlane &plane, rust::Slice<const SketchEdge> edges,
+std::unique_ptr<Shape> revolve_sketch(const SketchProfile &profile,
                                       const SketchAxis &axis, double radians);
+std::unique_ptr<Shape> sweep_sketch(const SketchProfile &profile, const SketchProfile &path,
+                                    bool keep_orientation, bool contact);
+std::unique_ptr<Shape> loft_sketches(rust::Slice<const SketchProfile> sections, bool ruled);
+rust::Vec<double> sketch_path_offsets(const SketchProfile &path, uint32_t count);
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 TextResult face_text(const Shape &body, const PlaneFrame &plane,
                      rust::Slice<const TextCharacter> text,

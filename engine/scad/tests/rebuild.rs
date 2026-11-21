@@ -78,7 +78,7 @@ fn an_edited_pull_rebuilds_with_the_pulls_after_it() {
     );
 
     // A step that has to run and is not ported yet fails in words, keeping the body.
-    model.payload["features"][2]["type"] = json!("loft");
+    model.payload["features"][2]["type"] = json!("future_feature");
     let last = BTreeSet::from([id(&model, 2)]);
     let shown: HashMap<String, Shape> = report
         .bodies

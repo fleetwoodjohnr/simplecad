@@ -135,6 +135,10 @@ impl Context<'_> {
             .and_then(Value::as_str)
             .filter(|name| !name.is_empty())
             .ok_or_else(|| failed("This feature has no sketch. Select a sketch first."))?;
+        self.named_sketch(name)
+    }
+
+    pub(crate) fn named_sketch(&self, name: &str) -> Result<&Value, StepError> {
         self.sketches
             .get(&format!("__sketch__{name}"))
             .map(Rc::as_ref)
@@ -455,6 +459,9 @@ pub const PORTED: &[&str] = &[
     "circular_pattern",
     "extrude",
     "revolve",
+    "sweep",
+    "loft",
+    "path_pattern",
     "embedded_import",
     "import",
 ];
@@ -722,7 +729,7 @@ fn execute(
     };
     let run = || -> Result<BTreeMap<String, Shape>, StepError> {
         match kind {
-            "extrude" | "revolve" => {
+            "extrude" | "revolve" | "sweep" | "loft" => {
                 let shape = crate::sketch::modeling::build(kind, ctx)?;
                 Ok(BTreeMap::from([(name()?, Rc::new(shape))]))
             }
@@ -991,9 +998,9 @@ fn execute(
                 Ok(BTreeMap::from([(name, shape)]))
             }
             "clip_joint" => crate::clip::build(ctx),
-            "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
-                [(body_name()?, crate::advanced::build(kind, ctx)?)],
-            )),
+            "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" | "path_pattern" => Ok(
+                BTreeMap::from([(body_name()?, crate::advanced::build(kind, ctx)?)]),
+            ),
             "boolean" => combine(ctx),
             "split" => {
                 let coordinates = |key, default| -> Result<[f64; 3], StepError> {

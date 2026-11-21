@@ -105,6 +105,20 @@ pub(crate) fn build(kind: &str, ctx: &Context) -> Result<Shape, StepError> {
                 add(&turn)?;
             }
         }
+        "path_pattern" => {
+            let count = count("count", 4.0)?;
+            if count > 400 {
+                return Err(too_many());
+            }
+            let profile = crate::sketch::modeling::read_profile(ctx.sketch("path")?)?;
+            let offsets = occt::sketch_path_offsets(&profile, count as u32).map_err(kernel)?;
+            if offsets.is_empty() {
+                return Ok(shape);
+            }
+            for translation in offsets.as_chunks::<3>().0 {
+                add(&occt::trsf_translation(translation))?;
+            }
+        }
         _ => unreachable!("unknown advanced modeling step: {kind}"),
     }
     occt::fuse_copies(&shape, &copies)

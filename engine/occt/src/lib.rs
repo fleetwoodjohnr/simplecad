@@ -217,6 +217,11 @@ pub mod ffi {
         pub parameters: [f64; 3],
     }
 
+    pub struct SketchProfile {
+        pub plane: SketchPlane,
+        pub edges: Vec<SketchEdge>,
+    }
+
     pub struct SketchAxis {
         pub origin: [f64; 3],
         pub direction: [f64; 3],
@@ -229,17 +234,23 @@ pub mod ffi {
         type Shape;
 
         fn extrude_sketch(
-            plane: &SketchPlane,
-            edges: &[SketchEdge],
+            profile: &SketchProfile,
             distance: f64,
             symmetric: bool,
         ) -> Result<UniquePtr<Shape>>;
         fn revolve_sketch(
-            plane: &SketchPlane,
-            edges: &[SketchEdge],
+            profile: &SketchProfile,
             axis: &SketchAxis,
             radians: f64,
         ) -> Result<UniquePtr<Shape>>;
+        fn sweep_sketch(
+            profile: &SketchProfile,
+            path: &SketchProfile,
+            keep_orientation: bool,
+            contact: bool,
+        ) -> Result<UniquePtr<Shape>>;
+        fn loft_sketches(sections: &[SketchProfile], ruled: bool) -> Result<UniquePtr<Shape>>;
+        fn sketch_path_offsets(path: &SketchProfile, count: u32) -> Result<Vec<f64>>;
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
         fn face_text(
             body: &Shape,

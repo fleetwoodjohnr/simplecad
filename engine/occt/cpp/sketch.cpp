@@ -7,13 +7,18 @@
 #include <stdexcept>
 #include <vector>
 
+#include <BRepAdaptor_CompCurve.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepTools.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
 #include <Geom_BSplineCurve.hxx>
@@ -87,20 +92,40 @@ double area(const TopoDS_Face &face) {
   return properties.Mass();
 }
 
-TopoDS_Face profile(const SketchPlane &plane, rust::Slice<const SketchEdge> edges) {
+occ::handle<Sequence> connected_wires(const SketchProfile &sketch) {
   occ::handle<Sequence> segments = new Sequence();
-  for (const SketchEdge &edge : edges) {
-    const auto curve = sketch_edge(edge, plane);
+  for (const SketchEdge &edge : sketch.edges) {
+    const auto curve = sketch_edge(edge, sketch.plane);
     if (!curve.IsNull()) segments->Append(curve);
   }
-  if (segments->IsEmpty()) throw std::runtime_error("This sketch has no closed profile.");
-  const auto wires = ShapeAnalysis_FreeBounds::ConnectEdgesToWires(segments, weld, false);
+  if (segments->IsEmpty()) return new Sequence();
+  return ShapeAnalysis_FreeBounds::ConnectEdgesToWires(segments, weld, false);
+}
+
+bool closed(const TopoDS_Wire &wire) {
+  TopoDS_Vertex first, last;
+  TopExp::Vertices(wire, first, last);
+  return first.IsNull() || last.IsNull() || BRep_Tool::Pnt(first).Distance(BRep_Tool::Pnt(last)) <= weld;
+}
+
+TopoDS_Wire path_wire(const SketchProfile &sketch, bool prefer_closed) {
+  const auto wires = connected_wires(sketch);
+  if (wires->IsEmpty()) throw std::runtime_error("The path sketch has no usable curve.");
+  if (prefer_closed) {
+    for (int i = 1; i <= wires->Length(); ++i) {
+      const auto wire = TopoDS::Wire(wires->Value(i));
+      if (closed(wire)) return wire;
+    }
+  }
+  return TopoDS::Wire(wires->Value(1));
+}
+
+TopoDS_Face profile(const SketchProfile &sketch) {
+  const auto wires = connected_wires(sketch);
   std::vector<std::pair<double, TopoDS_Wire>> loops;
   for (int i = 1; i <= wires->Length(); ++i) {
     const TopoDS_Wire wire = TopoDS::Wire(wires->Value(i));
-    TopoDS_Vertex first, last;
-    TopExp::Vertices(wire, first, last);
-    if (!first.IsNull() && !last.IsNull() && BRep_Tool::Pnt(first).Distance(BRep_Tool::Pnt(last)) > weld) continue;
+    if (!closed(wire)) continue;
     BRepBuilderAPI_MakeFace face(wire, true);
     if (face.IsDone()) loops.emplace_back(area(face.Face()), wire);
   }
@@ -126,10 +151,10 @@ TopoDS_Face profile(const SketchPlane &plane, rust::Slice<const SketchEdge> edge
 
 } // namespace
 
-std::unique_ptr<Shape> extrude_sketch(const SketchPlane &plane, rust::Slice<const SketchEdge> edges,
+std::unique_ptr<Shape> extrude_sketch(const SketchProfile &sketch,
                                       double distance, bool symmetric) {
-  const gp_Vec offset = gp_Vec(xyz(plane.normal)) * distance;
-  TopoDS_Face face = profile(plane, edges);
+  const gp_Vec offset = gp_Vec(xyz(sketch.plane.normal)) * distance;
+  TopoDS_Face face = profile(sketch);
   if (symmetric) {
     gp_Trsf shift;
     shift.SetTranslation(offset * -0.5);
@@ -141,13 +166,51 @@ std::unique_ptr<Shape> extrude_sketch(const SketchPlane &plane, rust::Slice<cons
   return unify(Shape(extrude.Shape()));
 }
 
-std::unique_ptr<Shape> revolve_sketch(const SketchPlane &plane, rust::Slice<const SketchEdge> edges,
+std::unique_ptr<Shape> revolve_sketch(const SketchProfile &sketch,
                                       const SketchAxis &axis, double radians) {
   const gp_Ax1 around(gp_Pnt(xyz(axis.origin)), gp_Dir(xyz(axis.direction)));
-  BRepPrimAPI_MakeRevol revolve(profile(plane, edges), around, radians);
+  BRepPrimAPI_MakeRevol revolve(profile(sketch), around, radians);
   revolve.Build();
   if (!revolve.IsDone()) throw std::runtime_error("The sketch could not be revolved.");
   return unify(Shape(revolve.Shape()));
+}
+
+std::unique_ptr<Shape> sweep_sketch(const SketchProfile &section, const SketchProfile &path,
+                                    bool keep_orientation, bool contact) {
+  BRepOffsetAPI_MakePipeShell sweep(path_wire(path, true));
+  if (keep_orientation) sweep.SetMode(gp_Dir(xyz(section.plane.normal)));
+  sweep.Add(BRepTools::OuterWire(profile(section)), contact, true);
+  sweep.Build();
+  if (!sweep.IsDone() || !sweep.MakeSolid()) {
+    throw std::runtime_error("The profile could not be swept along that path. Try a gentler path or smaller profile.");
+  }
+  return unify(Shape(sweep.Shape()));
+}
+
+std::unique_ptr<Shape> loft_sketches(rust::Slice<const SketchProfile> sections, bool ruled) {
+  if (sections.size() < 2) throw std::runtime_error("A loft needs at least two profiles.");
+  BRepOffsetAPI_ThruSections loft(true, ruled);
+  for (const auto &section : sections) loft.AddWire(BRepTools::OuterWire(profile(section)));
+  loft.Build();
+  if (!loft.IsDone()) throw std::runtime_error("These profiles could not be blended. Check that each profile is closed.");
+  return unify(Shape(loft.Shape()));
+}
+
+rust::Vec<double> sketch_path_offsets(const SketchProfile &path, uint32_t count) {
+  const BRepAdaptor_CompCurve curve(path_wire(path, false));
+  const double total = GCPnts_AbscissaPoint::Length(curve);
+  const auto start = curve.Value(curve.FirstParameter());
+  rust::Vec<double> offsets;
+  for (uint32_t index = 1; index < count; ++index) {
+    const double distance = total * index / (count - 1);
+    const GCPnts_AbscissaPoint locator(curve, distance, curve.FirstParameter());
+    if (!locator.IsDone()) throw std::runtime_error("A copy could not be located on the pattern path.");
+    const gp_XYZ offset = curve.Value(locator.Parameter()).XYZ() - start.XYZ();
+    offsets.push_back(offset.X());
+    offsets.push_back(offset.Y());
+    offsets.push_back(offset.Z());
+  }
+  return offsets;
 }
 
 } // namespace simplecad
