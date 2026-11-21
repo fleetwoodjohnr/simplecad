@@ -43,16 +43,26 @@ async function downloadWithDialog(window: BrowserWindow, release: Release, asset
 }
 
 export async function checkForUpdates(window: BrowserWindow) {
-  if (checking) return
+  if (checking || window.isDestroyed()) return
   checking = true
   const version = app.getVersion()
   try {
+    const kind = await installKind()
+    if (window.isDestroyed()) return
+    if (kind === 'flatpak') {
+      await dialog.showMessageBox(window, {
+        type: 'info',
+        message: 'Flatpak manages SimpleCAD updates',
+        detail: 'Use your software centre or run flatpak update io.github.fleetwoodjohnr.SimpleCAD.'
+      })
+      return
+    }
     const release = await checkRelease(version)
+    if (window.isDestroyed()) return
     if (!release) {
       await dialog.showMessageBox(window, { type: 'info', message: 'SimpleCAD is up to date', detail: `Installed version ${version}` })
       return
     }
-    const kind = await installKind()
     const asset = updateAsset(release, kind, process.arch)
     const go = asset ? 'Download and install' : 'View release'
     const { response } = await dialog.showMessageBox(window, {
