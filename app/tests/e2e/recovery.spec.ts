@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import type { ElectronApplication, Page } from '@playwright/test'
 import { expect, launch, test } from './helpers'
 
@@ -26,9 +28,15 @@ test('unsaved work is autosaved, and offered back after a crash', async () => {
   await pullTop(first.page, '-2')
   await expect(status).toHaveText(/21600 mm³/)
   await expect.poll(() => readdirSync(recovery).filter((f) => f.endsWith('.scad3')).length, { timeout: 10_000 }).toBe(1)
-  const crashed = first.app.waitForEvent('close')
-  first.app.process().kill('SIGKILL')
-  await crashed
+  const child = first.app.process()
+  if (process.platform === 'win32') {
+    // Chromium's children can keep the Playwright transport open after the
+    // Windows main process dies. Terminate this launch's entire process tree.
+    await promisify(execFile)('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'])
+  } else {
+    expect(child.kill('SIGKILL')).toBe(true)
+  }
+  await expect.poll(() => child.exitCode !== null || child.signalCode !== null).toBe(true)
 
   const { app, page } = await launch({ env })
   const offer = page.getByRole('region', { name: 'Unsaved work from last time' })
