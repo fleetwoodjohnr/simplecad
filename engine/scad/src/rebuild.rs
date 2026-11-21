@@ -1877,11 +1877,10 @@ pub fn rebuild(
             .map_or((fid, name), |(_, head, output)| {
                 (head.as_str(), output.as_str())
             });
-        // Recover only public outputs with an available name when the object
-        // is absent from the saved document.
+        // An output absent from the saved document cannot take a name already
+        // owned by a different object.
         if !previous.contains_key(oid)
             && (still_consumed
-                || output.starts_with("__")
                 || saved_names.contains(output)
                 || rebuilder.features[producer]["dropped"]
                     .as_array()
