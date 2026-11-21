@@ -95,6 +95,9 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
       - run: python -m pip install $(grep -hEi '^(pyside6|pillow|cryptography|packaging)[=<>]' requirements.txt requirements-build.txt)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -176,12 +179,15 @@ jobs:
           SIMPLECAD_CONTAINER_ENGINE: docker
         run: |
           set -euo pipefail
-          gh release download v0.4.4 --dir baseline -p '*.deb' -p '*.rpm' -p SHA256SUMS -p SHA256SUMS.sig
+          gh release download v0.4.4 --dir baseline -p '*.deb' -p '*.rpm' -p '*.AppImage' -p SHA256SUMS -p SHA256SUMS.sig
           for kind in deb rpm; do
             old="baseline/SimpleCAD-0.4.4-linux-x86_64.$kind"
             python scripts/verify_release_package.py "$old"
             scripts/upgrade_drill.sh "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.$kind"
           done
+          old=baseline/SimpleCAD-0.4.4-linux-x86_64.AppImage
+          python scripts/verify_release_package.py "$old"
+          node scripts/appimage_upgrade_drill.mjs "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.AppImage" "$SIMPLECAD_VERSION"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
