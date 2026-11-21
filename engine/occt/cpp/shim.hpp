@@ -44,6 +44,7 @@ struct CylinderData;
 struct SplitParts;
 struct HoleCut;
 struct ImportedBody;
+struct MeshImport;
 struct TextCharacter;
 struct TextSpec;
 struct TextResult;
@@ -112,6 +113,8 @@ rust::Vec<uint8_t> write_brep(const Shape &shape);
 rust::Vec<ImportedBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fallback_name);
 rust::Vec<ImportedBody> read_iges_file(rust::Str path, rust::Str fallback_name);
 rust::Vec<ImportedBody> read_brep_parts(rust::Slice<const uint8_t> bytes, rust::Str fallback_name);
+MeshImport import_mesh(rust::Slice<const double> points, rust::Slice<const uint32_t> triangles,
+                       rust::Slice<const uint32_t> boundaries);
 rust::Vec<uint8_t> write_step(const Shapes &shapes);
 std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> matrix);
 double volume(const Shape &shape);

@@ -42,6 +42,7 @@ fn main() {
     cxx_build::bridge("src/lib.rs")
         .file("cpp/shim.cpp")
         .file("cpp/step.cpp")
+        .file("cpp/mesh_import.cpp")
         .file("cpp/thread.cpp")
         .file("cpp/text.cpp")
         .file("cpp/texture.cpp")
@@ -69,6 +70,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GEOS_DIR");
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
     println!("cargo:rerun-if-changed=cpp/step.cpp");
+    println!("cargo:rerun-if-changed=cpp/mesh_import.cpp");
     println!("cargo:rerun-if-changed=cpp/thread.cpp");
     println!("cargo:rerun-if-changed=cpp/text.cpp");
     println!("cargo:rerun-if-changed=cpp/texture.cpp");

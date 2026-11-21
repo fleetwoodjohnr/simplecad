@@ -32,21 +32,27 @@ export function acceptProjectFile(token: unknown) {
 }
 
 export async function openModelFile(window: BrowserWindow): Promise<ModelImport | undefined> {
-  const formats = new Map<string, ImportFormat>([['step', 'step'], ['stp', 'step'], ['brep', 'brep'], ['igs', 'iges'], ['iges', 'iges']])
+  const formats = new Map<string, ImportFormat>([
+    ['step', 'step'], ['stp', 'step'], ['brep', 'brep'],
+    ['igs', 'iges'], ['iges', 'iges'], ['stl', 'stl'], ['obj', 'obj'], ['3mf', '3mf']
+  ])
   const choice = await dialog.showOpenDialog(window, {
     properties: ['openFile'],
     filters: [
       { name: 'Supported models', extensions: [...formats.keys()] },
       { name: 'STEP', extensions: ['step', 'stp'] },
       { name: 'B-Rep', extensions: ['brep'] },
-      { name: 'IGES', extensions: ['igs', 'iges'] }
+      { name: 'IGES', extensions: ['igs', 'iges'] },
+      { name: 'STL', extensions: ['stl'] },
+      { name: 'OBJ', extensions: ['obj'] },
+      { name: '3MF', extensions: ['3mf'] }
     ]
   })
   if (choice.canceled || !choice.filePaths.length) return
   const target = choice.filePaths[0]
   const ext = path.extname(target)
   const importFormat = formats.get(ext.slice(1).toLowerCase())
-  if (!importFormat) throw new Error('Choose a STEP, B-Rep or IGES file.')
+  if (!importFormat) throw new Error('Choose a supported model file.')
   return { importName: path.basename(target, ext), data: await readInputFile(target), importFormat }
 }
 

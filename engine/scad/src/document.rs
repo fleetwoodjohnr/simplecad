@@ -16,6 +16,7 @@ pub struct ImportedPart {
     pub name: String,
     pub asset: Vec<u8>,
     pub placed: Vec<u8>,
+    pub note: String,
 }
 
 pub struct StepSummary {
@@ -1024,6 +1025,7 @@ impl Model {
             name: label,
             asset: brep,
             placed,
+            note,
         } in parts
         {
             let asset = format!("{:x}", Sha256::digest(&brep));
@@ -1040,7 +1042,10 @@ impl Model {
                 assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
             }
             let [dx, dy, dz] = offset;
-            let inputs = json!({ "asset": asset, "dx": dx, "dy": dy, "dz": dz });
+            let mut inputs = json!({ "asset": asset, "dx": dx, "dy": dy, "dz": dz });
+            if !note.is_empty() {
+                inputs["mesh_note"] = json!(note);
+            }
             let name = self.record_primitive(
                 &new_feature_id(),
                 "embedded_import",
@@ -1072,6 +1077,7 @@ impl Model {
         inputs: Value,
         brep: Vec<u8>,
     ) -> Result<String, String> {
+        let note = inputs["mesh_note"].as_str().unwrap_or("").to_owned();
         // Named before the undo snapshot, as the panel does.
         let name = self.unique_name(label);
         let before = self.document();
@@ -1085,7 +1091,7 @@ impl Model {
         payload["bodies"].as_array_mut().unwrap().push(json!({
             "id": object, "name": name, "visible": true, "color": null, "producer": id, "metadata": {},
         }));
-        self.record(id, label, &object, brep, before, "")?;
+        self.record(id, label, &object, brep, before, &note)?;
         Ok(name)
     }
 

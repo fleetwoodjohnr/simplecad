@@ -154,6 +154,7 @@ fn a_deleted_cutter_can_be_replaced_by_object_id_and_the_repair_is_undoable() {
                 name: "Peg".into(),
                 asset: brep.clone(),
                 placed: brep,
+                note: String::new(),
             }],
             [0.0; 3],
         )

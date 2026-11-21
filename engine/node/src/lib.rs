@@ -353,7 +353,10 @@ impl Project {
             "step" => ffi::read_step(&bytes, &name).map_err(reason),
             "brep" => ffi::read_brep_parts(&bytes, &name).map_err(reason),
             "iges" => scad::iges::read(&bytes, &name).map_err(Error::from_reason),
-            _ => Err(Error::from_reason("Choose a STEP, B-Rep or IGES file.")),
+            "stl" | "obj" | "3mf" => {
+                scad::mesh_import::read(&format, &bytes, &name).map_err(Error::from_reason)
+            }
+            _ => Err(Error::from_reason("Choose a supported model file.")),
         }?;
         if parts.len() > limit as usize {
             return Err(Error::from_reason(
@@ -388,6 +391,7 @@ impl Project {
                     name: part.name.clone(),
                     asset,
                     placed,
+                    note: part.note.clone(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;

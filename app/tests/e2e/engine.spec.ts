@@ -353,6 +353,59 @@ async function offerFixture(app: ElectronApplication) {
   }, fixture)
 }
 
+for (const [format, imported] of [['stl', 'Model'], ['obj', 'Box2'], ['3mf', 'Box2']] as const) {
+  test(`round-trips ${format.toUpperCase()} as editable geometry and embeds the source`, async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-mesh-import-'))
+    const source = path.join(scratch, `Model.${format}`)
+    const target = path.join(scratch, 'Mesh.scad3')
+    try {
+      const { app, page } = await launch()
+      const status = page.getByTestId('engine-status')
+      const file = page.getByRole('button', { name: 'File', exact: true })
+      await expect(status).toHaveText(/24000 mm³/)
+      await app.evaluate(({ dialog }, filePath) => {
+        dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+        dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+      }, source)
+      await file.click()
+      await page.getByRole('menuitem', { name: `Export ${format.toUpperCase()}` }).click()
+      await expect.poll(async () => (await readFile(source).catch(() => Buffer.alloc(0))).length).toBeGreaterThan(0)
+      await file.click()
+      await page.getByRole('menuitem', { name: /Import/ }).click()
+      await expect(status).toHaveText(/48000 mm³/)
+      await page.getByLabel('Planar face').selectOption({ label: `${imported} · Top · 1200 mm²` })
+      const distance = page.getByLabel('Pull distance')
+      await distance.fill('1')
+      await distance.press('Enter')
+      await expect(status).toHaveText(/49200 mm³/)
+      const undo = page.getByRole('button', { name: 'Undo', exact: true })
+      await undo.click()
+      await expect(status).toHaveText(/48000 mm³/)
+      await undo.click()
+      await expect(status).toHaveText(/24000 mm³/)
+      const redo = page.getByRole('button', { name: 'Redo', exact: true })
+      await redo.click()
+      await expect(status).toHaveText(/48000 mm³/)
+      await app.evaluate(({ dialog }, filePath) => {
+        dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+        dialog.showOpenDialog = async () => ({ filePaths: [filePath], canceled: false })
+      }, target)
+      await file.click()
+      await page.getByRole('menuitem', { name: /^Save As/ }).click()
+      await expect(page.getByText('Mesh.scad3', { exact: true })).toBeVisible()
+      await rename(source, path.join(scratch, `moved.${format}`))
+      await file.click()
+      await page.getByRole('menuitem', { name: 'New box' }).click()
+      await expect(status).toHaveText(/24000 mm³/)
+      await file.click()
+      await page.getByRole('menuitem', { name: 'Open project' }).click()
+      await expect(status).toHaveText(/48000 mm³/)
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
+  })
+}
+
 test('stacks two parts after undo and records the new placement as one step', async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')

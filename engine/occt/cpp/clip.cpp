@@ -365,7 +365,7 @@ ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
     female = boolean<BRepAlgoAPI_Cut>(female, moved(pocket, where));
     wall(male, male_check, placement.male_on_a);
     male = boolean<BRepAlgoAPI_Cut>(male, moved(male_pocket, where));
-    result.connectors.push_back({{}, std::make_unique<Shape>(moved(clip_shape->shape, where))});
+    result.connectors.push_back({{}, std::make_unique<Shape>(moved(clip_shape->shape, where)), {}});
   }
   result.first = unify(Shape(placement.male_on_a ? male : female));
   result.second = unify(Shape(placement.male_on_a ? female : male));

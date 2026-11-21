@@ -68,7 +68,7 @@ void append_bodies(rust::Vec<ImportedBody> &bodies, const TopoDS_Shape &shape, c
   }
   for (std::size_t i = 0; i < parts.size(); ++i) {
     const auto label = parts.size() == 1 ? name : name + " " + std::to_string(i + 1);
-    bodies.push_back({rust::String::lossy(label), std::make_unique<Shape>(parts[i])});
+    bodies.push_back({rust::String::lossy(label), std::make_unique<Shape>(parts[i]), {}});
   }
 }
 

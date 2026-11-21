@@ -601,7 +601,7 @@ export function App() {
                       <Pencil className="size-3.5" />
                     </IconBtn>}
                   </div>
-                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention') && step.message &&
+                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import') && step.message &&
                     <p className="mt-1 break-words text-text-2">{step.message}</p>}
                   {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
                     aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined) }}>Repair input</Btn>}

@@ -8,6 +8,7 @@ pub mod evaluate;
 pub mod export;
 pub mod graph;
 pub mod iges;
+pub mod mesh_import;
 pub mod params;
 mod profiles;
 pub mod project;

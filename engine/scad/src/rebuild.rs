@@ -579,6 +579,9 @@ fn execute(
                 Ok(BTreeMap::from([(name()?, import_offset(ctx, body)?)]))
             }
             "embedded_import" => {
+                if let Some(note) = ctx.input("mesh_note").and_then(Value::as_str) {
+                    ctx.set_message(note.into());
+                }
                 let asset = ctx.input("asset").and_then(Value::as_str).unwrap_or("");
                 let feature = ctx.feature["name"].as_str().unwrap_or("");
                 let blob = store.and_then(|store| store.model_blobs.get(asset).cloned()
@@ -1409,6 +1412,9 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
         "step" | "stp" => "STEP",
         "brep" => "B-Rep",
         "iges" | "igs" => "IGES",
+        "stl" => "STL",
+        "obj" => "OBJ",
+        "3mf" => "3MF",
         _ => {
             return Err(failed(format!(
                 "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
@@ -1438,9 +1444,12 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
         .and_then(|stem| stem.to_str())
         .unwrap_or("Imported");
     let error = |_| failed(format!("'{name}' is not a readable {format} file."));
-    let parts = match format {
-        "B-Rep" => occt::read_brep_parts(&bytes, fallback).map_err(error)?,
-        "IGES" => crate::iges::read(&bytes, fallback).map_err(failed)?,
+    let parts = match extension.as_str() {
+        "brep" => occt::read_brep_parts(&bytes, fallback).map_err(error)?,
+        "iges" | "igs" => crate::iges::read(&bytes, fallback).map_err(failed)?,
+        "stl" | "obj" | "3mf" => {
+            crate::mesh_import::read(&extension, &bytes, fallback).map_err(failed)?
+        }
         _ => occt::read_step(&bytes, fallback).map_err(error)?,
     };
     Ok(parts.into_iter().map(|part| Rc::new(part.shape)).collect())

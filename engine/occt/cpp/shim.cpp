@@ -121,6 +121,9 @@ struct Plane {
 
 // A planar face's centre, outward normal and area; nothing for a curved face.
 std::optional<Plane> analyse_plane(const TopoDS_Face &face) {
+  if (BRep_Tool::Surface(face).IsNull()) {
+    return std::nullopt;
+  }
   BRepAdaptor_Surface adaptor(face);
   if (adaptor.GetType() != GeomAbs_Plane) {
     return std::nullopt;
@@ -156,6 +159,10 @@ std::pair<gp_XYZ, gp_XYZ> corners(const TopoDS_Shape &shape) {
     return {gp_XYZ(0, 0, 0), gp_XYZ(0, 0, 0)};
   }
   return {box.CornerMin().XYZ(), box.CornerMax().XYZ()};
+}
+
+bool display_mesh(const TopoDS_Shape &shape) {
+  return shape.ShapeType() == TopAbs_FACE && BRep_Tool::Surface(TopoDS::Face(shape)).IsNull();
 }
 
 // The offsets *shape* covers along *normal*, from its bounding box.
@@ -426,6 +433,10 @@ rust::Vec<FaceData> faces(const Shape &shape) {
       data.center = {plane->center.X(), plane->center.Y(), plane->center.Z()};
       data.normal = {plane->normal.X(), plane->normal.Y(), plane->normal.Z()};
       data.area = plane->area;
+    } else if (display_mesh(face)) {
+      const auto [low, high] = corners(face);
+      const auto center = (low + high) / 2.0;
+      data.center = {center.X(), center.Y(), center.Z()};
     } else {
       GProp_GProps props;
       BRepGProp::SurfaceProperties(face, props);
@@ -440,6 +451,13 @@ rust::Vec<FaceData> faces(const Shape &shape) {
 
 static FaceFingerprint describe_face(const TopoDS_Face &face) {
   FaceFingerprint out{};
+  if (display_mesh(face)) {
+    out.geometry = "mesh";
+    const auto [low, high] = corners(face);
+    const auto center = (low + high) / 2.0;
+    out.center = {center.X(), center.Y(), center.Z()};
+    return out;
+  }
   GProp_GProps props;
   BRepGProp::SurfaceProperties(face, props);
   const gp_Pnt c = props.CentreOfMass();
@@ -1034,6 +1052,7 @@ std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> m) 
 }
 
 double volume(const Shape &shape) {
+  if (display_mesh(shape.shape)) return 0.0;
   GProp_GProps props;
   BRepGProp::VolumeProperties(shape.shape, props);
   return props.Mass();
@@ -1076,7 +1095,9 @@ SplitParts split_solid(const Shape &shape, rust::Slice<const double> point,
 }
 
 MeshBuffers mesh(const Shape &shape, double deflection, double angle) {
-  BRepMesh_IncrementalMesh mesher(shape.shape, deflection, false, angle, true);
+  if (!display_mesh(shape.shape)) {
+    BRepMesh_IncrementalMesh mesher(shape.shape, deflection, false, angle, true);
+  }
   MeshBuffers out;
 
   ShapeMap faces;
@@ -1192,7 +1213,7 @@ rust::Vec<double> trsf_values(const Trsf &trsf) {
 }
 
 std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, bool copy) {
-  BRepBuilderAPI_Transform builder(shape.shape, trsf.trsf, copy);
+  BRepBuilderAPI_Transform builder(shape.shape, trsf.trsf, copy, display_mesh(shape.shape));
   if (!builder.IsDone()) {
     throw std::runtime_error("The move operation did not succeed on this geometry.");
   }
