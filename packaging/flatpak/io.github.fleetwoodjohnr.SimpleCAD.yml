@@ -1,11 +1,13 @@
-# Flatpak wrapping the PyInstaller bundle (packaging/build.py bundle flatpak-tarball).
+# Flatpak wrapping the desktop bundle made by packaging/build.py flatpak-tarball.
 # Not suitable for Flathub, which wants a from-source build; fine for a release
 # download and for local install:
 #   flatpak-builder --user --install build-flatpak packaging/flatpak/io.github.fleetwoodjohnr.SimpleCAD.yml
 # Updates for a Flatpak come from Flatpak; the app only tells the user.
 app-id: io.github.fleetwoodjohnr.SimpleCAD
 runtime: org.freedesktop.Platform
-runtime-version: "24.08"
+runtime-version: "26.08"
+base: org.electronjs.Electron2.BaseApp
+base-version: "26.08"
 sdk: org.freedesktop.Sdk
 command: simplecad
 finish-args:
@@ -20,10 +22,14 @@ modules:
     build-commands:
       - mkdir -p /app/lib /app/bin
       - cp -a SimpleCAD /app/lib/simplecad
-      - ln -s /app/lib/simplecad/simplecad /app/bin/simplecad
+      - install -Dm755 launch-simplecad.sh /app/bin/simplecad
       - sed 's|SIMPLECAD_LAUNCHER|simplecad|; s|^Icon=simplecad|Icon=io.github.fleetwoodjohnr.SimpleCAD|' simplecad.desktop > io.github.fleetwoodjohnr.SimpleCAD.desktop
+      - |
+        if [ -f /app/lib/simplecad/resources/app.asar ]; then
+          sed -i 's|;model/step;application/vnd.ms-package.3dmanufacturing-3dmodel+xml;model/stl;|;|' io.github.fleetwoodjohnr.SimpleCAD.desktop
+        fi
       - install -Dm644 io.github.fleetwoodjohnr.SimpleCAD.desktop /app/share/applications/io.github.fleetwoodjohnr.SimpleCAD.desktop
-      - install -Dm644 simplecad-mime.xml /app/share/mime/packages/simplecad-mime.xml
+      - install -Dm644 simplecad-mime.xml /app/share/mime/packages/io.github.fleetwoodjohnr.SimpleCAD.xml
       - install -Dm644 simplecad.svg /app/share/icons/hicolor/scalable/apps/io.github.fleetwoodjohnr.SimpleCAD.svg
       - sed 's|<icon type="stock">simplecad</icon>|<icon type="stock">io.github.fleetwoodjohnr.SimpleCAD</icon>|; s|simplecad.desktop|io.github.fleetwoodjohnr.SimpleCAD.desktop|' io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml > metainfo.xml
       - install -Dm644 metainfo.xml /app/share/metainfo/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml
@@ -31,6 +37,8 @@ modules:
       - type: archive
         path: ../../build/simplecad-bundle-x86_64.tar.gz
         strip-components: 0
+      - type: file
+        path: launch-simplecad.sh
       - type: file
         path: ../../simplecad.desktop
       - type: file

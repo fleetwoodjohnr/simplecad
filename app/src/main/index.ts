@@ -2,6 +2,7 @@
 // page beyond the few calls preload exposes. Security settings and patterns follow the rest of the Simple suite.
 
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMainInvokeEvent } from 'electron'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
@@ -155,6 +156,7 @@ function registerIpc() {
 }
 
 if (process.env.SIMPLECAD_USER_DATA) app.setPath('userData', process.env.SIMPLECAD_USER_DATA)
+if (process.platform === 'linux' && existsSync('/.flatpak-info')) app.setDesktopName('io.github.fleetwoodjohnr.SimpleCAD.desktop')
 // Without a usable GPU (a VM, remote desktop, a CI runner) Chromium now refuses WebGL on its software
 // rasterizer unless told otherwise, and the 3D view stays blank. The "unsafe" is about untrusted web pages
 // reaching that rasterizer; this window shows only the app's own sandboxed pages.
