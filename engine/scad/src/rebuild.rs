@@ -1840,6 +1840,7 @@ pub fn rebuild(
             ))
         })
         .collect();
+    let saved_names: HashSet<&str> = previous.values().map(|(name, _)| name.as_str()).collect();
     let consumed: HashSet<String> = order
         .iter()
         .filter(|f| !f["suppressed"].as_bool().unwrap_or(false))
@@ -1876,8 +1877,12 @@ pub fn rebuild(
             .map_or((fid, name), |(_, head, output)| {
                 (head.as_str(), output.as_str())
             });
+        // Recover only public outputs with an available name when the object
+        // is absent from the saved document.
         if !previous.contains_key(oid)
             && (still_consumed
+                || output.starts_with("__")
+                || saved_names.contains(output)
                 || rebuilder.features[producer]["dropped"]
                     .as_array()
                     .is_some_and(|dropped| dropped.iter().any(|name| name == output)))

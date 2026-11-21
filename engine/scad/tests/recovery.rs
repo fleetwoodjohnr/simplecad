@@ -198,3 +198,55 @@ fn interrupted_consumption_keeps_the_tools_last_good_result() {
     assert_plates_match(peg.shape.as_ref().unwrap(), &expected);
     assert!(!report.bodies.iter().any(|body| body.name == "Block"));
 }
+
+#[test]
+fn interrupted_consumption_cannot_revive_a_tool_with_a_reused_name() {
+    let project = read(ORIGINAL).unwrap();
+    let mut model = Model::open(&project);
+    let features = model.payload["features"].as_array_mut().unwrap();
+    let cut = features
+        .iter_mut()
+        .find(|f| f["name"] == "Combine2")
+        .unwrap();
+    let cut_id = cut["id"].as_str().unwrap().to_owned();
+    let plate_id = cut["output_ids"]["Plate"].clone();
+    let old_peg = cut["output_ids"]["Peg"].as_str().unwrap().to_owned();
+    cut["bindings"]["Plate"]["feature_id"] = json!("removed");
+    features.push(json!({
+        "id": "last-cut", "type": "boolean", "name": "Last cut",
+        "inputs": {"body": {"__body__": "Plate"}, "tools": [{"__body__": "Peg"}], "operation": "cut"},
+        "outputs": ["Plate"], "output_ids": {"Plate": plate_id},
+        "bindings": {
+            "Plate": {"feature_id": cut_id, "object_id": plate_id},
+            "Peg": {"feature_id": cut_id, "object_id": old_peg},
+        },
+        "suppressed": false, "dropped": [],
+    }));
+    features.push(json!({
+        "id": "replacement", "type": "box", "name": "Replacement",
+        "inputs": {"width": 4, "depth": 5, "height": 6},
+        "outputs": ["Peg"], "output_ids": {"Peg": "new-peg"},
+        "bindings": {}, "suppressed": false, "dropped": [],
+    }));
+    let bodies = model.payload["bodies"].as_array_mut().unwrap();
+    bodies.retain(|body| body["id"] != old_peg);
+    bodies
+        .push(json!({"id": "new-peg", "name": "Peg", "producer": "replacement", "visible": true}));
+    model.payload["geometry"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&old_peg);
+    let report = rebuild(&mut model, ORIGINAL, &HashMap::new(), &BTreeSet::new()).unwrap();
+    let pegs: Vec<_> = report
+        .bodies
+        .iter()
+        .filter(|body| body.name == "Peg")
+        .collect();
+    assert_eq!(
+        pegs.iter().map(|body| body.id.as_str()).collect::<Vec<_>>(),
+        ["new-peg"]
+    );
+    let peg = pegs[0].shape.as_ref().unwrap();
+    assert!((occt::volume(peg) - 120.0).abs() < 1e-6);
+    assert!(report.failures.contains_key("last-cut"));
+}
