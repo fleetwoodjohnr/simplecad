@@ -35,6 +35,8 @@ export const commands = {
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
+  move: { label: 'Move' },
+  rotate: { label: 'Rotate' },
   text: { label: 'Text' },
   faceTexture: { label: 'Face Texture' },
   updates: { label: 'Check for updates' }

@@ -526,8 +526,89 @@ pub fn create_face_feature(
         .ok_or("The face operation produced no geometry.")?;
     let brep = occt::write_brep(&geometry).map_err(kernel)?;
     let message = ctx.into_message();
-    model.record_face_feature(picked.name, feature, label, brep, &message)?;
+    model.record_body_feature(picked.name, feature, label, brep, &message)?;
     Ok(geometry)
+}
+
+fn move_geometry(
+    ctx: &Context,
+    body: &occt::Shape,
+) -> Result<occt::UniquePtr<occt::Shape>, StepError> {
+    let numbers = |key: &str| -> Option<Vec<f64>> {
+        ctx.input(key)
+            .and_then(Value::as_array)
+            .map(|l| l.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect())
+    };
+    let axis = match ctx.input("axis") {
+        None | Some(Value::Null) => None,
+        Some(_) => {
+            let axis = numbers("axis").unwrap_or_default();
+            if axis.len() != 3 || axis.iter().map(|v| v * v).sum::<f64>().sqrt() < 1e-9 {
+                return Err(failed("This rotation has no axis to turn about."));
+            }
+            Some(axis)
+        }
+    };
+    let pivot = match numbers("pivot").filter(|p| !p.is_empty()) {
+        Some(pivot) => pivot,
+        None => {
+            // Turned about the body's own centre.
+            let b = occt::bounds(body).map_err(kernel)?;
+            (0..3).map(|k| (b[k] + b[k + 3]) / 2.0).collect()
+        }
+    };
+    let mut m = Vec::with_capacity(15);
+    for key in ["dx", "dy", "dz"] {
+        m.push(ctx.value(key, 0.0, Dimension::Length)?);
+    }
+    for key in ["rx", "ry", "rz"] {
+        m.push(ctx.value(key, 0.0, Dimension::Angle)?);
+    }
+    m.extend(pivot.iter().take(3));
+    let order = ctx.input("order").map(|o| {
+        o.as_str()
+            .map(String::from)
+            .unwrap_or_else(|| o.to_string())
+    });
+    m.push(f64::from(u8::from(order.as_deref() == Some("xyz"))));
+    match axis {
+        Some(axis) => {
+            m.push(1.0);
+            m.extend(axis);
+            m.push(ctx.value("angle", 0.0, Dimension::Angle)?);
+        }
+        None => m.extend([0.0; 5]),
+    }
+    occt::move_shape(body, &m).map_err(kernel)
+}
+
+/// Evaluate a desktop transform with the same recipe used to rebuild saved moves.
+pub fn create_transform(
+    model: &mut Model,
+    body_name: &str,
+    shape: &occt::Shape,
+    label: &str,
+    mut inputs: Value,
+) -> Result<occt::UniquePtr<occt::Shape>, String> {
+    inputs["body"] = json!({ "__body__": body_name });
+    let feature = json!({ "type": "move", "inputs": inputs });
+    let (parameters, _) = resolve(
+        model.payload["parameters"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
+    let ctx = Context {
+        feature: &feature,
+        features: None,
+        bodies: HashMap::new(),
+        parameters: &parameters,
+        message: Default::default(),
+    };
+    let moved = move_geometry(&ctx, shape).map_err(|error| error.message)?;
+    let brep = occt::write_brep(&moved).map_err(|error| error.what().to_owned())?;
+    model.record_body_feature(body_name, feature, label, brep, "")?;
+    Ok(moved)
 }
 
 /// The steps this build can run, by type; `None` for the others.
@@ -652,53 +733,7 @@ fn execute(
             }
             "move" => {
                 let body = ctx.shape("body")?;
-                let numbers = |key: &str| -> Option<Vec<f64>> {
-                    ctx.input(key)
-                        .and_then(Value::as_array)
-                        .map(|l| l.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect())
-                };
-                let axis = match ctx.input("axis") {
-                    None | Some(Value::Null) => None,
-                    Some(_) => {
-                        let axis = numbers("axis").unwrap_or_default();
-                        if axis.len() != 3 || axis.iter().map(|v| v * v).sum::<f64>().sqrt() < 1e-9
-                        {
-                            return Err(failed("This rotation has no axis to turn about."));
-                        }
-                        Some(axis)
-                    }
-                };
-                let pivot = match numbers("pivot").filter(|p| !p.is_empty()) {
-                    Some(pivot) => pivot,
-                    None => {
-                        // Turned about the body's own centre.
-                        let b = occt::bounds(&body).map_err(kernel)?;
-                        (0..3).map(|k| (b[k] + b[k + 3]) / 2.0).collect()
-                    }
-                };
-                let mut m = Vec::with_capacity(15);
-                for key in ["dx", "dy", "dz"] {
-                    m.push(ctx.value(key, 0.0, Dimension::Length)?);
-                }
-                for key in ["rx", "ry", "rz"] {
-                    m.push(ctx.value(key, 0.0, Dimension::Angle)?);
-                }
-                m.extend(pivot.iter().take(3));
-                let order = ctx.input("order").map(|o| {
-                    o.as_str()
-                        .map(String::from)
-                        .unwrap_or_else(|| o.to_string())
-                });
-                m.push(f64::from(u8::from(order.as_deref() == Some("xyz"))));
-                match axis {
-                    Some(axis) => {
-                        m.push(1.0);
-                        m.extend(axis);
-                        m.push(ctx.value("angle", 0.0, Dimension::Angle)?);
-                    }
-                    None => m.extend([0.0; 5]),
-                }
-                let moved = occt::move_shape(&body, &m).map_err(kernel)?;
+                let moved = move_geometry(ctx, &body)?;
                 Ok(BTreeMap::from([(body_name()?, Rc::new(moved))]))
             }
             "move_many" => {

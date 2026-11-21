@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedFaceEdit, type SavedFaceStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedFaceEdit, type SavedFaceStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -19,6 +19,7 @@ export interface Project {
     movingName: string; movingFace: number; targetName: string; targetFace: number
     viewDirection?: number[]; viewUp?: number[]
   }): { project: Project; shape: Shape }
+  transform(body: string, shape: Shape, request: Transform): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
   steps(): Omit<StepInfo, 'undone'>[]
@@ -163,9 +164,10 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedFaceEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedFaceEdit | TransformEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
-    const step = 'editFaceId' in edit ? this.resolveFaceSettings(edit) : this.resolve(edit)
+    const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
+      'editFaceId' in edit ? this.resolveFaceSettings(edit) : this.resolve(edit)
     return this.show(this.prepare(step).bodies)
   }
 
@@ -210,7 +212,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedFaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedFaceEdit | TransformEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editFaceId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -236,6 +238,8 @@ export class EngineDocument {
       step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face }
     } else if ('editFaceId' in edit) {
       step = this.resolveFaceSettings(edit)
+    } else if ('transform' in edit) {
+      step = { body: edit.body, transform: edit.transform }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -419,7 +423,9 @@ export class EngineDocument {
     if (!shape) throw new Error('That body has no geometry to edit.')
     let next
     if ('target' in step) next = this.place(project, bodies, shape, step)
-    else if ('faceOperation' in step) {
+    else if ('transform' in step) {
+      next = project.transform(bodies[body].name, shape, step.transform)
+    } else if ('faceOperation' in step) {
       next = project.addFaceFeature(step.faceOperation, shape, bodies[body].name, step.face, step.settings)
     }
     else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)

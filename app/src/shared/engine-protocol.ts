@@ -45,6 +45,12 @@ export interface ReferenceRepair {
 }
 export interface SavedFaceEdit { editFaceId: string; changes: Record<string, string> }
 export type SavedFaceStep = SavedFaceEdit & { replay?: { index: number; name: string; kind: string } }
+export type Vec3 = [number, number, number]
+type Expressions = [string, string, string]
+export type Transform = { kind: 'move'; values: Expressions } |
+  { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
+  { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
+export interface TransformEdit { body: number; transform: Transform }
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]
@@ -105,7 +111,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedFaceStep
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedFaceStep | TransformEdit
 
 export interface Checkpoint {
   source: Source
@@ -158,6 +164,7 @@ export type RendererCommand =
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
+  | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
@@ -217,8 +224,22 @@ function isSavedFaceStep(value: unknown): value is SavedFaceStep {
     (replay === undefined || (!!replay && typeof replay === 'object' && isIndex(replay.index) && isName(replay.name) && isName(replay.kind)))
 }
 
+function isTransformEdit(value: unknown): value is TransformEdit {
+  if (!value || typeof value !== 'object') return false
+  const { body, transform } = value as Partial<TransformEdit>
+  if (!isIndex(body) || body >= MAX_BODIES || !transform || typeof transform !== 'object') return false
+  const vec3 = (value: unknown): value is Vec3 => Array.isArray(value) && value.length === 3 &&
+    value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9)
+  const { kind, values, axis, pivot } = transform as Record<string, unknown>
+  if (!Array.isArray(values) || !values.every((value) =>
+    typeof value === 'string' && value.trim().length > 0 && value.length < 256)) return false
+  if (kind === 'move') return values.length === 3 && axis === undefined && pivot === undefined
+  return kind === 'rotate' && (pivot === undefined || vec3(pivot)) &&
+    (axis === undefined ? values.length === 3 : values.length === 1 && vec3(axis) && Math.hypot(...axis) > 1e-9)
+}
+
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedFaceStep(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedFaceStep(value) || isTransformEdit(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -324,6 +345,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'previewFace' || m.op === 'applyFace') && isFaceEdit(m)) ||
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
+        ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||
         (m.op === 'repairInput' && isReferenceRepair(m)) ||
         ((m.op === 'previewSavedFace' || m.op === 'editSavedFace') && isSavedFaceStep(m) && m.replay === undefined) ||

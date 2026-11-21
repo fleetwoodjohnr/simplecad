@@ -38,6 +38,9 @@ class FakeProject implements Project {
   pushPull(body: string, shape: Shape, face: number, distance: number) {
     return { project: new FakeProject([...this.made, `${body} ${face} ${distance}`]), shape: (shape as FakeShape).pushPull(face, distance) }
   }
+  transform(_body: string, shape: Shape, _request: Parameters<Project['transform']>[2]) {
+    return { project: this, shape }
+  }
   place(...[moving, , request]: Parameters<Project['place']>) {
     const name = `${request.movingName} ${request.movingFace} to ${request.targetName} ${request.targetFace}`
     return { project: new FakeProject([...this.made, name]), shape: moving }

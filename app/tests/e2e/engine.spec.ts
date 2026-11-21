@@ -219,6 +219,86 @@ test('keeps an existing file when an export adds its extension and replacement i
   }
 })
 
+test('moves and rotates by expressions and preserves both steps through restart and reopen', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-transform-'))
+  const target = path.join(scratch, 'Transformed.scad3')
+  const stl = path.join(scratch, 'Bounds.stl')
+  try {
+    const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+    const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+    const bounds = async () => {
+      await rm(stl, { force: true })
+      await app.evaluate(({ dialog }, filePath) => {
+        dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+      }, stl)
+      await page.getByRole('button', { name: 'File', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STL' }).click()
+      await expect.poll(async () => (await readFile(stl).catch(() => Buffer.alloc(0))).length).toBe(684)
+      const mesh = await readFile(stl)
+      const low = [Infinity, Infinity, Infinity]
+      const high = [-Infinity, -Infinity, -Infinity]
+      for (let triangle = 84; triangle < mesh.length; triangle += 50) {
+        for (let point = triangle + 12; point < triangle + 48; point += 12) {
+          for (let axis = 0; axis < 3; axis++) {
+            const v = mesh.readFloatLE(point + axis * 4)
+            low[axis] = Math.min(low[axis], v)
+            high[axis] = Math.max(high[axis], v)
+          }
+        }
+      }
+      return [...low, ...high]
+    }
+    const matchBounds = (actual: number[], expected: number[]) =>
+      actual.forEach((value, index) => expect(value).toBeCloseTo(expected[index], 5))
+    await expect(steps).toHaveText(['Box'])
+    const start = await bounds()
+    await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+    const move = page.getByRole('form', { name: 'Move', exact: true })
+    await move.getByLabel('X (mm)').fill('1 cm + 2 mm')
+    await move.getByRole('button', { name: 'Preview' }).click()
+    await expect(move.getByRole('button', { name: 'Apply' })).toBeEnabled()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(steps).toHaveText(['Box'])
+    await move.getByRole('button', { name: 'Apply' }).click()
+    await expect(steps).toHaveText(['Box', 'Move'])
+    const moved = start.map((value, axis) => axis % 3 === 0 ? value + 12 : value)
+    matchBounds(await bounds(), moved)
+
+    await toolbar.getByRole('button', { name: 'Rotate', exact: true }).click()
+    const rotate = page.getByRole('form', { name: 'Rotate', exact: true })
+    await rotate.getByLabel('Z (°)').fill('45 + 45')
+    await rotate.getByLabel('Turn about').selectOption('origin')
+    await rotate.getByRole('button', { name: 'Apply' }).click()
+    await expect(steps).toHaveText(['Box', 'Move', 'Rotate'])
+    const turned = [-moved[4], moved[0], moved[2], -moved[1], moved[3], moved[5]]
+    matchBounds(await bounds(), turned)
+    await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+    matchBounds(await bounds(), moved)
+    await toolbar.getByRole('button', { name: 'Redo', exact: true }).click()
+    matchBounds(await bounds(), turned)
+
+    await page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().catch(() => {}))
+    await expect(page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(steps).toHaveText(['Box', 'Move', 'Rotate'])
+    matchBounds(await bounds(), turned)
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText('Transformed.scad3', { exact: true })).toBeVisible()
+    await app.close()
+    const reopened = await launch({ args: [target] })
+    await expect(reopened.page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Move', 'Rotate'])
+    await reopened.page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(reopened.page.getByRole('button', { name: 'Redo', exact: true })).toBeEnabled()
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test('creates a cylinder from expressions and undoes and redoes creation', async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')

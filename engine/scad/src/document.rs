@@ -580,7 +580,7 @@ impl Model {
         self.record(&id, "Align", object, brep, before, message)
     }
 
-    pub(crate) fn record_face_feature(
+    pub(crate) fn record_body_feature(
         &mut self,
         body: &str,
         mut feature: Value,

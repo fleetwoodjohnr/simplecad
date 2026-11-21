@@ -267,6 +267,14 @@ pub struct StackRequest {
     pub view_up: Option<Vec<f64>>,
 }
 
+#[napi(object)]
+pub struct TransformRequest {
+    pub kind: String,
+    pub values: Vec<String>,
+    pub pivot: Option<Vec<f64>>,
+    pub axis: Option<Vec<f64>>,
+}
+
 /// A distance as the Pull tool stores it: the number as typed (`50.75`, `5`).
 fn expression(distance: f64) -> String {
     format!("{distance}")
@@ -477,6 +485,46 @@ impl Project {
                 original: self.original.clone(),
             },
             shape: Shape::new(placed),
+        })
+    }
+
+    #[napi]
+    pub fn transform(&self, body: String, shape: &Shape, edit: TransformRequest) -> Result<Pulled> {
+        let vec3 = |v: &[f64]| v.len() == 3 && v.iter().all(|n| n.is_finite() && n.abs() <= 1e9);
+        let invalid = || Error::from_reason("Enter a valid move or rotation.");
+        if edit.pivot.as_deref().is_some_and(|v| !vec3(v))
+            || edit
+                .axis
+                .as_deref()
+                .is_some_and(|v| !vec3(v) || v.iter().all(|n| n.abs() <= 1e-9))
+        {
+            return Err(invalid());
+        }
+        let (label, inputs) = match (edit.kind.as_str(), edit.values.as_slice(), edit.axis) {
+            ("move", [x, y, z], None) => ("Move", serde_json::json!({ "dx": x, "dy": y, "dz": z })),
+            ("rotate", [x, y, z], None) => (
+                "Rotate",
+                serde_json::json!({
+                    "rx": x, "ry": y, "rz": z, "order": "xyz", "pivot": edit.pivot,
+                }),
+            ),
+            ("rotate", [angle], Some(axis)) => (
+                "Rotate",
+                serde_json::json!({
+                    "axis": axis, "angle": angle, "pivot": edit.pivot,
+                }),
+            ),
+            _ => return Err(invalid()),
+        };
+        let mut model = self.model.clone();
+        let moved = scad::rebuild::create_transform(&mut model, &body, &shape.inner, label, inputs)
+            .map_err(Error::from_reason)?;
+        Ok(Pulled {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            shape: Shape::new(moved),
         })
     }
 
