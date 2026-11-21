@@ -49,6 +49,9 @@ struct TextSpec;
 struct TextResult;
 struct TextureSpec;
 struct TextureRegion;
+struct ClipSpec;
+struct ClipPlacementSpec;
+struct ClipOutput;
 
 class Shape {
 public:
@@ -78,6 +81,10 @@ TextResult face_text(const Shape &body, const PlaneFrame &plane,
 std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern,
                                     rust::Str mode, const TextureSpec &settings,
                                     rust::Slice<const TextureRegion> text_regions);
+ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
+                           const Shape &face_a, const Shape &face_b,
+                           const ClipSpec &clip, const ClipPlacementSpec &placement,
+                           rust::Slice<const double> manual_points);
 std::unique_ptr<Shape> make_cylinder(double radius, double height);
 std::unique_ptr<Shape> sweep_thread_tooth(double radius, double pitch, double length,
                                          bool left_hand, rust::Slice<const double> profile);

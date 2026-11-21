@@ -2,6 +2,7 @@
 
 mod advanced;
 pub mod align;
+mod clip;
 pub mod document;
 pub mod evaluate;
 pub mod export;

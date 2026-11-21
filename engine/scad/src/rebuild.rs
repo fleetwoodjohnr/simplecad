@@ -409,6 +409,7 @@ pub const PORTED: &[&str] = &[
     "thread",
     "text",
     "face_texture",
+    "clip_joint",
     "draft",
     "mirror",
     "rectangular_pattern",
@@ -863,6 +864,7 @@ fn execute(
                 let shape = crate::texture::build(ctx, &name)?;
                 Ok(BTreeMap::from([(name, shape)]))
             }
+            "clip_joint" => crate::clip::build(ctx),
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
                 [(body_name()?, crate::advanced::build(kind, ctx)?)],
             )),

@@ -528,6 +528,39 @@ pub fn solve(ctx: &Context) -> Result<(Shape, String, Placement), StepError> {
     )
 }
 
+pub(crate) fn seat_joint(
+    moving: (&occt::Shape, u32),
+    target: (&occt::Shape, u32),
+    x: f64,
+    y: f64,
+) -> Result<UniquePtr<Trsf>, StepError> {
+    let moving = Face::read(moving.0, moving.1)?;
+    let target = Face::read(target.0, target.1)?;
+    let moving = moving
+        .planar()
+        .ok_or_else(|| failed("Clips need planar faces."))?;
+    let frame = planar_frame(&target)?;
+    let seat = seating_rotation(moving, frame.normal, false, 0.0, true)?;
+    let destination = frame.point(
+        anchored(frame.x_bounds, "center", x),
+        anchored(frame.y_bounds, "center", y),
+        0.0,
+    );
+    Ok(then(&seat, &translation(sub(destination, moving.center))))
+}
+
+pub(crate) fn joint_anchors(
+    target: (&occt::Shape, u32),
+    anchors: &[[f64; 2]],
+) -> Result<Vec<f64>, StepError> {
+    let target = Face::read(target.0, target.1)?;
+    let frame = planar_frame(&target)?;
+    Ok(anchors
+        .iter()
+        .flat_map(|[x, y]| frame.point(*x, *y, 0.0))
+        .collect())
+}
+
 fn solve_faces(
     ctx: &Context,
     moving_face: Face,

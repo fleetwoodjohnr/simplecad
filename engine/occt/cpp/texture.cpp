@@ -533,6 +533,12 @@ double opposite_wall(const Shape &body, const Mapping &mapping) {
 
 } // namespace
 
+texture::Geometry texture::planar_profile(const Layout &layout, const Shape &face) {
+  const auto mapping = mapping_of(face);
+  if (mapping.wrapped()) throw std::runtime_error("Select a planar face.");
+  return face_profile(layout, TopoDS::Face(face.shape), mapping);
+}
+
 std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern_name,
                                     rust::Str mode_name, const TextureSpec &spec,
                                     rust::Slice<const TextureRegion> text_regions) {

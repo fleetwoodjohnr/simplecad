@@ -116,6 +116,35 @@ pub mod ffi {
         pub outline: Vec<f64>,
     }
 
+    pub struct ClipSpec {
+        pub arm_width: f64,
+        pub slot: f64,
+        pub thickness: f64,
+        pub engagement: f64,
+        pub bridge: f64,
+        pub barb: f64,
+        pub removal_angle: f64,
+        pub clearance: f64,
+        pub depth_clearance: f64,
+        pub lead_in: f64,
+        pub min_wall: f64,
+    }
+
+    pub struct ClipPlacementSpec {
+        pub count: u32,
+        pub spacing: f64,
+        pub edge_offset: f64,
+        pub shift: f64,
+        pub rotation: f64,
+        pub male_on_a: bool,
+    }
+
+    pub struct ClipOutput {
+        pub first: UniquePtr<Shape>,
+        pub second: UniquePtr<Shape>,
+        pub connectors: Vec<ImportedBody>,
+    }
+
     pub struct TextResult {
         pub shape: UniquePtr<Shape>,
         pub font: String,
@@ -185,6 +214,15 @@ pub mod ffi {
             settings: &TextureSpec,
             text_regions: &[TextureRegion],
         ) -> Result<UniquePtr<Shape>>;
+        fn clip_connectors(
+            body_a: &Shape,
+            body_b: &Shape,
+            face_a: &Shape,
+            face_b: &Shape,
+            clip: &ClipSpec,
+            placement: &ClipPlacementSpec,
+            manual_points: &[f64],
+        ) -> Result<ClipOutput>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// Sweep the closed radial/axial profile along a cylindrical helix.
         fn sweep_thread_tooth(

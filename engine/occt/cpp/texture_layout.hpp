@@ -8,6 +8,7 @@
 
 #include <geos_c.h>
 
+namespace simplecad { class Shape; }
 namespace simplecad::texture {
 
 using Point = std::array<double, 2>;
@@ -177,5 +178,7 @@ public:
 inline double distance(Point a, Point b) {
   return std::hypot(a[0] - b[0], a[1] - b[1]);
 }
+
+Geometry planar_profile(const Layout &layout, const Shape &face);
 
 } // namespace simplecad::texture
