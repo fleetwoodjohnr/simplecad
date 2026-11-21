@@ -16,6 +16,7 @@ pub mod project;
 pub mod pyjson;
 pub mod rebuild;
 pub mod signatures;
+pub mod sketch;
 mod text;
 mod texture;
 mod thread;

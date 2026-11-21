@@ -197,12 +197,49 @@ pub mod ffi {
         pub internal: bool,
     }
 
+    pub struct SketchPlane {
+        pub origin: [f64; 3],
+        pub x_axis: [f64; 3],
+        pub normal: [f64; 3],
+    }
+
+    pub enum SketchCurve {
+        Line,
+        Circle,
+        Arc,
+        Ellipse,
+        Spline,
+    }
+
+    pub struct SketchEdge {
+        pub curve: SketchCurve,
+        pub points: Vec<f64>,
+        pub parameters: [f64; 3],
+    }
+
+    pub struct SketchAxis {
+        pub origin: [f64; 3],
+        pub direction: [f64; 3],
+    }
+
     unsafe extern "C++" {
         include!("shim.hpp");
 
         /// An OCCT shape: a `TopoDS_Shape`, owned.
         type Shape;
 
+        fn extrude_sketch(
+            plane: &SketchPlane,
+            edges: &[SketchEdge],
+            distance: f64,
+            symmetric: bool,
+        ) -> Result<UniquePtr<Shape>>;
+        fn revolve_sketch(
+            plane: &SketchPlane,
+            edges: &[SketchEdge],
+            axis: &SketchAxis,
+            radians: f64,
+        ) -> Result<UniquePtr<Shape>>;
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
         fn face_text(
             body: &Shape,

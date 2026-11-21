@@ -17,6 +17,7 @@ const INVALID: &str = "The source project's history could not be read.";
 struct Names {
     taken: HashSet<String>,
     bodies: HashMap<String, String>,
+    sketches: HashMap<String, String>,
     groups: HashMap<String, String>,
     parameters: HashMap<String, String>,
     feature_ids: HashMap<String, String>,
@@ -73,6 +74,18 @@ impl Names {
             let original = field(entry, "name")?;
             let cloned = names.unique(original);
             names.bodies.insert(original.into(), cloned);
+        }
+        for step in array(source, "features")
+            .iter()
+            .filter(|step| step["type"] == "sketch")
+        {
+            let original = field(step, "name")?;
+            let cloned = names.unique(original);
+            names.bodies.insert(
+                format!("__sketch__{original}"),
+                format!("__sketch__{cloned}"),
+            );
+            names.sketches.insert(original.into(), cloned);
         }
         for step in array(source, "features") {
             let id = field(step, "id")?;
@@ -215,7 +228,9 @@ impl Names {
         let mut feature = original.clone();
         feature["id"] = json!(self.feature_id(field(original, "id")?));
         let old_name = field(original, "name")?;
-        feature["name"] = json!(if original["output_ids"].get(old_name).is_some() {
+        feature["name"] = json!(if original["type"] == "sketch" {
+            name(&self.sketches, old_name)
+        } else if original["output_ids"].get(old_name).is_some() {
             name(&self.bodies, old_name)
         } else {
             self.unique(old_name)
@@ -257,10 +272,36 @@ impl Names {
                     .collect(),
             );
         }
+        let kind = field(original, "type")?;
         if let Some(inputs) = feature["inputs"].as_object_mut() {
+            if kind == "sketch"
+                && let Some(sketch) = inputs.get_mut("sketch")
+            {
+                sketch["name"] = json!(name(&self.sketches, old_name));
+                self.sketch_dimensions(sketch);
+            }
+            let sketch_refs: &[&str] = match kind {
+                "extrude" | "revolve" => &["sketch"],
+                "sweep" => &["profile", "path"],
+                "loft" => &["sketches"],
+                "path_pattern" => &["path"],
+                _ => &[],
+            };
             for (key, value) in inputs {
                 self.rewrite_refs(value);
-                if matches!(key.as_str(), "names" | "connector_names") {
+                if sketch_refs.contains(&key.as_str()) {
+                    match value {
+                        Value::String(alias) => *alias = name(&self.sketches, alias),
+                        Value::Array(list) => {
+                            for entry in list {
+                                if let Some(alias) = entry.as_str() {
+                                    *entry = json!(name(&self.sketches, alias));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if matches!(key.as_str(), "names" | "connector_names") {
                     if let Some(parts) = value.as_array_mut() {
                         for part in parts {
                             if let Some(alias) = part.as_str() {
@@ -274,6 +315,18 @@ impl Names {
             }
         }
         Ok(feature)
+    }
+
+    fn sketch_dimensions(&self, data: &mut Value) {
+        if let Some(constraints) = data["constraints"].as_array_mut() {
+            for constraint in constraints {
+                for key in ["value", "expression"] {
+                    if let Some(expression) = constraint[key].as_str() {
+                        constraint[key] = json!(self.expression(expression));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -407,9 +460,13 @@ impl Model {
                 && let Some(outputs) = entry["outputs"].as_object_mut()
             {
                 let entries = std::mem::take(outputs);
-                for (object, value) in entries {
+                for (object, mut value) in entries {
                     if let Some(sha) = value["sha256"].as_str() {
                         assets.read("geometry", sha)?;
+                    }
+                    if value["kind"] == "sketch" && value["data"].is_object() {
+                        value["data"]["name"] = clone["name"].clone();
+                        names.sketch_dimensions(&mut value["data"]);
                     }
                     outputs.insert(names.object_id(&object), value);
                 }

@@ -26,12 +26,33 @@ pub type Shape = Rc<occt::UniquePtr<occt::Shape>>;
 
 /// A step's output: the shape, and its blob's sha when it is stored as one.
 #[derive(Clone)]
-pub struct Part {
-    pub shape: Shape,
+struct Part {
+    value: Geometry,
     sha: Option<String>,
 }
 
+#[derive(Clone)]
+enum Geometry {
+    Brep(Shape),
+    Sketch(Rc<Value>),
+}
+
+impl Part {
+    fn shape(&self) -> Option<&Shape> {
+        match &self.value {
+            Geometry::Brep(shape) => Some(shape),
+            Geometry::Sketch(_) => None,
+        }
+    }
+}
+
 type Outputs = BTreeMap<String, Part>;
+
+#[derive(Default)]
+struct BoundInputs {
+    bodies: HashMap<String, Shape>,
+    sketches: HashMap<String, Rc<Value>>,
+}
 
 /// Why a step has no result: `CadError`, or `ReferenceLost` when `lost`.
 #[derive(Clone, Debug)]
@@ -81,6 +102,7 @@ pub struct Context<'a> {
     feature: &'a Value,
     features: Option<&'a HashMap<String, Value>>,
     bodies: HashMap<String, Shape>,
+    sketches: HashMap<String, Rc<Value>>,
     parameters: &'a HashMap<String, f64>,
     /// What the step says about its result (`feature.message`).
     message: std::cell::RefCell<String>,
@@ -97,6 +119,7 @@ impl Context<'_> {
             feature,
             features: None,
             bodies: HashMap::from([(name.into(), body)]),
+            sketches: HashMap::new(),
             parameters,
             message: Default::default(),
         }
@@ -104,6 +127,22 @@ impl Context<'_> {
 
     pub(crate) fn input(&self, key: &str) -> Option<&Value> {
         self.feature["inputs"].get(key)
+    }
+
+    pub(crate) fn sketch(&self, key: &str) -> Result<&Value, StepError> {
+        let name = self
+            .input(key)
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| failed("This feature has no sketch. Select a sketch first."))?;
+        self.sketches
+            .get(&format!("__sketch__{name}"))
+            .map(Rc::as_ref)
+            .ok_or_else(|| {
+                lost(format!(
+                    "The sketch '{name}' this feature needs is unavailable."
+                ))
+            })
     }
 
     pub(crate) fn set_message(&self, message: String) {
@@ -414,6 +453,8 @@ pub const PORTED: &[&str] = &[
     "mirror",
     "rectangular_pattern",
     "circular_pattern",
+    "extrude",
+    "revolve",
     "embedded_import",
     "import",
 ];
@@ -463,6 +504,7 @@ pub fn create_primitive(
         feature: &feature,
         features: None,
         bodies: HashMap::new(),
+        sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
     };
@@ -643,6 +685,7 @@ pub fn create_transform(
         feature: &feature,
         features: None,
         bodies: HashMap::new(),
+        sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
     };
@@ -679,6 +722,10 @@ fn execute(
     };
     let run = || -> Result<BTreeMap<String, Shape>, StepError> {
         match kind {
+            "extrude" | "revolve" => {
+                let shape = crate::sketch::modeling::build(kind, ctx)?;
+                Ok(BTreeMap::from([(name()?, Rc::new(shape))]))
+            }
             "import" => {
                 let path = ctx
                     .input("path")
@@ -1430,24 +1477,30 @@ impl Store<'_> {
         }
         let mut decoded = HashMap::new();
         for (oid, output) in entry["outputs"].as_object()? {
-            let sha = output["sha256"].as_str()?;
             let part = match output["kind"].as_str()? {
-                "brep" => Part {
-                    shape: self.decode(sha)?,
-                    sha: Some(sha.to_string()),
-                },
+                "brep" => {
+                    let sha = output["sha256"].as_str()?;
+                    Part {
+                        value: Geometry::Brep(self.decode(sha)?),
+                        sha: Some(sha.to_string()),
+                    }
+                }
                 "located" => {
                     let matrix: Vec<f64> = output["location"]
                         .as_array()?
                         .iter()
                         .filter_map(Value::as_f64)
                         .collect();
-                    let base = self.decode(sha)?;
+                    let base = self.decode(output["sha256"].as_str()?)?;
                     Part {
-                        shape: Rc::new(occt::located(&base, &matrix).ok()?),
+                        value: Geometry::Brep(Rc::new(occt::located(&base, &matrix).ok()?)),
                         sha: None,
                     }
                 }
+                "sketch" if feature["type"] == "sketch" && output["data"].is_object() => Part {
+                    value: Geometry::Sketch(Rc::new(output["data"].clone())),
+                    sha: None,
+                },
                 _ => return None,
             };
             decoded.insert(oid.clone(), part);
@@ -1568,7 +1621,7 @@ impl Rebuilder<'_> {
                         .get(entry, feature)
                         .and_then(|mut outputs| outputs.remove(&name))
                 {
-                    return Some(part.shape);
+                    return part.shape().cloned();
                 }
             }
         }
@@ -1588,7 +1641,7 @@ impl Rebuilder<'_> {
                 self.store.get(entry, feature)
             });
             if let Some(part) = saved.and_then(|mut outputs| outputs.remove(&output(feature)?)) {
-                return Some(part.shape);
+                return part.shape().cloned();
             }
         }
         None
@@ -1670,14 +1723,14 @@ impl Rebuilder<'_> {
             self.cache.insert(fid.to_string(), outputs.clone());
             return Ok(outputs);
         }
-        let bodies = self.inputs(&feature)?;
-        self.finish(fid, feature, signature, bodies, suppressed)
+        let inputs = self.inputs(&feature)?;
+        self.finish(fid, feature, signature, inputs, suppressed)
     }
 
     /// `_input_context`: each bound name, from the step that wrote it.
-    fn inputs(&mut self, feature: &Value) -> Result<HashMap<String, Shape>, StepError> {
+    fn inputs(&mut self, feature: &Value) -> Result<BoundInputs, StepError> {
         let Some(bindings) = feature["bindings"].as_object() else {
-            return Ok(HashMap::new());
+            return Ok(BoundInputs::default());
         };
         // A deleted input blocks this step even if another input also fails.
         // Name the deleted object so the user can repair the saved reference.
@@ -1689,7 +1742,7 @@ impl Rebuilder<'_> {
                 "The object '{name}' this feature needs was deleted. Undo the deletion or re-select its input."
             )));
         }
-        let mut bodies = HashMap::new();
+        let mut inputs = BoundInputs::default();
         for (name, reference) in bindings {
             let source_id = reference["feature_id"].as_str().unwrap_or("");
             let outputs = self.get(source_id)?;
@@ -1702,7 +1755,18 @@ impl Rebuilder<'_> {
                 .find(|(_, oid)| oid.as_str() == Some(object))
                 .map(|(n, _)| n.clone());
             match source_name.and_then(|n| outputs.get(&n).cloned()) {
-                Some(part) => bodies.insert(name.clone(), part.shape),
+                Some(Part {
+                    value: Geometry::Brep(shape),
+                    ..
+                }) => {
+                    inputs.bodies.insert(name.clone(), shape);
+                }
+                Some(Part {
+                    value: Geometry::Sketch(sketch),
+                    ..
+                }) => {
+                    inputs.sketches.insert(name.clone(), sketch);
+                }
                 None => {
                     return Err(lost(format!(
                         "The output '{name}' this feature needs is unavailable."
@@ -1710,7 +1774,7 @@ impl Rebuilder<'_> {
                 }
             };
         }
-        Ok(bodies)
+        Ok(inputs)
     }
 
     /// The step run on its inputs, and its result stored.
@@ -1719,7 +1783,7 @@ impl Rebuilder<'_> {
         fid: &str,
         feature: Value,
         signature: String,
-        bodies: HashMap<String, Shape>,
+        inputs: BoundInputs,
         suppressed: bool,
     ) -> Result<Outputs, StepError> {
         let names: Vec<String> = feature["outputs"]
@@ -1728,19 +1792,32 @@ impl Rebuilder<'_> {
             .flatten()
             .filter_map(|n| n.as_str().map(String::from))
             .collect();
-        let mut outputs: BTreeMap<String, Shape> = if suppressed {
+        let mut outputs: BTreeMap<String, Geometry> = if suppressed {
             self.states
                 .insert(fid.to_string(), ("suppressed".into(), String::new()));
             names
                 .iter()
-                .filter_map(|n| Some((n.clone(), bodies.get(n)?.clone())))
+                .filter_map(|n| Some((n.clone(), Geometry::Brep(inputs.bodies.get(n)?.clone()))))
                 .collect()
+        } else if feature["type"] == "sketch" {
+            let solved = crate::sketch::solve(&feature["inputs"]["sketch"], &self.parameters)?;
+            let message = solved.message();
+            if solved.state == crate::sketch::State::Conflicting {
+                return Err(failed(message));
+            }
+            let name = names
+                .first()
+                .ok_or_else(|| failed("This sketch has no output."))?;
+            self.states.insert(fid.to_string(), ("ok".into(), message));
+            self.rebuilt.push(fid.to_string());
+            BTreeMap::from([(name.clone(), Geometry::Sketch(Rc::new(solved.recipe)))])
         } else {
             let kind = feature["type"].as_str().unwrap_or("");
             let ctx = Context {
                 feature: &feature,
                 features: Some(&self.features),
-                bodies,
+                bodies: inputs.bodies,
+                sketches: inputs.sketches,
                 parameters: &self.parameters,
                 message: Default::default(),
             };
@@ -1753,7 +1830,9 @@ impl Rebuilder<'_> {
             self.states
                 .insert(fid.to_string(), ("ok".into(), ctx.message.take()));
             self.rebuilt.push(fid.to_string());
-            made
+            made.into_iter()
+                .map(|(name, shape)| (name, Geometry::Brep(shape)))
+                .collect()
         };
         // `keep`: what the user deleted is not emitted.
         let dropped: Vec<&str> = feature["dropped"]
@@ -1783,21 +1862,18 @@ impl Rebuilder<'_> {
         // `ResultStore.put`.
         let mut parts = Outputs::new();
         let mut encoded = Map::new();
-        for (name, shape) in outputs {
-            let blob = occt::write_brep(&shape).map_err(kernel)?;
-            let sha = format!("{:x}", Sha256::digest(&blob));
-            encoded.insert(
-                output_ids[&name].as_str().unwrap_or("").to_string(),
-                json!({ "kind": "brep", "sha256": sha }),
-            );
-            self.new_blobs.insert(sha.clone(), blob.into());
-            parts.insert(
-                name,
-                Part {
-                    shape,
-                    sha: Some(sha),
-                },
-            );
+        for (name, value) in outputs {
+            let (data, sha) = match &value {
+                Geometry::Brep(shape) => {
+                    let blob = occt::write_brep(shape).map_err(kernel)?;
+                    let sha = format!("{:x}", Sha256::digest(&blob));
+                    self.new_blobs.insert(sha.clone(), blob.into());
+                    (json!({ "kind": "brep", "sha256": sha }), Some(sha))
+                }
+                Geometry::Sketch(sketch) => (json!({ "kind": "sketch", "data": &**sketch }), None),
+            };
+            encoded.insert(output_ids[&name].as_str().unwrap_or("").to_string(), data);
+            parts.insert(name, Part { value, sha });
         }
         let message = self
             .states
@@ -1915,8 +1991,8 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
     let mut found = Vec::new();
     for feature in order.iter().filter(|f| f["type"] == kind) {
         let name = feature["name"].clone();
-        let outcome = rebuilder.inputs(feature).and_then(|bodies| {
-            let ctx = Context { feature, features: Some(&rebuilder.features), bodies, parameters: &rebuilder.parameters, message: Default::default() };
+        let outcome = rebuilder.inputs(feature).and_then(|inputs| {
+            let ctx = Context { feature, features: Some(&rebuilder.features), bodies: inputs.bodies, sketches: inputs.sketches, parameters: &rebuilder.parameters, message: Default::default() };
             match kind {
                 "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
                     json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
@@ -2077,11 +2153,11 @@ pub fn rebuild(
         }
         match rebuilder.get(fid) {
             Ok(outputs) => {
-                if let Some(part) = outputs.get(name) {
+                if let Some(shape) = outputs.get(name).and_then(Part::shape) {
                     last.retain(|(o, _)| o != oid);
                     last.push((
                         oid.clone(),
-                        (name.clone(), Some(part.shape.clone()), fid.clone()),
+                        (name.clone(), Some(shape.clone()), fid.clone()),
                     ));
                 }
             }
@@ -2192,7 +2268,10 @@ pub fn rebuild(
         let Some(shape) = shape else { continue };
         let part_sha = rebuilder.cache.get(producer).and_then(|o| {
             o.values()
-                .find(|p| Rc::ptr_eq(&p.shape, shape))
+                .find(|p| {
+                    p.shape()
+                        .is_some_and(|candidate| Rc::ptr_eq(candidate, shape))
+                })
                 .and_then(|p| p.sha.clone())
         });
         let sha = match part_sha {
@@ -2338,6 +2417,7 @@ mod tests {
             feature: &feature,
             features: None,
             bodies: HashMap::from([("Base".into(), base)]),
+            sketches: HashMap::new(),
             parameters: &HashMap::new(),
             message: Default::default(),
         };
@@ -2417,6 +2497,7 @@ mod tests {
                     feature: &feature,
                     features: None,
                     bodies,
+                    sketches: HashMap::new(),
                     parameters: &HashMap::new(),
                     message: Default::default(),
                 };
@@ -2453,6 +2534,7 @@ mod tests {
                 feature: &feature,
                 features: None,
                 bodies: HashMap::new(),
+                sketches: HashMap::new(),
                 parameters: &HashMap::new(),
                 message: Default::default(),
             };

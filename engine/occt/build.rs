@@ -47,6 +47,7 @@ fn main() {
         .file("cpp/text.cpp")
         .file("cpp/texture.cpp")
         .file("cpp/clip.cpp")
+        .file("cpp/sketch.cpp")
         .include(format!("{geos}/include"))
         .include("cpp")
         .include(format!("{dir}/include/opencascade"))
@@ -75,6 +76,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/text.cpp");
     println!("cargo:rerun-if-changed=cpp/texture.cpp");
     println!("cargo:rerun-if-changed=cpp/clip.cpp");
+    println!("cargo:rerun-if-changed=cpp/sketch.cpp");
     println!("cargo:rerun-if-changed=cpp/texture_layout.hpp");
     println!("cargo:rerun-if-changed=cpp/shim.hpp");
 }

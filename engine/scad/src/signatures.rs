@@ -122,6 +122,19 @@ fn parameter_names(feature: &Value) -> BTreeSet<String> {
             "text_clearance",
             "other_clearance",
         ]),
+        Some("sketch") => inputs["sketch"]["constraints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|constraint| constraint["driving"].as_bool().unwrap_or(true))
+            .filter_map(|constraint| {
+                constraint
+                    .get("expression")
+                    .or_else(|| constraint.get("value"))?
+                    .as_str()
+            })
+            .flat_map(dependencies)
+            .collect(),
         Some("edge_finish") => inputs
             .get("edge_specs")
             .and_then(Value::as_array)
