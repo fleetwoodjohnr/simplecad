@@ -8,7 +8,7 @@ use crate::project::CACHE_VERSION;
 use crate::signatures::signatures;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
@@ -24,6 +24,13 @@ pub struct StepSummary {
     pub kind: String,
     pub state: String,
     pub message: Option<String>,
+    pub missing_input: Option<MissingInput>,
+}
+
+pub struct MissingInput {
+    pub name: String,
+    pub object_id: String,
+    pub face: bool,
 }
 
 /// The parts of `model.json` that are the document (`Document.to_dict`); the rest
@@ -277,24 +284,138 @@ impl Model {
 
     /// Every step and its most recent diagnostic, in recipe order.
     pub fn steps(&self) -> Vec<StepSummary> {
-        self.list("features")
+        let features = self.list("features");
+        let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
+        features
             .iter()
             .map(|f| {
                 let text = |v: &Value| v.as_str().unwrap_or("").to_string();
                 let id = text(&f["id"]);
                 let diagnostic = &self.payload["diagnostics"][&id];
+                let state = diagnostic["state"].as_str().unwrap_or("ok");
                 StepSummary {
                     id,
                     name: text(&f["name"]),
                     kind: text(&f["type"]),
-                    state: diagnostic["state"].as_str().unwrap_or("ok").into(),
+                    state: state.into(),
                     message: diagnostic["message"]
                         .as_str()
                         .filter(|message| !message.is_empty())
                         .map(String::from),
+                    missing_input: (state == "needs_attention")
+                        .then(|| missing_reference(f, &ids))
+                        .flatten(),
                 }
             })
             .collect()
+    }
+
+    /// Rebind a deleted Combine tool or Align target to a selected object.
+    /// The original feature ID, unrelated inputs and its undo branch survive.
+    pub fn repair_reference(
+        &mut self,
+        step_id: &str,
+        missing_id: &str,
+        body_id: &str,
+        face: Option<u32>,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let features = self.payload["features"]
+            .as_array()
+            .ok_or("The project has no steps.")?;
+        let position = features
+            .iter()
+            .position(|f| f["id"] == step_id)
+            .ok_or("This history step is no longer available.")?;
+        let mut updated = features[position].clone();
+        let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
+        let lost = missing_reference(&updated, &ids)
+            .filter(|reference| reference.object_id == missing_id)
+            .ok_or("This step's missing input has changed.")?;
+        let body = self.payload["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|body| body["id"] == body_id)
+            .ok_or("Select an existing body.")?;
+        let name = body["name"].as_str().ok_or("This body has no name.")?;
+        let producer = body["producer"]
+            .as_str()
+            .filter(|producer| ids.contains(producer))
+            .ok_or("This body has no available modeling step.")?;
+        let already_bound = updated["bindings"].as_object().is_some_and(|bindings| {
+            bindings.iter().any(|(alias, binding)| {
+                alias != &lost.name && (alias == name || binding["object_id"] == body_id)
+            })
+        });
+        if producer == step_id || already_bound {
+            return Err("Select a body that is not already an input to this step.".into());
+        }
+        if lost.face {
+            let index = face.ok_or("Select a replacement target face.")?;
+            let shape = shown
+                .get(body_id)
+                .ok_or("This body has no visible geometry.")?;
+            let mark =
+                occt::face_fingerprint(shape, index).map_err(|error| error.what().to_string())?;
+            let old_role = updated["inputs"]["target_face"]["__ref__"]["role"].clone();
+            updated["inputs"]["target_face"] = json!({ "__ref__": {
+                "feature_id": producer, "body": name, "body_id": body_id, "index_hint": index, "kind": "face", "role": old_role,
+                "fingerprint": {"kind": "face", "geometry": mark.geometry, "measure": mark.measure, "center": mark.center,
+                    "direction": mark.has_direction.then_some(mark.direction), "radius": mark.has_radius.then_some(mark.radius), "neighbours": []}
+            }});
+            crate::align::reframe_target(&mut updated["inputs"], shape, index)?;
+        } else {
+            let key = tools_key(&updated);
+            let value = &mut updated["inputs"][key];
+            let tools = match value {
+                Value::Array(tools) => tools.as_mut_slice(),
+                value => std::slice::from_mut(value),
+            };
+            let tool = tools
+                .iter_mut()
+                .find(|tool| tool_name(tool) == Some(lost.name.as_str()))
+                .ok_or("The old Combine tool could not be read.")?;
+            *tool = json!({"__body__": name, "feature_id": producer, "object_id": body_id});
+            for key in ["outputs", "dropped"] {
+                if let Some(names) = updated[key].as_array_mut() {
+                    names.retain(|name| name != &lost.name);
+                }
+            }
+            let keep_tool = updated["inputs"]["keep_tool"].as_bool() == Some(true);
+            if let Some(ids) = updated["output_ids"].as_object_mut() {
+                ids.shift_remove(&lost.name);
+                if keep_tool {
+                    ids.insert(name.into(), json!(body_id));
+                }
+            }
+        }
+        let bindings = updated["bindings"]
+            .as_object_mut()
+            .ok_or("The old input was not bound.")?;
+        bindings.shift_remove(&lost.name);
+        bindings.insert(
+            name.into(),
+            json!({"feature_id": producer, "object_id": body_id}),
+        );
+
+        let before = self.document();
+        let mut candidate = self.clone();
+        candidate.payload["features"][position] = updated;
+        if signatures(&candidate.payload).is_none() {
+            return Err(
+                "That input depends on the step you are repairing. Choose a different body.".into(),
+            );
+        }
+        let stale = dependents(&candidate.payload, &BTreeSet::from([step_id.into()]));
+        let report = crate::rebuild::rebuild(&mut candidate, original, shown, &stale)?;
+        if let Some(error) = report.failures.get(step_id) {
+            return Err(error.clone());
+        }
+        candidate.push_undo("Repair input", before)?;
+        *self = candidate;
+        Ok(report)
     }
 
     /// A face reference as `naming.make_ref` writes it, anchored to the body's producing step.
@@ -1040,6 +1161,55 @@ fn touched(change: &Value) -> BTreeSet<String> {
 }
 
 /// `DependencyGraph.dependents`: `ids` and every step downstream of them.
+fn tools_key(step: &Value) -> &'static str {
+    if step["inputs"]["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        "tools"
+    } else {
+        "tool"
+    }
+}
+
+fn tool_name(value: &Value) -> Option<&str> {
+    value["__body__"].as_str().or_else(|| value.as_str())
+}
+
+fn missing_reference(step: &Value, available: &HashSet<&str>) -> Option<MissingInput> {
+    let face = step["type"] == "align";
+    let sources = match step["type"].as_str()? {
+        "align" => vec![step["inputs"]["target_face"]["__ref__"]["body"].as_str()?],
+        "boolean" => {
+            let tools = &step["inputs"][tools_key(step)];
+            tools
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_else(|| std::slice::from_ref(tools))
+                .iter()
+                .filter_map(tool_name)
+                .collect()
+        }
+        _ => return None,
+    };
+    let bindings = step["bindings"].as_object()?;
+    // This repair changes a single input and must leave a buildable step.
+    let mut lost = bindings.iter().filter(|(_, binding)| {
+        !binding["feature_id"]
+            .as_str()
+            .is_some_and(|producer| available.contains(producer))
+    });
+    let (name, binding) = lost.next()?;
+    if lost.next().is_some() || !sources.contains(&name.as_str()) {
+        return None;
+    }
+    Some(MissingInput {
+        name: name.clone(),
+        object_id: binding["object_id"].as_str()?.into(),
+        face,
+    })
+}
+
 fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
     let mut found = ids.clone();
     let features: Vec<(String, BTreeSet<String>)> = model["features"]

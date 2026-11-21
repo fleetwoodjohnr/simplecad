@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, ModelResult, PullEdit, RendererCommand, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, ModelResult, PullEdit, ReferenceRepair, RendererCommand, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -113,6 +113,7 @@ export function previewStack(revision: number, edit: StackEdit): Promise<Display
 
 export const applyStack = (revision: number, edit: StackEdit) => send<ModelResult>({ op: 'applyStack', revision, ...edit }).then(accept)
 export const createShape = (revision: number, edit: ShapeEdit) => send<ModelResult>({ op: 'createShape', revision, ...edit }).then(accept)
+export const repairInput = (revision: number, edit: ReferenceRepair) => send<ModelResult>({ op: 'repairInput', revision, ...edit }).then(accept)
 export const importModel = (revision: number, edit: ModelImport) => {
   const importId = crypto.randomUUID()
   return send<ModelResult>({ op: 'importModel', revision, importId, ...edit }).then((result) => {

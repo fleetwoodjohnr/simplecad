@@ -37,6 +37,12 @@ export type Source = { kind: 'box' } | { kind: 'file'; name: string }
 export interface PullEdit { face: number; distance: number }
 /** A push/pull as the history keeps it: the body, and the face as that body numbers it, so showing or hiding bodies doesn't change it. */
 export interface FacePick { body: number; face: number }
+export interface ReferenceRepair {
+  repairStepId: string
+  missingInputId: string
+  replacementBody: number
+  replacementFace?: number
+}
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]
@@ -97,7 +103,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair
 
 export interface Checkpoint {
   source: Source
@@ -120,6 +126,7 @@ export interface StepInfo {
   /** As last built: `ok`, `suppressed`, `failed` or `needs_attention`. */
   state: string
   message?: string
+  missingInput?: { name: string; objectId: string; face: boolean }
   /** Undone in this session; redo brings it back. */
   undone: boolean
 }
@@ -150,6 +157,7 @@ export type RendererCommand =
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
+  | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
   | { op: 'export'; revision: number; format: ExportFormat }
@@ -189,8 +197,15 @@ function isEdit(value: unknown): value is PullEdit {
     typeof edit.distance === 'number' && Number.isFinite(edit.distance) && Math.abs(edit.distance) <= 1e9
 }
 
+function isReferenceRepair(value: unknown): value is ReferenceRepair {
+  if (!value || typeof value !== 'object') return false
+  const edit = value as Partial<ReferenceRepair>
+  return isName(edit.repairStepId) && isName(edit.missingInputId) && isIndex(edit.replacementBody) && edit.replacementBody < MAX_BODIES &&
+    (edit.replacementFace === undefined || (isIndex(edit.replacementFace) && edit.replacementFace <= 0xffffffff))
+}
+
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -297,6 +312,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||
+        (m.op === 'repairInput' && isReferenceRepair(m)) ||
         (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))
       ))) return m as RendererRequest
   throw new Error('Invalid geometry command or arguments.')

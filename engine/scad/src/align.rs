@@ -757,6 +757,45 @@ pub struct PickedFace<'a> {
     pub index: u32,
 }
 
+fn store_target_frame(
+    inputs: &mut Value,
+    target: &Face,
+    view: Option<(V, V)>,
+) -> Result<(), StepError> {
+    let base = planar_frame(target)?;
+    let (u_axis, v_axis) = match view.and_then(|(direction, up)| view_axes(&base, direction, up)) {
+        Some(axes) => axes,
+        None => reference_axes(&base)?,
+    };
+    let snapped = |value: f64| {
+        [0.0, 1.0, -1.0]
+            .into_iter()
+            .find(|v| (value - v).abs() <= 1e-9)
+            .unwrap_or(value)
+    };
+    inputs["target_basis"] = serde_json::json!([
+        snapped(dot(u_axis, base.x_axis)),
+        snapped(dot(u_axis, base.y_axis)),
+        snapped(dot(v_axis, base.x_axis)),
+        snapped(dot(v_axis, base.y_axis)),
+    ]);
+    inputs["target_u"] = serde_json::json!(u_axis);
+    inputs["target_normal"] = serde_json::json!(base.normal);
+    Ok(())
+}
+
+pub(crate) fn reframe_target(
+    inputs: &mut Value,
+    shape: &occt::Shape,
+    face: u32,
+) -> Result<(), String> {
+    if inputs["placement_mode"] == "edge_gap" && inputs["operation"] != "concentric" {
+        let target = Face::read(shape, face).map_err(|error| error.message)?;
+        store_target_frame(inputs, &target, None).map_err(|error| error.message)?;
+    }
+    Ok(())
+}
+
 /// Solve a new placement directly on picked faces and record its editable recipe.
 pub fn place(
     model: &mut crate::document::Model,
@@ -779,26 +818,7 @@ pub fn place(
             .zip(vector(up.as_ref()).ok().flatten())
     });
     if inputs["placement_mode"] == "edge_gap" {
-        let base = planar_frame(&target_face).map_err(error)?;
-        let (u_axis, v_axis) =
-            match view.and_then(|(direction, up)| view_axes(&base, direction, up)) {
-                Some(axes) => axes,
-                None => reference_axes(&base).map_err(error)?,
-            };
-        let snapped = |value: f64| {
-            [0.0, 1.0, -1.0]
-                .into_iter()
-                .find(|v| (value - v).abs() <= 1e-9)
-                .unwrap_or(value)
-        };
-        inputs["target_basis"] = serde_json::json!([
-            snapped(dot(u_axis, base.x_axis)),
-            snapped(dot(u_axis, base.y_axis)),
-            snapped(dot(v_axis, base.x_axis)),
-            snapped(dot(v_axis, base.y_axis)),
-        ]);
-        inputs["target_u"] = serde_json::json!(u_axis);
-        inputs["target_normal"] = serde_json::json!(base.normal);
+        store_target_frame(&mut inputs, &target_face, view).map_err(error)?;
     }
     let reference = |picked: &PickedFace<'_>| -> Result<Value, String> {
         let f =

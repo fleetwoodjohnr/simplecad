@@ -203,13 +203,30 @@ pub struct Project {
 
 /// A step of the model: its name, type (`push_pull`, `box`...) and state
 /// (`ok`, `suppressed`, `failed`, `needs_attention`) as last built.
-#[napi(object)]
+#[napi(object, object_from_js = false)]
 pub struct Step {
     pub id: String,
     pub name: String,
     pub kind: String,
     pub state: String,
     pub message: Option<String>,
+    pub missing_input: Option<MissingInput>,
+}
+
+#[napi(object, object_from_js = false)]
+pub struct MissingInput {
+    pub name: String,
+    pub object_id: String,
+    pub face: bool,
+}
+
+#[napi(object, object_to_js = false)]
+pub struct ReferenceRepair {
+    pub step_id: String,
+    pub missing_id: String,
+    pub replacement_id: Option<String>,
+    pub replacement_name: String,
+    pub face: Option<u32>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -265,6 +282,59 @@ fn bounds_for<'a>(shapes: impl IntoIterator<Item = &'a ffi::Shape>) -> Result<[f
         }
     }
     Ok([low[0], low[1], low[2], high[0], high[1], high[2]])
+}
+
+impl Project {
+    fn shown_shapes(&self, shown: Vec<ShownBody>) -> HashMap<String, scad::rebuild::Shape> {
+        let shown: HashMap<_, _> = shown
+            .into_iter()
+            .map(|body| (body.id.unwrap_or(body.name), body.shape.inner.clone()))
+            .collect();
+        self.model.payload["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|body| {
+                let id = body["id"].as_str()?;
+                let prior = shown
+                    .get(id)
+                    .or_else(|| shown.get(body["name"].as_str()?))?;
+                Some((id.to_owned(), prior.clone()))
+            })
+            .collect()
+    }
+
+    fn rebuilt_model(
+        &self,
+        model: scad::document::Model,
+        report: scad::rebuild::Report,
+    ) -> OpenedProject {
+        let hidden: std::collections::HashSet<_> = model.payload["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|body| body["visible"].as_bool() == Some(false))
+            .filter_map(|body| body["id"].as_str())
+            .collect();
+        let bodies = report
+            .bodies
+            .into_iter()
+            .map(|body| OpenedBody {
+                name: body.name,
+                visible: !hidden.contains(body.id.as_str()),
+                id: Some(body.id),
+                shape: body.shape.map(|inner| Shape { inner }),
+            })
+            .collect();
+        OpenedProject {
+            bodies,
+            notes: Vec::new(),
+            project: Some(Project {
+                model,
+                original: self.original.clone(),
+            }),
+        }
+    }
 }
 
 #[napi]
@@ -480,6 +550,11 @@ impl Project {
                 kind: step.kind,
                 state: step.state,
                 message: step.message,
+                missing_input: step.missing_input.map(|reference| MissingInput {
+                    name: reference.name,
+                    object_id: reference.object_id,
+                    face: reference.face,
+                }),
             })
             .collect()
     }
@@ -507,22 +582,7 @@ impl Project {
         if count == 0 || count > if redo { depth.redo } else { depth.undo } {
             return Err(Error::from_reason("There is no such history point."));
         }
-        let shown: HashMap<_, _> = shown
-            .into_iter()
-            .map(|body| (body.id.unwrap_or(body.name), body.shape.inner.clone()))
-            .collect();
-        let old_shapes = self.model.payload["bodies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|body| {
-                let id = body["id"].as_str()?;
-                let prior = shown
-                    .get(id)
-                    .or_else(|| shown.get(body["name"].as_str()?))?;
-                Some((id.to_owned(), prior.clone()))
-            })
-            .collect();
+        let old_shapes = self.shown_shapes(shown);
         let mut model = self.model.clone();
         let mut stale = BTreeSet::new();
         for _ in 0..count {
@@ -530,31 +590,39 @@ impl Project {
         }
         let report = scad::rebuild::rebuild(&mut model, &self.original, &old_shapes, &stale)
             .map_err(Error::from_reason)?;
-        let hidden: std::collections::HashSet<_> = model.payload["bodies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|body| body["visible"].as_bool() == Some(false))
-            .filter_map(|body| body["id"].as_str())
-            .collect();
-        let bodies = report
-            .bodies
-            .into_iter()
-            .map(|body| OpenedBody {
-                name: body.name,
-                visible: !hidden.contains(body.id.as_str()),
-                id: Some(body.id),
-                shape: body.shape.map(|inner| Shape { inner }),
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    #[napi]
+    pub fn repair_input(
+        &self,
+        request: ReferenceRepair,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let body_id = request
+            .replacement_id
+            .as_deref()
+            .or_else(|| {
+                self.model.payload["bodies"]
+                    .as_array()?
+                    .iter()
+                    .find(|body| body["name"] == request.replacement_name)?["id"]
+                    .as_str()
             })
-            .collect();
-        Ok(OpenedProject {
-            bodies,
-            notes: Vec::new(),
-            project: Some(Project {
-                model,
-                original: self.original.clone(),
-            }),
-        })
+            .ok_or_else(|| Error::from_reason("Select an existing replacement body."))?;
+        let old_shapes = self.shown_shapes(shown);
+        let mut model = self.model.clone();
+        let report = model
+            .repair_reference(
+                &request.step_id,
+                &request.missing_id,
+                body_id,
+                request.face,
+                &self.original,
+                &old_shapes,
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
     }
 
     /// The `.scad3` of this point of the session with its newest `undone` steps

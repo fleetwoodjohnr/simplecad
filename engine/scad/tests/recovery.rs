@@ -1,9 +1,10 @@
-use scad::document::Model;
+use scad::document::{ImportedPart, Model};
 use scad::project::{Project, read, read_saved};
 use scad::rebuild::rebuild;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Cursor, Read};
+use std::rc::Rc;
 
 const ORIGINAL: &[u8] = include_bytes!("data/align.scad3");
 
@@ -127,6 +128,168 @@ fn opening_a_missing_body_recovers_the_cut_and_saving_persists_it() {
         rebuilt.payload["diagnostics"][cut_id]["state"],
         "needs_attention"
     );
+}
+
+#[test]
+fn a_deleted_cutter_can_be_replaced_by_object_id_and_the_repair_is_undoable() {
+    let (mut model, cut_id, plate_id, _) = project_with_the_cut_tool_deleted();
+    let step = || {
+        model.payload["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["id"] == cut_id)
+            .unwrap()
+    };
+    let old_peg = step()["bindings"]["Peg"]["object_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let peg = cached_plate(&model, &cut_id, &old_peg);
+    let cut_plate = cached_plate(&model, &cut_id, &plate_id);
+    let brep = occt::write_brep(&peg).unwrap();
+    let name = model
+        .add_imports(
+            vec![ImportedPart {
+                name: "Peg".into(),
+                asset: brep.clone(),
+                placed: brep,
+            }],
+            [0.0; 3],
+        )
+        .unwrap()
+        .remove(0);
+    let new_id = model.payload["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|body| body["name"] == name)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(new_id, old_peg);
+    let diagnosed = model
+        .steps()
+        .into_iter()
+        .find(|step| step.id == cut_id)
+        .unwrap();
+    assert_eq!(diagnosed.missing_input.unwrap().object_id, old_peg);
+
+    let shown = HashMap::new();
+    let before = model.document();
+    assert!(
+        model
+            .repair_reference(&cut_id, &old_peg, &old_peg, None, ORIGINAL, &shown)
+            .is_err()
+    );
+    assert_eq!(model.document(), before);
+    let repaired = model
+        .repair_reference(&cut_id, &old_peg, &new_id, None, ORIGINAL, &shown)
+        .unwrap();
+    assert!(!repaired.failures.contains_key(&cut_id));
+    let plate = repaired
+        .bodies
+        .iter()
+        .find(|body| body.id == plate_id)
+        .unwrap();
+    assert_plates_match(plate.shape.as_ref().unwrap(), &cut_plate);
+    let saved = model.save(ORIGINAL).unwrap();
+    let reopened = read(&saved).unwrap();
+    let mut model = Model::open(&reopened);
+    let step = model
+        .steps()
+        .into_iter()
+        .find(|step| step.id == cut_id)
+        .unwrap();
+    assert_eq!(step.state, "ok");
+    assert!(step.missing_input.is_none());
+    let stale = model.move_history(false).unwrap();
+    let undone = rebuild(&mut model, &saved, &shown, &stale).unwrap();
+    assert!(undone.failures[&cut_id].contains("was deleted"));
+    let stale = model.move_history(true).unwrap();
+    let redone = rebuild(&mut model, &saved, &shown, &stale).unwrap();
+    assert!(!redone.failures.contains_key(&cut_id));
+    assert_plates_match(
+        redone
+            .bodies
+            .iter()
+            .find(|body| body.id == plate_id)
+            .unwrap()
+            .shape
+            .as_ref()
+            .unwrap(),
+        &cut_plate,
+    );
+}
+
+#[test]
+fn a_deleted_align_target_can_be_replaced_with_a_picked_face() {
+    let mut model = Model::open(&read(ORIGINAL).unwrap());
+    let steps = model.payload["features"].as_array_mut().unwrap();
+    let position = steps
+        .iter()
+        .position(|step| step["name"] == "Align2")
+        .unwrap();
+    let step = &mut steps[position];
+    step["bindings"]["Plate"]["feature_id"] = json!("deleted");
+    step["inputs"]["target_face"]["__ref__"]["feature_id"] = json!("deleted");
+    let id = step["id"].as_str().unwrap().to_owned();
+    let missing = step["bindings"]["Plate"]["object_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let settings = step["inputs"]["offset"].clone();
+    model.payload["diagnostics"][&id] = json!({"state": "needs_attention"});
+    let (name, solid) = scad::rebuild::create_primitive(
+        &mut model,
+        "box",
+        json!({"width": "30 mm", "depth": "20 mm", "height": "10 mm", "x": "100 mm"}),
+    )
+    .unwrap();
+    let id_for_body = model.payload["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|body| body["name"] == name)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let index = occt::faces(&solid)
+        .unwrap()
+        .iter()
+        .position(|face| face.normal[2] > 0.99)
+        .unwrap() as u32;
+    let shown = HashMap::from([(id_for_body.clone(), Rc::new(solid))]);
+    assert!(
+        model
+            .steps()
+            .into_iter()
+            .find(|step| step.id == id)
+            .unwrap()
+            .missing_input
+            .unwrap()
+            .face
+    );
+    let repaired = model
+        .repair_reference(&id, &missing, &id_for_body, Some(index), ORIGINAL, &shown)
+        .unwrap();
+    assert!(!repaired.failures.contains_key(&id));
+    let saved = model.save(ORIGINAL).unwrap();
+    let reopened = read(&saved).unwrap();
+    let step = &reopened.model["features"][position];
+    assert_eq!(step["id"], id);
+    assert_eq!(step["inputs"]["offset"], settings);
+    assert_eq!(
+        step["inputs"]["target_face"]["__ref__"]["body_id"],
+        id_for_body
+    );
+    assert_eq!(
+        step["inputs"]["target_face"]["__ref__"]["index_hint"],
+        index
+    );
+    assert_eq!(reopened.model["diagnostics"][id]["state"], "ok");
 }
 
 #[test]

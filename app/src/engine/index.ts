@@ -47,6 +47,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'applyFace':
       case 'applyStack':
       case 'importModel':
+      case 'repairInput':
       case 'createShape': result = document.apply(req, req.revision); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break

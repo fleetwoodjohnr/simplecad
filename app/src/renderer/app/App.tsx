@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, ModelResult, StackEdit, StackSettings, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyFace, applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyFace, applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewFace, previewPull, previewStack, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -94,6 +94,8 @@ export function App() {
   const [stack, setStack] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
   const [faceTool, setFaceTool] = useState<FaceOperation['faceOperation']>()
+  const [repairing, setRepairing] = useState<string>()
+  const [repairBody, setRepairBody] = useState<number>()
   const [target, setTarget] = useState<number>()
   const [targetView, setTargetView] = useState<ViewFrame>()
   const readViewFrame = useRef<() => ViewFrame>(undefined)
@@ -114,6 +116,8 @@ export function App() {
   const busyRef = useRef(false)
   const historyList = useRef<HTMLOListElement>(null)
   const connection = useRef(0)
+  const repairStep = model?.steps.find((step) => step.id === repairing && !step.undone)
+  const missingInput = repairStep?.missingInput
 
   const updateBusy = (active: boolean) => {
     busyRef.current = active
@@ -128,6 +132,7 @@ export function App() {
       cancelPlacement()
       setShapePanel(false)
       setFaceTool(undefined)
+      setRepairing(undefined)
     }
   }
   const cancelPlacement = () => {
@@ -154,6 +159,7 @@ export function App() {
     cancelPlacement()
     setShapePanel(false)
     setFaceTool(undefined)
+    setRepairing(undefined)
     setError('')
     void openSession(generation > 1).then(
       (next) => {
@@ -252,7 +258,7 @@ export function App() {
   const cancelFaceTool = () => { setFaceTool(undefined); clearFacePreview() }
 
   const pull = (amount: number) => {
-    if (stack || faceTool || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
+    if (stack || faceTool || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
@@ -540,6 +546,28 @@ export function App() {
               onChange={clearFacePreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
+            {model && repairStep && missingInput && <form aria-label={`Repair ${repairStep.name}`} className="grid gap-2 text-xs"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const body = missingInput.face && selected !== undefined ? model.shape.faces[selected]?.body : repairBody
+                if (body === undefined || revision === undefined) return
+                mutate(() => repairInput(revision, { repairStepId: repairStep.id, missingInputId: missingInput.objectId,
+                  replacementBody: body, replacementFace: missingInput.face ? selected : undefined }))
+              }}>
+              <div className="font-semibold">Repair {repairStep.name}</div>
+              {missingInput.face ? <p>Pick a target face to replace {missingInput.name}.</p> :
+                <label className="grid gap-1">Replacement tool
+                  <select value={repairBody ?? ''} className={inputCls} disabled={busy}
+                    onChange={(event) => setRepairBody(event.target.value === '' ? undefined : Number(event.target.value))}>
+                    <option value="">Select a body</option>
+                    {model.bodies.map((body, i) => body.empty ? null : <option key={i} value={i}>{body.name}</option>)}
+                  </select>
+                </label>}
+              <div className="flex gap-2">
+                <Btn size="sm" variant="primary" type="submit" disabled={busy || (missingInput.face ? selected === undefined : repairBody === undefined)}>Apply repair</Btn>
+                <Btn size="sm" type="button" disabled={busy} onClick={() => { setRepairing(undefined); setError('') }}>Cancel</Btn>
+              </div>
+            </form>}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
               {model?.steps.map((step) => (
@@ -550,6 +578,8 @@ export function App() {
                   </div>
                   {!step.undone && (step.state === 'failed' || step.state === 'needs_attention') && step.message &&
                     <p className="mt-1 break-words text-text-2">{step.message}</p>}
+                  {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
+                    aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined) }}>Repair input</Btn>}
                 </li>
               ))}
             </ol>
@@ -566,10 +596,10 @@ export function App() {
           </div>
           <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
             <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={stack || !!faceTool || selected === undefined || busy} className={`${inputCls} w-24`}
+              disabled={stack || !!faceTool || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={stack || !!faceTool || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={stack || !!faceTool || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>

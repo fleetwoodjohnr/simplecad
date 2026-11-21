@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -24,6 +24,8 @@ export interface Project {
   steps(): Omit<StepInfo, 'undone'>[]
   historyDepth(): { undo: number; redo: number }
   moveHistory(offset: number, shown: { id?: string; name: string; shape: Shape }[]): State
+  repairInput(request: { stepId: string; missingId: string; replacementId?: string; replacementName: string; face?: number },
+    shown: { id?: string; name: string; shape: Shape }[]): State
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
@@ -187,8 +189,8 @@ export class EngineDocument {
   /** What `save` writes, whatever the window last saw: for autosave. */
   snapshot(): Uint8Array {
     const newest = this.states.length - 1
-    if (this.cursor < 0 && newest > 0) {
-      return this.moveInherited(this.states[newest], this.cursor - newest).project.save(0)
+    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step))) {
+      return this.moveInherited({ ...this.states[newest], bodies: this.current.bodies }, this.cursor - newest).project.save(0)
     }
     if (this.inherited) return this.current.project.save(0)
     return this.states[newest].project.save(newest - this.cursor)
@@ -206,7 +208,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair, revision: number): ModelResult {
     this.checkRevision(revision)
     if ('distance' in edit && edit.distance === 0) return this.model()
     const fork = this.inherited !== undefined
@@ -225,6 +227,11 @@ export class EngineDocument {
       sources.set(edit.importId, edit.data)
       step = { importName: edit.importName, importId: edit.importId, importFormat: edit.importFormat ?? 'step',
         against: this.shown(current.bodies).map(({ body }) => body) }
+    } else if ('repairStepId' in edit) {
+      const { repairStepId, missingInputId, replacementBody, replacementFace } = edit
+      const picked = replacementFace === undefined ? undefined : this.pick(replacementFace)
+      if (picked && picked.body !== replacementBody) throw new Error('Select a face of the replacement body.')
+      step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -288,9 +295,15 @@ export class EngineDocument {
   }
 
   private moveInherited({ bodies, project }: State, offset: number): State {
-    const shown = bodies.flatMap(({ id, name, shape }) => shape ? [{ id, name, shape }] : [])
-    const moved = project.moveHistory(offset, shown)
-    return { ...moved, bodies: moved.bodies.map((body) => ({ ...body, shape: body.shape ?? null })) }
+    return this.rebuiltState(project.moveHistory(offset, this.shapes(bodies)))
+  }
+
+  private shapes(bodies: Body[]) {
+    return bodies.flatMap(({ id, name, shape }) => shape ? [{ id, name, shape }] : [])
+  }
+
+  private rebuiltState(state: State): State {
+    return { ...state, bodies: state.bodies.map((body) => ({ ...body, shape: body.shape ?? null })) }
   }
 
   /** The newest state's steps: each step of this session adds one, so those past the cursor are its undone ones. */
@@ -354,6 +367,12 @@ export class EngineDocument {
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
   private execute({ bodies, project }: State, step: Step, sources = this.imports): State {
+    if ('repairStepId' in step) {
+      const replacement = bodies[step.replacementBody]
+      if (!replacement?.shape) throw new Error('Select a replacement body with geometry.')
+      return this.rebuiltState(project.repairInput({ stepId: step.repairStepId, missingId: step.missingInputId,
+        replacementId: replacement.id, replacementName: replacement.name, face: step.replacementFace }, this.shapes(bodies)))
+    }
     if ('importId' in step) {
       const data = sources.get(step.importId)
       if (!data) throw new Error('The import source for this recovery step is missing.')
