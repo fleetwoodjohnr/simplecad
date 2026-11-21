@@ -60,10 +60,13 @@ export function verifiedChecksum(sums: Buffer, signature: Buffer, key: Buffer, n
   return matches[0]![1].toLowerCase()
 }
 
-async function request(url: string, download: Download, version: string, timeout: number) {
+async function request(url: string, download: Download, version: string, timeout: number, cancel?: AbortSignal) {
+  const deadline = AbortSignal.timeout(timeout)
+  const signal = cancel ? AbortSignal.any([cancel, deadline]) : deadline
+  signal.throwIfAborted()
   const response = await download(url, {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': `SimpleCAD/${version}` },
-    signal: AbortSignal.timeout(timeout)
+    signal
   })
   if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}.`)
   return response
@@ -74,12 +77,13 @@ export async function checkRelease(current: string, download: Download = fetch) 
   return releaseFromGitHub(await response.json(), current)
 }
 
-export async function downloadUpdate(release: Release, name: string, folder: string, key: Buffer, download: Download = fetch) {
+export async function downloadUpdate(release: Release, name: string, folder: string, key: Buffer,
+  download: Download = fetch, cancel?: AbortSignal) {
   if (![name, SUMS, SIGNATURE].every((file) => release.assets.has(file))) {
     throw new Error('The release is missing its installer or signed checksums.')
   }
   const asset = (file: string, timeout: number) => request(
-    `${RELEASES}/download/v${release.version}/${encodeURIComponent(file)}`, download, release.version, timeout
+    `${RELEASES}/download/v${release.version}/${encodeURIComponent(file)}`, download, release.version, timeout, cancel
   )
   const sums = Buffer.from(await (await asset(SUMS, 30000)).arrayBuffer())
   const signature = Buffer.from(await (await asset(SIGNATURE, 30000)).arrayBuffer())
@@ -97,7 +101,8 @@ export async function downloadUpdate(release: Release, name: string, folder: str
         callback(null, chunk)
       }
     })
-    await pipeline(response.body, digest, createWriteStream(partial, { flags: 'wx', mode: 0o600 }))
+    await pipeline(response.body, digest, createWriteStream(partial, { flags: 'wx', mode: 0o600 }), { signal: cancel })
+    cancel?.throwIfAborted()
     if (hash.digest('hex') !== expected) throw new Error('The package does not match its signed checksum.')
     return { installer: partial, expected }
   } catch (err) {

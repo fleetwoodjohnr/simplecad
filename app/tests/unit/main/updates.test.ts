@@ -49,6 +49,34 @@ it('refuses a corrupted installer and supports an atomic AppImage swap and rollb
   try {
     await expect(downloadUpdate(release, name, folder, key, fakeFetch)).rejects.toThrow(/signed checksum/)
     expect(await readdir(folder)).toEqual([])
+    const disconnected: typeof fetch = async (url, options) => {
+      if (!String(url).endsWith(name)) return fakeFetch(url, options)
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(Buffer.from('new '))
+        },
+        pull(controller) {
+          controller.error(new Error('Connection lost'))
+        }
+      }))
+    }
+    await expect(downloadUpdate(release, name, folder, key, disconnected)).rejects.toThrow('Connection lost')
+    expect(await readdir(folder)).toEqual([])
+
+    const cancel = new AbortController()
+    const slow: typeof fetch = async (url, options) => {
+      if (!String(url).endsWith(name)) return fakeFetch(url, options)
+      return new Response(new ReadableStream({
+        pull(controller) {
+          controller.enqueue(Buffer.from('new '))
+          cancel.abort()
+          controller.close()
+        }
+      }))
+    }
+    await expect(downloadUpdate(release, name, folder, key, slow, cancel.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await readdir(folder)).toEqual([])
+
     assets.set(name, 'new image')
     const target = path.join(folder, 'existing.AppImage')
     await writeFile(target, 'old image', { mode: 0o755 })

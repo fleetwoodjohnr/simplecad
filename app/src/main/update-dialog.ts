@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import keyText from '../../../simplecad/update_key.pub?raw'
-import { checkRelease, downloadUpdate, RELEASES, replaceAppImage, updateAsset, type InstallKind } from './updates'
+import { checkRelease, downloadUpdate, RELEASES, replaceAppImage, updateAsset, type InstallKind, type Release } from './updates'
 
 async function installKind(): Promise<InstallKind> {
   if (existsSync('/.flatpak-info')) return 'flatpak'
@@ -17,6 +17,30 @@ async function installKind(): Promise<InstallKind> {
 }
 
 let checking = false
+
+async function downloadWithDialog(window: BrowserWindow, release: Release, asset: string) {
+  const cancel = new AbortController()
+  const dismiss = new AbortController()
+  const onClose = () => cancel.abort()
+  window.once('closed', onClose)
+  const prompt = dialog.showMessageBox(window, {
+    type: 'info', message: `Downloading SimpleCAD ${release.version}`,
+    detail: 'The installer will be verified before it opens.',
+    buttons: ['Cancel'], cancelId: 0, signal: dismiss.signal
+  }).then(() => {
+    if (!dismiss.signal.aborted) cancel.abort()
+  }, onClose)
+  try {
+    return await downloadUpdate(release, asset, path.join(app.getPath('userData'), 'updates'),
+      Buffer.from(keyText.trim(), 'base64'), fetch, cancel.signal)
+  } catch (err) {
+    if (!cancel.signal.aborted) throw err
+  } finally {
+    dismiss.abort()
+    window.removeListener('closed', onClose)
+    await prompt
+  }
+}
 
 export async function checkForUpdates(window: BrowserWindow) {
   if (checking) return
@@ -35,20 +59,25 @@ export async function checkForUpdates(window: BrowserWindow) {
       type: 'info', message: `SimpleCAD ${release.version} is available`,
       detail: release.notes.slice(0, 1800), buttons: ['Cancel', go], cancelId: 0, defaultId: 0
     })
-    if (response !== 1) return
+    if (response !== 1 || window.isDestroyed()) return
     if (!asset) {
       await shell.openExternal(`${RELEASES}/tag/v${release.version}`)
       return
     }
 
-    const update = await downloadUpdate(release, asset, path.join(app.getPath('userData'), 'updates'), Buffer.from(keyText.trim(), 'base64'))
+    const update = await downloadWithDialog(window, release, asset)
+    if (!update) return
+    if (window.isDestroyed()) {
+      await rm(path.dirname(update.installer), { recursive: true, force: true })
+      return
+    }
     if (kind === 'appimage') {
       try {
         await replaceAppImage(update.installer, process.env.APPIMAGE!, update.expected)
       } finally {
         await rm(path.dirname(update.installer), { recursive: true, force: true })
       }
-      await dialog.showMessageBox(window, {
+      if (!window.isDestroyed()) await dialog.showMessageBox(window, {
         type: 'info', message: 'The update is ready', detail: 'Close SimpleCAD when ready and reopen it to start the new version.'
       })
     } else {
