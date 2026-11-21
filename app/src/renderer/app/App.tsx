@@ -19,6 +19,7 @@ import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
+import { defaultOffsetPlane, OffsetPlanePanel } from './OffsetPlanePanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
@@ -317,7 +318,8 @@ export function App() {
   const savedFaceRequest = (operation: FaceOperation) => {
     if (!faceStep?.faceSettings) return
     const defaults = {
-      text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings
+      text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings,
+      offset_plane: defaultOffsetPlane
     }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
     const changes = Object.fromEntries(Object.entries(operation.settings).filter(([key, value]) => original[key] !== value))
@@ -542,6 +544,7 @@ export function App() {
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
+    offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
     extrude: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('extrude') },
     revolve: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('revolve') },
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('sweep') },
@@ -643,6 +646,7 @@ export function App() {
           <Btn size="sm" disabled={!actions.thread.enabled} onClick={actions.thread.run}>{commands.thread.label}</Btn>
           <Btn size="sm" disabled={!actions.matchingPart.enabled} onClick={actions.matchingPart.run}>{commands.matchingPart.label}</Btn>
           <Btn size="sm" disabled={!actions.text.enabled} onClick={actions.text.run}>{commands.text.label}</Btn>
+          <Btn size="sm" disabled={!actions.offsetPlane.enabled} onClick={actions.offsetPlane.run}>{commands.offsetPlane.label}</Btn>
           <Btn size="sm" disabled={!actions.faceTexture.enabled} onClick={actions.faceTexture.run}>{commands.faceTexture.label}</Btn>
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
@@ -785,6 +789,10 @@ export function App() {
               onChange={clearPreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
+            {faceTool === 'offset_plane' && <OffsetPlanePanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
+              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'offset_plane', settings })} />}
             {faceTool === 'face_texture' && <TexturePanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
               selected={!!faceStep || selected !== undefined}
               onChange={clearPreview} onCancel={cancelFaceTool}
@@ -843,7 +851,7 @@ export function App() {
                           setShapePanel(true)
                         } else {
                           setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread') {
+                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane') {
                             setFaceTool(step.kind)
                           }
                         }
@@ -851,7 +859,7 @@ export function App() {
                       <Pencil className="size-3.5" />
                     </IconBtn>}
                   </div>
-                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import') && step.message &&
+                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import' || step.constructionPlane) && step.message &&
                     <p className="mt-1 break-words text-text-2">{step.message}</p>}
                   {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
                     aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined) }}>Repair input</Btn>}

@@ -575,6 +575,46 @@ impl Model {
         })
     }
 
+    pub fn add_offset_plane(
+        &mut self,
+        body: &str,
+        index: u32,
+        distance: &str,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (producer, object) = self.latest().remove(body).ok_or("Select a planar face.")?;
+        let shape = shown.get(&object).ok_or("Select a body with geometry.")?;
+        let mark = occt::face_fingerprint(shape, index).map_err(|error| error.what().to_owned())?;
+        if mark.geometry != "plane" {
+            return Err("An offset plane needs a flat face to offset from.".into());
+        }
+        let mut reference = self.face_ref(
+            body,
+            index,
+            json!({
+                "kind": "face", "geometry": mark.geometry, "measure": mark.measure,
+                "center": mark.center, "direction": mark.has_direction.then_some(mark.direction),
+                "radius": mark.has_radius.then_some(mark.radius), "neighbours": [],
+            }),
+        );
+        reference["body_id"] = json!(object);
+
+        let label = "Offset Plane";
+        let mut candidate = self.clone();
+        let name = candidate.unique_name(label);
+        let id = new_feature_id();
+        let output = format!("__construction__{name}");
+        let feature = json!({
+            "id": id, "type": "offset_plane", "name": name, "outputs": [output],
+            "output_ids": { &output: crate::graph::output_id(&id, &output) },
+            "inputs": { "face": { "__ref__": reference }, "distance": distance },
+            "bindings": { body: { "feature_id": producer, "object_id": object } },
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
     /// The Pull tool's step on `body`, its result `brep`: the feature the Python
     /// app's `add_feature` and dependency graph would write, its cached result and
     /// current geometry, and its undo step. Returns the new feature's id.
@@ -1355,6 +1395,7 @@ fn shape_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
 
 fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
+        "offset_plane" => Some(&["distance"]),
         "hole" => Some(&[
             "style",
             "depth_mode",

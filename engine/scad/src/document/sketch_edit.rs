@@ -61,7 +61,7 @@ impl Model {
             "output_ids": { &output: output_id(id, &output) },
             "inputs": { "sketch": draft }, "bindings": {}, "dropped": [], "suppressed": false,
         });
-        self.add_sketch_recipe(candidate, feature, "Sketch", original, shown)
+        self.add_rebuilt_recipe(candidate, feature, "Sketch", original, shown)
     }
 
     pub fn apply_sketch_solid(
@@ -141,10 +141,10 @@ impl Model {
             "output_ids": { &output: object }, "inputs": inputs,
             "bindings": bindings, "dropped": [], "suppressed": false
         });
-        self.add_sketch_recipe(candidate, feature, label, original, shown)
+        self.add_rebuilt_recipe(candidate, feature, label, original, shown)
     }
 
-    fn add_sketch_recipe(
+    pub(super) fn add_rebuilt_recipe(
         &mut self,
         mut candidate: Model,
         feature: Value,

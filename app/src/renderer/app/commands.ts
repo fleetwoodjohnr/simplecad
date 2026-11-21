@@ -39,6 +39,7 @@ export const commands = {
   move: { label: 'Move' },
   rotate: { label: 'Rotate' },
   sketch: { label: 'Sketch' },
+  offsetPlane: { label: 'Offset Plane' },
   extrude: { label: 'Extrude' },
   revolve: { label: 'Revolve' },
   sweep: { label: 'Sweep' },

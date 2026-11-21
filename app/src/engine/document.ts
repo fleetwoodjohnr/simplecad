@@ -17,6 +17,7 @@ export interface Project {
   applySketchDraft(request: SketchDraftEdit['sketchDraft'], shown: { id?: string; name: string; shape: Shape }[]): State
   applySketchSolid(request: SketchSolidEdit['sketchSolid'], shown: { id?: string; name: string; shape: Shape }[]): State
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
+  addOffsetPlane(body: string, face: number, distance: string, shown: { id?: string; name: string; shape: Shape }[]): State
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   addFaceFeature(shape: Shape, request: { kind: FaceOperation['faceOperation']; body: string; face: number
@@ -396,6 +397,7 @@ export class EngineDocument {
     if ('faceOperation' in edit) {
       const pick = this.pick(edit.face)
       switch (edit.faceOperation) {
+        case 'offset_plane': return { ...pick, faceOperation: 'offset_plane', settings: edit.settings }
         case 'text': return { ...pick, faceOperation: 'text', settings: edit.settings }
         case 'face_texture': return { ...pick, faceOperation: 'face_texture', settings: edit.settings }
         case 'hole': return { ...pick, faceOperation: 'hole', settings: edit.settings, position: edit.position, untilBody: edit.untilBody }
@@ -478,6 +480,9 @@ export class EngineDocument {
     else if ('transform' in step) {
       next = project.transform(bodies[body].name, shape, step.transform)
     } else if ('faceOperation' in step) {
+      if (step.faceOperation === 'offset_plane') {
+        return this.rebuiltState(project.addOffsetPlane(bodies[body].name, step.face, step.settings.distance, this.shapes(bodies)))
+      }
       const hole = step.faceOperation === 'hole' ? step : undefined
       const target = hole?.untilBody === undefined ? undefined : bodies[hole.untilBody]
       if (hole?.untilBody !== undefined && (!target?.shape || hole.untilBody === body)) {

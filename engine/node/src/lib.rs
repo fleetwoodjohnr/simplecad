@@ -643,6 +643,27 @@ impl Project {
     }
 
     #[napi]
+    pub fn add_offset_plane(
+        &self,
+        body: String,
+        face: u32,
+        distance: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let mut model = self.model.clone();
+        let report = model
+            .add_offset_plane(
+                &body,
+                face,
+                &distance,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    #[napi]
     pub fn add_face_feature(&self, shape: &Shape, request: FaceFeatureRequest) -> Result<Pulled> {
         let FaceFeatureRequest {
             kind,

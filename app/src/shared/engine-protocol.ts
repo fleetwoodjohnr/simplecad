@@ -124,6 +124,7 @@ export interface HoleSettings extends Omit<ThreadSettings, 'length' | 'resize'> 
   thread_length: string
 }
 export type FaceOperation =
+  | { faceOperation: 'offset_plane'; settings: { distance: string } }
   | { faceOperation: 'text'; settings: TextSettings }
   | { faceOperation: 'face_texture'; settings: TextureSettings }
   | { faceOperation: 'hole'; settings: HoleSettings; position?: Vec3; untilBody?: number }
@@ -310,6 +311,9 @@ function isFaceEdit(value: unknown): value is FaceEdit {
   if (typeof edit.face !== 'number' || !isIndex(edit.face) || edit.face > 0xffffffff ||
       !edit.settings || typeof edit.settings !== 'object') return false
   const short = (entry: unknown) => typeof entry === 'string' && entry.length <= 256
+  if (edit.faceOperation === 'offset_plane') {
+    return short(edit.settings.distance) && !!edit.settings.distance.trim()
+  }
   if (edit.faceOperation === 'text') {
     const { font_family: family, mode, text, text_height: height, depth, offset_x: x, offset_y: y, rotation } = edit.settings
     return (family === 'sans-serif' || family === 'serif' || family === 'monospace') &&
