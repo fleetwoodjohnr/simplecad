@@ -3,6 +3,18 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.5.0 (2026-11-21)
+
+- The desktop app runs modeling and previews in a separate Rust geometry
+  worker. Move and Rotate preview in the viewport and record one history
+  action when a drag finishes.
+- History identifies inputs by their saved IDs. Repair can reconnect a
+  missing input while the viewport keeps the last good geometry.
+- Draw and dimension sketches, edit them from History, and create solids
+  with Extrude, Revolve, Sweep, Loft, and Pattern Along Path.
+- Create matching printed bolts and nuts from modeled threads. Import
+  editable models from STEP, IGES, B-Rep, STL, OBJ, 3MF, and SimpleCAD projects.
+
 ## 0.4.4 (2026-11-20)
 
 Installing updates works again on Linux, parts no longer go missing when a

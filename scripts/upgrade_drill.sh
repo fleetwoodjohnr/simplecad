@@ -3,7 +3,8 @@
 #
 #   scripts/upgrade_drill.sh <old .rpm|.deb> <new .rpm|.deb>
 #
-# .rpm runs in Fedora 44 (dnf upgrade), .deb in Ubuntu 24.04 (apt install). Needs podman.
+# .rpm runs in Fedora 44 (dnf upgrade), .deb in Ubuntu 24.04 (apt install).
+# Uses Podman by default. Set SIMPLECAD_CONTAINER_ENGINE=docker on Docker hosts.
 set -euo pipefail
 if [[ $# != 2 ]]; then
   echo "usage: $0 <old package> <new package>" >&2
@@ -24,7 +25,7 @@ cp -- "$old" "$scratch/before.$kind"
 cp -- "$new" "$scratch/after.$kind"
 cp -- "$fixture" "$scratch/model.scad3"
 
-podman run --rm -i -v "$scratch:/drill:ro,Z" "$image" bash -euo pipefail -s -- "$kind" <<'DRILL'
+"${SIMPLECAD_CONTAINER_ENGINE:-podman}" run --rm -i -v "$scratch:/drill:ro,Z" "$image" bash -euo pipefail -s -- "$kind" <<'DRILL'
 kind=$1
 old="/drill/before.$kind"
 new="/drill/after.$kind"

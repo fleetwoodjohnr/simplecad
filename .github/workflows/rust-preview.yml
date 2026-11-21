@@ -1,6 +1,8 @@
 name: Rust preview
 
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - 'app/**'
@@ -11,6 +13,12 @@ on:
       - 'scripts/verify_release_package.py'
       - '.github/workflows/rust-preview.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      include-macos-intel:
+        description: Build and test the Intel macOS package in the release matrix.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,7 +30,7 @@ jobs:
       matrix:
         # Linux builds on the oldest supported glibc, as the Python release does:
         # OCCT built on a newer system needs a newer libm than Ubuntu 22.04 has.
-        os: [ubuntu-22.04, windows-2025, macos-15]
+        os: ${{ fromJSON(inputs.include-macos-intel && '["ubuntu-22.04", "windows-2025", "macos-15", "macos-15-intel"]' || '["ubuntu-22.04", "windows-2025", "macos-15"]') }}
     runs-on: ${{ matrix.os }}
     # The first run on each OS compiles OCCT (about an hour); later runs restore it from the cache.
     timeout-minutes: 120

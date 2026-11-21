@@ -18,28 +18,27 @@
 
 ## Each release
 
-1. Set the version in `simplecad/__init__.py` **and** `pyproject.toml` (a test
-   checks they agree). Then:
+1. Set the desktop version in `app/package.json` and `app/package-lock.json`.
+   Update the Rust workspace version and lockfile in `engine/`. Then:
    - add a `## <version>` section to `CHANGELOG.md`; it becomes the release
      notes and what the in-app updater shows
    - add a `<release>` line to
      `packaging/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml`
 2. Prove the release pipeline on the branch first, without tagging:
    `gh workflow run release.yml --ref <branch>` (or Actions → Release → Run
-   workflow). It builds, installs and runs every package and signs the set,
-   but creates no release. A tag is never moved once pushed, so this is the
-   time to find out.
+   workflow). It builds and tests the desktop, verifies the installers,
+   and stores the signed assets as an Actions artifact for this commit.
 3. Merge to `main`, push it, and wait for CI to pass.
 4. Tag that commit with an **annotated** tag and push the tag:
    ```sh
-   git tag -a v0.3.0 -m "SimpleCAD 0.3.0" && git push origin v0.3.0
+   git tag -a v0.5.0 -m "SimpleCAD 0.5.0" && git push origin v0.5.0
    ```
 5. `release.yml` then:
    1. **preflight**: refuses a lightweight tag, a tag that differs from
-      `__version__`, a commit that is not on `main`, or a missing CHANGELOG
+      the version in `app/package.json`, a commit outside `main`, or a missing CHANGELOG
       section
-   2. runs CI in full: lint, audit, Linux tests with the real-window checks,
-      and headless Windows and macOS tests
+   2. runs Python CI and the Rust and Electron suites, including the packaged
+      desktop tests on Linux, Windows, and both macOS architectures
    3. builds on Linux (AppImage, .deb, .rpm, Flatpak tarball), Windows
       (installer) and macOS (arm64 and x86_64 DMGs); appimagetool and nfpm are
       pinned and checksum-checked
@@ -50,23 +49,25 @@
       - each Linux package also opens its real window under Xvfb for 30 s
         (`scripts/window_smoke.sh`); `--self-test` is headless and cannot
         catch a build whose window fails to start
-      - the Windows installer, silently
-      - the DMG: mounted, the app run from it
+      - the Windows installer and macOS DMGs through installation, upgrade,
+        file association, and rollback checks
    5. checks the exact file list, writes and signs `SHA256SUMS` (failing if the
       secret doesn't match the key built into the app), and runs
       `sha256sum -c`
    6. refuses to touch an existing release, then uploads everything to a
       **draft** with the CHANGELOG notes
-6. Read the draft and **Publish**. Installed copies see it on their next
-   check.
+6. Verify the draft belongs to the tagged commit and download and verify its
+   signed assets before publishing it as latest. Check that the stable
+   updater offers the published installers.
 
 ## Building locally (Linux)
 
 ```sh
-.venv/bin/pip install -r requirements-build.txt
-.venv/bin/python packaging/build.py bundle          # dist/SimpleCAD/, self-tested
-.venv/bin/python packaging/build.py appimage        # needs appimagetool on PATH
-.venv/bin/python packaging/build.py deb rpm         # needs nfpm on PATH
+# Set OCCT_DIR and GEOS_DIR to the native library installations first.
+(cd app && npm ci && npm run dist)
+export SIMPLECAD_BUNDLE="$PWD/app/release/linux-unpacked"
+export SIMPLECAD_VERSION="$(node -p "require('./app/package.json').version")"
+.venv/bin/python packaging/build.py icons appimage deb rpm flatpak-tarball
 ```
 
 ## Known limits
@@ -75,6 +76,3 @@
   Authenticode-signed; both need paid certificates. Users see Gatekeeper
   (System Settings → Privacy & Security → "Open Anyway" the first time) and
   SmartScreen ("More info → Run anyway") respectively.
-- **Testing**: the Windows and macOS 3D viewport has not been run by anyone
-  yet. CI proves those builds start, compute and self-test headless, not that
-  the viewport draws.

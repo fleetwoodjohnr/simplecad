@@ -1,10 +1,10 @@
 name: Release
 
-# Push an annotated tag like v0.3.0 (matching simplecad/__init__.py) on a commit
+# Push an annotated tag like v0.3.0 (matching app/package.json) on a commit
 # that is on main. This then:
 #   1. refuses a lightweight or mismatched tag, one not on main, or one that
 #      already has a release (nothing is ever overwritten)
-#   2. runs CI (ci.yml) in full
+#   2. runs Python CI and the Rust desktop build and test matrix
 #   3. builds every package, installs each one and runs it (--self-test)
 #   4. checks the full set of files is present, checksums and signs them
 #   5. uploads them to a DRAFT release with the CHANGELOG notes
@@ -33,29 +33,35 @@ env:
   APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
   NFPM_VERSION: "2.41.1"
   NFPM_SHA256: b3cf95aa6dabed836d09ad7f0c190a13c74c5b1304db60846f0f702ee407f430
-  INNOSETUP_VERSION: "6.7.1"
 
 jobs:
   preflight:
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: The tag is annotated, matches the code, and is on main
+      - name: Validate the desktop version and release ref
+        id: validate
         shell: bash
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' simplecad/__init__.py)"
+          version="$(node -p "require('./app/package.json').version")"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::a release requires a stable version in app/package.json"; exit 1
+          fi
+          grep -Fq "## $version (" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
-            grep -q "^## ${version}" CHANGELOG.md || {
-              echo "::error::CHANGELOG.md has no section for ${version}"; exit 1; }
             echo "Dry run of ${version} from ${GITHUB_REF_NAME}: no tag checks, no release"
             exit 0
           fi
           if [ "v${version}" != "${tag}" ]; then
-            echo "::error::tag ${tag} does not match __version__ ${version}"; exit 1
+            echo "::error::tag ${tag} does not match the desktop version ${version}"; exit 1
           fi
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           if [ "$(git cat-file -t "refs/tags/${tag}")" != "tag" ]; then
@@ -65,38 +71,38 @@ jobs:
           if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
             echo "::error::${tag} points at a commit that is not on main"; exit 1
           fi
-          grep -q "^## ${version}" CHANGELOG.md || {
-            echo "::error::CHANGELOG.md has no section for ${version}"; exit 1; }
           echo "Releasing ${tag} from $(git rev-parse --short "${GITHUB_SHA}")"
 
   ci:
     needs: preflight
     uses: ./.github/workflows/ci.yml
 
-  build:
-    needs: [preflight, ci]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04        # older glibc: the AppImage runs on more systems
-            steps: bundle appimage deb rpm flatpak-tarball
-          - os: windows-2025
-            steps: bundle windows
-          - os: macos-15            # Apple silicon
-            steps: bundle macos
-          - os: macos-15-intel      # Intel
-            steps: bundle macos
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+  rust-desktop:
+    needs: preflight
+    uses: ./.github/workflows/rust-preview.yml
+    with:
+      include-macos-intel: true
+
+  linux-packages:
+    needs: [preflight, rust-desktop]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      SIMPLECAD_VERSION: ${{ needs.preflight.outputs.version }}
+      SIMPLECAD_BUNDLE: ${{ github.workspace }}/app/release/linux-unpacked
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - run: pip install -r requirements-build.txt
+      - run: python -m pip install $(grep -hEi '^(pyside6|pillow|cryptography|packaging)[=<>]' requirements.txt requirements-build.txt)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: simplecad-linux-unpacked
+          path: app
+      - name: Extract the tested desktop bundle
+        run: mkdir -p app/release && tar -xzf app/linux-unpacked.tar.gz -C app/release
       - name: Linux packaging tools (pinned, checksum-verified)
-        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -109,19 +115,14 @@ jobs:
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
           echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum -c -
           tar xzf nfpm.tar.gz nfpm && sudo mv nfpm /usr/local/bin/
-      - name: Inno Setup (pinned)
-        if: runner.os == 'Windows'
-        run: choco install innosetup --version=${{ env.INNOSETUP_VERSION }} -y --no-progress
-      - name: Build
-        shell: bash
+      - name: Build AppImage, DEB, RPM and Flatpak source archive
         env:
           QT_QPA_PLATFORM: offscreen
-          APPIMAGE_EXTRACT_AND_RUN: "1"   # appimagetool without FUSE
-        run: python packaging/build.py ${{ matrix.steps }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: python packaging/build.py icons appimage deb rpm flatpak-tarball
 
       # -- install what was built, the way a user would, and run it -------------
       - name: Install and run the AppImage, .deb and .rpm
-        if: runner.os == 'Linux'
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
@@ -133,8 +134,8 @@ jobs:
           chmod +x "${smoke}"
           cd dist/release
           chmod +x SimpleCAD-*-linux-x86_64.AppImage
-          APPIMAGE_EXTRACT_AND_RUN=1 ./SimpleCAD-*-linux-x86_64.AppImage --self-test
           sudo apt-get install -y ./SimpleCAD-*-linux-x86_64.deb xvfb
+          APPIMAGE_EXTRACT_AND_RUN=1 ./SimpleCAD-*-linux-x86_64.AppImage --self-test
           /usr/bin/simplecad --self-test
           test -s /usr/share/icons/hicolor/48x48/apps/simplecad.png
           test -s /usr/share/icons/hicolor/scalable/apps/simplecad.svg
@@ -149,13 +150,15 @@ jobs:
           docker run --rm -e QT_QPA_PLATFORM=offscreen -e LANG=C.UTF-8 -v "$PWD:/pkgs:ro" \
             -v "${smoke}:/smoke.sh:ro" fedora:44 bash -euxc '
             dnf install -y -q mesa-libGL mesa-libEGL mesa-dri-drivers libxkbcommon fontconfig \
-              glib2 dbus-libs xorg-x11-server-Xvfb xorg-x11-xauth desktop-file-utils appstream
+              glib2 dbus-libs xorg-x11-server-Xvfb xorg-x11-xauth desktop-file-utils appstream \
+              shadow-utils util-linux
             dnf install -y -q /pkgs/SimpleCAD-*-linux-x86_64.rpm
-            /usr/bin/simplecad --self-test
-            env -u QT_QPA_PLATFORM /smoke.sh rpm-fedora-44 /usr/bin/simplecad
+            useradd -m tester
+            runuser -u tester -- /usr/bin/simplecad --self-test
+            runuser -u tester -- env -u QT_QPA_PLATFORM /smoke.sh rpm-fedora-44 /usr/bin/simplecad --no-sandbox
             cp /pkgs/SimpleCAD-*-linux-x86_64.AppImage /tmp/SimpleCAD.AppImage
-            env -u QT_QPA_PLATFORM APPIMAGE_EXTRACT_AND_RUN=1 /smoke.sh appimage-fedora-44 \
-              /tmp/SimpleCAD.AppImage
+            runuser -u tester -- env -u QT_QPA_PLATFORM APPIMAGE_EXTRACT_AND_RUN=1 /smoke.sh \
+              appimage-fedora-44 /tmp/SimpleCAD.AppImage --no-sandbox
             desktop-file-validate /usr/share/applications/simplecad.desktop
             appstreamcli validate --no-net \
               /usr/share/metainfo/io.github.fleetwoodjohnr.SimpleCAD.metainfo.xml'
@@ -164,51 +167,37 @@ jobs:
             ubuntu:24.04 bash -euxc '
             apt-get update -q
             apt-get install -y -q /pkgs/SimpleCAD-*-linux-x86_64.deb xvfb xauth libgl1-mesa-dri
-            /usr/bin/simplecad --self-test
-            env -u QT_QPA_PLATFORM /smoke.sh deb-ubuntu-24.04 /usr/bin/simplecad'
-      - name: Install and run the Windows installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $setup = Get-ChildItem dist/release/SimpleCAD-*-windows-x86_64-setup.exe | Select-Object -First 1
-          $install = Join-Path $env:RUNNER_TEMP 'SimpleCAD'
-          $p = Start-Process $setup.FullName -Wait -PassThru -ArgumentList `
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$install"
-          if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
-          $env:QT_QPA_PLATFORM = 'offscreen'
-          $out = Join-Path $env:RUNNER_TEMP 'self-test.txt'
-          $app = Start-Process (Join-Path $install 'SimpleCAD.exe') -Wait -PassThru `
-            -ArgumentList '--self-test' -RedirectStandardOutput $out
-          Get-Content $out -ErrorAction SilentlyContinue
-          if ($app.ExitCode -ne 0) { throw "installed SimpleCAD --self-test exited $($app.ExitCode)" }
-      - name: Open the disk image and run the app from it
-        if: runner.os == 'macOS'
-        shell: bash
+            useradd -m tester
+            runuser -u tester -- /usr/bin/simplecad --self-test
+            runuser -u tester -- env -u QT_QPA_PLATFORM /smoke.sh deb-ubuntu-24.04 /usr/bin/simplecad --no-sandbox'
+      - name: Upgrade and roll back from the signed v0.4.4 installers
         env:
-          QT_QPA_PLATFORM: offscreen
+          GH_TOKEN: ${{ github.token }}
+          SIMPLECAD_CONTAINER_ENGINE: docker
         run: |
-          set -euxo pipefail
-          dmg="$(ls dist/release/SimpleCAD-*-macos-*.dmg)"
-          hdiutil attach "$dmg" -mountpoint /Volumes/SimpleCADTest -nobrowse
-          test -L /Volumes/SimpleCADTest/Applications
-          ditto /Volumes/SimpleCADTest/SimpleCAD.app "$RUNNER_TEMP/SimpleCAD.app"
-          hdiutil detach /Volumes/SimpleCADTest
-          test -s "$RUNNER_TEMP/SimpleCAD.app/Contents/Resources/simplecad.icns"
-          "$RUNNER_TEMP/SimpleCAD.app/Contents/MacOS/SimpleCAD" --self-test
+          set -euo pipefail
+          gh release download v0.4.4 --dir baseline -p '*.deb' -p '*.rpm' -p SHA256SUMS -p SHA256SUMS.sig
+          for kind in deb rpm; do
+            old="baseline/SimpleCAD-0.4.4-linux-x86_64.$kind"
+            python scripts/verify_release_package.py "$old"
+            scripts/upgrade_drill.sh "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.$kind"
+          done
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-${{ matrix.os }}
+          name: simplecad-installers-linux
           path: |
             dist/release/*
             build/simplecad-bundle-*.tar.gz
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [preflight, ci, linux-packages]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      SIMPLECAD_VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -219,11 +208,12 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
+          pattern: simplecad-installers-*
       - name: Every package is here, and nothing else
         shell: bash
         run: |
           set -euo pipefail
-          v="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' simplecad/__init__.py)"
+          v="$SIMPLECAD_VERSION"
           mkdir -p dist/release
           find artifacts -type f \( -name 'SimpleCAD-*' -o -name 'simplecad-bundle-*' \) \
             -exec cp {} dist/release/ \;
@@ -252,9 +242,16 @@ jobs:
           (cd dist/release && sha256sum -c SHA256SUMS)
       - name: Notes from CHANGELOG.md
         run: |
-          python scripts/release_notes.py "$(python -c 'import simplecad; print(simplecad.__version__)')" \
+          python scripts/release_notes.py "$SIMPLECAD_VERSION" \
             > "$RUNNER_TEMP/notes.md"
           head -20 "$RUNNER_TEMP/notes.md"
+      - name: Keep the signed trial assets
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: simplecad-signed-release-trial-${{ github.sha }}
+          path: dist/release/*
+          if-no-files-found: error
       - name: Draft release (never over an existing one)
         if: github.event_name == 'push'
         env:
