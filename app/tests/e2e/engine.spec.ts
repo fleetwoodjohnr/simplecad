@@ -32,9 +32,9 @@ test('reports an unavailable 3D view after the geometry worker becomes ready', a
   const { page } = await launch()
   await page.addInitScript(() => {
     const getContext = HTMLCanvasElement.prototype.getContext
-    HTMLCanvasElement.prototype.getContext = function (type: string, options?: unknown) {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, options?: unknown) {
       return /^webgl/.test(type) ? null : Reflect.apply(getContext, this, [type, options])
-    }
+    } as typeof getContext
   })
   await page.reload()
   await expect(page.locator('canvas')).toHaveCount(0)
