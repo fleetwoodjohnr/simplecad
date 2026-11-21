@@ -5,6 +5,7 @@
 import { readdir, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { MAX_PROJECT_BYTES } from '../shared/engine-protocol'
 
 /** `paths.data_dir()/recovery`; `SIMPLECAD_RECOVERY_DIR` moves it, for the tests. */
@@ -55,5 +56,18 @@ export async function readRecovered(file: string) {
 
 /** Each file and the `.part` an interrupted autosave leaves beside it. */
 export async function remove(files: string[]) {
-  await Promise.all(files.flatMap((f) => [f, `${f}.part`]).map((f) => rm(f, { force: true }).catch(() => {})))
+  await Promise.all(files.flatMap((f) => [f, `${f}.part`]).map(async (file) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rm(file, { force: true })
+        return
+      } catch (error) {
+        if (attempt === 5 || !['EACCES', 'EBUSY', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+          console.warn('Could not remove a recovery file:', error)
+          return
+        }
+        await delay(50 * (attempt + 1))
+      }
+    }
+  }))
 }

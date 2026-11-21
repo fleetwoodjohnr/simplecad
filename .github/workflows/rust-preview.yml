@@ -138,6 +138,8 @@ jobs:
   # does not. It also proves a 22.04 build runs on a newer system.
   linux-window:
     needs: build
+    # Run against the Linux artifact even if the Windows or macOS job fails.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -159,4 +161,4 @@ jobs:
           mkdir -p release && tar -xzf linux-unpacked.tar.gz -C release
           sudo apt-get update
           sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libgl1-mesa-dri libegl1 libgles2
-          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test
+          SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test --fail-on-flaky-tests

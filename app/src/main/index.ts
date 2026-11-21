@@ -33,12 +33,22 @@ const recovery = recoveryDir()
 const autosaveFile = sessionFile(recovery)
 /** Recovery files whose work this session now holds: they go when it ends cleanly. */
 let recovered: string[] = []
+let sessionCleanup: Promise<void> | undefined
+let quitState: 'running' | 'cleaning' | 'ready' = 'running'
 const engine = new EngineHost(addon, () => mainWindow?.webContents ?? null, {
   SIMPLECAD_AUTOSAVE_FILE: autosaveFile,
   SIMPLECAD_AUTOSAVE_SECONDS: process.env.SIMPLECAD_AUTOSAVE_SECONDS ?? '90'
 })
 
 function createWindow() {
+  if (sessionCleanup) {
+    const closing = sessionCleanup
+    void closing.then(() => {
+      if (sessionCleanup === closing) sessionCleanup = undefined
+      if (!mainWindow && quitState === 'running') createWindow()
+    })
+    return
+  }
   const dark = nativeTheme.shouldUseDarkColors
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -193,11 +203,24 @@ if (process.argv.includes('--version')) {
       if (!mainWindow) createWindow()
     })
   })
-  // A clean exit: the engine stopped first, so no autosave lands after its file is removed.
+  // Stop the worker before deleting autosaves. On macOS the app can stay open
+  // without a window, and an explicit Quit uses Electron's will-quit path.
+  const cleanSession = () => sessionCleanup ??= engine.stop().then(async () => {
+    await remove([autosaveFile, ...recovered])
+    recovered = []
+  })
   app.on('window-all-closed', () => {
-    void engine.stop().then(() => remove([autosaveFile, ...recovered])).finally(() => {
-      recovered = []
-      if (!isMac) app.quit()
+    if (isMac) void cleanSession()
+    else app.quit()
+  })
+  app.on('will-quit', (event) => {
+    if (quitState === 'ready') return
+    event.preventDefault()
+    if (quitState === 'cleaning') return
+    quitState = 'cleaning'
+    void cleanSession().finally(() => {
+      quitState = 'ready'
+      app.quit()
     })
   })
 }

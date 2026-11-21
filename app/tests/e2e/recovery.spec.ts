@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { Page } from '@playwright/test'
+import type { ElectronApplication, Page } from '@playwright/test'
 import { expect, launch, test } from './helpers'
 
 async function pullTop(page: Page, distance: string) {
@@ -9,6 +9,12 @@ async function pullTop(page: Page, distance: string) {
   const field = page.getByLabel('Pull distance')
   await field.fill(distance)
   await field.press('Enter')
+}
+
+async function closeWindow(app: ElectronApplication, page: Page) {
+  const closed = process.platform === 'darwin' ? page.waitForEvent('close') : app.waitForEvent('close')
+  await page.evaluate(() => { void window.simplecad.windowClose() })
+  await closed
 }
 
 test('unsaved work is autosaved, and offered back after a crash', async () => {
@@ -20,7 +26,9 @@ test('unsaved work is autosaved, and offered back after a crash', async () => {
   await pullTop(first.page, '-2')
   await expect(status).toHaveText(/21600 mm³/)
   await expect.poll(() => readdirSync(recovery).filter((f) => f.endsWith('.scad3')).length, { timeout: 10_000 }).toBe(1)
+  const crashed = first.app.waitForEvent('close')
   first.app.process().kill('SIGKILL')
+  await crashed
 
   const { app, page } = await launch({ env })
   const offer = page.getByRole('region', { name: 'Unsaved work from last time' })
@@ -33,10 +41,8 @@ test('unsaved work is autosaved, and offered back after a crash', async () => {
 
   // Closed without saving, on purpose: a clean exit, so no work is left to offer.
   await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1 })
-  const closed = app.waitForEvent('close')
-  await page.evaluate(() => window.simplecad.windowClose())
-  await closed
-  expect(readdirSync(recovery)).toEqual([])
+  await closeWindow(app, page)
+  await expect.poll(() => readdirSync(recovery)).toEqual([])
 })
 
 test('closing with unsaved work asks: Cancel keeps the window, Save saves and then closes', async () => {
@@ -56,8 +62,23 @@ test('closing with unsaved work asks: Cancel keeps the window, Save saves and th
     dialog.showSaveDialog = async () => ({ filePath: file, canceled: false })
     return file
   })
-  const closed = app.waitForEvent('close')
-  await page.evaluate(() => window.simplecad.windowClose())
-  await closed
+  await closeWindow(app, page)
   expect(existsSync(target)).toBe(true)
+})
+
+test('explicit Quit cleans a discarded autosave before the application exits', async () => {
+  const recovery = mkdtempSync(path.join(tmpdir(), 'scad-recovery-'))
+  const { app, page } = await launch({ env: { SIMPLECAD_RECOVERY_DIR: recovery, SIMPLECAD_AUTOSAVE_SECONDS: '1' } })
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  await pullTop(page, '-2')
+  await expect(status).toHaveText(/21600 mm³/)
+  await expect.poll(() => readdirSync(recovery).filter((f) => f.endsWith('.scad3')).length).toBe(1)
+  const closed = app.waitForEvent('close')
+  await app.evaluate(({ app: electron, dialog }) => {
+    dialog.showMessageBoxSync = () => 1
+    setImmediate(() => electron.quit())
+  })
+  await closed
+  expect(readdirSync(recovery)).toEqual([])
 })
