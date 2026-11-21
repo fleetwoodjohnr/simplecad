@@ -1408,6 +1408,7 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
     let format = match extension.as_str() {
         "step" | "stp" => "STEP",
         "brep" => "B-Rep",
+        "iges" | "igs" => "IGES",
         _ => {
             return Err(failed(format!(
                 "This import has to be rebuilt, and this version cannot build it yet: '{name}'."
@@ -1436,14 +1437,13 @@ fn read_import_source(path: &str) -> Result<Vec<Shape>, StepError> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("Imported");
-    let parts = if extension == "brep" {
-        occt::read_brep_parts(&bytes, fallback)
-    } else {
-        occt::read_step(&bytes, fallback)
+    let error = |_| failed(format!("'{name}' is not a readable {format} file."));
+    let parts = match format {
+        "B-Rep" => occt::read_brep_parts(&bytes, fallback).map_err(error)?,
+        "IGES" => crate::iges::read(&bytes, fallback).map_err(failed)?,
+        _ => occt::read_step(&bytes, fallback).map_err(error)?,
     };
-    parts
-        .map(|parts| parts.into_iter().map(|part| Rc::new(part.shape)).collect())
-        .map_err(|_| failed(format!("'{name}' is not a readable {format} file.")))
+    Ok(parts.into_iter().map(|part| Rc::new(part.shape)).collect())
 }
 
 struct Rebuilder<'a> {

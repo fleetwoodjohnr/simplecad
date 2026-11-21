@@ -1,7 +1,8 @@
 // Runs the geometry engine (src/engine) in an Electron utility process, restarts it if it crashes, and hands the
 // window a MessagePort to it. The same pattern as Simple Viz's engine host.
 
-import { MessageChannelMain, utilityProcess, type UtilityProcess, type WebContents } from 'electron'
+import { app, MessageChannelMain, utilityProcess, type UtilityProcess, type WebContents } from 'electron'
+import { rmSync } from 'node:fs'
 import path from 'node:path'
 
 export class EngineHost {
@@ -22,14 +23,20 @@ export class EngineHost {
     if (this.ready) return this.ready
     this.stopping = false
     this.ready = new Promise((resolve, reject) => {
+      const igesFile = path.join(app.getPath('userData'), 'engine', 'import.iges')
+      const discardImport = () => {
+        try { rmSync(igesFile, { force: true }) } catch { this.log('error', 'Could not remove the temporary IGES file.') }
+      }
+      discardImport()
       const child = utilityProcess.fork(path.join(__dirname, 'engine.js'), [], {
         serviceName: 'SimpleCAD geometry engine',
         stdio: 'inherit',
-        env: { ...process.env, ...this.env, SIMPLECAD_ENGINE_ADDON: this.addon }
+        env: { ...process.env, ...this.env, SIMPLECAD_ENGINE_ADDON: this.addon, SIMPLECAD_IGES_SCRATCH_FILE: igesFile }
       })
       this.child = child
       child.once('spawn', () => resolve())
       child.on('exit', (code) => {
+        discardImport()
         this.child = null
         this.ready = null
         if (this.stopping) return

@@ -7,6 +7,7 @@ pub mod document;
 pub mod evaluate;
 pub mod export;
 pub mod graph;
+pub mod iges;
 pub mod params;
 mod profiles;
 pub mod project;

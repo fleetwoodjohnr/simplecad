@@ -5,7 +5,7 @@
 #   engine/occt/build-occt.sh <install-prefix> [work-dir]
 #
 # The engine models and meshes; three.js draws. Build the modelling modules,
-# STEP and the B-Rep font toolkit without OCCT's graphics backends.
+# STEP, IGES and the B-Rep font toolkit without OCCT's graphics backends.
 # The CI cache key hashes this file, so changing it rebuilds OCCT.
 set -euo pipefail
 
@@ -76,7 +76,7 @@ cmake -S "OCCT-$VERSION" -B build ${CMAKE_GENERATOR:+-G "$CMAKE_GENERATOR"} \
   -DBUILD_MODULE_Visualization=OFF \
   -DBUILD_MODULE_ApplicationFramework=OFF \
   -DBUILD_MODULE_DataExchange=OFF \
-  '-DBUILD_ADDITIONAL_TOOLKITS=TKDESTEP;TKV3d' \
+  '-DBUILD_ADDITIONAL_TOOLKITS=TKDESTEP;TKDEIGES;TKV3d' \
   -DBUILD_MODULE_Draw=OFF \
   -DUSE_OPENGL=OFF -DUSE_GLES2=OFF -DUSE_D3D=OFF -DUSE_XLIB=OFF \
   -DUSE_FREETYPE=ON -DUSE_RAPIDJSON=OFF \

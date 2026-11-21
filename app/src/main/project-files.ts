@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { link, mkdtemp, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { isExportFormat, MAX_PROJECT_BYTES, type ModelImport } from '../shared/engine-protocol'
+import { isExportFormat, MAX_PROJECT_BYTES, type ImportFormat, type ModelImport } from '../shared/engine-protocol'
 
 const filters = [{ name: 'SimpleCAD project', extensions: ['scad3'] }]
 /** The file this window's session came from or was last saved to: where Save writes. */
@@ -32,21 +32,22 @@ export function acceptProjectFile(token: unknown) {
 }
 
 export async function openModelFile(window: BrowserWindow): Promise<ModelImport | undefined> {
+  const formats = new Map<string, ImportFormat>([['step', 'step'], ['stp', 'step'], ['brep', 'brep'], ['igs', 'iges'], ['iges', 'iges']])
   const choice = await dialog.showOpenDialog(window, {
     properties: ['openFile'],
     filters: [
-      { name: 'Supported models', extensions: ['step', 'stp', 'brep'] },
+      { name: 'Supported models', extensions: [...formats.keys()] },
       { name: 'STEP', extensions: ['step', 'stp'] },
-      { name: 'B-Rep', extensions: ['brep'] }
+      { name: 'B-Rep', extensions: ['brep'] },
+      { name: 'IGES', extensions: ['igs', 'iges'] }
     ]
   })
   if (choice.canceled || !choice.filePaths.length) return
   const target = choice.filePaths[0]
   const ext = path.extname(target)
-  const extension = ext.toLowerCase()
-  if (!['.step', '.stp', '.brep'].includes(extension)) throw new Error('Choose a STEP or B-Rep file.')
-  return { importName: path.basename(target, ext), data: await readInputFile(target),
-    importFormat: extension === '.brep' ? 'brep' : 'step' }
+  const importFormat = formats.get(ext.slice(1).toLowerCase())
+  if (!importFormat) throw new Error('Choose a STEP, B-Rep or IGES file.')
+  return { importName: path.basename(target, ext), data: await readInputFile(target), importFormat }
 }
 
 async function readInputFile(target: string): Promise<Uint8Array> {

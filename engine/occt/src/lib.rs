@@ -266,6 +266,7 @@ pub mod ffi {
         fn write_brep(shape: &Shape) -> Result<Vec<u8>>;
         /// Read independently editable solids or shells, in STEP root order, in mm.
         fn read_step(bytes: &[u8], fallback_name: &str) -> Result<Vec<ImportedBody>>;
+        fn read_iges_file(path: &str, fallback_name: &str) -> Result<Vec<ImportedBody>>;
         fn read_brep_parts(bytes: &[u8], fallback_name: &str) -> Result<Vec<ImportedBody>>;
         /// Write one analytic STEP transfer root per object in order, as AP214 in mm.
         fn write_step(shapes: &Shapes) -> Result<Vec<u8>>;

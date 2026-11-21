@@ -90,10 +90,10 @@ export type FaceOperation =
   | { faceOperation: 'face_texture'; settings: TextureSettings }
 export type FaceEdit = { face: number } & FaceOperation
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
-export type ImportFormat = 'step' | 'brep'
+export type ImportFormat = 'step' | 'brep' | 'iges'
 export interface ModelImport { importName: string; data: Uint8Array; importFormat?: ImportFormat }
 function isImportFormat(format: unknown): format is ImportFormat | undefined {
-  return format === undefined || format === 'step' || format === 'brep'
+  return format === undefined || format === 'step' || format === 'brep' || format === 'iges'
 }
 export interface ImportSource { importId: string; data: Uint8Array }
 export type ImportRequest = ModelImport & Pick<ImportSource, 'importId'>

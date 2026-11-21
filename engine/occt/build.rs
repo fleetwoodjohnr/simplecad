@@ -6,6 +6,7 @@
 /// The OCCT toolkits the shim calls into, dependencies after dependents.
 const TOOLKITS: &[&str] = &[
     "TKDESTEP",
+    "TKDEIGES",
     "TKXSBase",
     "TKV3d",
     "TKService",

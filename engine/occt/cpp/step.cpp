@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <DESTEP_Parameters.hxx>
+#include <IGESControl_Reader.hxx>
 #include <Message_Messenger.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
@@ -77,6 +78,22 @@ rust::Vec<ImportedBody> read_brep_parts(rust::Slice<const uint8_t> bytes, rust::
   const auto shape = read_brep(bytes);
   rust::Vec<ImportedBody> bodies;
   append_bodies(bodies, shape->shape, fallback_name.empty() ? "Imported" : std::string(fallback_name));
+  return bodies;
+}
+
+rust::Vec<ImportedBody> read_iges_file(rust::Str path, rust::Str fallback_name) {
+  const std::string filename(path);
+  IGESControl_Reader reader;
+  if (reader.ReadFile(filename.c_str()) != IFSelect_RetDone) {
+    throw std::runtime_error("This is not a readable IGES file.");
+  }
+  reader.TransferRoots();
+  const auto shape = reader.OneShape();
+  if (shape.IsNull()) {
+    throw std::runtime_error("The IGES file contains no geometry to import.");
+  }
+  rust::Vec<ImportedBody> bodies;
+  append_bodies(bodies, shape, fallback_name.empty() ? "Imported" : std::string(fallback_name));
   return bodies;
 }
 

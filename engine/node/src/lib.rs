@@ -350,11 +350,11 @@ impl Project {
         visible: Vec<ClassInstance<Shape>>,
     ) -> Result<ImportedModel> {
         let mut parts = match format.as_str() {
-            "step" => ffi::read_step(&bytes, &name),
-            "brep" => ffi::read_brep_parts(&bytes, &name),
-            _ => return Err(Error::from_reason("Choose a STEP or B-Rep file.")),
-        }
-        .map_err(reason)?;
+            "step" => ffi::read_step(&bytes, &name).map_err(reason),
+            "brep" => ffi::read_brep_parts(&bytes, &name).map_err(reason),
+            "iges" => scad::iges::read(&bytes, &name).map_err(Error::from_reason),
+            _ => Err(Error::from_reason("Choose a STEP, B-Rep or IGES file.")),
+        }?;
         if parts.len() > limit as usize {
             return Err(Error::from_reason(
                 "This import would exceed the project's body limit.",
