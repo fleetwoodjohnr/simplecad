@@ -37,6 +37,8 @@ export const commands = {
   clear: { label: 'Clear selection' },
   move: { label: 'Move' },
   rotate: { label: 'Rotate' },
+  hole: { label: 'Hole' },
+  thread: { label: 'Thread' },
   text: { label: 'Text' },
   faceTexture: { label: 'Face Texture' },
   updates: { label: 'Check for updates' }

@@ -8,6 +8,7 @@ import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
+import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
@@ -92,6 +93,7 @@ export function App() {
   const [fileName, setFileName] = useState('Untitled')
   const [preview, setPreview] = useState<DisplayShape>()
   const [selected, setSelected] = useState<number>()
+  const [holePosition, setHolePosition] = useState<Vec3>()
   const [stack, setStack] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
   const [editingShape, setEditingShape] = useState<string>()
@@ -133,8 +135,9 @@ export function App() {
     busyRef.current = active
     setBusy(active)
   }
-  const select = (face?: number) => {
+  const select = (face?: number, position?: Vec3) => {
     setSelected(face)
+    setHolePosition(position)
     setPreview(undefined)
     setDistance('')
     setError('')
@@ -168,6 +171,7 @@ export function App() {
     updateBusy(true)
     setPreview(undefined)
     setSelected(undefined)
+    setHolePosition(undefined)
     setDistance('')
     cancelPlacement()
     setTransformKind(undefined)
@@ -250,7 +254,9 @@ export function App() {
 
   const savedFaceRequest = (operation: FaceOperation) => {
     if (!faceStep?.faceSettings) return
-    const defaults = operation.faceOperation === 'text' ? defaultTextSettings : defaultTextureSettings
+    const defaults = {
+      text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings
+    }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
     const changes = Object.fromEntries(Object.entries(operation.settings).filter(([key, value]) => original[key] !== value))
     return { editStepId: faceStep.id, changes }
@@ -443,6 +449,8 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
+    thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
     move: { enabled: canTransform, run: () => openTransform('move') },
     rotate: { enabled: canTransform, run: () => openTransform('rotate') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
@@ -509,6 +517,8 @@ export function App() {
           }}>Shape</Btn>
           <Btn size="sm" disabled={!actions.move.enabled} onClick={actions.move.run}>{commands.move.label}</Btn>
           <Btn size="sm" disabled={!actions.rotate.enabled} onClick={actions.rotate.run}>{commands.rotate.label}</Btn>
+          <Btn size="sm" disabled={!actions.hole.enabled} onClick={actions.hole.run}>{commands.hole.label}</Btn>
+          <Btn size="sm" disabled={!actions.thread.enabled} onClick={actions.thread.run}>{commands.thread.label}</Btn>
           <Btn size="sm" disabled={!actions.text.enabled} onClick={actions.text.run}>{commands.text.label}</Btn>
           <Btn size="sm" disabled={!actions.faceTexture.enabled} onClick={actions.faceTexture.run}>{commands.faceTexture.label}</Btn>
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
@@ -540,14 +550,14 @@ export function App() {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
-            canPull={!stack && !shapePanel && !faceTool && !transformKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
+            canPull={!stack && !shapePanel && !faceTool && !transformKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
               if (!ready || shapePanel) return
               if (transformKind) {
                 if (face !== undefined) {
                   clearPreview()
                   setTransformBody(model.shape.faces[face]?.body)
                 }
-              } else if (!stack) select(face)
+              } else if (!stack) select(face, point)
               else if (face !== undefined && face !== target && model.shape.faces[face]?.body !== movingBody) {
                 pickTarget(face)
               }
@@ -624,6 +634,18 @@ export function App() {
               onChange={clearPreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
+            {model && faceTool === 'hole' && <HolePanel key={editingFace ?? 'new'} busy={busy}
+              bodies={model.bodies} body={movingBody} preset={faceStep?.faceSettings}
+              selected={!!faceStep || (selected !== undefined && !!model.shape.faces[selected]?.planar)}
+              onChange={clearPreview} onCancel={cancelFaceTool}
+              onPreview={(settings, untilBody) => showFacePreview({ faceOperation: 'hole', settings, untilBody, position: holePosition })}
+              onApply={(settings, untilBody) => commitFace({ faceOperation: 'hole', settings, untilBody, position: holePosition })} />}
+            {model && faceTool === 'thread' && <ThreadPanel key={editingFace ?? 'new'} busy={busy}
+              preset={faceStep?.faceSettings}
+              selected={!!faceStep || (selected !== undefined && !model.shape.faces[selected]?.planar)}
+              onChange={clearPreview} onCancel={cancelFaceTool}
+              onPreview={(settings) => showFacePreview({ faceOperation: 'thread', settings })}
+              onApply={(settings) => commitFace({ faceOperation: 'thread', settings })} />}
             {model && repairStep && missingInput && <form aria-label={`Repair ${repairStep.name}`} className="grid gap-2 text-xs"
               onSubmit={(event) => {
                 event.preventDefault()
@@ -661,7 +683,9 @@ export function App() {
                           setShapePanel(true)
                         } else {
                           setEditingFace(step.id)
-                          setFaceTool(step.kind === 'text' ? 'text' : 'face_texture')
+                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread') {
+                            setFaceTool(step.kind)
+                          }
                         }
                       }}>
                       <Pencil className="size-3.5" />

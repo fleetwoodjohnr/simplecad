@@ -86,6 +86,10 @@ fn clearance(value: Option<&Value>) -> Result<f64, StepError> {
 }
 
 impl Thread {
+    pub(crate) fn designation(&self) -> &str {
+        &self.size.name
+    }
+
     pub(crate) fn read(ctx: &Context, diameter: f64, internal: bool) -> Result<Self, StepError> {
         let name = ctx.input("designation").and_then(Value::as_str);
         let size = name.and_then(|name| sizes().iter().find(|s| s.name.eq_ignore_ascii_case(name)))

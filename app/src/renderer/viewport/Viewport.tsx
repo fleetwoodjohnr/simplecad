@@ -5,7 +5,7 @@ import {
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
-import type { DisplayShape, ViewFrame } from '@/shared/engine-protocol'
+import type { DisplayShape, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { edgeGeometry, faceAtTriangle, surfaceGeometry } from './geometry'
 import { viewportTransform, type TransformView } from './transform'
 
@@ -19,7 +19,7 @@ interface Props {
   canPull: boolean
   frame: number
   readViewFrame: RefObject<(() => ViewFrame) | undefined>
-  onSelect: (face?: number) => void
+  onSelect: (face?: number, point?: Vec3) => void
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
@@ -205,14 +205,15 @@ export function Viewport(props: Props) {
       for (const hit of ray.intersectObject(displayed === shape ? body : committed)) {
         if (hit.faceIndex == null) continue
         const face = faceAtTriangle(shape.faceTriStart, hit.faceIndex)
-        if (face !== undefined && shape.faces[face]?.body !== placingBody) return face
+        if (face !== undefined && shape.faces[face]?.body !== placingBody) return { face, point: hit.point }
       }
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
-      current.current.onSelect(faceAt(e.clientX, e.clientY))
+      const picked = faceAt(e.clientX, e.clientY)
+      current.current.onSelect(picked?.face, picked?.point.toArray())
     }
     // Hover: at most one pick per frame, and none while a button is held (orbiting).
     let pointer: { x: number; y: number } | null = null
@@ -224,7 +225,7 @@ export function Viewport(props: Props) {
         hoverFrame = 0
         if (!pointer) return
         const started = performance.now()
-        showHover(faceAt(pointer.x, pointer.y))
+        showHover(faceAt(pointer.x, pointer.y)?.face)
         // What one hover costs, for the performance check.
         canvas.dataset.hoverMs = (performance.now() - started).toFixed(2)
       })

@@ -276,6 +276,16 @@ pub struct TransformRequest {
     pub axis: Option<Vec<f64>>,
 }
 
+#[napi(object, object_to_js = false)]
+pub struct FaceFeatureRequest<'a> {
+    pub kind: String,
+    pub body: String,
+    pub face: u32,
+    pub inputs: HashMap<String, String>,
+    pub position: Option<Vec<f64>>,
+    pub target: Option<ShownBody<'a>>,
+}
+
 /// A distance as the Pull tool stores it: the number as typed (`50.75`, `5`).
 fn expression(distance: f64) -> String {
     format!("{distance}")
@@ -610,15 +620,37 @@ impl Project {
     }
 
     #[napi]
-    pub fn add_face_feature(
-        &self,
-        kind: String,
-        shape: &Shape,
-        body: String,
-        face: u32,
-        inputs: std::collections::HashMap<String, String>,
-    ) -> Result<Pulled> {
+    pub fn add_face_feature(&self, shape: &Shape, request: FaceFeatureRequest) -> Result<Pulled> {
+        let FaceFeatureRequest {
+            kind,
+            body,
+            face,
+            inputs,
+            position,
+            target,
+        } = request;
         let mut model = self.model.clone();
+        let mut inputs = serde_json::json!(inputs);
+        for key in [
+            "counterbore_diameter",
+            "counterbore_depth",
+            "countersink_diameter",
+        ] {
+            if inputs[key].as_str() == Some("") {
+                inputs.as_object_mut().unwrap().remove(key);
+            }
+        }
+        for flag in ["left_hand", "resize"] {
+            if let Some(value) = inputs[flag].as_str() {
+                inputs[flag] = serde_json::json!(value == "true");
+            }
+        }
+        if let Some(position) = position {
+            if position.len() != 3 || position.iter().any(|value| !value.is_finite()) {
+                return Err(Error::from_reason("Select a position on the face."));
+            }
+            inputs["position"] = serde_json::json!(position);
+        }
         let inner = scad::rebuild::create_face_feature(
             &mut model,
             scad::align::PickedFace {
@@ -627,7 +659,11 @@ impl Project {
                 index: face,
             },
             &kind,
-            serde_json::json!(inputs),
+            inputs,
+            target.as_ref().map(|target| scad::rebuild::FaceTarget {
+                name: &target.name,
+                shape: &target.shape.inner,
+            }),
         )
         .map_err(Error::from_reason)?;
         Ok(Pulled {

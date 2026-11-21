@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -14,7 +14,8 @@ export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
-  addFaceFeature(kind: FaceOperation['faceOperation'], shape: Shape, body: string, face: number, settings: FaceOperation['settings']): { project: Project; shape: Shape }
+  addFaceFeature(shape: Shape, request: { kind: FaceOperation['faceOperation']; body: string; face: number
+    inputs: FaceOperation['settings']; position?: Vec3; target?: { name: string; shape: Shape } }): { project: Project; shape: Shape }
   place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
     viewDirection?: number[]; viewUp?: number[]
@@ -355,9 +356,12 @@ export class EngineDocument {
     if ('distance' in edit) return { ...this.pick(edit.face), distance: edit.distance }
     if ('faceOperation' in edit) {
       const pick = this.pick(edit.face)
-      return edit.faceOperation === 'text'
-        ? { ...pick, faceOperation: 'text', settings: edit.settings }
-        : { ...pick, faceOperation: 'face_texture', settings: edit.settings }
+      switch (edit.faceOperation) {
+        case 'text': return { ...pick, faceOperation: 'text', settings: edit.settings }
+        case 'face_texture': return { ...pick, faceOperation: 'face_texture', settings: edit.settings }
+        case 'hole': return { ...pick, faceOperation: 'hole', settings: edit.settings, position: edit.position, untilBody: edit.untilBody }
+        case 'thread': return { ...pick, faceOperation: 'thread', settings: edit.settings }
+      }
     }
     const moving = this.pick(edit.moving)
     const target = this.pick(edit.target)
@@ -428,7 +432,13 @@ export class EngineDocument {
     else if ('transform' in step) {
       next = project.transform(bodies[body].name, shape, step.transform)
     } else if ('faceOperation' in step) {
-      next = project.addFaceFeature(step.faceOperation, shape, bodies[body].name, step.face, step.settings)
+      const hole = step.faceOperation === 'hole' ? step : undefined
+      const target = hole?.untilBody === undefined ? undefined : bodies[hole.untilBody]
+      if (hole?.untilBody !== undefined && (!target?.shape || hole.untilBody === body)) {
+        throw new Error('Choose a different body to stop drilling at.')
+      }
+      next = project.addFaceFeature(shape, { kind: step.faceOperation, body: bodies[body].name, face: step.face,
+        inputs: step.settings, position: hole?.position, target: target?.shape ? { name: target.name, shape: target.shape } : undefined })
     }
     else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)
     return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project }

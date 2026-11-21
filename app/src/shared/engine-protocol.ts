@@ -99,9 +99,31 @@ export interface TextureSettings {
   text_clearance: string
   other_clearance: string
 }
+export interface ThreadSettings {
+  designation: string
+  clearance: 'tight' | 'normal' | 'loose' | 'very_loose'
+  form: 'printed' | 'iso'
+  from_end: 'top' | 'bottom'
+  left_hand: 'true' | 'false'
+  length: string
+  resize: 'true' | 'false'
+}
+export interface HoleSettings extends Omit<ThreadSettings, 'length' | 'resize'> {
+  style: 'simple' | 'counterbore' | 'countersink' | 'threaded'
+  depth_mode: 'through' | 'blind' | 'to_object'
+  diameter: string
+  depth: string
+  counterbore_diameter: string
+  counterbore_depth: string
+  countersink_diameter: string
+  countersink_angle: string
+  thread_length: string
+}
 export type FaceOperation =
   | { faceOperation: 'text'; settings: TextSettings }
   | { faceOperation: 'face_texture'; settings: TextureSettings }
+  | { faceOperation: 'hole'; settings: HoleSettings; position?: Vec3; untilBody?: number }
+  | { faceOperation: 'thread'; settings: ThreadSettings }
 export type FaceEdit = { face: number } & FaceOperation
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
 export type ImportFormat = 'step' | 'brep' | 'iges' | 'scad3' | 'gltf' | 'glb' | MeshFormat
@@ -230,7 +252,7 @@ function isSavedStep(value: unknown): value is SavedStep {
   const { editStepId, changes, replay } = value as Partial<SavedStep>
   if (!isName(editStepId) || !changes || typeof changes !== 'object' || Array.isArray(changes)) return false
   const entries = Object.entries(changes)
-  return entries.length <= 12 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && typeof value === 'string' && value.length <= 256) &&
+  return entries.length <= 14 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && typeof value === 'string' && value.length <= 256) &&
     (replay === undefined || (!!replay && typeof replay === 'object' && isIndex(replay.index) && isName(replay.name) && isName(replay.kind)))
 }
 
@@ -273,6 +295,23 @@ function isFaceEdit(value: unknown): value is FaceEdit {
       [s.size, s.spacing, s.depth, s.offset_u, s.offset_v, s.rotation,
         s.edge_clearance, s.hole_clearance, s.text_clearance, s.other_clearance].every(short)
   }
+  const hasThreadOptions = (s: Pick<ThreadSettings, 'designation' | 'clearance' | 'form' | 'from_end' | 'left_hand'>) =>
+    short(s.designation) && ['tight', 'normal', 'loose', 'very_loose'].includes(s.clearance) &&
+    ['printed', 'iso'].includes(s.form) && ['top', 'bottom'].includes(s.from_end) &&
+    (s.left_hand === 'true' || s.left_hand === 'false')
+  if (edit.faceOperation === 'thread') {
+    return hasThreadOptions(edit.settings) && short(edit.settings.length) && ['true', 'false'].includes(edit.settings.resize)
+  }
+  if (edit.faceOperation === 'hole') {
+    const h = edit.settings
+    return hasThreadOptions(h) && ['simple', 'counterbore', 'countersink', 'threaded'].includes(h.style) &&
+      ['through', 'blind', 'to_object'].includes(h.depth_mode) &&
+      [h.diameter, h.depth, h.counterbore_diameter, h.counterbore_depth,
+        h.countersink_diameter, h.countersink_angle, h.thread_length].every(short) &&
+      (h.depth_mode === 'to_object' ? isIndex(edit.untilBody) && edit.untilBody < MAX_BODIES : edit.untilBody === undefined) &&
+      (edit.position === undefined || (Array.isArray(edit.position) && edit.position.length === 3 &&
+        edit.position.every((value) => typeof value === 'number' && Number.isFinite(value))))
+  }
   return false
 }
 
@@ -300,7 +339,7 @@ function isShapeEdit(value: unknown): value is ShapeEdit {
   const { shapeKind, values } = value as Partial<ShapeEdit>
   if (typeof shapeKind !== 'string' || !/^[a-z_]{1,20}$/.test(shapeKind) || !values || typeof values !== 'object' || Array.isArray(values)) return false
   const entries = Object.entries(values)
-  return entries.length <= 12 && entries.every(([key, expression]) => /^[a-z][a-z_0-9]{0,30}$/.test(key) &&
+  return entries.length <= 14 && entries.every(([key, expression]) => /^[a-z][a-z_0-9]{0,30}$/.test(key) &&
     typeof expression === 'string' && expression.length > 0 && expression.length < 256)
 }
 

@@ -337,7 +337,20 @@ impl Model {
             .as_object_mut()
             .ok_or("The original step settings are missing.")?;
         for (key, value) in changes {
-            inputs.insert(key, Value::String(value));
+            if value.is_empty()
+                && matches!(
+                    key.as_str(),
+                    "counterbore_diameter" | "counterbore_depth" | "countersink_diameter"
+                )
+            {
+                inputs.remove(&key);
+                continue;
+            }
+            let value = match key.as_str() {
+                "left_hand" | "resize" => json!(value == "true"),
+                _ => Value::String(value),
+            };
+            inputs.insert(key, value);
         }
         self.rebuild_recipe(position, updated, "Edit step", original, shown)
     }
@@ -581,20 +594,29 @@ impl Model {
         message: &str,
     ) -> Result<(), String> {
         let before = self.document();
-        let (producer, object) = self
-            .latest()
-            .remove(body)
+        let latest = self.latest();
+        let (producer, object) = latest
+            .get(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
         let id = new_feature_id();
         feature["id"] = json!(id);
         feature["name"] = json!(self.unique_name(label));
         feature["outputs"] = json!([body]);
         feature["output_ids"] = json!({ body: object });
-        feature["bindings"] = json!({ body: { "feature_id": producer, "object_id": object } });
+        let mut bindings = json!({ body: { "feature_id": producer, "object_id": object } });
+        for input in crate::graph::input_names(
+            feature["type"].as_str().unwrap_or_default(),
+            &feature["inputs"],
+        ) {
+            if let Some((producer, object)) = latest.get(&input) {
+                bindings[&input] = json!({ "feature_id": producer, "object_id": object });
+            }
+        }
+        feature["bindings"] = bindings;
         feature["suppressed"] = json!(false);
         feature["dropped"] = json!([]);
         self.append_body_step(body, &id, feature);
-        self.record(&id, label, &object, brep, before, message)
+        self.record(&id, label, object, brep, before, message)
     }
 
     fn append_body_step(&mut self, body: &str, id: &str, feature: Value) {
@@ -1230,6 +1252,7 @@ fn edit_values(feature: &Value, fields: Option<&[&str]>) -> Option<HashMap<Strin
                 let value = match feature["inputs"].get(*key)? {
                     Value::String(text) => text.clone(),
                     Value::Number(number) => number.to_string(),
+                    Value::Bool(state) => state.to_string(),
                     _ => return None,
                 };
                 Some(((*key).into(), value))
@@ -1258,6 +1281,31 @@ fn shape_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
 
 fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
+        "hole" => Some(&[
+            "style",
+            "depth_mode",
+            "diameter",
+            "depth",
+            "counterbore_diameter",
+            "counterbore_depth",
+            "countersink_diameter",
+            "countersink_angle",
+            "designation",
+            "clearance",
+            "form",
+            "thread_length",
+            "from_end",
+            "left_hand",
+        ]),
+        "thread" => Some(&[
+            "designation",
+            "clearance",
+            "form",
+            "length",
+            "from_end",
+            "left_hand",
+            "resize",
+        ]),
         "text" => Some(&[
             "text",
             "font_family",

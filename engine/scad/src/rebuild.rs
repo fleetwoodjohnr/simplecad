@@ -477,16 +477,24 @@ pub fn create_primitive(
     Ok((name, shape))
 }
 
+pub struct FaceTarget<'a> {
+    pub name: &'a str,
+    pub shape: &'a occt::Shape,
+}
+
 /// Build and record an operation picked on a viewport face.
 pub fn create_face_feature(
     model: &mut Model,
     picked: crate::align::PickedFace<'_>,
     kind: &str,
     mut inputs: Value,
+    target: Option<FaceTarget<'_>>,
 ) -> Result<occt::UniquePtr<occt::Shape>, String> {
     let label = match kind {
         "text" => "Text",
         "face_texture" => "Face Texture",
+        "hole" => "Hole",
+        "thread" => "Thread",
         _ => return Err("Choose a face operation.".into()),
     };
     if !inputs.is_object() {
@@ -501,7 +509,10 @@ pub fn create_face_feature(
     }));
     inputs["body"] = json!({ "__body__": picked.name });
     inputs["face"] = json!({ "__ref__": face });
-    let feature = json!({ "type": kind, "inputs": inputs });
+    if let Some(target) = &target {
+        inputs["until"] = json!({ "__body__": target.name });
+    }
+    let mut feature = json!({ "type": kind, "inputs": inputs });
     let parameters = model.payload["parameters"]
         .as_array()
         .map(Vec::as_slice)
@@ -517,6 +528,11 @@ pub fn create_face_feature(
         .collect();
     let mut ctx = Context::placement(&feature, picked.name, Rc::new(shape), &parameters);
     ctx.features = Some(&features);
+    if let Some(target) = target {
+        let shape = occt::transform_shape(target.shape, &occt::trsf_translation(&[0.0; 3]), false)
+            .map_err(kernel)?;
+        ctx.bodies.insert(target.name.to_owned(), Rc::new(shape));
+    }
     let mut outputs = execute(kind, &ctx, None)
         .ok_or("This face operation is unavailable.")?
         .map_err(|error| error.message)?;
@@ -525,7 +541,32 @@ pub fn create_face_feature(
         .and_then(|shape| Rc::try_unwrap(shape).ok())
         .ok_or("The face operation produced no geometry.")?;
     let brep = occt::write_brep(&geometry).map_err(kernel)?;
+    let threaded_hole =
+        kind == "hole" && ctx.input("style").and_then(Value::as_str) == Some("threaded");
+    let thread_metadata = if threaded_hole || kind == "thread" {
+        let (diameter, internal) = if threaded_hole {
+            (
+                ctx.value("diameter", 6.0, Dimension::Length)
+                    .map_err(|error| error.message)?,
+                true,
+            )
+        } else {
+            let face = occt::sub_face(picked.shape, picked.index).map_err(kernel)?;
+            let shaft = occt::cylinder_data(&face).map_err(kernel)?;
+            (shaft.radius * 2.0, shaft.internal)
+        };
+        let thread =
+            crate::thread::Thread::read(&ctx, diameter, internal).map_err(|error| error.message)?;
+        Some((thread.designation().to_owned(), internal))
+    } else {
+        None
+    };
     let message = ctx.into_message();
+    if let Some((designation, internal)) = thread_metadata {
+        feature["inputs"]["designation"] = json!(designation);
+        feature["inputs"]["thread_internal"] = json!(internal);
+        feature["inputs"]["thread_modelled"] = json!(true);
+    }
     model.record_body_feature(picked.name, feature, label, brep, &message)?;
     Ok(geometry)
 }

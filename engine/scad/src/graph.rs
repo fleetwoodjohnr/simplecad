@@ -111,7 +111,7 @@ fn ref_bodies(value: &Value, out: &mut Vec<String>) {
 }
 
 /// `graph.input_names`: every name a step reads, in order, once each.
-fn input_names(kind: &str, inputs: &Value) -> Vec<String> {
+pub(crate) fn input_names(kind: &str, inputs: &Value) -> Vec<String> {
     let mut refs = Vec::new();
     body_refs(inputs, &mut refs);
     let mut names: Vec<String> = refs.into_iter().map(|(name, _)| name).collect();
