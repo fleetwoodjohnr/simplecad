@@ -110,11 +110,13 @@ export interface Checkpoint {
 }
 
 export interface StepInfo {
+  id: string
   name: string
   /** The step's type, as the file names it: `push_pull`, `box`… */
   kind: string
   /** As last built: `ok`, `suppressed`, `failed` or `needs_attention`. */
   state: string
+  message?: string
   /** Undone in this session; redo brings it back. */
   undone: boolean
 }

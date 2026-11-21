@@ -252,8 +252,11 @@ export class EngineDocument {
     const active = this.states[this.cursor].project
     let activeSteps = this.stepLists.get(active)
     if (!activeSteps) this.stepLists.set(active, activeSteps = active.steps())
-    const shown = activeSteps.length
-    return steps.map((step, i) => ({ ...step, undone: i >= shown }))
+    const shown = new Map(activeSteps.map((step) => [step.id, step]))
+    return steps.map((step) => {
+      const current = shown.get(step.id)
+      return { ...(current ?? step), undone: current === undefined }
+    })
   }
 
   private display(shape: Shape): PartDisplay {

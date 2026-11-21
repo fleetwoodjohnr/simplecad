@@ -181,9 +181,11 @@ pub struct Project {
 /// (`ok`, `suppressed`, `failed`, `needs_attention`) as last built.
 #[napi(object)]
 pub struct Step {
+    pub id: String,
     pub name: String,
     pub kind: String,
     pub state: String,
+    pub message: Option<String>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -447,7 +449,13 @@ impl Project {
         self.model
             .steps()
             .into_iter()
-            .map(|(name, kind, state)| Step { name, kind, state })
+            .map(|step| Step {
+                id: step.id,
+                name: step.name,
+                kind: step.kind,
+                state: step.state,
+                message: step.message,
+            })
             .collect()
     }
 

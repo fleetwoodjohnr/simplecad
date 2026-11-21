@@ -111,6 +111,13 @@ fn opening_a_missing_body_recovers_the_cut_and_saving_persists_it() {
         reopened.model["diagnostics"][&cut_id]["state"],
         "needs_attention"
     );
+    let step = Model::open(&reopened)
+        .steps()
+        .into_iter()
+        .find(|step| step.id == cut_id)
+        .unwrap();
+    assert_eq!(step.state, "needs_attention");
+    assert!(step.message.unwrap().contains("was deleted"));
 
     let mut rebuilt = Model::open(&reopened);
     rebuilt.adopt_baseline(&reopened.bodies);

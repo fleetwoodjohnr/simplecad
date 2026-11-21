@@ -542,10 +542,14 @@ export function App() {
               onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
-              {model?.steps.map((step, index) => (
-                <li key={index} className={`flex justify-between gap-2 px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
-                  <span className="truncate">{step.name}</span>
-                  {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
+              {model?.steps.map((step) => (
+                <li key={step.id} className={`px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
+                  <div className="flex justify-between gap-2">
+                    <span className="truncate">{step.name}</span>
+                    {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
+                  </div>
+                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention') && step.message &&
+                    <p className="mt-1 break-words text-text-2">{step.message}</p>}
                 </li>
               ))}
             </ol>

@@ -43,7 +43,7 @@ class FakeProject implements Project {
     return { project: new FakeProject([...this.made, name]), shape: moving }
   }
   steps() {
-    return this.made.map((name) => ({ name, kind: 'push_pull', state: 'ok' }))
+    return this.made.map((name, index) => ({ id: String(index), name, kind: 'push_pull', state: 'ok' }))
   }
   save(undone: number) {
     const kept = this.made.length - undone

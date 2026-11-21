@@ -18,6 +18,14 @@ pub struct ImportedPart {
     pub placed: Vec<u8>,
 }
 
+pub struct StepSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub state: String,
+    pub message: Option<String>,
+}
+
 /// The parts of `model.json` that are the document (`Document.to_dict`); the rest
 /// (format, history, cache, geometry, diagnostics) is what saving adds.
 const DOCUMENT_KEYS: &[&str] = &[
@@ -267,17 +275,24 @@ impl Model {
         Some(signatures)
     }
 
-    /// Every step's name, type and state as last built, in order.
-    pub fn steps(&self) -> Vec<(String, String, String)> {
+    /// Every step and its most recent diagnostic, in recipe order.
+    pub fn steps(&self) -> Vec<StepSummary> {
         self.list("features")
             .iter()
             .map(|f| {
                 let text = |v: &Value| v.as_str().unwrap_or("").to_string();
                 let id = text(&f["id"]);
-                let state = self.payload["diagnostics"][&id]["state"]
-                    .as_str()
-                    .unwrap_or("ok");
-                (text(&f["name"]), text(&f["type"]), state.to_string())
+                let diagnostic = &self.payload["diagnostics"][&id];
+                StepSummary {
+                    id,
+                    name: text(&f["name"]),
+                    kind: text(&f["type"]),
+                    state: diagnostic["state"].as_str().unwrap_or("ok").into(),
+                    message: diagnostic["message"]
+                        .as_str()
+                        .filter(|message| !message.is_empty())
+                        .map(String::from),
+                }
             })
             .collect()
     }
