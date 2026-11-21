@@ -6,6 +6,9 @@ on:
       - 'app/**'
       - 'engine/**'
       - 'simplecad/update_key.pub'
+      - 'packaging/**'
+      - 'scripts/*upgrade_drill*'
+      - 'scripts/verify_release_package.py'
       - '.github/workflows/rust-preview.yml'
   workflow_dispatch:
 
@@ -140,6 +143,58 @@ jobs:
           name: packaged-window-${{ matrix.os }}
           path: app/test-results
           if-no-files-found: ignore
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: runner.os != 'Linux'
+        with:
+          python-version: '3.13'
+      - name: Install packaging dependencies
+        if: runner.os != 'Linux'
+        run: python -m pip install $(grep -hEi '^(pyside6|pillow|cryptography|packaging)[=<>]' requirements.txt requirements-build.txt)
+      - name: Inno Setup (pinned)
+        if: runner.os == 'Windows'
+        run: choco install innosetup --version=6.7.1 -y --no-progress
+      - name: Verify the Windows installer on upgrade and rollback
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:ISCC = Join-Path "${env:ProgramFiles(x86)}" 'Inno Setup 6\ISCC.exe'
+          $env:SIMPLECAD_BUNDLE = (Resolve-Path app/release/win-unpacked).Path
+          $env:SIMPLECAD_VERSION = node -p "require('./app/package.json').version"
+          python packaging/build.py icons windows
+          $baseline = 'SimpleCAD-0.4.4-windows-x86_64-setup.exe'
+          $candidate = "SimpleCAD-${env:SIMPLECAD_VERSION}-windows-x86_64-setup.exe"
+          gh release download v0.4.4 --dir baseline -p $baseline -p SHA256SUMS -p SHA256SUMS.sig
+          python scripts/verify_release_package.py "baseline/$baseline"
+          scripts/windows_upgrade_drill.ps1 (Resolve-Path "baseline/$baseline") (Resolve-Path "dist/release/$candidate") $env:SIMPLECAD_VERSION
+      - name: Verify the macOS disk image on upgrade and rollback
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          export SIMPLECAD_BUNDLE
+          SIMPLECAD_BUNDLE=$(find "$PWD/app/release" -type d -name SimpleCAD.app -print -quit)
+          export SIMPLECAD_VERSION
+          SIMPLECAD_VERSION=$(node -p "require('./app/package.json').version")
+          arch=$(uname -m)
+          baseline="SimpleCAD-0.4.4-macos-$arch.dmg"
+          python packaging/build.py macos
+          gh release download v0.4.4 --dir baseline -p "$baseline" -p SHA256SUMS -p SHA256SUMS.sig
+          python scripts/verify_release_package.py "baseline/$baseline"
+          scripts/macos_upgrade_drill.sh "baseline/$baseline" "dist/release/SimpleCAD-$SIMPLECAD_VERSION-macos-$arch.dmg" "$SIMPLECAD_VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os != 'Linux'
+        with:
+          name: simplecad-installers-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 14
       - name: The Linux app, for the upgrade drills
         if: runner.os == 'Linux'
         working-directory: app
