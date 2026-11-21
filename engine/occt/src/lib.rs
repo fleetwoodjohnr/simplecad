@@ -161,6 +161,11 @@ pub mod ffi {
         pub font: String,
     }
 
+    pub struct TextFont {
+        pub path: String,
+        pub name: String,
+    }
+
     pub struct HoleCut {
         pub position: [f64; 3],
         pub inward: [f64; 3],
@@ -261,7 +266,7 @@ pub mod ffi {
             body: &Shape,
             plane: &PlaneFrame,
             text: &[TextCharacter],
-            font_paths: &[String],
+            fonts: &[TextFont],
             family: &str,
             settings: &TextSpec,
         ) -> Result<TextResult>;

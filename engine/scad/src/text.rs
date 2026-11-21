@@ -2,34 +2,34 @@
 
 use crate::evaluate::Dimension;
 use crate::rebuild::{Context, Shape, StepError, failed};
-use occt::{PlaneFrame, TextCharacter, TextResult, TextSpec};
+use occt::{PlaneFrame, TextCharacter, TextFont, TextResult, TextSpec};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-const SANS: &[&str] = &[
-    "LiberationSans-Regular.ttf",
-    "OpenSans-Regular.ttf",
-    "NotoSans-Regular.ttf",
-    "AdwaitaSans-Regular.ttf",
-    "arial.ttf",
+const SANS: &[(&str, &str)] = &[
+    ("LiberationSans-Regular.ttf", "Liberation Sans"),
+    ("OpenSans-Regular.ttf", "Open Sans"),
+    ("NotoSans-Regular.ttf", "Noto Sans"),
+    ("AdwaitaSans-Regular.ttf", "Adwaita Sans"),
+    ("arial.ttf", "Arial"),
 ];
-const SERIF: &[&str] = &[
-    "LiberationSerif-Regular.ttf",
-    "NotoSerif-Regular.ttf",
-    "DejaVuSerif.ttf",
-    "times.ttf",
-    "Times New Roman.ttf",
+const SERIF: &[(&str, &str)] = &[
+    ("LiberationSerif-Regular.ttf", "Liberation Serif"),
+    ("NotoSerif-Regular.ttf", "Noto Serif"),
+    ("DejaVuSerif.ttf", "DejaVu Serif"),
+    ("times.ttf", "Times New Roman"),
+    ("Times New Roman.ttf", "Times New Roman"),
 ];
-const MONO: &[&str] = &[
-    "LiberationMono-Regular.ttf",
-    "AdwaitaMono-Regular.ttf",
-    "SourceCodePro-Regular.otf",
-    "DejaVuSansMono.ttf",
-    "consola.ttf",
-    "cour.ttf",
-    "Courier New.ttf",
+const MONO: &[(&str, &str)] = &[
+    ("LiberationMono-Regular.ttf", "Liberation Mono"),
+    ("AdwaitaMono-Regular.ttf", "Adwaita Mono"),
+    ("SourceCodePro-Regular.otf", "Source Code Pro"),
+    ("DejaVuSansMono.ttf", "DejaVu Sans Mono"),
+    ("consola.ttf", "Consolas"),
+    ("cour.ttf", "Courier New"),
+    ("Courier New.ttf", "Courier New"),
 ];
 
 fn collect_fonts(root: &Path, depth: u8, found: &mut Vec<PathBuf>) {
@@ -45,7 +45,7 @@ fn collect_fonts(root: &Path, depth: u8, found: &mut Vec<PathBuf>) {
     }
 }
 
-fn font_paths(names: &[&str]) -> Vec<String> {
+fn fonts(names: &[(&str, &str)]) -> Vec<TextFont> {
     static SYSTEM_FONTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
     let files = SYSTEM_FONTS.get_or_init(|| {
         let mut roots: Vec<PathBuf> = match std::env::consts::OS {
@@ -71,15 +71,20 @@ fn font_paths(names: &[&str]) -> Vec<String> {
     });
     names
         .iter()
-        .flat_map(|name| {
+        .flat_map(|(filename, name)| {
             files
                 .iter()
                 .filter(move |path| {
                     path.file_name()
                         .and_then(|n| n.to_str())
-                        .is_some_and(|file| file.eq_ignore_ascii_case(name))
+                        .is_some_and(|file| file.eq_ignore_ascii_case(filename))
                 })
-                .filter_map(|path| path.to_str().map(str::to_owned))
+                .filter_map(move |path| {
+                    Some(TextFont {
+                        path: path.to_str()?.to_owned(),
+                        name: (*name).to_owned(),
+                    })
+                })
         })
         .collect()
 }
@@ -134,15 +139,8 @@ fn text_geometry(
     if settings.depth <= 0.0 {
         return Err(failed("Text depth must be greater than zero."));
     }
-    occt::face_text(
-        body,
-        &face,
-        &characters,
-        &font_paths(names),
-        family,
-        settings,
-    )
-    .map_err(|error| failed(error.what()))
+    occt::face_text(body, &face, &characters, &fonts(names), family, settings)
+        .map_err(|error| failed(error.what()))
 }
 
 pub(crate) fn build(ctx: &Context<'_>) -> Result<Shape, StepError> {

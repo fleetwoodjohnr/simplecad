@@ -12,7 +12,6 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
-#include <Font_FontMgr.hxx>
 #include <GProp_GProps.hxx>
 #include <StdPrs_BRepFont.hxx>
 #include <TopExp_Explorer.hxx>
@@ -110,17 +109,17 @@ struct Glyphs {
 };
 
 Glyphs choose_font(rust::Slice<const TextCharacter> text, double height,
-                   rust::Slice<const rust::String> paths, const std::string &family) {
-  const auto manager = Font_FontMgr::GetInstance();
-  for (const auto &path : paths) {
+                   rust::Slice<const TextFont> fonts, const std::string &family) {
+  // An explicit font file can be loaded without scanning the system
+  // font database. OCCT's family search below initializes it on demand.
+  for (const auto &candidate : fonts) {
     try {
-      const std::string file(path);
-      const auto candidate = manager->CheckFont(file.c_str());
+      const std::string file(candidate.path);
       StdPrs_BRepFont font;
-      if (!candidate.IsNull() && font.Init(file.c_str(), height, 0)) {
+      if (font.Init(file.c_str(), height, 0)) {
         auto shapes = render(font, text);
         if (!shapes.empty()) {
-          return {std::move(shapes), candidate->FontName().ToCString()};
+          return {std::move(shapes), std::string(candidate.name)};
         }
       }
     } catch (const Standard_Failure &) {
@@ -148,9 +147,9 @@ TopoDS_Shape prism(const TopoDS_Shape &profile, const gp_Vec &direction) {
 
 TextResult face_text(const Shape &body, const PlaneFrame &plane,
                      rust::Slice<const TextCharacter> text,
-                     rust::Slice<const rust::String> font_paths,
+                     rust::Slice<const TextFont> fonts,
                      rust::Str family, const TextSpec &settings) {
-  auto glyphs = choose_font(text, settings.height, font_paths, std::string(family));
+  auto glyphs = choose_font(text, settings.height, fonts, std::string(family));
   auto extent = bounds(Shape(glyphs.shapes.front()));
   for (const auto &glyph : glyphs.shapes) {
     const auto box = bounds(Shape(glyph));

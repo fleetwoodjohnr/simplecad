@@ -44,6 +44,7 @@ struct PlaneFrame;
 struct CylinderData;
 struct SplitParts;
 struct HoleCut;
+struct TextFont;
 struct ImportedBody;
 struct MeshImport;
 struct TextCharacter;
@@ -88,7 +89,7 @@ rust::Vec<double> sketch_path_offsets(const SketchProfile &path, uint32_t count)
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 TextResult face_text(const Shape &body, const PlaneFrame &plane,
                      rust::Slice<const TextCharacter> text,
-                     rust::Slice<const rust::String> font_paths,
+                     rust::Slice<const TextFont> fonts,
                      rust::Str family, const TextSpec &settings);
 std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::Str pattern,
                                     rust::Str mode, const TextureSpec &settings,
