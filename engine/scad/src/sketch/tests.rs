@@ -20,7 +20,8 @@ fn adjusts_saved_geometry_and_preserves_dimension_expressions() {
     assert!(out.residual < 1e-8);
     assert!((out.recipe["points"][1]["x"].as_f64().unwrap() - 12.0).abs() < 1e-8);
     assert!(out.recipe["points"][1]["y"].as_f64().unwrap().abs() < 1e-8);
-    assert_eq!(out.recipe["constraints"][2]["value"], "width / 2");
+    assert_eq!(out.recipe["constraints"][2]["expression"], "width / 2");
+    assert_eq!(out.recipe["constraints"][2]["value"], 12.0);
 }
 
 #[test]

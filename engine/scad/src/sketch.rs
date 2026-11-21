@@ -339,6 +339,21 @@ pub fn solve(recipe: &Value, parameters: &HashMap<String, f64>) -> Result<Soluti
         for ((list, index, field), value) in layout.fields.into_iter().zip(values.iter()) {
             solved[list][index][field] = json!(value);
         }
+        let driving = entries(recipe, "constraints")?
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| value["driving"].as_bool().unwrap_or(true));
+        for ((index, value), (_, constraint)) in driving.zip(&equations.constraints) {
+            if let Some(target) = constraint.target_value() {
+                let stored = &mut solved["constraints"][index];
+                if value.get("expression").is_none()
+                    && let Some(expression) = value["value"].as_str()
+                {
+                    stored["expression"] = json!(expression);
+                }
+                stored["value"] = json!(target);
+            }
+        }
     }
     Ok(Solution {
         recipe: solved,

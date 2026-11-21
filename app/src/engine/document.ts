@@ -1,3 +1,4 @@
+import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
@@ -11,6 +12,10 @@ export interface Shape {
 export interface Body { name: string; shape: Shape | null; id?: string; visible?: boolean }
 /** The saved project at one point in the history (the addon's `Project`). */
 export interface Project {
+  sketchDraft(id: string): string
+  solveSketch(recipe: string): SketchSolution
+  applySketchDraft(request: SketchDraftEdit['sketchDraft'], shown: { id?: string; name: string; shape: Shape }[]): State
+  applySketchSolid(request: SketchSolidEdit['sketchSolid'], shown: { id?: string; name: string; shape: Shape }[]): State
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
@@ -94,6 +99,7 @@ export class EngineDocument {
   private notes: string[] = []
   // View overrides follow the saved body's ID, or the session-local name for new shapes.
   private visibility = new Map<string, boolean>()
+  private savedBodyIds = new Set<string>()
   private previewResult?: { step: Step; state: State }
   // A shape never changes, so its mesh is made once: undo, redo, previews and showing a body re-mesh only what changed.
   private displays = new WeakMap<Shape, PartDisplay>()
@@ -162,16 +168,27 @@ export class EngineDocument {
     this.checkRevision(revision)
     const target = this.current.bodies[body]
     if (!target) throw new Error('There is no such body.')
-    this.visibility.set(target.id ?? target.name, visible)
+    this.visibility.set(this.visibilityKey(target), visible)
     this.advance()
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
-      'editStepId' in edit ? this.resolveStepSettings(edit) : this.resolve(edit)
+      'editStepId' in edit ? this.resolveStepSettings(edit) :
+      'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } : this.resolve(edit)
     return this.show(this.prepare(step).bodies)
+  }
+
+  readSketch(revision: number, id: string) {
+    this.checkRevision(revision)
+    return this.current.project.sketchDraft(id)
+  }
+
+  solveSketch(revision: number, recipe: string) {
+    this.checkRevision(revision)
+    return this.current.project.solveSketch(recipe)
   }
 
   measurementPicks(revision: number, selection: MeasurePick[]) {
@@ -206,7 +223,7 @@ export class EngineDocument {
   /** What `save` writes, whatever the window last saw: for autosave. */
   snapshot(): Uint8Array {
     const newest = this.states.length - 1
-    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editStepId' in step))) {
+    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editStepId' in step || 'sketchDraft' in step || 'sketchSolid' in step))) {
       return this.moveInherited({ ...this.states[newest], bodies: this.current.bodies }, this.cursor - newest).project.save(0)
     }
     if (this.inherited) return this.current.project.save(0)
@@ -225,7 +242,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -251,6 +268,10 @@ export class EngineDocument {
       step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face }
     } else if ('editStepId' in edit) {
       step = this.resolveStepSettings(edit)
+    } else if ('sketchDraft' in edit) {
+      step = { sketchDraft: edit.sketchDraft }
+    } else if ('sketchSolid' in edit) {
+      step = { sketchSolid: edit.sketchSolid }
     } else if ('transform' in edit) {
       step = { body: edit.body, transform: edit.transform }
     } else {
@@ -300,6 +321,9 @@ export class EngineDocument {
     this.cursor = 0
     this.historyOffset = 0
     this.visibility.clear()
+    this.savedBodyIds = source.kind === 'file'
+      ? new Set(opened.bodies.flatMap(({ id }) => id === undefined ? [] : [id]))
+      : new Set()
     this.notes = opened.notes
     this.advance()
   }
@@ -353,8 +377,12 @@ export class EngineDocument {
     return bodies.flatMap((b, i) => this.isVisible(b) && b.shape ? [{ body: i, shape: b.shape }] : [])
   }
 
+  private visibilityKey(body: Body): string {
+    return body.id && this.savedBodyIds.has(body.id) ? body.id : body.name
+  }
+
   private isVisible(body: Body): boolean {
-    return this.visibility.get(body.id ?? body.name) ?? body.visible ?? true
+    return this.visibility.get(this.visibilityKey(body)) ?? body.visible ?? true
   }
 
   private show(bodies: Body[]): DisplayShape {
@@ -402,6 +430,13 @@ export class EngineDocument {
 
   /** The next point of the history: the body pushed or pulled, and the step recorded for saving. */
   private execute({ bodies, project }: State, step: Step, sources = this.imports): State {
+    if ('sketchDraft' in step) {
+      return this.rebuiltState(project.applySketchDraft(step.sketchDraft, this.shapes(bodies)))
+    }
+    if ('sketchSolid' in step) {
+      if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
+      return this.rebuiltState(project.applySketchSolid(step.sketchSolid, this.shapes(bodies)))
+    }
     if ('editStepId' in step) {
       const steps = project.steps()
       const replacement = step.replay ? steps[step.replay.index] : undefined

@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
+import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySketchDraft, applySketchSolid, previewSketchSolid, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
+import { SketchEditor } from './SketchEditor'
+import { profileOperations, SketchSolidPanel } from './SketchSolidPanel'
 import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
 import { MeasurePanel } from './MeasurePanel'
 import { PreferencesDialog } from './PreferencesDialog'
@@ -38,6 +41,18 @@ const defaultStack: StackSettings = {
   operation: 'stack', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
   horizontalGap: 0, verticalGap: 0
 }
+
+function sketchPlane(face: FaceInfo | undefined, point?: Vec3): SketchPlane | undefined {
+  if (!face?.planar) return
+  const normal = face.normal
+  const candidate: Vec3 = Math.abs(normal[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]
+  const alignment = candidate.reduce((sum, component, i) => sum + component * normal[i], 0)
+  const projected = candidate.map((component, i) => component - alignment * normal[i])
+  const length = Math.hypot(...projected)
+  return { origin: point ?? face.center, normal, x_axis: projected.map((component) => component / length) as Vec3 }
+}
+
+type ProfileTool = SketchSolidEdit['sketchSolid']['kind']
 
 function faceLabel(face: FaceInfo, bodies: BodyInfo[], unit: DisplayUnit) {
   const axis = face.normal.findIndex((n) => Math.abs(n) > 0.9999)
@@ -102,6 +117,8 @@ export function App() {
   const [measurePicks, setMeasurePicks] = useState<MeasurePick[]>([])
   const [measurements, setMeasurements] = useState<Measurement[]>([])
   const [measuring, setMeasuring] = useState(false)
+  const [sketchEditor, setSketchEditor] = useState<{ id: string; creating: boolean; recipe: SketchRecipe; facePlane?: SketchPlane }>()
+  const [sketchTool, setSketchTool] = useState<ProfileTool>()
   const [shapePanel, setShapePanel] = useState(false)
   const [editingShape, setEditingShape] = useState<string>()
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
@@ -165,6 +182,8 @@ export function App() {
       closeMeasure()
       setTransformKind(undefined)
       setShapePanel(false)
+      setSketchEditor(undefined)
+      setSketchTool(undefined)
       setEditingShape(undefined)
       setFaceTool(undefined)
       setEditingFace(undefined)
@@ -224,7 +243,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack || shapePanel || faceTool || transformKind || measureKind) return
+    if (stack || shapePanel || faceTool || transformKind || measureKind || sketchTool) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -462,7 +481,34 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
-  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !measureKind
+  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !sketchEditor
+  const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
+  const closeSketchTool = () => { setSketchTool(undefined); clearPreview() }
+  const closeSketchEditor = () => { setSketchEditor(undefined); setError('') }
+  const openSketch = async (id?: string) => {
+    if (revision === undefined || busyRef.current) return
+    const picked = selected === undefined ? undefined : sketchPlane(model?.shape.faces[selected], holePosition)
+    select()
+    if (!id) {
+      setSketchEditor({ id: crypto.randomUUID().replaceAll('-', ''), creating: true, facePlane: picked,
+        recipe: { plane: picked ?? basePlanes.XY, points: [], entities: [], constraints: [] } })
+      return
+    }
+    const generation = connection.current
+    updateBusy(true)
+    try {
+      const recipe = JSON.parse(await readSketch(revision, id)) as SketchRecipe
+      if (connection.current === generation) setSketchEditor({ id, creating: false, recipe, facePlane: picked })
+    } catch (failure) {
+      if (connection.current === generation) setError((failure as Error).message)
+    } finally {
+      if (connection.current === generation) updateBusy(false)
+    }
+  }
+  const openSketchTool = (kind: ProfileTool) => {
+    select()
+    setSketchTool(kind)
+  }
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
@@ -489,6 +535,11 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
+    extrude: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('extrude') },
+    revolve: { enabled: canUseFaceTool && sketches.length >= 1, run: () => openSketchTool('revolve') },
+    sweep: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('sweep') },
+    loft: { enabled: canUseFaceTool && sketches.length >= 2, run: () => openSketchTool('loft') },
     hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
     measure: { enabled: canUseFaceTool, run: () => {
@@ -508,17 +559,18 @@ export function App() {
 
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.isComposing) return
+      if (event.defaultPrevented || event.repeat || event.isComposing || sketchEditor) return
       if (matchesShortcut(event, 'Mod-K')) {
         event.preventDefault()
         setSearchOpen((shown) => !shown)
         return
       }
       if (searchOpen || settingsOpen || document.querySelector('[role="menu"]')) return
-      if (!busy && (stack || shapePanel || faceTool || transformKind || measureKind) && event.key === 'Escape') {
+      if (!busy && (stack || shapePanel || faceTool || transformKind || measureKind || sketchTool) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         cancelShapePanel()
+        closeSketchTool()
         cancelFaceTool()
         cancelTransform()
         closeMeasure()
@@ -564,6 +616,14 @@ export function App() {
             select()
             setShapePanel(true)
           }}>Shape</Btn>
+          <Btn size="sm" disabled={!actions.sketch.enabled} onClick={actions.sketch.run}>{commands.sketch.label}</Btn>
+          <Menu>
+            <MenuTrigger asChild><Btn size="sm" disabled={!canUseFaceTool || !sketches.length}>From Sketch</Btn></MenuTrigger>
+            <MenuContent>
+              {(Object.keys(profileOperations) as ProfileTool[]).map((id) =>
+                <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}>{commands[id].label}</MenuItem>)}
+            </MenuContent>
+          </Menu>
           <Btn size="sm" disabled={!actions.measure.enabled} onClick={actions.measure.run}>{commands.measure.label}</Btn>
           <Btn size="sm" disabled={!actions.move.enabled} onClick={actions.move.run}>{commands.move.label}</Btn>
           <Btn size="sm" disabled={!actions.rotate.enabled} onClick={actions.rotate.run}>{commands.rotate.label}</Btn>
@@ -600,8 +660,8 @@ export function App() {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
-            canPull={!stack && !shapePanel && !faceTool && !transformKind && !measureKind && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
-              if (!ready || shapePanel) return
+            canPull={!stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face, point) => {
+              if (!ready || shapePanel || sketchTool) return
               if (measureKind) {
                 if (face !== undefined) {
                   if (measureKind === 'body') pickMeasure({ kind: 'body', body: model.shape.faces[face].body })
@@ -699,6 +759,10 @@ export function App() {
                 if (shapeStep) void requestPreview(() => previewSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
               }}
               onChange={clearPreview} onCancel={cancelShapePanel} />}
+            {sketchTool && revision !== undefined && <SketchSolidPanel key={sketchTool} kind={sketchTool} sketches={sketches}
+              busy={busy} onChange={clearPreview} onClose={closeSketchTool}
+              onPreview={(edit) => void requestPreview(() => previewSketchSolid(revision, edit))}
+              onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}
             {faceTool === 'text' && <TextPanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
               planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
               onChange={clearPreview} onCancel={cancelFaceTool}
@@ -750,8 +814,12 @@ export function App() {
                   <div className="flex justify-between gap-2">
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
-                    {!step.undone && (step.faceSettings || step.shapeSettings) && <IconBtn label={`Edit ${step.name}`}
+                    {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
                       disabled={busy || editingFace === step.id || editingShape === step.id} onClick={() => {
+                        if (step.kind === 'sketch') {
+                          void openSketch(step.id)
+                          return
+                        }
                         select()
                         if (step.shapeSettings) {
                           setEditingShape(step.id)
@@ -786,10 +854,10 @@ export function App() {
           </div>
           <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
             <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
+              disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!sketchTool || !!missingInput || selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={stack || shapePanel || !!faceTool || !!transformKind || !!measureKind || !!sketchTool || !!missingInput || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>
@@ -802,6 +870,11 @@ export function App() {
             </Menu>
           </form>
         </footer>
+        {sketchEditor && revision !== undefined && <SketchEditor key={sketchEditor.id} revision={revision}
+          initial={sketchEditor.recipe} facePlane={sketchEditor.facePlane} error={error} busy={busy} onClose={closeSketchEditor}
+          onApply={(recipe) => mutate(() => applySketchDraft(revision, { sketchDraft: {
+            id: sketchEditor.id, creating: sketchEditor.creating, recipe: JSON.stringify(recipe)
+          } }))} />}
         {settingsOpen && <PreferencesDialog current={preferences} onClose={() => setSettingsOpen(false)}
           onApply={(next) => { applyPreferences(next); setSettingsOpen(false) }} />}
         {searchOpen && <CommandSearch actions={actions} close={() => setSearchOpen(false)} />}

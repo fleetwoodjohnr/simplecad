@@ -1,3 +1,5 @@
+import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from './sketch'
+
 export interface MeshData {
   positions: Float32Array
   normals: Float32Array
@@ -144,7 +146,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit
 
 export interface Checkpoint {
   source: Source
@@ -201,6 +203,10 @@ export type RendererCommand =
   | { op: 'measure'; revision: number; picks: MeasurePick[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
+  | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
+  | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
+  | { op: 'readSketch'; revision: number; sketchId: string }
+  | { op: 'solveSketch'; revision: number; recipe: string }
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
   | ({ op: 'previewSavedStep' | 'editSavedStep'; revision: number } & SavedStepEdit)
@@ -211,7 +217,7 @@ export type RendererCommand =
 
 export type RendererRequest = RendererCommand & { id: number }
 export type EngineResponse =
-  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] }
+  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] | string | SketchSolution }
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
@@ -273,8 +279,23 @@ function isTransformEdit(value: unknown): value is TransformEdit {
     (axis === undefined ? values.length === 3 : values.length === 1 && vec3(axis) && Math.hypot(...axis) > 1e-9)
 }
 
+const isRecipe = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= MAX_PROJECT_BYTES
+
+function isSketchDraft(value: unknown): value is SketchDraftEdit {
+  const draft = (value as Partial<SketchDraftEdit> | null)?.sketchDraft
+  return !!draft && isName(draft.id) && typeof draft.creating === 'boolean' && isRecipe(draft.recipe)
+}
+
+function isSketchSolid(value: unknown): value is SketchSolidEdit {
+  const solid = (value as Partial<SketchSolidEdit> | null)?.sketchSolid
+  return !!solid && ['extrude', 'revolve', 'sweep', 'loft'].includes(solid.kind) &&
+    Array.isArray(solid.profiles) && solid.profiles.length <= MAX_BODIES && solid.profiles.every(isName) &&
+    isRecipe(solid.inputs)
+}
+
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -406,6 +427,10 @@ export function checkRendererRequest(data: unknown): RendererRequest {
           m.moving !== m.target && isStackSettings(m.settings)) ||
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||
+        (m.op === 'readSketch' && isName(m.sketchId)) ||
+        (m.op === 'solveSketch' && isRecipe(m.recipe)) ||
+        (m.op === 'applySketchDraft' && isSketchDraft(m)) ||
+        ((m.op === 'previewSketchSolid' || m.op === 'applySketchSolid') && isSketchSolid(m)) ||
         (m.op === 'repairInput' && isReferenceRepair(m)) ||
         ((m.op === 'previewSavedStep' || m.op === 'editSavedStep') && isSavedStep(m) && m.replay === undefined) ||
         (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))

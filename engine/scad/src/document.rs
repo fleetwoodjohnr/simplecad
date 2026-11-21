@@ -5,6 +5,7 @@
 //! asked, and can undo it.
 
 mod project_import;
+mod sketch_edit;
 
 use crate::project::CACHE_VERSION;
 use crate::signatures::signatures;

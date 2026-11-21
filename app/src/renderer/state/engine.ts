@@ -4,6 +4,8 @@
 
 import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
+import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
+
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
 let port: MessagePort | null = null
@@ -89,6 +91,16 @@ export const previewTransform = (revision: number, edit: TransformEdit) =>
   send<DisplayShape>({ op: 'previewTransform', revision, ...edit })
 export const applyTransform = (revision: number, edit: TransformEdit) =>
   send<ModelResult>({ op: 'applyTransform', revision, ...edit }).then(accept)
+export const readSketch = (revision: number, sketchId: string) =>
+  send<string>({ op: 'readSketch', revision, sketchId })
+export const solveSketch = (revision: number, recipe: string) =>
+  send<SketchSolution>({ op: 'solveSketch', revision, recipe })
+export const applySketchDraft = (revision: number, edit: SketchDraftEdit) =>
+  send<ModelResult>({ op: 'applySketchDraft', revision, ...edit }).then(accept)
+export const previewSketchSolid = (revision: number, edit: SketchSolidEdit) =>
+  send<DisplayShape>({ op: 'previewSketchSolid', revision, ...edit })
+export const applySketchSolid = (revision: number, edit: SketchSolidEdit) =>
+  send<ModelResult>({ op: 'applySketchSolid', revision, ...edit }).then(accept)
 let stackPreviewRunning = false
 let nextStackPreview: { run: () => void; cancel: () => void } | undefined
 

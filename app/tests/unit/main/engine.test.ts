@@ -27,6 +27,10 @@ class FakeShape implements Shape {
 
 /** Stands in for the addon's Project: remembers the steps it was given. */
 class FakeProject implements Project {
+  sketchDraft(): never { throw new Error('Sketches are covered in the packaged app.') }
+  solveSketch(): never { throw new Error('Sketch solving is covered in the packaged app.') }
+  applySketchDraft(): never { throw new Error('Sketch editing is covered in the packaged app.') }
+  applySketchSolid(): never { throw new Error('Sketch modeling is covered in the packaged app.') }
   addFaceFeature(): never { throw new Error('Face tools are covered in the packaged app.') }
   constructor(readonly made: string[] = []) {}
   addShape(kind: string) {

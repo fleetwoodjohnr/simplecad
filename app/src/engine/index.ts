@@ -45,6 +45,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'previewFace':
       case 'previewSavedStep':
       case 'previewTransform':
+      case 'previewSketchSolid':
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
       case 'applyFace':
@@ -53,7 +54,11 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'importModel':
       case 'repairInput':
       case 'editSavedStep':
+      case 'applySketchDraft':
+      case 'applySketchSolid':
       case 'createShape': result = document.apply(req, req.revision); break
+      case 'readSketch': result = document.readSketch(req.revision, req.sketchId); break
+      case 'solveSketch': result = document.solveSketch(req.revision, req.recipe); break
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break

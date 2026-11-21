@@ -113,6 +113,16 @@ impl Constraint {
         })
     }
 
+    pub(super) fn target_value(&self) -> Option<f64> {
+        match *self {
+            Self::Distance(_, _, value) | Self::Diameter(_, value) | Self::Radius(_, value) => {
+                Some(value)
+            }
+            Self::Angle(_, _, radians) => Some(radians.to_degrees()),
+            _ => None,
+        }
+    }
+
     pub(super) fn residuals(&self, values: &[f64]) -> Residual {
         use Residual::{One, Two};
         let point = |point: Point| [values[point.start], values[point.start + 1]];

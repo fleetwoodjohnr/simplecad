@@ -250,6 +250,27 @@ pub struct ImportedModel {
     pub bodies: Vec<OpenedBody>,
 }
 
+#[napi(object, object_from_js = false)]
+pub struct SketchSolution {
+    pub recipe: String,
+    pub message: String,
+    pub solved: bool,
+}
+
+#[napi(object, object_to_js = false)]
+pub struct SketchDraftRequest {
+    pub id: String,
+    pub creating: bool,
+    pub recipe: String,
+}
+
+#[napi(object, object_to_js = false)]
+pub struct SketchSolidRequest {
+    pub kind: String,
+    pub profiles: Vec<String>,
+    pub inputs: String,
+}
+
 #[napi(object)]
 pub struct StackRequest {
     pub moving_name: String,
@@ -808,6 +829,69 @@ impl Project {
         let mut model = self.model.clone();
         let report = model
             .edit_step_settings(&step_id, changes, &self.original, &old_shapes)
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    #[napi]
+    pub fn sketch_draft(&self, id: String) -> Result<String> {
+        let draft = self.model.sketch_draft(&id).map_err(Error::from_reason)?;
+        Ok(draft.to_string())
+    }
+
+    #[napi]
+    pub fn solve_sketch(&self, recipe: String) -> Result<SketchSolution> {
+        let value = serde_json::from_str(&recipe)
+            .map_err(|_| Error::from_reason("The sketch could not be read."))?;
+        let solution = self
+            .model
+            .solve_sketch_draft(&value)
+            .map_err(Error::from_reason)?;
+        Ok(SketchSolution {
+            recipe: solution.recipe.to_string(),
+            message: solution.message(),
+            solved: solution.state != scad::sketch::State::Conflicting,
+        })
+    }
+
+    #[napi]
+    pub fn apply_sketch_draft(
+        &self,
+        request: SketchDraftRequest,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let recipe = serde_json::from_str(&request.recipe)
+            .map_err(|_| Error::from_reason("The sketch could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .apply_sketch_draft(
+                &request.id,
+                request.creating,
+                recipe,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    #[napi]
+    pub fn apply_sketch_solid(
+        &self,
+        request: SketchSolidRequest,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&request.inputs)
+            .map_err(|_| Error::from_reason("The sketch settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .apply_sketch_solid(
+                &request.kind,
+                &request.profiles,
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }
