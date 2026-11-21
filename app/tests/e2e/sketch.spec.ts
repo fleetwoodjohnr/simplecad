@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { expect, launch, test } from './helpers'
@@ -121,4 +121,51 @@ test('creates Loft, Sweep, Revolve and a path pattern from drawn sketches', asyn
   await expect(status).toContainText(`${Number((expected + Math.PI * 25 * 20).toFixed(2))} mm³`)
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toContainText(`${Number(expected.toFixed(2))} mm³`)
+})
+
+test('sketches and extrudes on a construction plane saved by v0.4.4', async () => {
+  const fixture = path.resolve('tests/e2e/fixtures/construction-plane.scad3')
+  const scratch = await mkdtemp(path.join(tmpdir(), 'simplecad-construction-plane-'))
+  const target = path.join(scratch, 'Extrusion.stl')
+  try {
+    const { app, page } = await launch({ args: [fixture] })
+    const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+    await expect(page.getByTestId('engine-status')).toContainText('8000 mm³')
+    await page.getByRole('button', { name: 'Hide Plate', exact: true }).click()
+    await toolbar.getByRole('button', { name: 'Sketch', exact: true }).click()
+    const editor = page.getByRole('dialog', { name: 'Sketch editor' })
+    await editor.getByLabel('Sketch plane', { exact: true }).selectOption({ label: 'Raised workplane' })
+    await editor.getByLabel('Plane offset (mm)').fill('2')
+    await editor.getByRole('button', { name: 'Rectangle', exact: true }).click()
+    const drawing = editor.getByLabel('Sketch drawing')
+    const { width, height } = (await drawing.boundingBox())!
+    await drawing.click({ position: { x: width * 0.4, y: height * 0.4 } })
+    await drawing.click({ position: { x: width * 0.6, y: height * 0.6 } })
+    await editor.getByRole('button', { name: 'Save sketch' }).click()
+    await expect(editor).toBeHidden()
+
+    await toolbar.getByRole('button', { name: 'From Sketch' }).click()
+    await page.getByRole('menuitem', { name: 'Extrude', exact: true }).click()
+    const tool = page.getByRole('form', { name: 'Extrude' })
+    await tool.getByRole('button', { name: 'Apply' }).click()
+    await expect(page.getByRole('list', { name: 'Model history' })).toContainText('Extrude')
+
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await toolbar.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Export STL' }).click()
+    await expect.poll(async () => (await readFile(target).catch(() => Buffer.alloc(0))).length).toBeGreaterThan(84)
+    const bytes = await readFile(target)
+    const elevations = []
+    for (let offset = 84; offset + 50 <= bytes.length; offset += 50) {
+      for (let vertex = offset + 12; vertex < offset + 48; vertex += 12) {
+        elevations.push(bytes.readFloatLE(vertex + 8))
+      }
+    }
+    expect(Math.min(...elevations)).toBeCloseTo(37, 5)
+    expect(Math.max(...elevations)).toBeCloseTo(47, 5)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
 })

@@ -44,12 +44,13 @@ interface Props {
   revision: number
   busy: boolean
   facePlane?: SketchPlane
+  constructionPlanes: { id: string; name: string; plane: SketchPlane }[]
   error: string
   onApply: (recipe: SketchRecipe) => void
   onClose: () => void
 }
 
-export function SketchEditor({ initial, revision, busy, facePlane, error, onApply, onClose }: Props) {
+export function SketchEditor({ initial, revision, busy, facePlane, constructionPlanes, error, onApply, onClose }: Props) {
   const [draft, setDraft] = useState<SketchRecipe>(() => ({
     ...initial, plane: initial.plane ?? basePlanes.XY,
     points: initial.points ?? [], entities: initial.entities ?? [], constraints: initial.constraints ?? []
@@ -85,7 +86,8 @@ export function SketchEditor({ initial, revision, busy, facePlane, error, onAppl
   }, [revision, tested])
 
   function choosePlane(selected: string, distance: string) {
-    const base = selected === 'Original' ? initial.plane : selected === 'Face' ? facePlane : basePlanes[selected]
+    const base = selected === 'Original' ? initial.plane : selected === 'Face' ? facePlane :
+      basePlanes[selected] ?? constructionPlanes.find((plane) => plane.id === selected)?.plane
     const displacement = Number(distance)
     if (!base || !Number.isFinite(displacement)) return
     setDraft((previous) => ({ ...previous, plane: { ...base,
@@ -156,6 +158,7 @@ export function SketchEditor({ initial, revision, busy, facePlane, error, onAppl
               <option value="Original">Original</option>
               {Object.keys(basePlanes).map((name) => <option key={name}>{name}</option>)}
               {facePlane && <option value="Face">Selected face</option>}
+              {constructionPlanes.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
             </select>
           </label>
           <label className="grid gap-1">Plane offset (mm)

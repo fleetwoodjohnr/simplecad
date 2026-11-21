@@ -889,6 +889,8 @@ export function App() {
         </footer>
         {sketchEditor && revision !== undefined && <SketchEditor key={sketchEditor.id} revision={revision}
           initial={sketchEditor.recipe} facePlane={sketchEditor.facePlane} error={error} busy={busy} onClose={closeSketchEditor}
+          constructionPlanes={model?.steps.flatMap((step) => !step.undone && step.constructionPlane
+            ? [{ id: `construction:${step.id}`, name: step.name, plane: step.constructionPlane }] : []) ?? []}
           onApply={(recipe) => mutate(() => applySketchDraft(revision, { sketchDraft: {
             id: sketchEditor.id, creating: sketchEditor.creating, recipe: JSON.stringify(recipe)
           } }))} />}

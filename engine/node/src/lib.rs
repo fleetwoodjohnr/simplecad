@@ -214,6 +214,7 @@ pub struct Step {
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
     pub matching_thread: Option<HashMap<String, String>>,
+    pub construction_plane: Option<HashMap<String, Vec<f64>>>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -750,6 +751,7 @@ impl Project {
                 face_settings: step.face_settings,
                 shape_settings: step.shape_settings,
                 matching_thread: step.matching_thread,
+                construction_plane: step.construction_plane,
             })
             .collect()
     }

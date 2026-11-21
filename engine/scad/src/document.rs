@@ -32,6 +32,7 @@ pub struct StepSummary {
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
     pub matching_thread: Option<HashMap<String, String>>,
+    pub construction_plane: Option<HashMap<String, Vec<f64>>>,
 }
 
 pub struct MissingInput {
@@ -323,6 +324,7 @@ impl Model {
     pub fn steps(&self) -> Vec<StepSummary> {
         let features = self.list("features");
         let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
+        let current = std::cell::OnceCell::new();
         features
             .iter()
             .map(|f| {
@@ -330,6 +332,18 @@ impl Model {
                 let id = text(&f["id"]);
                 let diagnostic = &self.payload["diagnostics"][&id];
                 let state = diagnostic["state"].as_str().unwrap_or("ok");
+                let construction_plane = (state == "ok")
+                    .then(|| {
+                        let kind = crate::construction::Kind::from_feature(f["type"].as_str()?)?;
+                        if kind.cache_kind() != "ConstructionPlane" || f["suppressed"] == true {
+                            return None;
+                        }
+                        let signatures =
+                            current.get_or_init(|| signatures(&self.payload).unwrap_or_default());
+                        let key = signatures.get(&id)?;
+                        self.cached_construction_plane(f, key)
+                    })
+                    .flatten();
                 StepSummary {
                     id,
                     name: text(&f["name"]),
@@ -345,7 +359,34 @@ impl Model {
                     face_settings: edit_values(f, face_edit_fields(&f["type"])),
                     shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
                     matching_thread: (state == "ok").then(|| Self::matching_thread(f)).flatten(),
+                    construction_plane,
                 }
+            })
+            .collect()
+    }
+
+    fn cached_construction_plane(
+        &self,
+        feature: &Value,
+        key: &str,
+    ) -> Option<HashMap<String, Vec<f64>>> {
+        let name = format!("__construction__{}", feature["name"].as_str()?);
+        let id = feature["output_ids"][name].as_str()?;
+        let entry = &self.payload["cache"]["entries"][key];
+        if entry["version"] != CACHE_VERSION || entry["feature_id"] != feature["id"] {
+            return None;
+        }
+        let output = &entry["outputs"][id];
+        if output["kind"] != "ConstructionPlane" {
+            return None;
+        }
+        ["origin", "normal", "x_axis"]
+            .into_iter()
+            .map(|key| {
+                let [x, y, z] = output["data"][key].as_array()?.as_slice() else {
+                    return None;
+                };
+                Some((key.into(), vec![x.as_f64()?, y.as_f64()?, z.as_f64()?]))
             })
             .collect()
     }

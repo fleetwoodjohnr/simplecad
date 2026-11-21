@@ -1,4 +1,4 @@
-import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from './sketch'
+import type { SketchDraftEdit, SketchPlane, SketchSolidEdit, SketchSolution } from './sketch'
 
 export interface MeshData {
   positions: Float32Array
@@ -173,6 +173,7 @@ export interface StepInfo {
   faceSettings?: Record<string, string>
   shapeSettings?: Record<string, string>
   matchingThread?: Record<string, string>
+  constructionPlane?: SketchPlane
   /** Undone in this session; redo brings it back. */
   undone: boolean
 }
