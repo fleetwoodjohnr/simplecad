@@ -84,6 +84,25 @@ pub mod ffi {
         pub shape: UniquePtr<Shape>,
     }
 
+    pub struct TextCharacter {
+        pub code: u32,
+        pub space: bool,
+    }
+
+    pub struct TextSpec {
+        pub height: f64,
+        pub depth: f64,
+        pub offset_x: f64,
+        pub offset_y: f64,
+        pub rotation: f64,
+        pub raised: bool,
+    }
+
+    pub struct TextResult {
+        pub shape: UniquePtr<Shape>,
+        pub font: String,
+    }
+
     pub struct HoleCut {
         pub position: [f64; 3],
         pub inward: [f64; 3],
@@ -132,6 +151,14 @@ pub mod ffi {
         type Shape;
 
         fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
+        fn face_text(
+            body: &Shape,
+            plane: &PlaneFrame,
+            text: &[TextCharacter],
+            font_paths: &[String],
+            family: &str,
+            settings: &TextSpec,
+        ) -> Result<TextResult>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// Sweep the closed radial/axial profile along a cylindrical helix.
         fn sweep_thread_tooth(

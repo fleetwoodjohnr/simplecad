@@ -378,6 +378,34 @@ impl Project {
         })
     }
 
+    #[napi]
+    pub fn add_text(
+        &self,
+        shape: &Shape,
+        body: String,
+        face: u32,
+        inputs: std::collections::HashMap<String, String>,
+    ) -> Result<Pulled> {
+        let mut model = self.model.clone();
+        let inner = scad::text::create(
+            &mut model,
+            scad::align::PickedFace {
+                name: &body,
+                shape: &shape.inner,
+                index: face,
+            },
+            serde_json::json!(inputs),
+        )
+        .map_err(Error::from_reason)?;
+        Ok(Pulled {
+            project: Project {
+                model,
+                original: self.original.clone(),
+            },
+            shape: Shape { inner },
+        })
+    }
+
     /// Push/pull face `face` of `shape` (the body `body` as shown) by `distance`
     /// mm: the new shape, and this project with the step recorded as the Pull tool would.
     #[napi]

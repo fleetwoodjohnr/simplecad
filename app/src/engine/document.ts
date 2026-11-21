@@ -1,4 +1,4 @@
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type Checkpoint, type DisplayShape, type FaceInfo, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type PullEdit, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type TextEdit, type TextSettings } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -14,6 +14,7 @@ export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
+  addText(shape: Shape, body: string, face: number, settings: TextSettings): { project: Project; shape: Shape }
   place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
     viewDirection?: number[]; viewUp?: number[]
@@ -138,7 +139,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | TextEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     return this.show(this.prepare(this.resolve(edit)).bodies)
   }
@@ -180,7 +181,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | ShapeEdit | ImportRequest, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | TextEdit | ShapeEdit | ImportRequest, revision: number): ModelResult {
     this.checkRevision(revision)
     if ('distance' in edit && edit.distance === 0) return this.model()
     if (this.cursor >= MAX_EDITS) throw new Error('This modeling session has reached its history limit.')
@@ -271,8 +272,9 @@ export class EngineDocument {
   }
 
   /** Which body a face of the shown model belongs to, and its number within that body. */
-  private resolve(edit: PullEdit | StackEdit): (FacePick & PullEdit) | StackStep {
+  private resolve(edit: PullEdit | StackEdit | TextEdit): (FacePick & (PullEdit | TextEdit)) | StackStep {
     if ('distance' in edit) return { ...this.pick(edit.face), distance: edit.distance }
+    if ('textSettings' in edit) return { ...this.pick(edit.face), textSettings: edit.textSettings }
     const moving = this.pick(edit.moving)
     const target = this.pick(edit.target)
     if (moving.body === target.body) throw new Error('Pick a face on each of two different parts.')
@@ -312,9 +314,10 @@ export class EngineDocument {
     const body = 'target' in step ? step.moving.body : step.body
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
-    const next = 'target' in step
-      ? this.place(project, bodies, shape, step)
-      : project.pushPull(bodies[body].name, shape, step.face, step.distance)
+    let next
+    if ('target' in step) next = this.place(project, bodies, shape, step)
+    else if ('textSettings' in step) next = project.addText(shape, bodies[body].name, step.face, step.textSettings)
+    else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)
     return { bodies: bodies.map((b, i) => i === body ? { name: b.name, shape: next.shape } : b), project: next.project }
   }
 

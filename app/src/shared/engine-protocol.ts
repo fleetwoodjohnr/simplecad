@@ -53,6 +53,17 @@ export interface StackSettings {
   view?: ViewFrame
 }
 export interface StackEdit { moving: number; target: number; settings: StackSettings }
+export interface TextSettings {
+  text: string
+  font_family: 'sans-serif' | 'serif' | 'monospace'
+  mode: 'raised' | 'engraved'
+  text_height: string
+  depth: string
+  offset_x: string
+  offset_y: string
+  rotation: string
+}
+export interface TextEdit { face: number; textSettings: TextSettings }
 export interface ShapeEdit { shapeKind: string; values: Record<string, string> }
 export type ImportFormat = 'step' | 'brep'
 export interface ModelImport { importName: string; data: Uint8Array; importFormat?: ImportFormat }
@@ -69,7 +80,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & PullEdit) | StackStep | ShapeEdit | ImportRef
+export type Step = (FacePick & (PullEdit | TextEdit)) | StackStep | ShapeEdit | ImportRef
 
 export interface Checkpoint {
   source: Source
@@ -112,6 +123,7 @@ export type RendererCommand =
   | { op: 'open'; data: Uint8Array; name: string; revision: number; recovered?: boolean }
   | ({ op: 'preview' | 'apply'; revision: number } & PullEdit)
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
+  | ({ op: 'previewText' | 'applyText'; revision: number } & TextEdit)
   | ({ op: 'createShape'; revision: number } & ShapeEdit)
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | { op: 'show'; body: number; visible: boolean; revision: number }
@@ -155,10 +167,20 @@ function isEdit(value: unknown): value is PullEdit {
 
 function isStep(value: unknown): value is Step {
   if (isShapeEdit(value) || isImportRef(value)) return true
-  if (isEdit(value)) return isPick(value)
+  if (isEdit(value) || isTextEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
   return isPick(step.moving) && isPick(step.target) && step.moving.body !== step.target.body && isStackSettings(step.settings)
+}
+
+function isTextEdit(value: unknown): value is TextEdit {
+  if (!value || typeof value !== 'object') return false
+  const { face, textSettings: settings } = value as Partial<TextEdit>
+  return isIndex(face) && face! <= 0xffffffff && !!settings && typeof settings === 'object' &&
+    (settings.font_family === 'sans-serif' || settings.font_family === 'serif' || settings.font_family === 'monospace') &&
+    (settings.mode === 'raised' || settings.mode === 'engraved') &&
+    [settings.text, settings.text_height, settings.depth, settings.offset_x, settings.offset_y, settings.rotation]
+      .every((entry) => typeof entry === 'string' && entry.length <= 256)
 }
 
 function isImportRef(value: unknown): value is ImportRef {
@@ -234,6 +256,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||
+        ((m.op === 'previewText' || m.op === 'applyText') && isTextEdit(m)) ||
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         (m.op === 'createShape' && isShapeEdit(m)) ||

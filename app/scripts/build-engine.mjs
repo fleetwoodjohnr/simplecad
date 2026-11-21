@@ -23,6 +23,7 @@ execFileSync(cargo, ['build', '--release', '--locked', '-p', 'scad_engine', '--t
 mkdirSync(native, { recursive: true })
 for (const stale of readdirSync(native)) if (stale !== '.gitkeep') rmSync(path.join(native, stale), { force: true })
 copyFileSync(path.join(engine, 'target', 'release', binary), path.join(native, 'scad_engine.node'))
+copyFileSync(path.join(occt, 'share', 'licenses', 'freetype', 'FTL.TXT'), path.join(native, 'FreeType-License.txt'))
 
 // Every OCCT library, as installed: real files copied, version symlinks recreated rather than copied three times.
 const libraries = process.platform === 'win32' ? path.join(occt, 'bin') : path.join(occt, 'lib')

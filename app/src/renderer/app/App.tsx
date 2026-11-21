@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Magnet, Redo2, Search, Undo2 } from 'lucide-react'
-import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, ModelResult, StackEdit, StackSettings, ViewFrame } from '@/shared/engine-protocol'
+import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, ModelResult, StackEdit, StackSettings, TextSettings, ViewFrame } from '@/shared/engine-protocol'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyPull, applyStack, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyPull, applyStack, applyText, cancelQueuedStackPreview, createShape, exportModel, importModel, markSaved, onEngineConnected, openProject, openSession, previewPull, previewStack, previewText, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
+import { TextPanel } from './TextPanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
 function useTheme(): [boolean, () => void] {
@@ -91,6 +92,7 @@ export function App() {
   const [selected, setSelected] = useState<number>()
   const [stack, setStack] = useState(false)
   const [shapePanel, setShapePanel] = useState(false)
+  const [textTool, setTextTool] = useState(false)
   const [target, setTarget] = useState<number>()
   const [targetView, setTargetView] = useState<ViewFrame>()
   const readViewFrame = useRef<() => ViewFrame>(undefined)
@@ -124,6 +126,7 @@ export function App() {
     if (face === undefined) {
       cancelPlacement()
       setShapePanel(false)
+      setTextTool(false)
     }
   }
   const cancelPlacement = () => {
@@ -149,6 +152,7 @@ export function App() {
     setDistance('')
     cancelPlacement()
     setShapePanel(false)
+    setTextTool(false)
     setError('')
     void openSession(generation > 1).then(
       (next) => {
@@ -172,7 +176,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack) return
+    if (stack || textTool) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -183,7 +187,7 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value, stack])
+  }, [busy, selected, revision, value, stack, textTool])
 
   useEffect(() => {
     if (!stack) return
@@ -221,8 +225,24 @@ export function App() {
     ).finally(() => { if (connection.current === generation) updateBusy(false) })
   }
 
+  const showTextPreview = async (settings: TextSettings) => {
+    if (busyRef.current || selected === undefined || revision === undefined) return
+    const generation = connection.current
+    setError('')
+    setPreview(undefined)
+    updateBusy(true)
+    try {
+      const next = await previewText(revision, { face: selected, textSettings: settings })
+      if (connection.current === generation) setPreview(next)
+    } catch (failure) {
+      if (connection.current === generation) setError((failure as Error).message)
+    } finally {
+      if (connection.current === generation) updateBusy(false)
+    }
+  }
+
   const pull = (amount: number) => {
-    if (stack || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
+    if (stack || textTool || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
@@ -340,7 +360,7 @@ export function App() {
   const canRedo = !!model && model.checkpoint.cursor < model.checkpoint.edits.length && !busy
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
-  const canStack = ready && !shapePanel && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  const canStack = ready && !shapePanel && !textTool && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -351,6 +371,11 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    text: { enabled: ready && !stack && !shapePanel && !textTool, run: () => {
+      setDistance('')
+      setPreview(undefined)
+      setTextTool(true)
+    } },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
   }
 
@@ -363,10 +388,11 @@ export function App() {
         return
       }
       if (searchOpen || document.querySelector('[role="menu"]')) return
-      if ((stack || shapePanel) && event.key === 'Escape') {
+      if ((stack || shapePanel || (textTool && !busy)) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         setShapePanel(false)
+        setTextTool(false)
         setError('')
         return
       }
@@ -405,10 +431,11 @@ export function App() {
             </MenuContent>
           </Menu>
           <span className="mx-2 border-b-2 border-accent py-2 text-[12.5px] font-medium">Model</span>
-          <Btn size="sm" disabled={!ready || stack || shapePanel} onClick={() => {
+          <Btn size="sm" disabled={!ready || stack || shapePanel || textTool} onClick={() => {
             select()
             setShapePanel(true)
           }}>Shape</Btn>
+          <Btn size="sm" disabled={!actions.text.enabled} onClick={actions.text.run}>{commands.text.label}</Btn>
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
           <Btn size="sm" disabled={!canStack || stack} onClick={() => {
@@ -434,7 +461,7 @@ export function App() {
             shape={model?.shape} shown={preview} selected={selected} showEdges={showEdges} frame={frame}
             readViewFrame={readViewFrame}
             placingBody={stack ? movingBody : undefined}
-            canPull={!stack && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
+            canPull={!stack && !textTool && ready && selected !== undefined && !!model?.shape.faces[selected]?.planar} onSelect={(face) => {
               if (!ready) return
               if (!stack) select(face)
               else if (face !== undefined && face !== target && model.shape.faces[face]?.body !== movingBody) {
@@ -491,6 +518,15 @@ export function App() {
             {shapePanel && revision !== undefined && <ShapePanel busy={busy}
               onCreate={(edit) => mutate(() => createShape(revision, edit), true)}
               onCancel={() => { setShapePanel(false); setError('') }} />}
+            {textTool && <TextPanel busy={busy} planar={selected !== undefined && !!model?.shape.faces[selected]?.planar}
+              onChange={() => { setPreview(undefined); setError('') }}
+              onPreview={showTextPreview}
+              onApply={(settings) => {
+                if (revision !== undefined && selected !== undefined) {
+                  mutate(() => applyText(revision, { face: selected, textSettings: settings }))
+                }
+              }}
+              onCancel={() => { setTextTool(false); setPreview(undefined); setError('') }} />}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <ol ref={historyList} aria-label="Model history" className="min-h-0 flex-1 overflow-auto text-xs">
               {model?.steps.map((step, index) => (
@@ -513,10 +549,10 @@ export function App() {
           </div>
           <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); pull(value) }}>
             <input aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
-              disabled={stack || selected === undefined || busy} className={`${inputCls} w-24`}
+              disabled={stack || textTool || selected === undefined || busy} className={`${inputCls} w-24`}
               onChange={(e) => { setDistance(e.target.value); setError('') }} />
             <span className="text-xs text-text-2">mm</span>
-            <Btn type="submit" variant="primary" size="sm" disabled={stack || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
+            <Btn type="submit" variant="primary" size="sm" disabled={stack || textTool || !ready || selected === undefined || !model?.shape.faces[selected]?.planar || !Number.isFinite(value) || value === 0}>
               <Magnet className="size-3.5" /> Pull
             </Btn>
             <Menu>

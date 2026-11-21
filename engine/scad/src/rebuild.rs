@@ -108,6 +108,10 @@ impl Context<'_> {
         *self.message.borrow_mut() = message;
     }
 
+    pub(crate) fn into_message(self) -> String {
+        self.message.into_inner()
+    }
+
     /// `ctx.shape`: the body an input names.
     pub fn shape(&self, key: &str) -> Result<Shape, StepError> {
         let name = match self.input(key) {
@@ -382,6 +386,7 @@ pub const PORTED: &[&str] = &[
     "split",
     "hole",
     "thread",
+    "text",
     "draft",
     "mirror",
     "rectangular_pattern",
@@ -776,6 +781,7 @@ fn execute(
             "arrange" => crate::advanced::arrange_row(ctx),
             "hole" => Ok(BTreeMap::from([(body_name()?, drill(ctx)?)])),
             "thread" => Ok(BTreeMap::from([(body_name()?, crate::thread::build(ctx)?)])),
+            "text" => Ok(BTreeMap::from([(body_name()?, crate::text::build(ctx)?)])),
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" => Ok(BTreeMap::from(
                 [(body_name()?, crate::advanced::build(kind, ctx)?)],
             )),

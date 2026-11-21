@@ -44,6 +44,9 @@ struct CylinderData;
 struct SplitParts;
 struct HoleCut;
 struct ImportedBody;
+struct TextCharacter;
+struct TextSpec;
+struct TextResult;
 
 class Shape {
 public:
@@ -66,6 +69,10 @@ public:
 };
 
 std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
+TextResult face_text(const Shape &body, const PlaneFrame &plane,
+                     rust::Slice<const TextCharacter> text,
+                     rust::Slice<const rust::String> font_paths,
+                     rust::Str family, const TextSpec &settings);
 std::unique_ptr<Shape> make_cylinder(double radius, double height);
 std::unique_ptr<Shape> sweep_thread_tooth(double radius, double pitch, double length,
                                          bool left_hand, rust::Slice<const double> profile);

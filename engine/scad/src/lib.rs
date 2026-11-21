@@ -12,5 +12,6 @@ pub mod project;
 pub mod pyjson;
 pub mod rebuild;
 pub mod signatures;
+pub mod text;
 mod thread;
 mod vent;

@@ -380,6 +380,30 @@ impl Model {
         self.record(&id, "Align", object, brep, before, message)
     }
 
+    pub(crate) fn record_text(
+        &mut self,
+        body: &str,
+        inputs: Value,
+        brep: Vec<u8>,
+        message: &str,
+    ) -> Result<(), String> {
+        let before = self.document();
+        let (producer, object) = self
+            .latest()
+            .remove(body)
+            .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
+        let id = new_feature_id();
+        let name = self.unique_name("Text");
+        let feature = json!({
+            "id": id, "type": "text", "name": name, "inputs": inputs,
+            "outputs": [body], "output_ids": { body: object },
+            "bindings": { body: { "feature_id": producer, "object_id": object } },
+            "suppressed": false, "dropped": [],
+        });
+        self.append_body_step(body, &id, feature);
+        self.record(&id, "Text", &object, brep, before, message)
+    }
+
     fn append_body_step(&mut self, body: &str, id: &str, feature: Value) {
         let payload = self.payload.as_object_mut().unwrap();
         payload

@@ -41,8 +41,10 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'restore': result = document.restore(req.checkpoint, req.data, req.imports); break
       case 'open': result = document.open(req.data, req.name, req.revision, req.recovered); break
       case 'preview':
+      case 'previewText':
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
+      case 'applyText':
       case 'applyStack':
       case 'importModel':
       case 'createShape': result = document.apply(req, req.revision); break

@@ -7,6 +7,8 @@
 const TOOLKITS: &[&str] = &[
     "TKDESTEP",
     "TKXSBase",
+    "TKV3d",
+    "TKService",
     "TKOffset",
     "TKFillet",
     "TKMesh",
@@ -32,6 +34,7 @@ fn main() {
         .file("cpp/shim.cpp")
         .file("cpp/step.cpp")
         .file("cpp/thread.cpp")
+        .file("cpp/text.cpp")
         .include("cpp")
         .include(format!("{dir}/include/opencascade"))
         .std("c++17")
@@ -50,5 +53,6 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
     println!("cargo:rerun-if-changed=cpp/step.cpp");
     println!("cargo:rerun-if-changed=cpp/thread.cpp");
+    println!("cargo:rerun-if-changed=cpp/text.cpp");
     println!("cargo:rerun-if-changed=cpp/shim.hpp");
 }

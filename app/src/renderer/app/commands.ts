@@ -35,6 +35,7 @@ export const commands = {
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
+  text: { label: 'Text' },
   updates: { label: 'Check for updates' }
 } satisfies Record<string, { label: string; shortcut?: string }>
 

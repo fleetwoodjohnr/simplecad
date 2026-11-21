@@ -173,14 +173,14 @@ ELECTRON_LIBRARIES = {
         "libasound2", "libatspi2.0-0")] + [
         "libnss3", "libdbus-1-3", "libcairo2", "libpango-1.0-0", "libx11-6", "libxcomposite1",
         "libxdamage1", "libxext6", "libxfixes3", "libxrandr2", "libgbm1", "libexpat1", "libxcb1",
-        "libxkbcommon0", "libudev1", "libgcc-s1"],
+        "libxkbcommon0", "libudev1", "libgcc-s1", "libfontconfig1"],
     "rpm": [f"{so}()(64bit)" for so in (
         "libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0", "libnspr4.so", "libnss3.so",
         "libnssutil3.so", "libsmime3.so", "libatk-1.0.so.0", "libatk-bridge-2.0.so.0",
         "libcups.so.2", "libdbus-1.so.3", "libcairo.so.2", "libgtk-3.so.0", "libpango-1.0.so.0",
         "libX11.so.6", "libXcomposite.so.1", "libXdamage.so.1", "libXext.so.6", "libXfixes.so.3",
         "libXrandr.so.2", "libgbm.so.1", "libexpat.so.1", "libxcb.so.1", "libxkbcommon.so.0",
-        "libudev.so.1", "libasound.so.2", "libatspi.so.0", "libgcc_s.so.1")],
+        "libudev.so.1", "libasound.so.2", "libatspi.so.0", "libgcc_s.so.1", "libfontconfig.so.1")],
 }
 
 
