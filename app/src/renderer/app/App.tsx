@@ -656,6 +656,21 @@ export function App() {
       </li>
     )
   }
+  /** The middle of the chosen body's display bounds. */
+  const bodyCentre = useMemo(() => {
+    const range = model?.shape.ranges.find(({ body }) => body === transformBody)
+    if (!model || !range) return undefined
+    const low = [Infinity, Infinity, Infinity]
+    const high = [-Infinity, -Infinity, -Infinity]
+    for (let i = range.indices[0]; i < range.indices[1]; i++) {
+      const vertex = model.shape.indices[i] * 3
+      for (let axis = 0; axis < 3; axis++) {
+        low[axis] = Math.min(low[axis], model.shape.positions[vertex + axis])
+        high[axis] = Math.max(high[axis], model.shape.positions[vertex + axis])
+      }
+    }
+    return low.map((value, axis) => (value + high[axis]) / 2) as Vec3
+  }, [model, transformBody])
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -704,6 +719,7 @@ export function App() {
     point: { enabled: canTransform, hint: 'Show a body first', run: () => openConstruction('construction_point') },
     fillet: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'fillet' }) } },
     chamfer: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'chamfer' }) } },
+    split: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('split') },
     combine: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two bodies first', run: () => openBodyTool('boolean') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
@@ -775,7 +791,7 @@ export function App() {
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
             offsetPlane: faceTool === 'offset_plane', shell: faceTool === 'shell', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
-            scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean',
+            scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean', split: bodyTool?.kind === 'split',
             fillet: edgeTool?.kind === 'fillet', chamfer: edgeTool?.kind === 'chamfer'
           }} />
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
@@ -937,7 +953,7 @@ export function App() {
               onApply={(value) => mutate(() => applyEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
               onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: edgeTool.editing!, changes }))} />}
             {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
-              kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy}
+              kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy} centre={bodyCentre}
               preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
               onBody={(body) => { clearPreview(); setTransformBody(body) }} onChange={clearPreview} onCancel={closeBodyTool}
               onPreview={(edit) => void requestPreview(() => previewBodyOperation(revision, edit))}

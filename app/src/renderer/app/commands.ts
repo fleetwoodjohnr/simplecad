@@ -45,6 +45,7 @@ export const commands = {
   circularPattern: { label: 'Circular Pattern' },
   scale: { label: 'Scale' },
   combine: { label: 'Combine' },
+  split: { label: 'Split' },
   shell: { label: 'Shell' },
   fillet: { label: 'Fillet' },
   midplane: { label: 'Midplane' },

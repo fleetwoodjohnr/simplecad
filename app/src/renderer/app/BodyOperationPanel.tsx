@@ -6,7 +6,7 @@ export type BodyOperation = BodyOperationEdit['bodyOperation']
 
 export const bodyOperationLabels: Record<BodyOperation, string> = {
   mirror: 'Mirror', rectangular_pattern: 'Rectangular Pattern', circular_pattern: 'Circular Pattern', scale: 'Scale',
-  boolean: 'Combine'
+  boolean: 'Combine', split: 'Split'
 }
 const combinations = [{ value: 'join', label: 'Join' }, { value: 'cut', label: 'Cut' }, { value: 'intersect', label: 'Intersect' }]
 
@@ -16,12 +16,13 @@ const defaults: Record<BodyOperation, Record<string, string>> = {
   rectangular_pattern: { count_x: '3', count_y: '1', spacing_x: '20 mm', spacing_y: '20 mm' },
   circular_pattern: { count: '4', total_angle: '360' },
   scale: { factor: '2' },
-  boolean: { operation: 'join', keep_tool: 'false' }
+  boolean: { operation: 'join', keep_tool: 'false' },
+  split: { position: '0' }
 }
 const flags = new Set(['keep', 'keep_tool', 'operation'])
 const fieldLabels: Record<string, string> = {
   count_x: 'Count along X', count_y: 'Count along Y', spacing_x: 'Spacing X', spacing_y: 'Spacing Y',
-  count: 'Count', total_angle: 'Total angle (°)', factor: 'Factor'
+  count: 'Count', total_angle: 'Total angle (°)', factor: 'Factor', position: 'Offset from the centre'
 }
 const axes = ['x', 'y', 'z'] as const
 type Axis = typeof axes[number]
@@ -31,6 +32,8 @@ interface Props {
   kind: BodyOperation
   bodies: BodyInfo[]
   body?: number
+  /** The body's centre, which a split plane runs through. */
+  centre?: Vec3
   busy: boolean
   /** A saved step's settings: only these are edited, and its directions stay as made. */
   preset?: Record<string, string>
@@ -42,7 +45,7 @@ interface Props {
   onCancel: () => void
 }
 
-export function BodyOperationPanel({ kind, bodies, body, busy, preset, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
+export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
   const [values, setValues] = useState<Record<string, string>>({ ...defaults[kind], ...preset })
   const [axis, setAxis] = useState<Axis>(kind === 'mirror' ? 'x' : 'z')
   const [center, setCenter] = useState<[string, string, string]>(['0', '0', '0'])
@@ -58,6 +61,7 @@ export function BodyOperationPanel({ kind, bodies, body, busy, preset, onBody, o
     if (kind === 'boolean') Object.assign(inputs, { tools: tools.filter((tool) => tool !== body), keep_tool: keepTool === 'true' })
     if (kind === 'mirror') Object.assign(inputs, { normal: unit(axis), origin: point, keep: keep === 'true' })
     if (kind === 'circular_pattern') Object.assign(inputs, { axis: unit(axis), center: point })
+    if (kind === 'split') Object.assign(inputs, { normal: unit(axis), origin: centre ?? [0, 0, 0] })
     return { bodyOperation: kind, body: body!, inputs }
   }
   const submit = (commit: boolean) => {
@@ -80,10 +84,11 @@ export function BodyOperationPanel({ kind, bodies, body, busy, preset, onBody, o
           {bodies.map((part, index) => part.visible && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
         </select>
       </label>}
-      {!preset && (kind === 'mirror' || kind === 'circular_pattern') && <div className="grid gap-1">
-        {kind === 'mirror' ? 'Mirror across' : 'Turn about'}
-        <Segmented label={kind === 'mirror' ? 'Mirror plane' : 'Axis'} value={axis} onChange={(next) => { setAxis(next); onChange() }}
-          options={axes.map((value) => ({ value, label: kind === 'mirror' ? { x: 'YZ', y: 'XZ', z: 'XY' }[value] : value.toUpperCase() }))} />
+      {!preset && (kind === 'mirror' || kind === 'circular_pattern' || kind === 'split') && <div className="grid gap-1">
+        {{ mirror: 'Mirror across', split: 'Cut across', circular_pattern: 'Turn about' }[kind]}
+        <Segmented label={kind === 'circular_pattern' ? 'Axis' : kind === 'split' ? 'Split plane' : 'Mirror plane'} value={axis}
+          onChange={(next) => { setAxis(next); onChange() }}
+          options={axes.map((value) => ({ value, label: kind === 'circular_pattern' ? value.toUpperCase() : { x: 'YZ', y: 'XZ', z: 'XY' }[value] }))} />
       </div>}
       {!preset && (kind === 'mirror' || kind === 'circular_pattern') && <fieldset className="grid grid-cols-3 gap-2" disabled={busy}>
         <legend className="pb-1">{kind === 'mirror' ? 'Through point (mm)' : 'Centre (mm)'}</legend>

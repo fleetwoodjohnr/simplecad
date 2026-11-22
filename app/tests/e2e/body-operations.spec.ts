@@ -192,3 +192,47 @@ test('fillets every edge of a body, then chamfers one clicked edge and edits it 
   await expect.poll(async () => Math.round((24000 - await volume()) * 100) / 100).toBe(cut * 4)
   await expect(steps).toHaveText(['Box', 'Chamfer'])
 })
+
+test('splits a body into two named halves, edits the cut from History, and saves after undoing it', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-split-'))
+  const target = path.join(scratch, 'Split.scad3')
+  try {
+    const { app, page } = await launch()
+    const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+    const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+    const status = page.getByTestId('engine-status')
+    await expect(status).toHaveText(/24000 mm³/)
+    await toolbar.getByRole('button', { name: 'Split', exact: true }).click()
+    const split = page.getByRole('form', { name: 'Split' })
+    await split.getByRole('radio', { name: 'XY' }).click()
+    await split.getByLabel('Offset from the centre').fill('5 mm')
+    await split.getByRole('button', { name: 'Apply' }).click()
+    await expect(bodies.getByRole('button', { name: /^Box [AB]$/ })).toHaveCount(2)
+    await expect(status).toHaveText(/24000 mm³/)
+
+    await page.getByRole('button', { name: 'Edit Split' }).click()
+    const saved = page.getByRole('form', { name: 'Split' })
+    await expect(saved.getByLabel('Offset from the centre')).toHaveValue('5 mm')
+    await saved.getByLabel('Offset from the centre').fill('-5 mm')
+    await saved.getByRole('button', { name: 'Apply' }).click()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(bodies.getByRole('button', { name: /^Box [AB]$/ })).toHaveCount(2)
+
+    await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+    await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(bodies.getByRole('button', { name: 'Box', exact: true })).toHaveCount(1)
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText('Split.scad3', { exact: true })).toBeVisible()
+    await app.close()
+    const reopened = await launch({ args: [target] })
+    await expect(reopened.page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+    await reopened.page.getByRole('button', { name: 'Redo', exact: true }).click()
+    await expect(reopened.page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: /^Box [AB]$/ })).toHaveCount(2)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})

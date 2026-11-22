@@ -738,3 +738,38 @@ fn every_construction_tool_is_created_from_its_picks_and_rebuilds() {
             .is_err()
     );
 }
+
+#[test]
+fn a_split_consumes_the_body_into_two_named_halves() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(solid))]);
+    let inputs = json!({"normal": [0.0, 0.0, 1.0], "origin": [5.0, 5.0, 5.0], "position": "2 mm"});
+    let report = model
+        .add_body_operation("split", "Box", inputs, &[], &shown)
+        .unwrap();
+    let halves: Vec<_> = report
+        .bodies
+        .iter()
+        .map(|body| {
+            (
+                body.name.as_str(),
+                occt::volume(body.shape.as_ref().unwrap()).round(),
+            )
+        })
+        .collect();
+    assert_eq!(halves, [("Box A", 700.0), ("Box B", 300.0)]);
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    let split = saved.model["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(split["outputs"], json!(["Box A", "Box B"]));
+    assert_eq!(split["inputs"]["names"], json!(["Box A", "Box B"]));
+}

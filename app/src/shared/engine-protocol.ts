@@ -75,7 +75,7 @@ export interface GroupEdit { group: number[] }
 export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
-export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean'] as const
+export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean', 'split'] as const
 /** Mirror, pattern, scale or combine one body in place: expressions as strings, directions as vectors,
  * and a Combine's `tools` as body indices. */
 export interface BodyOperationEdit {

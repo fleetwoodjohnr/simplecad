@@ -1,7 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
   ArrowUpFromLine, Axis3d, Box, ChevronDown, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
-  Rotate3d, Ruler, Scaling, Shapes, Spline, SquareDashed, Type, type LucideIcon
+  Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
 import { commands, type CommandActions, type CommandId } from './commands'
@@ -26,6 +26,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { menu: 'Pattern', icon: Grid2x2, items: ['rectangularPattern', 'circularPattern'], hint: 'Show a body first' },
     { id: 'scale', icon: Scaling },
     { id: 'combine', icon: Combine },
+    { id: 'split', icon: Scissors },
     { id: 'shell', icon: Box },
     { id: 'fillet', icon: SquareRoundCorner },
     { id: 'chamfer', icon: SquareSlash },

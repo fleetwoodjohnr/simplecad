@@ -769,6 +769,7 @@ impl Model {
             "circular_pattern" => "Circular Pattern",
             "scale" => "Scale",
             "boolean" => "Combine",
+            "split" => "Split",
             _ => return Err("Choose an operation.".into()),
         };
         if !inputs.is_object() {
@@ -804,9 +805,25 @@ impl Model {
         }
         let mut candidate = self.clone();
         let name = candidate.unique_name(label);
+        let id = new_feature_id();
+        // A split consumes the body and makes two new ones, named as SimpleCAD 0.4's split tool names them.
+        let (outputs, output_ids) = if kind == "split" {
+            let names = [
+                candidate.unique_name(&format!("{body} A")),
+                candidate.unique_name(&format!("{body} B")),
+            ];
+            inputs["names"] = json!(names);
+            let ids: Map<String, Value> = names
+                .iter()
+                .map(|name| (name.clone(), json!(crate::graph::output_id(&id, name))))
+                .collect();
+            (json!(names), Value::Object(ids))
+        } else {
+            (json!([body]), json!({ body: object }))
+        };
         let feature = json!({
-            "id": new_feature_id(), "type": kind, "name": name, "outputs": [body],
-            "output_ids": { body: object }, "inputs": inputs, "bindings": bindings,
+            "id": id, "type": kind, "name": name, "outputs": outputs,
+            "output_ids": output_ids, "inputs": inputs, "bindings": bindings,
             "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
@@ -1751,6 +1768,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "circular_pattern" => &["count", "total_angle"],
         "scale" => &["factor"],
         "boolean" => &["operation", "keep_tool"],
+        "split" => &["position"],
         _ => return None,
     })
 }
