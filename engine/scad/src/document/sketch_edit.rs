@@ -123,10 +123,7 @@ impl Model {
                 })
                 .ok_or("Select a body to repeat along the path.")?
                 .to_owned();
-            let (producer, object) = self
-                .latest()
-                .remove(&body)
-                .ok_or("The selected body has no available modeling step.")?;
+            let (producer, object) = self.editable(&body)?;
             inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
             bindings.insert(
                 body.clone(),

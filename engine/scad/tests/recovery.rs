@@ -421,3 +421,27 @@ fn interrupted_consumption_cannot_revive_a_tool_with_a_reused_name() {
     assert!((occt::volume(peg) - 120.0).abs() < 1e-6);
     assert!(report.failures.contains_key("last-cut"));
 }
+
+/// A body downstream of a step that waits on a repair keeps its last valid model on every rebuild, so a
+/// change on top of it would show and then be lost on Redo after reopening (Spondge Holder). It is refused.
+#[test]
+fn a_body_waiting_on_a_repair_refuses_changes_until_it_is_repaired() {
+    let (mut model, ..) = project_with_the_cut_tool_deleted();
+    let error = model
+        .add_body_operation(
+            "scale",
+            "Plate",
+            json!({"factor": "2"}),
+            ORIGINAL,
+            &HashMap::new(),
+        )
+        .err()
+        .expect("a body waiting on a repair was changed");
+    assert_eq!(
+        error,
+        "Repair the step marked in History that made \"Plate\" before changing it."
+    );
+    let steps = model.steps().len();
+    assert!(model.editable("Plate").is_err());
+    assert_eq!(model.steps().len(), steps, "nothing was recorded");
+}

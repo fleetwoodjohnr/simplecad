@@ -189,6 +189,26 @@ impl Model {
         }
     }
 
+    /// The step that last wrote `body`, and its object ID, when the body can be changed. A body whose
+    /// step failed, or waits on a repair upstream, keeps its last valid model whenever it is rebuilt
+    /// (as in SimpleCAD 0.4), so a change made on top of it would show now and be lost on Redo after
+    /// reopening.
+    pub fn editable(&self, body: &str) -> Result<(String, String), String> {
+        let (producer, object) = self
+            .latest()
+            .remove(body)
+            .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
+        if matches!(
+            self.payload["diagnostics"][&producer]["state"].as_str(),
+            Some("failed" | "needs_attention")
+        ) {
+            return Err(format!(
+                "Repair the step marked in History that made \"{body}\" before changing it."
+            ));
+        }
+        Ok((producer, object))
+    }
+
     /// `DependencyGraph.latest`: the step and object that last wrote each body name.
     fn latest(&self) -> BTreeMap<String, (String, String)> {
         let mut latest = BTreeMap::new();
@@ -600,17 +620,13 @@ impl Model {
         if !inputs.is_object() {
             return Err("The operation settings could not be read.".into());
         }
-        let (producer, object) = self
-            .latest()
-            .remove(body)
-            .ok_or("Select a body with an available modeling step.")?;
+        let (producer, object) = self.editable(body)?;
         inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
         let mut bindings = Map::from_iter([(
             body.to_owned(),
             json!({ "feature_id": producer, "object_id": object }),
         )]);
         if kind == "boolean" {
-            let latest = self.latest();
             let mut tools = Vec::new();
             for tool in inputs["tools"]
                 .as_array()
@@ -620,9 +636,7 @@ impl Model {
                     .as_str()
                     .filter(|tool| *tool != body)
                     .ok_or("Choose a different body to combine with.")?;
-                let (producer, object) = latest
-                    .get(tool)
-                    .ok_or("A tool body has no available modeling step.")?;
+                let (producer, object) = &self.editable(tool)?;
                 let bound = json!({ "feature_id": producer, "object_id": object });
                 if bindings.insert(tool.to_owned(), bound).is_some() {
                     return Err("Choose each tool body once.".into());
@@ -708,10 +722,7 @@ impl Model {
         brep: Vec<u8>,
     ) -> Result<(), String> {
         let before = self.document();
-        let (producer, object) = self
-            .latest()
-            .remove(body)
-            .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
+        let (producer, object) = self.editable(body)?;
         let name = self.unique_name("Pull");
         let feature = json!({
             "id": id, "type": "push_pull", "name": name,
@@ -734,24 +745,8 @@ impl Model {
         brep: Vec<u8>,
         message: &str,
     ) -> Result<(), String> {
-        let latest = self.latest();
-        let binding = |body| {
-            latest
-                .get(body)
-                .ok_or_else(|| format!("No step writes the body \"{body}\"."))
-        };
-        let (moving_producer, object) = binding(moving)?;
-        let (target_producer, target_object) = binding(target)?;
-        for (name, producer) in [(moving, moving_producer), (target, target_producer)] {
-            if matches!(
-                self.payload["diagnostics"][producer]["state"].as_str(),
-                Some("failed" | "needs_attention")
-            ) {
-                return Err(format!(
-                    "Repair the step that made \"{name}\" before placing this part."
-                ));
-            }
-        }
+        let (moving_producer, object) = &self.editable(moving)?;
+        let (target_producer, target_object) = &self.editable(target)?;
         let before = self.document();
         let id = new_feature_id();
         let name = self.unique_name("Align");
@@ -778,9 +773,7 @@ impl Model {
     ) -> Result<(), String> {
         let before = self.document();
         let latest = self.latest();
-        let (producer, object) = latest
-            .get(body)
-            .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
+        let (producer, object) = &self.editable(body)?;
         let id = new_feature_id();
         feature["id"] = json!(id);
         feature["name"] = json!(self.unique_name(label));
