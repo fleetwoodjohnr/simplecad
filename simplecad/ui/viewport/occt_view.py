@@ -232,8 +232,24 @@ def _pointer_capsule(pointer: int):
     return new_capsule(pointer, None, None)
 
 
+#: The OCCT wrappers macOS views are bound through. Each must outlive its
+#: binding: destroying one deletes the default VAO, FBO and textures it made in
+#: Qt's current context, which crashed the window when a temporary went away.
+_cocoa_wrappers: list = []  # ponytail: kept for the process, one per (re)bind; a few small objects
+
+
 def _current_occt_context():
     """Read Qt's current context in the type accepted by this OCP build."""
+    if sys.platform == "darwin":
+        # OCP's Cocoa SetWindow overload takes a typed NSOpenGLContext, not a
+        # capsule; OCCT reads Qt's bound context and returns it in that type.
+        from OCP.OpenGl import OpenGl_Context
+
+        wrapper = OpenGl_Context()
+        if not wrapper.Init(True):
+            return None
+        _cocoa_wrappers.append(wrapper)
+        return wrapper.RenderingContext()
     pointer = _current_gl_context_pointer()
     return _pointer_capsule(pointer) if pointer is not None else None
 
