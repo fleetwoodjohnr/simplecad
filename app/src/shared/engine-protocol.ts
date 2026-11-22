@@ -52,6 +52,8 @@ export interface ReferenceRepair {
   missingInputId: string
   replacementBody: number
   replacementFace?: number
+  /** A Combine's other lost tools, each with its replacement body: all are repaired together. */
+  more?: { missingInputId: string; replacementBody: number }[]
 }
 export interface SavedStepEdit { editStepId: string; changes: Record<string, string> }
 export type SavedStep = SavedStepEdit & { replay?: { index: number; name: string; kind: string } }
@@ -198,6 +200,7 @@ export interface StepInfo {
   state: string
   message?: string
   missingInput?: { name: string; objectId: string; face: boolean }
+  moreMissing?: { name: string; objectId: string; face: boolean }[]
   faceSettings?: Record<string, string>
   shapeSettings?: Record<string, string>
   matchingThread?: Record<string, string>
@@ -291,7 +294,9 @@ function isReferenceRepair(value: unknown): value is ReferenceRepair {
   if (!value || typeof value !== 'object') return false
   const edit = value as Partial<ReferenceRepair>
   return isName(edit.repairStepId) && isName(edit.missingInputId) && isIndex(edit.replacementBody) && edit.replacementBody < MAX_BODIES &&
-    (edit.replacementFace === undefined || (isIndex(edit.replacementFace) && edit.replacementFace <= 0xffffffff))
+    (edit.replacementFace === undefined || (isIndex(edit.replacementFace) && edit.replacementFace <= 0xffffffff)) &&
+    (edit.more === undefined || (Array.isArray(edit.more) && edit.more.length < MAX_BODIES && edit.more.every((more) =>
+      !!more && isName(more.missingInputId) && isIndex(more.replacementBody) && more.replacementBody < MAX_BODIES)))
 }
 
 function isSavedStep(value: unknown): value is SavedStep {

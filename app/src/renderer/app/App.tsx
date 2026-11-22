@@ -148,6 +148,8 @@ export function App() {
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
   const [repairBody, setRepairBody] = useState<number>()
+  /** Replacements for a Combine's other lost tools, by the lost object's ID. */
+  const [moreRepair, setMoreRepair] = useState<Record<string, number>>({})
   const [target, setTarget] = useState<number>()
   const [targetView, setTargetView] = useState<ViewFrame>()
   const readViewFrame = useRef<() => ViewFrame>(undefined)
@@ -172,6 +174,7 @@ export function App() {
   const connection = useRef(0)
   const repairStep = model?.steps.find((step) => step.id === repairing && !step.undone)
   const missingInput = repairStep?.missingInput
+  const moreMissing = repairStep?.moreMissing ?? []
   const faceStep = model?.steps.find((step) => step.id === editingFace && !step.undone)
   const shapeStep = model?.steps.find((step) => step.id === editingShape && !step.undone)
   const savedShape = shapeStep?.shapeSettings ? { kind: shapeStep.kind, name: shapeStep.name, values: shapeStep.shapeSettings } : undefined
@@ -1031,21 +1034,30 @@ export function App() {
               onSubmit={(event) => {
                 event.preventDefault()
                 const body = missingInput.face && selected !== undefined ? model.shape.faces[selected]?.body : repairBody
-                if (body === undefined || revision === undefined) return
+                if (body === undefined || revision === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined)) return
+                const more = moreMissing.map(({ objectId }) => ({ missingInputId: objectId, replacementBody: moreRepair[objectId] }))
                 mutate(() => repairInput(revision, { repairStepId: repairStep.id, missingInputId: missingInput.objectId,
-                  replacementBody: body, replacementFace: missingInput.face ? selected : undefined }))
+                  replacementBody: body, replacementFace: missingInput.face ? selected : undefined, ...(more.length ? { more } : {}) }))
               }}>
               <div className="font-semibold">Repair {repairStep.name}</div>
               {missingInput.face ? <p>Pick a target face to replace {missingInput.name}.</p> :
-                <label className="grid gap-1">Replacement tool
-                  <select value={repairBody ?? ''} className={inputCls} disabled={busy}
-                    onChange={(event) => setRepairBody(event.target.value === '' ? undefined : Number(event.target.value))}>
-                    <option value="">Select a body</option>
-                    {model.bodies.map((body, i) => body.empty ? null : <option key={i} value={i}>{body.name}</option>)}
-                  </select>
-                </label>}
+                [missingInput, ...moreMissing].map((input, i) => {
+                  const value = i === 0 ? repairBody : moreRepair[input.objectId]
+                  return <label key={input.objectId} className="grid gap-1">
+                    {moreMissing.length ? `Replacement for ${input.name}` : 'Replacement tool'}
+                    <select value={value ?? ''} className={inputCls} disabled={busy} onChange={(event) => {
+                      const chosen = event.target.value === '' ? undefined : Number(event.target.value)
+                      if (i === 0) setRepairBody(chosen)
+                      else setMoreRepair(({ [input.objectId]: _, ...rest }) => chosen === undefined ? rest : { ...rest, [input.objectId]: chosen })
+                    }}>
+                      <option value="">Select a body</option>
+                      {model.bodies.map((body, b) => body.empty ? null : <option key={b} value={b}>{body.name}</option>)}
+                    </select>
+                  </label>
+                })}
               <div className="flex gap-2">
-                <Btn size="sm" variant="primary" type="submit" disabled={busy || (missingInput.face ? selected === undefined : repairBody === undefined)}>Apply repair</Btn>
+                <Btn size="sm" variant="primary" type="submit" disabled={busy || (missingInput.face ? selected === undefined
+                  : repairBody === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined))}>Apply repair</Btn>
                 <Btn size="sm" type="button" disabled={busy} onClick={() => { setRepairing(undefined); setError('') }}>Cancel</Btn>
               </div>
             </form>}
@@ -1095,7 +1107,7 @@ export function App() {
                   {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import' || step.constructionPlane) && step.message &&
                     <p className="mt-1 break-words text-text-2">{step.message}</p>}
                   {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
-                    aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined) }}>Repair input</Btn>}
+                    aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }}>Repair input</Btn>}
                 </li>
               ))}
             </ol>

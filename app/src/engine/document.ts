@@ -40,7 +40,8 @@ export interface Project {
   steps(): Omit<StepInfo, 'undone'>[]
   historyDepth(): { undo: number; redo: number }
   moveHistory(offset: number, shown: { id?: string; name: string; shape: Shape }[]): State
-  repairInput(request: { stepId: string; missingId: string; replacementId?: string; replacementName: string; face?: number },
+  repairInput(request: { stepId: string; missingId: string; replacementId?: string; replacementName: string; face?: number
+    more?: { missingId: string; replacementId?: string; replacementName: string }[] },
     shown: { id?: string; name: string; shape: Shape }[]): State
   editStepSettings(stepId: string, changes: Record<string, string>, shown: { id?: string; name: string; shape: Shape }[]): State
 }
@@ -290,10 +291,10 @@ export class EngineDocument {
       step = { importName: edit.importName, importId: edit.importId, importFormat: edit.importFormat ?? 'step',
         against: this.shown(current.bodies).map(({ body }) => body) }
     } else if ('repairStepId' in edit) {
-      const { repairStepId, missingInputId, replacementBody, replacementFace } = edit
+      const { repairStepId, missingInputId, replacementBody, replacementFace, more } = edit
       const picked = replacementFace === undefined ? undefined : this.pick(replacementFace)
       if (picked && picked.body !== replacementBody) throw new Error('Select a face of the replacement body.')
-      step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face }
+      step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face, ...(more?.length ? { more } : {}) }
     } else if ('editStepId' in edit) {
       step = this.resolveStepSettings(edit)
     } else if ('sketchDraft' in edit) {
@@ -501,8 +502,13 @@ export class EngineDocument {
     if ('repairStepId' in step) {
       const replacement = bodies[step.replacementBody]
       if (!replacement?.shape) throw new Error('Select a replacement body with geometry.')
+      const more = step.more?.map(({ missingInputId, replacementBody }) => {
+        const body = bodies[replacementBody]
+        if (!body?.shape) throw new Error('Select a replacement body with geometry for each missing input.')
+        return { missingId: missingInputId, replacementId: body.id, replacementName: body.name }
+      })
       return this.rebuiltState(project.repairInput({ stepId: step.repairStepId, missingId: step.missingInputId,
-        replacementId: replacement.id, replacementName: replacement.name, face: step.replacementFace }, this.shapes(bodies)))
+        replacementId: replacement.id, replacementName: replacement.name, face: step.replacementFace, more }, this.shapes(bodies)))
     }
     if ('importId' in step) {
       const data = sources.get(step.importId)

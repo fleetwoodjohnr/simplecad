@@ -224,6 +224,8 @@ pub struct Step {
     pub state: String,
     pub message: Option<String>,
     pub missing_input: Option<MissingInput>,
+    /// A Combine's other lost tools, repaired together with `missing_input`.
+    pub more_missing: Vec<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
     pub matching_thread: Option<HashMap<String, String>>,
@@ -244,6 +246,15 @@ pub struct ReferenceRepair {
     pub replacement_id: Option<String>,
     pub replacement_name: String,
     pub face: Option<u32>,
+    /// A Combine's other lost tools, each with its replacement body's ID.
+    pub more: Option<Vec<MoreRepair>>,
+}
+
+#[napi(object, object_to_js = false)]
+pub struct MoreRepair {
+    pub missing_id: String,
+    pub replacement_id: Option<String>,
+    pub replacement_name: String,
 }
 
 #[napi(object, object_from_js = false)]
@@ -909,6 +920,15 @@ impl Project {
                     object_id: reference.object_id,
                     face: reference.face,
                 }),
+                more_missing: step
+                    .more_missing
+                    .into_iter()
+                    .map(|reference| MissingInput {
+                        name: reference.name,
+                        object_id: reference.object_id,
+                        face: reference.face,
+                    })
+                    .collect(),
                 face_settings: step.face_settings,
                 shape_settings: step.shape_settings,
                 matching_thread: step.matching_thread,
@@ -957,25 +977,39 @@ impl Project {
         request: ReferenceRepair,
         shown: Vec<ShownBody>,
     ) -> Result<OpenedProject> {
-        let body_id = request
-            .replacement_id
-            .as_deref()
-            .or_else(|| {
+        // A body made this session may have no ID on the window's side yet: find it by name.
+        let body_id = |id: Option<&str>, name: &str| {
+            id.or_else(|| {
                 self.model.payload["bodies"]
                     .as_array()?
                     .iter()
-                    .find(|body| body["name"] == request.replacement_name)?["id"]
+                    .find(|body| body["name"] == name)?["id"]
                     .as_str()
             })
-            .ok_or_else(|| Error::from_reason("Select an existing replacement body."))?;
+            .map(String::from)
+            .ok_or_else(|| Error::from_reason("Select an existing replacement body."))
+        };
+        let more = request
+            .more
+            .unwrap_or_default()
+            .into_iter()
+            .map(|repair| {
+                Ok((
+                    repair.missing_id,
+                    body_id(repair.replacement_id.as_deref(), &repair.replacement_name)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let body_id = body_id(request.replacement_id.as_deref(), &request.replacement_name)?;
         let old_shapes = self.shown_shapes(shown);
         let mut model = self.model.clone();
         let report = model
             .repair_reference(
                 &request.step_id,
                 &request.missing_id,
-                body_id,
+                &body_id,
                 request.face,
+                &more,
                 &self.original,
                 &old_shapes,
             )

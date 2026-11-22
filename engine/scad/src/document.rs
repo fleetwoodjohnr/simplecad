@@ -29,6 +29,8 @@ pub struct StepSummary {
     pub state: String,
     pub message: Option<String>,
     pub missing_input: Option<MissingInput>,
+    /// A Combine's other lost tools: a repair replaces them all at once, or the step cannot rebuild.
+    pub more_missing: Vec<MissingInput>,
     pub face_settings: Option<HashMap<String, String>>,
     pub shape_settings: Option<HashMap<String, String>>,
     pub matching_thread: Option<HashMap<String, String>>,
@@ -404,8 +406,13 @@ impl Model {
                             .map(String::from)
                     },
                     missing_input: (state == "needs_attention")
-                        .then(|| missing_reference(f, &ids))
+                        .then(|| missing_references(f, &ids).into_iter().next())
                         .flatten(),
+                    more_missing: if state == "needs_attention" {
+                        missing_references(f, &ids).into_iter().skip(1).collect()
+                    } else {
+                        Vec::new()
+                    },
                     face_settings: edit_values(
                         f,
                         face_edit_fields(&f["type"]).or_else(|| body_edit_fields(&f["type"])),
@@ -485,12 +492,16 @@ impl Model {
 
     /// Rebind a deleted Combine tool or Align target to a selected object.
     /// The original feature ID, unrelated inputs and its undo branch survive.
+    /// `more`: replacements for a Combine's other lost tools, as (missing object ID, body ID); every lost
+    /// input has to be replaced in the one repair, or the step still cannot rebuild.
+    #[allow(clippy::too_many_arguments)]
     pub fn repair_reference(
         &mut self,
         step_id: &str,
         missing_id: &str,
         body_id: &str,
         face: Option<u32>,
+        more: &[(String, String)],
         original: &[u8],
         shown: &HashMap<String, crate::rebuild::Shape>,
     ) -> Result<crate::rebuild::Report, String> {
@@ -501,9 +512,37 @@ impl Model {
             .flatten()
             .filter_map(|f| f["id"].as_str())
             .collect();
-        let lost = missing_reference(&updated, &ids)
-            .filter(|reference| reference.object_id == missing_id)
-            .ok_or("This step's missing input has changed.")?;
+        let missing = missing_references(&updated, &ids);
+        if missing.len() != more.len() + 1 {
+            return Err("Choose a replacement for each missing input.".into());
+        }
+        let mut chosen = HashSet::new();
+        for (missing_id, body_id) in std::iter::once((missing_id, body_id)).chain(
+            more.iter()
+                .map(|(missing, body)| (missing.as_str(), body.as_str())),
+        ) {
+            if !chosen.insert(body_id) {
+                return Err("Choose a different body for each missing input.".into());
+            }
+            let lost = missing
+                .iter()
+                .find(|reference| reference.object_id == missing_id)
+                .ok_or("This step's missing input has changed.")?;
+            self.replace_input(&mut updated, &ids, lost, body_id, face, shown)?;
+        }
+        self.rebuild_recipe(position, updated, "Repair input", original, shown)
+    }
+
+    /// One lost input of `updated`, rebound to the body `body_id` (and its face `face`, for an Align).
+    fn replace_input(
+        &self,
+        updated: &mut Value,
+        ids: &HashSet<&str>,
+        lost: &MissingInput,
+        body_id: &str,
+        face: Option<u32>,
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<(), String> {
         let body = self.payload["bodies"]
             .as_array()
             .into_iter()
@@ -520,7 +559,7 @@ impl Model {
                 alias != &lost.name && (alias == name || binding["object_id"] == body_id)
             })
         });
-        if producer == step_id || already_bound {
+        if Some(producer) == updated["id"].as_str() || already_bound {
             return Err("Select a body that is not already an input to this step.".into());
         }
         if lost.face {
@@ -538,7 +577,7 @@ impl Model {
             }});
             crate::align::reframe_target(&mut updated["inputs"], shape, index)?;
         } else {
-            let key = tools_key(&updated);
+            let key = tools_key(updated);
             let value = &mut updated["inputs"][key];
             let tools = match value {
                 Value::Array(tools) => tools.as_mut_slice(),
@@ -570,8 +609,7 @@ impl Model {
             name.into(),
             json!({"feature_id": producer, "object_id": body_id}),
         );
-
-        self.rebuild_recipe(position, updated, "Repair input", original, shown)
+        Ok(())
     }
 
     fn recipe(&self, step_id: &str) -> Result<(usize, Value), String> {
@@ -1908,11 +1946,16 @@ fn lost_binding(step: &Value, ids: &HashSet<&str>) -> bool {
     })
 }
 
-fn missing_reference(step: &Value, available: &HashSet<&str>) -> Option<MissingInput> {
+/// The inputs a repair can replace: an Align's lost target face, or every lost tool of a Combine
+/// (all of them together, since the step cannot rebuild while one is still missing).
+fn missing_references(step: &Value, available: &HashSet<&str>) -> Vec<MissingInput> {
     let face = step["type"] == "align";
-    let sources = match step["type"].as_str()? {
-        "align" => vec![step["inputs"]["target_face"]["__ref__"]["body"].as_str()?],
-        "boolean" => {
+    let sources: Vec<&str> = match step["type"].as_str() {
+        Some("align") => step["inputs"]["target_face"]["__ref__"]["body"]
+            .as_str()
+            .into_iter()
+            .collect(),
+        Some("boolean") => {
             let tools = &step["inputs"][tools_key(step)];
             tools
                 .as_array()
@@ -1922,24 +1965,37 @@ fn missing_reference(step: &Value, available: &HashSet<&str>) -> Option<MissingI
                 .filter_map(tool_name)
                 .collect()
         }
-        _ => return None,
+        _ => return Vec::new(),
     };
-    let bindings = step["bindings"].as_object()?;
-    // This repair changes a single input and must leave a buildable step.
-    let mut lost = bindings.iter().filter(|(_, binding)| {
-        !binding["feature_id"]
-            .as_str()
-            .is_some_and(|producer| available.contains(producer))
-    });
-    let (name, binding) = lost.next()?;
-    if lost.next().is_some() || !sources.contains(&name.as_str()) {
-        return None;
+    let Some(bindings) = step["bindings"].as_object() else {
+        return Vec::new();
+    };
+    let lost: Vec<_> = bindings
+        .iter()
+        .filter(|(_, binding)| {
+            !binding["feature_id"]
+                .as_str()
+                .is_some_and(|producer| available.contains(producer))
+        })
+        .collect();
+    // Only what a repair replaces: an Align's single target, or a Combine's tools.
+    if lost.is_empty()
+        || (face && lost.len() > 1)
+        || lost
+            .iter()
+            .any(|(name, _)| !sources.contains(&name.as_str()))
+    {
+        return Vec::new();
     }
-    Some(MissingInput {
-        name: name.clone(),
-        object_id: binding["object_id"].as_str()?.into(),
-        face,
-    })
+    lost.into_iter()
+        .filter_map(|(name, binding)| {
+            Some(MissingInput {
+                name: name.clone(),
+                object_id: binding["object_id"].as_str()?.into(),
+                face,
+            })
+        })
+        .collect()
 }
 
 fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {

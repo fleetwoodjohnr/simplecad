@@ -181,12 +181,12 @@ fn a_deleted_cutter_can_be_replaced_by_object_id_and_the_repair_is_undoable() {
     let before = model.document();
     assert!(
         model
-            .repair_reference(&cut_id, &old_peg, &old_peg, None, ORIGINAL, &shown)
+            .repair_reference(&cut_id, &old_peg, &old_peg, None, &[], ORIGINAL, &shown)
             .is_err()
     );
     assert_eq!(model.document(), before);
     let repaired = model
-        .repair_reference(&cut_id, &old_peg, &new_id, None, ORIGINAL, &shown)
+        .repair_reference(&cut_id, &old_peg, &new_id, None, &[], ORIGINAL, &shown)
         .unwrap();
     assert!(!repaired.failures.contains_key(&cut_id));
     let plate = repaired
@@ -274,7 +274,15 @@ fn a_deleted_align_target_can_be_replaced_with_a_picked_face() {
             .face
     );
     let repaired = model
-        .repair_reference(&id, &missing, &id_for_body, Some(index), ORIGINAL, &shown)
+        .repair_reference(
+            &id,
+            &missing,
+            &id_for_body,
+            Some(index),
+            &[],
+            ORIGINAL,
+            &shown,
+        )
         .unwrap();
     assert!(!repaired.failures.contains_key(&id));
     let saved = model.save(ORIGINAL).unwrap();

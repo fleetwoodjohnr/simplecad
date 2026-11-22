@@ -845,3 +845,80 @@ fn an_arrangement_spaces_bodies_evenly_along_an_axis_and_edits_its_gap() {
             .is_err()
     );
 }
+
+/// Spondge Holder's Combine5 lost both of its tools. A repair replaces every lost tool at once: one
+/// replacement alone would leave a step that still cannot rebuild.
+#[test]
+fn a_combine_that_lost_two_tools_is_repaired_with_both_replacements_at_once() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let mut shown = HashMap::new();
+    shown.insert(
+        model.payload["bodies"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        Rc::new(solid),
+    );
+    let make = |model: &mut Model, shown: &mut HashMap<String, Shape>, x: &str| {
+        let (name, shape) = scad::rebuild::create_primitive(
+            model,
+            "box",
+            json!({"width": "2 mm", "depth": "2 mm", "height": "20 mm", "x": x, "y": "4 mm", "z": "-5 mm"}),
+        )
+        .unwrap();
+        let id = model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        shown.insert(id.clone(), Rc::new(shape));
+        (name, id)
+    };
+    let (first, _) = make(&mut model, &mut shown, "1 mm");
+    let (second, _) = make(&mut model, &mut shown, "6 mm");
+    let inputs = json!({"tools": [first, second], "operation": "cut", "keep_tool": true});
+    model
+        .add_body_operation("boolean", "Box", inputs, &[], &shown)
+        .unwrap();
+    let (_, spare_a) = make(&mut model, &mut shown, "1 mm");
+    let (_, spare_b) = make(&mut model, &mut shown, "6 mm");
+    let combine = model.payload["features"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|f| f["type"] == "boolean")
+        .unwrap();
+    for tool in [&first, &second] {
+        combine["bindings"][tool]["feature_id"] = json!("");
+    }
+    let id = combine["id"].as_str().unwrap().to_owned();
+    let step = model.steps().into_iter().find(|s| s.id == id).unwrap();
+    assert_eq!(step.state, "needs_attention");
+    let missing = step.missing_input.unwrap();
+    assert_eq!(step.more_missing.len(), 1, "both lost tools are offered");
+    let other = &step.more_missing[0];
+    let only_one =
+        model.repair_reference(&id, &missing.object_id, &spare_a, None, &[], &[], &shown);
+    assert_eq!(
+        only_one.err().as_deref(),
+        Some("Choose a replacement for each missing input.")
+    );
+    let both = [(other.object_id.clone(), spare_b.clone())];
+    let repaired = model
+        .repair_reference(&id, &missing.object_id, &spare_a, None, &both, &[], &shown)
+        .unwrap();
+    assert!(!repaired.failures.contains_key(&id));
+    // Two 2 × 2 mm columns through the 10 mm cube: 1000 - 2 × 40.
+    let cube = repaired.bodies.iter().find(|b| b.name == "Box").unwrap();
+    assert!((occt::volume(cube.shape.as_ref().unwrap()) - 920.0).abs() < 1e-6);
+    let step = model.steps().into_iter().find(|s| s.id == id).unwrap();
+    assert_eq!(
+        (step.state.as_str(), step.missing_input.is_none()),
+        ("ok", true)
+    );
+}
