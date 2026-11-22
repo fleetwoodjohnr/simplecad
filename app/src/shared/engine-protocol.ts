@@ -261,6 +261,7 @@ export type RendererCommand =
   | ({ op: 'plate'; revision: number } & PlateEdit)
   | { op: 'health'; revision: number }
   | { op: 'calibrate' }
+  | { op: 'calibrationModel' }
   | ({ op: 'applyConstruction'; revision: number } & ConstructionEdit)
   | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
   | ({ op: 'applySectionReplace' | 'previewSectionReplace'; revision: number } & SectionReplaceEdit)
@@ -557,7 +558,7 @@ function isMeasurePick(value: unknown): value is MeasurePick {
 export function checkRendererRequest(data: unknown): RendererRequest {
   const m = data as Record<string, unknown> | null
   if (!m || typeof m !== 'object' || !isIndex(m.id)) throw new Error('Malformed engine request.')
-  if (m.op === 'model' || m.op === 'crash' || m.op === 'calibrate' ||
+  if (m.op === 'model' || m.op === 'crash' || m.op === 'calibrate' || m.op === 'calibrationModel' ||
       (m.op === 'restore' && isCheckpoint(m.checkpoint) && (m.data === undefined || isData(m.data)) &&
         (m.imports === undefined || isImportList(m.imports))) ||
       (isIndex(m.revision) && (

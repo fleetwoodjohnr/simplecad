@@ -20,6 +20,7 @@ interface Addon {
   measureShapes(parts: ReturnType<EngineDocument['measurementPicks']>): Measurement[]
   bodyHealth(shape: Shape, minFeature: number): Omit<BodyHealth, 'name'>
   setCalibration(profile?: string): void
+  calibrationModel(): Buffer
   crash(): void
 }
 
@@ -96,6 +97,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
       case 'calibrate': calibrate(); result = ''; break
+      case 'calibrationModel': result = new Uint8Array(addon.calibrationModel()); break
       case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape, defaultPrinter.minFeature) })); break
       case 'export': result = new Uint8Array(req.format === 'step'
         ? addon.exportStep(document.exportShapes(req.revision).map(({ shape }) => shape))

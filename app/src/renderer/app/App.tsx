@@ -4,7 +4,7 @@ import type { BodyHealth, BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOp
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -1027,7 +1027,15 @@ export function App() {
             {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
               busy={busy} onPlate={(how) => { if (revision !== undefined) mutate(() => placeOnPlate(revision, how)) }}
               onFit={() => setFitPanel(true)} onClose={() => setPrintCheck(false)} />}
-            {fitPanel && <FitPanel busy={busy} onClose={() => setFitPanel(false)} onSave={async (measured) => {
+            {fitPanel && <FitPanel busy={busy} onClose={() => setFitPanel(false)} onTestPrint={() => {
+              if (revision === undefined) return
+              mutate(async () => {
+                setNotice('Building the calibration model…')
+                const next = await importModel(revision, { importName: 'Calibration model', data: await calibrationModel(), importFormat: 'step' })
+                setNotice('8 test fits at 0.05–0.50 mm on a 10 mm pin. Print both pieces, then enter the first clearance that fits.')
+                return next
+              }, true)
+            }} onSave={async (measured) => {
               try {
                 await window.simplecad.saveCalibration(measured)
                 await reloadCalibration()

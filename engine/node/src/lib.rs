@@ -1175,6 +1175,20 @@ pub fn set_calibration(profile: Option<String>) -> Result<()> {
     scad::calibration::set(profile.as_deref()).map_err(Error::from_reason)
 }
 
+/// SimpleCAD 0.4's calibration test print (pins and labelled plate) as STEP, each piece named, to import.
+#[napi]
+pub fn calibration_model() -> Result<Buffer> {
+    let pieces = scad::calibration::test_print().map_err(Error::from_reason)?;
+    let mut shapes = ffi::shapes_new();
+    for (_, shape) in &pieces {
+        ffi::shapes_push(shapes.pin_mut(), shape);
+    }
+    let names: Vec<String> = pieces.into_iter().map(|(name, _)| name).collect();
+    ffi::write_named_step(&shapes, &names)
+        .map(Buffer::from)
+        .map_err(reason)
+}
+
 /// The B-rep half of the print check, for one body.
 #[napi]
 pub fn body_health(shape: &Shape, min_feature: f64) -> Result<BodyHealth> {

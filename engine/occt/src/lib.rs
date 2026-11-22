@@ -344,6 +344,8 @@ pub mod ffi {
         -> Result<MeshImport>;
         /// Write one analytic STEP transfer root per object in order, as AP214 in mm.
         fn write_step(shapes: &Shapes) -> Result<Vec<u8>>;
+        /// `write_step` with each shape's product, and so its imported body, named.
+        fn write_named_step(shapes: &Shapes, names: &[String]) -> Result<Vec<u8>>;
         /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
         /// the Python app places a cached "located" output).
         fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;

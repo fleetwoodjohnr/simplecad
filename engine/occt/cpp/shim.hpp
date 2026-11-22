@@ -130,6 +130,7 @@ rust::Vec<ImportedBody> read_brep_parts(rust::Slice<const uint8_t> bytes, rust::
 MeshImport import_mesh(rust::Slice<const double> points, rust::Slice<const uint32_t> triangles,
                        rust::Slice<const uint32_t> boundaries);
 rust::Vec<uint8_t> write_step(const Shapes &shapes);
+rust::Vec<uint8_t> write_named_step(const Shapes &shapes, rust::Slice<const rust::String> names);
 std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> matrix);
 double volume(const Shape &shape);
 double surface_area(const Shape &shape);

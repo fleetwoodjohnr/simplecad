@@ -13,6 +13,7 @@
 #include <STEPControl_Writer.hxx>
 #include <StepBasic_Product.hxx>
 #include <StepBasic_ProductDefinition.hxx>
+#include <StepData_StepModel.hxx>
 #include <StepBasic_ProductDefinitionFormation.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopExp_Explorer.hxx>
@@ -134,7 +135,11 @@ rust::Vec<ImportedBody> read_step(rust::Slice<const uint8_t> bytes, rust::Str fa
   return bodies;
 }
 
-rust::Vec<uint8_t> write_step(const Shapes &shapes) {
+rust::Vec<uint8_t> write_step(const Shapes &shapes) { return write_named_step(shapes, {}); }
+
+// Each shape's STEP product named by `names`, in order (the translator's own name past their end), which
+// read_step takes as the body's name.
+rust::Vec<uint8_t> write_named_step(const Shapes &shapes, rust::Slice<const rust::String> names) {
   if (shapes.list.IsEmpty()) {
     throw std::runtime_error("There are no bodies to export.");
   }
@@ -148,10 +153,28 @@ rust::Vec<uint8_t> write_step(const Shapes &shapes) {
   DESTEP_Parameters parameters;
   parameters.WriteUnit = UnitsMethods_LengthUnit_Millimeter;
   parameters.WriteSchema = DESTEP_Parameters::WriteMode_StepSchema_AP214IS;
-  parameters.WriteProductName = "Open CASCADE STEP translator";
+  size_t index = 0;
   for (const auto &shape : shapes.list) {
+    parameters.WriteProductName = index < names.size() ? std::string(names[index]) : "Open CASCADE STEP translator";
+    ++index;
     if (writer.Transfer(shape, STEPControl_AsIs, parameters) != IFSelect_RetDone) {
       throw std::runtime_error("A body could not be converted to STEP.");
+    }
+  }
+  // The translator numbers each product ("Name 1", "Name 2"); give each shape exactly its name instead.
+  const auto model = writer.Model();
+  std::vector<occ::handle<StepBasic_Product>> products;
+  for (int i = 1; !model.IsNull() && i <= model->NbEntities(); ++i) {
+    const auto product = occ::down_cast<StepBasic_Product>(model->Value(i));
+    if (!product.IsNull()) {
+      products.push_back(product);
+    }
+  }
+  if (!names.empty() && products.size() == names.size()) {
+    for (size_t i = 0; i < names.size(); ++i) {
+      const occ::handle<TCollection_HAsciiString> name = new TCollection_HAsciiString(std::string(names[i]).c_str());
+      products[i]->SetName(name);
+      products[i]->SetId(name);
     }
   }
   std::ostringstream stream;

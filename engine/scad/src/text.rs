@@ -171,3 +171,32 @@ pub(crate) fn build(ctx: &Context<'_>) -> Result<Shape, StepError> {
     ctx.set_message(format!("{action} {text:?} in {}", result.font));
     Ok(Rc::new(result.shape))
 }
+
+/// Raised sans-serif `text` on the plane `face` of `body`, centred `offset` along the plane from its centre.
+pub(crate) fn raised_label(
+    body: &occt::Shape,
+    face: &PlaneFrame,
+    text: &str,
+    height: f64,
+    depth: f64,
+    offset: [f64; 2],
+) -> Result<occt::UniquePtr<occt::Shape>, String> {
+    let settings = TextSpec {
+        height,
+        depth,
+        offset_x: offset[0],
+        offset_y: offset[1],
+        rotation: 0.0,
+        raised: true,
+    };
+    occt::face_text(
+        body,
+        face,
+        &characters(text).map_err(|error| error.message)?,
+        &fonts(SANS),
+        "sans-serif",
+        &settings,
+    )
+    .map(|result| result.shape)
+    .map_err(|error| error.what().to_string())
+}
