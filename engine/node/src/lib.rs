@@ -675,7 +675,14 @@ impl Project {
     ) -> Result<OpenedProject> {
         let mut model = self.model.clone();
         let report = model
-            .add_edge_finish(&kind, &body, &edges, &value, &self.original, &self.shown_shapes(shown))
+            .add_edge_finish(
+                &kind,
+                &body,
+                &edges,
+                &value,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }
@@ -981,6 +988,9 @@ impl Project {
 pub struct MeasureSelection<'a> {
     pub shape: ClassInstance<'a, Shape>,
     pub face: Option<u32>,
+    pub edge: Option<u32>,
+    /// A vertex, by where it was picked: the body's nearest vertex is measured.
+    pub point: Option<Vec<f64>>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -992,10 +1002,30 @@ pub struct Measurement {
 
 #[napi]
 pub fn measure_shapes(picks: Vec<MeasureSelection>) -> Result<Vec<Measurement>> {
-    let choices: Vec<_> = picks
+    let choices = picks
         .iter()
-        .map(|pick| (&**pick.shape.inner, pick.face))
-        .collect();
+        .map(|pick| {
+            let shape = &**pick.shape.inner;
+            let choice = match (pick.face, pick.edge, &pick.point) {
+                (Some(face), ..) => scad::measure::Pick::Face(face),
+                (_, Some(edge), _) => scad::measure::Pick::Edge(edge),
+                (_, _, Some(point)) if point.len() == 3 => {
+                    let distance = |center: &[f64; 3]| {
+                        (0..3).map(|i| (center[i] - point[i]).powi(2)).sum::<f64>()
+                    };
+                    let vertices = occt::vertex_fingerprints(shape).map_err(reason)?;
+                    let nearest = (0..vertices.len())
+                        .min_by(|&a, &b| {
+                            distance(&vertices[a].center).total_cmp(&distance(&vertices[b].center))
+                        })
+                        .ok_or_else(|| Error::from_reason("This body has no vertices."))?;
+                    scad::measure::Pick::Vertex(nearest as u32)
+                }
+                _ => scad::measure::Pick::Body,
+            };
+            Ok((shape, choice))
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(scad::measure::measure(&choices)
         .map_err(reason)?
         .into_iter()

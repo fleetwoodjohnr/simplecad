@@ -152,3 +152,39 @@ test('dragging the face handle sweeps a preview with its distance, and Escape ca
   await expect(steps).toHaveText(['Box', 'Pull'])
   await expect(status).not.toHaveText(/24000 mm³/)
 })
+
+test('measures an edge it is clicked on, and the distance between two corners', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const canvas = page.locator('canvas')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await toolbar.getByRole('button', { name: 'Measure', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Measure' })
+  const reading = (label: string) => panel.getByText(label, { exact: true }).locator('..').locator('dd')
+  const anchors = async () => {
+    await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
+    await page.waitForTimeout(200)
+    const box = (await canvas.boundingBox())!
+    return (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as ([number, number] | null)[])
+      .filter((point): point is [number, number] => !!point && point[0] > box.x + 20 && point[0] < box.x + box.width - 20 &&
+        point[1] > box.y + 20 && point[1] < box.y + box.height - 20)
+  }
+
+  await panel.getByLabel('Measure selection').selectOption('edge')
+  const [first] = await anchors()
+  await page.mouse.click(...first)
+  await expect(reading('Length')).toHaveText(/^(20|30|40) mm$/)
+  await expect(canvas).toHaveAttribute('data-picked-edges', '1')
+
+  await panel.getByLabel('Measure selection').selectOption('vertex')
+  await panel.getByRole('button', { name: /^Remove / }).click()
+  const [a, b] = await anchors()
+  await page.mouse.click(a[0], a[1])
+  await expect(reading('Position')).toHaveText(/^-?[\d.]+, -?[\d.]+, -?[\d.]+ mm$/)
+  await page.mouse.click(b[0], b[1])
+  await expect(panel.getByRole('list', { name: 'Measured items' }).locator('li')).toHaveCount(2)
+  // Two corners of the 40 × 30 × 20 box are apart by an edge, a face diagonal or the body diagonal.
+  const apart = Number((await reading('Minimum distance').innerText()).split(' ')[0])
+  const possible = [20, 30, 40, Math.hypot(20, 30), Math.hypot(20, 40), Math.hypot(30, 40), Math.hypot(20, 30, 40)]
+  expect(possible.some((distance) => Math.abs(distance - apart) < 0.001)).toBe(true)
+})

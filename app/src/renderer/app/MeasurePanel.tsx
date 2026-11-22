@@ -21,10 +21,13 @@ export function MeasurePanel({ kind, selections, readings, loading, displayUnit,
     <label className="grid gap-1">Measure selection
       <select className={inputCls} value={kind} onChange={(event) => onKind(event.target.value as MeasurePick['kind'])}>
         <option value="face">Faces</option>
+        <option value="edge">Edges</option>
+        <option value="vertex">Vertices</option>
         <option value="body">Bodies</option>
       </select>
     </label>
-    {selections.length === 0 ? <p>{kind === 'face' ? 'Select faces in the view or the face list.' : 'Select bodies in the view or the body list.'}</p> :
+    {selections.length === 0 ? <p>{{ face: 'Select faces in the view or the face list.', edge: 'Click edges in the view.',
+      vertex: 'Click near the corners to measure.', body: 'Select bodies in the view or the body list.' }[kind]}</p> :
       <ul aria-label="Measured items" className="grid gap-1">
         {selections.map(({ key, label }) => <li key={key} className="flex min-w-0 items-center justify-between gap-2">
           <span className="min-w-0 truncate" title={label}>{label}</span>
@@ -39,7 +42,7 @@ export function MeasurePanel({ kind, selections, readings, loading, displayUnit,
         return <div key={label} className="flex justify-between gap-2">
           <dt className="font-medium">{label}</dt>
           <dd className="text-right tabular-nums">
-            {formatted.join(['Normal', 'Axis', 'Centre', 'Centre of mass'].includes(label) ? ', ' : ' × ')}
+            {formatted.join(['Normal', 'Axis', 'Centre', 'Centre of mass', 'Position'].includes(label) ? ', ' : ' × ')}
             {suffix && ` ${suffix}`}
           </dd>
         </div>

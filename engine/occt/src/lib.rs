@@ -405,6 +405,8 @@ pub mod ffi {
         fn transform_shape(shape: &Shape, trsf: &Trsf, copy: bool) -> Result<UniquePtr<Shape>>;
         /// Face `face` (a `faces` index) on its own.
         fn sub_face(shape: &Shape, face: u32) -> Result<UniquePtr<Shape>>;
+        fn sub_edge(shape: &Shape, edge: u32) -> Result<UniquePtr<Shape>>;
+        fn sub_vertex(shape: &Shape, vertex: u32) -> Result<UniquePtr<Shape>>;
         fn plane_frame(face: &Shape) -> Result<PlaneFrame>;
         fn cylinder_data(face: &Shape) -> Result<CylinderData>;
         /// `align._x_extent`: the X range of the exact optimal bounding box.

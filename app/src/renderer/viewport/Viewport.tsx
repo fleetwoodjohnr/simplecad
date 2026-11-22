@@ -26,7 +26,7 @@ interface Props {
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
-  onPickEdge?: (edge: number) => void
+  onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
 }
 
@@ -330,13 +330,13 @@ export function Viewport(props: Props) {
       const depth = camera.position.distanceTo(controls.target)
       ray.params.Line.threshold = depth * Math.tan((camera.fov * Math.PI) / 360) * 2 * 6 / Math.max(1, rect.height)
       const hit = ray.intersectObject(edges)[0]
-      return hit?.index === undefined ? undefined : edgeOf(shape, hit.index / 2)
+      return hit?.index === undefined ? undefined : { edge: edgeOf(shape, hit.index / 2), point: hit.point.toArray() as Vec3 }
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
       if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
-        const edge = edgeAt(e.clientX, e.clientY)
-        if (edge !== undefined) current.current.onPickEdge(edge)
+        const hit = edgeAt(e.clientX, e.clientY)
+        if (hit) current.current.onPickEdge(hit.edge, hit.point)
         return
       }
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||

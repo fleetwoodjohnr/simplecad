@@ -68,7 +68,8 @@ function faceLabel(face: FaceInfo, bodies: BodyInfo[], unit: DisplayUnit) {
 }
 
 function pickKey(pick: MeasurePick) {
-  return pick.kind === 'body' ? `body:${pick.body}` : `face:${pick.face}`
+  return pick.kind === 'body' ? `body:${pick.body}` : pick.kind === 'face' ? `face:${pick.face}` :
+    pick.kind === 'edge' ? `edge:${pick.edge}` : `vertex:${pick.body}:${pick.point.map((v) => v.toFixed(4))}`
 }
 
 function StackOptions({ settings, onChange }: { settings: StackSettings; onChange: (next: StackSettings) => void }) {
@@ -379,6 +380,7 @@ export function App() {
   const cancelShapePanel = () => { setShapePanel(false); setEditingShape(undefined); clearPreview() }
   const cancelTransform = () => { setTransformKind(undefined); clearPreview() }
   const closeBodyTool = () => { setBodyTool(undefined); clearPreview() }
+  const measuredEdges = useMemo(() => measurePicks.flatMap((pick) => pick.kind === 'edge' ? [pick.edge] : []), [measurePicks])
   const closeEdgeTool = () => { setEdgeTool(undefined); setEdgePicks([]); clearPreview() }
   /** The body a display edge belongs to. */
   const edgeBody = (edge: number) => model?.shape.ranges.find((range) => edge >= range.edges[0] && edge < range.edges[1])?.body
@@ -387,6 +389,17 @@ export function App() {
     clearPreview()
     setEdgePicks((picks) => picks.includes(edge) ? picks.filter((pick) => pick !== edge)
       : picks.length && edgeBody(picks[0]) !== edgeBody(edge) ? [edge] : [...picks, edge])
+  }
+  /** In Measure, an edge itself, or the corner at the end of it nearest the click. */
+  const pickMeasureEdge = (edge: number, point: Vec3) => {
+    const shape = model?.shape
+    const body = edgeBody(edge)
+    if (!shape || body === undefined) return
+    if (measureKind === 'edge') return pickMeasure({ kind: 'edge', edge })
+    const ends = [shape.edgeStart[edge], shape.edgeStart[edge + 1] - 1].map((p) =>
+      [0, 1, 2].map((axis) => shape.edgePoints[p * 3 + axis]) as Vec3)
+    const distance = (end: Vec3) => end.reduce((sum, value, axis) => sum + (value - point[axis]) ** 2, 0)
+    pickMeasure({ kind: 'vertex', body, point: distance(ends[0]) <= distance(ends[1]) ? ends[0] : ends[1] })
   }
   /** Every real edge of the picked body, or of the only visible one. */
   const pickAllEdges = () => {
@@ -723,7 +736,9 @@ export function App() {
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
             canPull={canPullFace}
-            onPickEdge={edgeTool && !edgeTool.editing && ready ? pickEdge : undefined} pickedEdges={edgePicks}
+            onPickEdge={edgeTool && !edgeTool.editing && ready ? pickEdge
+              : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge : undefined}
+            pickedEdges={edgeTool ? edgePicks : measuredEdges}
             overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
               canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
               onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
@@ -788,6 +803,8 @@ export function App() {
             {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
               selections={measurePicks.map((pick) => ({
                 key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
+                  pick.kind === 'edge' ? `${model.bodies[edgeBody(pick.edge) ?? -1]?.name ?? 'Body'} · Edge ${pick.edge + 1}` :
+                  pick.kind === 'vertex' ? `${model.bodies[pick.body]?.name ?? 'Body'} · Corner ${pick.point.map((v) => format.format(displayLength(v, unit))).join(', ')}` :
                   model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies, unit) : 'Face'
               }))}
               onKind={setMeasureKind} onRemove={(key) => setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}

@@ -8,18 +8,47 @@ pub struct Reading {
     pub unit: &'static str,
 }
 
+/// What of a body is measured: all of it, or one face, edge or vertex (in `TopExp::MapShapes` order).
+#[derive(Clone, Copy)]
+pub enum Pick {
+    Body,
+    Face(u32),
+    Edge(u32),
+    Vertex(u32),
+}
+
 struct Selected<'a> {
     body: &'a Shape,
+    pick: Pick,
     face: Option<occt::UniquePtr<Shape>>,
     index: Option<u32>,
+    /// The picked edge or vertex.
+    part: Option<occt::UniquePtr<Shape>>,
 }
 
 impl Selected<'_> {
     fn shape(&self) -> &Shape {
-        self.face.as_deref().unwrap_or(self.body)
+        self.face
+            .as_deref()
+            .or(self.part.as_deref())
+            .unwrap_or(self.body)
     }
 
     fn center(&self) -> Result<Option<Vec<f64>>, occt::Exception> {
+        match self.pick {
+            Pick::Edge(index) => {
+                let edge = &occt::edge_fingerprints(self.body)?[index as usize].curve;
+                return Ok(Some(edge.center.into()));
+            }
+            Pick::Vertex(index) => {
+                return Ok(Some(
+                    occt::vertex_fingerprints(self.body)?[index as usize]
+                        .center
+                        .into(),
+                ));
+            }
+            _ => {}
+        }
         if let Some(face) = &self.face {
             let plane = occt::plane_frame(face)?;
             if plane.planar {
@@ -66,6 +95,25 @@ fn extent(bounds: &[f64]) -> Vec<f64> {
 
 fn single(part: &Selected<'_>) -> Result<Vec<Reading>, occt::Exception> {
     let shape = part.shape();
+    match part.pick {
+        Pick::Edge(index) => {
+            let edge = &occt::edge_fingerprints(part.body)?[index as usize].curve;
+            let mut result = vec![reading("Length", edge.measure, "mm")];
+            if edge.has_radius {
+                result.push(reading("Radius", edge.radius, "mm"));
+                result.push(reading("Diameter", edge.radius * 2.0, "mm"));
+            }
+            return Ok(result);
+        }
+        Pick::Vertex(_) => {
+            return Ok(vec![vector(
+                "Position",
+                part.center()?.unwrap_or_default(),
+                "mm",
+            )]);
+        }
+        _ => {}
+    }
     if let (Some(face), Some(index)) = (&part.face, part.index) {
         let data = occt::face_fingerprint(part.body, index)?;
         let area = reading("Area", occt::surface_area(shape)?, "mm²");
@@ -151,14 +199,24 @@ fn pair(first: &Selected<'_>, second: &Selected<'_>) -> Result<Vec<Reading>, occ
     Ok(result)
 }
 
-pub fn measure(parts: &[(&Shape, Option<u32>)]) -> Result<Vec<Reading>, occt::Exception> {
+pub fn measure(parts: &[(&Shape, Pick)]) -> Result<Vec<Reading>, occt::Exception> {
     let parts = parts
         .iter()
-        .map(|&(body, index)| {
+        .map(|&(body, pick)| {
+            let index = match pick {
+                Pick::Face(index) => Some(index),
+                _ => None,
+            };
             Ok(Selected {
                 body,
+                pick,
                 index,
                 face: index.map(|index| occt::sub_face(body, index)).transpose()?,
+                part: match pick {
+                    Pick::Edge(index) => Some(occt::sub_edge(body, index)?),
+                    Pick::Vertex(index) => Some(occt::sub_vertex(body, index)?),
+                    _ => None,
+                },
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -178,5 +236,50 @@ pub fn measure(parts: &[(&Shape, Option<u32>)]) -> Result<Vec<Reading>, occt::Ex
             }
             Ok(vec![vector("Overall extent", extent(&overall), "mm")])
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find<'a>(readings: &'a [Reading], label: &str) -> &'a [f64] {
+        &readings.iter().find(|r| r.label == label).unwrap().values
+    }
+
+    #[test]
+    fn edges_and_vertices_measure_alone_and_against_each_other() {
+        let cube = occt::make_box(10.0, 20.0, 30.0).unwrap();
+        let lengths: Vec<f64> = (0..12)
+            .map(|edge| find(&measure(&[(&cube, Pick::Edge(edge))]).unwrap(), "Length")[0])
+            .collect();
+        for side in [10.0, 20.0, 30.0] {
+            assert_eq!(
+                lengths.iter().filter(|l| (*l - side).abs() < 1e-9).count(),
+                4
+            );
+        }
+        let rim = occt::make_cylinder(4.0, 7.0).unwrap();
+        let circle = (0..occt::edge_fingerprints(&rim).unwrap().len() as u32)
+            .find(|&edge| {
+                occt::edge_fingerprints(&rim).unwrap()[edge as usize]
+                    .curve
+                    .has_radius
+            })
+            .unwrap();
+        let readings = measure(&[(&rim, Pick::Edge(circle))]).unwrap();
+        assert!((find(&readings, "Radius")[0] - 4.0).abs() < 1e-9);
+        assert!((find(&readings, "Diameter")[0] - 8.0).abs() < 1e-9);
+
+        let corners = occt::vertex_fingerprints(&cube).unwrap();
+        let origin = corners.iter().position(|v| v.center == [0.0; 3]).unwrap() as u32;
+        let far = corners
+            .iter()
+            .position(|v| v.center == [10.0, 20.0, 30.0])
+            .unwrap() as u32;
+        let position = measure(&[(&cube, Pick::Vertex(far))]).unwrap();
+        assert_eq!(find(&position, "Position"), [10.0, 20.0, 30.0]);
+        let apart = measure(&[(&cube, Pick::Vertex(origin)), (&cube, Pick::Vertex(far))]).unwrap();
+        assert!((find(&apart, "Minimum distance")[0] - 1400f64.sqrt()).abs() < 1e-9);
     }
 }

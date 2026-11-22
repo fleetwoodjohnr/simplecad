@@ -1284,13 +1284,26 @@ std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, boo
   return owned(builder.Shape(), "move");
 }
 
-std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t index) {
+// The index-th face, edge or vertex, in `TopExp::MapShapes` order (the order every fingerprint uses).
+static std::unique_ptr<Shape> sub_shape(const Shape &shape, TopAbs_ShapeEnum kind, uint32_t index, const char *name) {
   ShapeMap map;
-  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  TopExp::MapShapes(shape.shape, kind, map);
   if (index >= static_cast<uint32_t>(map.Extent())) {
-    throw std::runtime_error("no such face");
+    throw std::runtime_error(std::string("no such ") + name);
   }
-  return owned(map.FindKey(static_cast<int>(index) + 1), "face");
+  return owned(map.FindKey(static_cast<int>(index) + 1), name);
+}
+
+std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t index) {
+  return sub_shape(shape, TopAbs_FACE, index, "face");
+}
+
+std::unique_ptr<Shape> sub_edge(const Shape &shape, uint32_t index) {
+  return sub_shape(shape, TopAbs_EDGE, index, "edge");
+}
+
+std::unique_ptr<Shape> sub_vertex(const Shape &shape, uint32_t index) {
+  return sub_shape(shape, TopAbs_VERTEX, index, "vertex");
 }
 
 // `detect.analyse_plane` and what `align.planar_frame` reads off the plane.

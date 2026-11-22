@@ -165,6 +165,8 @@ rust::Vec<double> trsf_point(const Trsf &trsf, rust::Slice<const double> point);
 rust::Vec<double> trsf_values(const Trsf &trsf);
 std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, bool copy);
 std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t face);
+std::unique_ptr<Shape> sub_edge(const Shape &shape, uint32_t edge);
+std::unique_ptr<Shape> sub_vertex(const Shape &shape, uint32_t vertex);
 PlaneFrame plane_frame(const Shape &face);
 CylinderData cylinder_data(const Shape &face);
 rust::Vec<double> x_extent(const Shape &shape);

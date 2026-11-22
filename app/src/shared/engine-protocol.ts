@@ -71,7 +71,9 @@ export interface BodyOperationEdit {
   body: number
   inputs: Record<string, string | boolean | Vec3 | number[]>
 }
-export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number }
+/** A body; a face or edge by its display index; or a vertex by its body and where it was picked. */
+export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number } | { kind: 'edge'; edge: number } |
+  { kind: 'vertex'; body: number; point: Vec3 }
 export interface Measurement { label: string; values: number[]; unit: string }
 export interface ViewFrame {
   direction: [number, number, number]
@@ -448,7 +450,12 @@ export function isCheckpoint(value: unknown): value is Checkpoint {
 function isMeasurePick(value: unknown): value is MeasurePick {
   if (!value || typeof value !== 'object') return false
   const pick = value as Partial<MeasurePick>
+  if (pick.kind === 'vertex') {
+    return isIndex(pick.body) && pick.body < MAX_BODIES && Array.isArray(pick.point) && pick.point.length === 3 &&
+      pick.point.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9)
+  }
   return pick.kind === 'body' ? isIndex(pick.body) && pick.body < MAX_BODIES :
+    pick.kind === 'edge' ? isIndex(pick.edge) && pick.edge <= 0xffffffff :
     pick.kind === 'face' && isIndex(pick.face) && pick.face <= 0xffffffff
 }
 export function checkRendererRequest(data: unknown): RendererRequest {

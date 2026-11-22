@@ -200,10 +200,11 @@ export class EngineDocument {
   measurementPicks(revision: number, selection: MeasurePick[]) {
     this.checkRevision(revision)
     return selection.map((entry) => {
-      const pick = entry.kind === 'face' ? this.pick(entry.face) : entry
+      const pick = entry.kind === 'face' ? this.pick(entry.face) : entry.kind === 'edge' ? this.pickEdge(entry.edge) : entry
       const shape = this.current.bodies[pick.body]?.shape
       if (!shape) throw new Error('Select a body with geometry.')
-      return { shape, face: 'face' in pick ? pick.face : undefined }
+      return { shape, face: 'face' in pick ? pick.face : undefined, edge: 'edge' in pick ? pick.edge : undefined,
+        point: 'point' in pick ? pick.point : undefined }
     })
   }
 
