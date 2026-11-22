@@ -28,7 +28,7 @@ export function ContextBar({ actions, planar, distance, canPull, distanceRef, on
   return (
     <div role="toolbar" aria-label="Selection tools"
       className="flex items-center gap-0.5 rounded-xl border border-border bg-elev/95 p-1 text-xs shadow-lg backdrop-blur">
-      {planar && <form className="flex items-center gap-1 border-r border-border pr-1" onSubmit={(e) => { e.preventDefault(); onPull() }}>
+      {<form className="flex items-center gap-1 border-r border-border pr-1" onSubmit={(e) => { e.preventDefault(); onPull() }}>
         <ArrowUpFromLine className="ml-1 size-4 text-accent-ink" aria-hidden />
         <input ref={distanceRef} aria-label="Pull distance" type="number" step="any" placeholder="Distance" value={distance}
           className={`${inputCls} max-w-20`} onChange={(e) => onDistance(e.target.value)} />

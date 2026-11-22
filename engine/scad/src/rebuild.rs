@@ -607,10 +607,21 @@ pub fn create_face_feature(
         "thread" => "Thread",
         "shell" => "Shell",
         "matching_thread" => "Matching Thread",
+        "resize_round" => "Resize",
         _ => return Err("Choose a face operation.".into()),
     };
     if !inputs.is_object() {
         return Err("The face settings could not be read.".into());
+    }
+    if kind == "resize_round" {
+        // SimpleCAD 0.4 stores the radius change as a number, rounded to a thousandth of a millimetre.
+        let delta = inputs["delta"]
+            .as_str()
+            .and_then(|text| text.trim().parse::<f64>().ok())
+            .or_else(|| inputs["delta"].as_f64())
+            .filter(|delta| delta.is_finite() && delta.abs() >= 1e-9)
+            .ok_or("Enter how far to move the round face, in millimetres.")?;
+        inputs["delta"] = json!((delta * 1000.0).round() / 1000.0);
     }
     let kernel = |error: occt::Exception| error.what().to_owned();
     let mark = occt::face_fingerprint(picked.shape, picked.index).map_err(kernel)?;

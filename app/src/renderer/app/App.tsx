@@ -26,7 +26,7 @@ import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
-import { defaultOffsetPlane, defaultShell, OffsetPlanePanel, ShellPanel } from './OffsetPlanePanel'
+import { defaultOffsetPlane, defaultResize, defaultShell, OffsetPlanePanel, ResizePanel, ShellPanel } from './OffsetPlanePanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
@@ -288,7 +288,11 @@ export function App() {
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
     const timer = window.setTimeout(() => {
-      void previewPull(revision, { face: selected, distance: value }).then(
+      // A round face is pushed along its radius; a flat one along its normal.
+      const round = !model?.shape.faces[selected]?.planar
+      void (round
+        ? previewFace(revision, { face: selected, faceOperation: 'resize_round', settings: { delta: String(value) } })
+        : previewPull(revision, { face: selected, distance: value })).then(
         (next) => { if (active && !busyRef.current) setPreview(next) },
         () => { if (active) setPreview(undefined) }
       )
@@ -355,7 +359,7 @@ export function App() {
     if (!faceStep?.faceSettings) return
     const defaults = {
       text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings,
-      offset_plane: defaultOffsetPlane, shell: defaultShell,
+      offset_plane: defaultOffsetPlane, shell: defaultShell, resize_round: defaultResize,
       matching_thread: { designation: '', clearance: 'normal', form: 'printed', left_hand: 'false', resize: 'false' }
     }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
@@ -469,6 +473,10 @@ export function App() {
 
   const pull = (amount: number) => {
     if (stack || shapePanel || faceTool || transformKind || measureKind || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
+    if (!model?.shape.faces[selected]?.planar) {
+      mutate(() => applyFace(revision, { face: selected, faceOperation: 'resize_round', settings: { delta: String(amount) } }))
+      return
+    }
     mutate(() => applyPull(revision, { face: selected, distance: amount }))
   }
   const dirty = !!model && model.unsaved
@@ -643,7 +651,8 @@ export function App() {
   }
   const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !construction && !arrange && !section && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
-  const canPullFace = idle && ready && !!selectedFace?.planar
+  // Flat faces move along their normal; round ones along their radius (typed, as they have no single normal).
+  const canPullFace = idle && ready && !!selectedFace
   const startStack = () => {
     setStackSettings(defaultStack)
     setDistance('')
@@ -712,7 +721,7 @@ export function App() {
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
-    pushPull: { enabled: canPullFace, hint: 'Select a planar face', run: () => distanceField.current?.focus() },
+    pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => distanceField.current?.focus() },
     arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two or more bodies first', run: openArrange },
     stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },
@@ -1045,6 +1054,10 @@ export function App() {
               onChange={clearPreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
+            {faceTool === 'resize_round' && <ResizePanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || selected !== undefined}
+              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'resize_round', settings })} />}
             {faceTool === 'shell' && <ShellPanel key={editingFace ?? 'new'} busy={busy}
               planar={!!faceStep || selected !== undefined}
               preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
@@ -1140,7 +1153,7 @@ export function App() {
                             return
                           }
                           setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell') {
+                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round') {
                             setFaceTool(step.kind)
                           }
                         }

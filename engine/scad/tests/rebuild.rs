@@ -1018,3 +1018,72 @@ fn a_matching_thread_is_applied_to_an_existing_shaft_as_0_4_records_it() {
         (&json!(false), &json!(false), &json!("printed"))
     );
 }
+
+#[test]
+fn a_round_face_is_pushed_out_along_its_radius_and_its_change_edits_from_history() {
+    let rod = occt::make_cylinder(10.0, 20.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&rod).unwrap()).unwrap();
+    let side = (0..occt::faces(&rod).unwrap().len() as u32)
+        .find(|&i| occt::face_fingerprint(&rod, i).unwrap().geometry == "cylinder")
+        .unwrap();
+    let picked = scad::align::PickedFace {
+        name: "Box",
+        shape: &rod,
+        index: side,
+    };
+    let wider = scad::rebuild::create_face_feature(
+        &mut model,
+        picked,
+        "resize_round",
+        json!({"delta": "2"}),
+        None,
+    )
+    .unwrap();
+    let pi = std::f64::consts::PI;
+    assert!(
+        (occt::volume(&wider) - pi * 144.0 * 20.0).abs() < 1e-6,
+        "radius 10 → 12"
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.kind.as_str()),
+        ("Resize", "resize_round")
+    );
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    assert_eq!(
+        saved.model["features"].as_array().unwrap().last().unwrap()["inputs"]["delta"],
+        json!(2.0)
+    );
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(wider))]);
+    let thinner = model
+        .edit_step_settings(
+            &step.id,
+            [("delta".to_owned(), "-3".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    assert!(
+        (occt::volume(thinner.bodies[0].shape.as_ref().unwrap()) - pi * 49.0 * 20.0).abs() < 1e-6,
+        "radius 10 → 7"
+    );
+    let bad = scad::align::PickedFace {
+        name: "Box",
+        shape: &rod,
+        index: side,
+    };
+    assert!(
+        scad::rebuild::create_face_feature(
+            &mut model,
+            bad,
+            "resize_round",
+            json!({"delta": "0"}),
+            None
+        )
+        .is_err()
+    );
+}

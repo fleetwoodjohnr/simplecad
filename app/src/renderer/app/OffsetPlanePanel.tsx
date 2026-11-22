@@ -3,6 +3,7 @@ import { Btn, inputCls } from '../ui'
 
 export const defaultOffsetPlane = { distance: '10 mm' }
 export const defaultShell = { thickness: '2 mm' }
+export const defaultResize = { delta: '1' }
 
 interface Props {
   busy: boolean
@@ -21,6 +22,12 @@ export function OffsetPlanePanel(props: Props) {
 export function ShellPanel(props: Omit<Props, 'onApply'> & { onApply: (settings: { thickness: string }) => void }) {
   return <FaceValuePanel {...props} name="Shell" label="Wall thickness" field="thickness" initial={defaultShell.thickness}
     hint="Select the face to open." onApply={(value) => props.onApply({ thickness: value })} />
+}
+
+/** History's edit of a round Push/Pull: how far the round face moves along its radius, in millimetres. */
+export function ResizePanel(props: Omit<Props, 'onApply'> & { onApply: (settings: { delta: string }) => void }) {
+  return <FaceValuePanel {...props} name="Resize" label="Radius change (mm)" field="delta" initial={defaultResize.delta}
+    hint="Select a round face." onApply={(value) => props.onApply({ delta: value })} />
 }
 
 /** One expression on a picked face: an offset plane's distance, a shell's wall. */

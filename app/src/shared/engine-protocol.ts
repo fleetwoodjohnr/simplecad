@@ -161,6 +161,8 @@ export interface HoleSettings extends Omit<ThreadSettings, 'length' | 'resize'> 
 export type FaceOperation =
   | { faceOperation: 'offset_plane'; settings: { distance: string } }
   | { faceOperation: 'shell'; settings: { thickness: string } }
+  /** Push/Pull on a round face: moves it along its radius, positive adding material. */
+  | { faceOperation: 'resize_round'; settings: { delta: string } }
   /** A thread matching another one, cut into a round face of an existing part. */
   | { faceOperation: 'matching_thread'; settings: Pick<ThreadSettings, 'designation' | 'clearance' | 'form' | 'left_hand' | 'resize'> }
   | { faceOperation: 'text'; settings: TextSettings }
@@ -419,6 +421,9 @@ function isFaceEdit(value: unknown): value is FaceEdit {
   const short = (entry: unknown) => typeof entry === 'string' && entry.length <= 256
   if (edit.faceOperation === 'offset_plane') {
     return short(edit.settings.distance) && !!edit.settings.distance.trim()
+  }
+  if (edit.faceOperation === 'resize_round') {
+    return short(edit.settings.delta) && Number.isFinite(Number(edit.settings.delta)) && Number(edit.settings.delta) !== 0
   }
   if (edit.faceOperation === 'shell') {
     return short(edit.settings.thickness) && !!edit.settings.thickness.trim()
