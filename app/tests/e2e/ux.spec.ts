@@ -360,3 +360,23 @@ test('adds the calibration test print as named pieces in one undoable step', asy
   await expect(bodies).not.toContainText('Calibration')
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
 })
+
+test('adds the P30 thread gauges as named parts in one undoable step', async () => {
+  test.setTimeout(180_000)
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const bodies = page.getByRole('list', { name: 'Bodies' })
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await page.getByRole('button', { name: 'Command search' }).click()
+  const search = page.getByLabel('Search commands')
+  await search.fill('fit & clearance')
+  await search.press('Enter')
+  await page.getByRole('form', { name: 'Fit & Clearance' }).getByRole('button', { name: 'Add P30 thread gauges' }).click()
+  await expect(page.getByRole('status', { name: 'Notice' })).toHaveText(/turns freely/, { timeout: 150_000 })
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  for (const name of ['P30 calibration plug', 'P30 gauge 0.40 mm', 'P30 gauge 0.60 mm', 'P30 gauge 0.80 mm', 'P30 gauge 1.00 mm']) {
+    await expect(bodies).toContainText(name)
+  }
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(bodies).not.toContainText('P30')
+})

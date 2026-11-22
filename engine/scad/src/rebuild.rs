@@ -517,7 +517,17 @@ pub const PORTED: &[&str] = &[
 pub fn create_primitive(
     model: &mut Model,
     kind: &str,
+    inputs: Value,
+) -> Result<(String, occt::UniquePtr<occt::Shape>), String> {
+    create_named_primitive(model, kind, inputs, None)
+}
+
+/// `create_primitive`, the step and its body called `name` (made unique) rather than after the shape.
+pub fn create_named_primitive(
+    model: &mut Model,
+    kind: &str,
     mut inputs: Value,
+    name: Option<&str>,
 ) -> Result<(String, occt::UniquePtr<occt::Shape>), String> {
     let (kind, label, sides) = match kind {
         "matching_bolt" => (kind, "Bolt", None),
@@ -544,6 +554,7 @@ pub fn create_primitive(
         "octagon" => ("polygon_prism", "Octagon", Some(8)),
         _ => return Err("Choose a shape to create.".into()),
     };
+    let label = name.unwrap_or(label);
     if !inputs.is_object() {
         return Err("The shape dimensions could not be read.".into());
     }

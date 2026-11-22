@@ -587,11 +587,16 @@ impl Project {
         &self,
         kind: String,
         inputs: std::collections::HashMap<String, String>,
+        name: Option<String>,
     ) -> Result<CreatedShape> {
         let mut model = self.model.clone();
-        let (name, inner) =
-            scad::rebuild::create_primitive(&mut model, &kind, serde_json::json!(inputs))
-                .map_err(Error::from_reason)?;
+        let (name, inner) = scad::rebuild::create_named_primitive(
+            &mut model,
+            &kind,
+            serde_json::json!(inputs),
+            name.as_deref(),
+        )
+        .map_err(Error::from_reason)?;
         Ok(CreatedShape {
             project: Project {
                 model,

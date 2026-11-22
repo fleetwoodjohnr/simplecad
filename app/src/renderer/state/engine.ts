@@ -104,6 +104,8 @@ export const applyArrange = (revision: number, edit: ArrangeEdit) =>
 export const reloadCalibration = () => send<string>({ op: 'calibrate' })
 /** The calibration test print, as a STEP of its named pieces, to import. */
 export const calibrationModel = () => send<Uint8Array>({ op: 'calibrationModel' })
+export const addThreadGauges = (revision: number) =>
+  send<ModelResult>({ op: 'threadGauges', revision, threadGauges: 'P30' }).then(accept)
 export const bodyHealth = (revision: number) => send<BodyHealth[]>({ op: 'health', revision })
 export const applyConstruction = (revision: number, edit: ConstructionEdit) =>
   send<ModelResult>({ op: 'applyConstruction', revision, ...edit }).then(accept)

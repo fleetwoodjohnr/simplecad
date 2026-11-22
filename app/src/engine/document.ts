@@ -1,6 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -26,7 +26,7 @@ export interface Project {
   solveSketch(recipe: string): SketchSolution
   applySketchDraft(request: SketchDraftEdit['sketchDraft'], shown: { id?: string; name: string; shape: Shape }[]): State
   applySketchSolid(request: SketchSolidEdit['sketchSolid'], shown: { id?: string; name: string; shape: Shape }[]): State
-  addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
+  addShape(kind: string, values: Record<string, string>, name?: string): { project: Project; name: string; shape: Shape }
   addOffsetPlane(body: string, face: number, distance: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   groups(): { name: string; members: string[] }[]
@@ -284,7 +284,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -324,6 +324,8 @@ export class EngineDocument {
       step = { group: edit.group }
     } else if ('plate' in edit) {
       step = { plate: edit.plate }
+    } else if ('threadGauges' in edit) {
+      step = { threadGauges: edit.threadGauges }
     } else if ('sectionTarget' in edit) {
       step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
@@ -578,6 +580,23 @@ export class EngineDocument {
     }
     if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
     if ('plate' in step) return this.onPlate(project, bodies, step.plate)
+    if ('threadGauges' in step) {
+      // fit_panel.generate_threads: the plug and gauges it adds, with its names, sizes and layout.
+      const at = (index: number) => ({ x: String(30 + 55 * (1 + index % 2)), y: String(30 + 55 * Math.floor(index / 2)) })
+      const parts: [string, string, Record<string, string>][] = [
+        ['matching_bolt', 'P30 calibration plug', { designation: 'P30', length: '10', thread_length: '10', form: 'printed', x: '30', y: '30' }],
+        ...[0.4, 0.6, 0.8, 1].map((clearance, index): [string, string, Record<string, string>] => ['matching_nut',
+          `P30 gauge ${clearance.toFixed(2)} mm`, { designation: 'P30', height: '10', clearance: String(clearance), form: 'printed', ...at(index) }])
+      ]
+      if (bodies.length + parts.length > MAX_BODIES) throw new Error('This project has reached its body limit.')
+      let next = bodies
+      for (const [kind, name, values] of parts) {
+        const created = project.addShape(kind, values, name)
+        project = created.project
+        next = [...next, { name: created.name, shape: created.shape }]
+      }
+      return { bodies: next, project }
+    }
     if ('edgeFinish' in step) {
       const picks = step.edges.map((edge) => this.pickEdge(edge))
       const body = picks[0].body

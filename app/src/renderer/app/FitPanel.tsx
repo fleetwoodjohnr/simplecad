@@ -9,14 +9,15 @@ const SWEEP = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 
 interface Props {
   busy: boolean
-  /** Adds the calibration test print to the model. */
+  /** Adds the calibration test print, or the P30 thread gauges, to the model. */
   onTestPrint: () => void
+  onThreadGauges: () => void
   onSave: (measured: Pick<Calibration, 'fits' | 'thread'>) => Promise<void>
   onClose: () => void
 }
 
 /** SimpleCAD 0.4's Fit & Clearance: what each fit means on this printer, and the values a test print measured. */
-export function FitPanel({ busy, onSave, onTestPrint, onClose }: Props) {
+export function FitPanel({ busy, onSave, onTestPrint, onThreadGauges, onClose }: Props) {
   const [saved, setSaved] = useState<Calibration>()
   const [values, setValues] = useState<Record<string, string>>({})
   useEffect(() => {
@@ -48,7 +49,10 @@ export function FitPanel({ busy, onSave, onTestPrint, onClose }: Props) {
       <div className="font-semibold">Calibration</div>
       <p className="text-text-2">Adds a pin strip and a matching plate with holes at {SWEEP[0].toFixed(2)}–{SWEEP.at(-1)!.toFixed(2)} mm
         clearance, each labelled. Print both, find the first pair that fits the way you want, and enter that number above.</p>
-      <Btn type="button" size="sm" className="justify-self-start" disabled={busy} onClick={onTestPrint}>Add calibration model</Btn>
+      <div className="flex flex-wrap gap-1">
+        <Btn type="button" size="sm" disabled={busy} onClick={onTestPrint}>Add calibration model</Btn>
+        <Btn type="button" size="sm" disabled={busy} title="A P30 plug and gauges at 0.40, 0.60, 0.80 and 1.00 mm" onClick={onThreadGauges}>Add P30 thread gauges</Btn>
+      </div>
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Save measurements</Btn>
         <Btn type="button" size="sm" onClick={onClose}>Close</Btn>
