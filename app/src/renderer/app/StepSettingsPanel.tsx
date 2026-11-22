@@ -2,8 +2,12 @@ import { useState } from 'react'
 import { Btn, inputCls } from '../ui'
 
 const labels: Record<string, string> = {
-  dx: 'Move X', dy: 'Move Y', dz: 'Move Z', rx: 'Turn about X (°)', ry: 'Turn about Y (°)', rz: 'Turn about Z (°)', angle: 'Turn (°)'
+  dx: 'Move X', dy: 'Move Y', dz: 'Move Z', rx: 'Turn about X (°)', ry: 'Turn about Y (°)', rz: 'Turn about Z (°)', angle: 'Turn (°)',
+  distance: 'Distance', offset: 'Offset', rotation: 'Rotation (°)', flip: 'Flip', horizontal: 'Horizontal', vertical: 'Vertical',
+  horizontal_gap: 'Horizontal gap', vertical_gap: 'Vertical gap', u: 'Offset U', v: 'Offset V'
 }
+/** Settings that are a choice rather than an expression. */
+const choices: Record<string, string[]> = { horizontal: ['left', 'center', 'right'], vertical: ['bottom', 'center', 'top'] }
 
 interface Props {
   /** The step's name, which names the form. */
@@ -26,10 +30,21 @@ export function StepSettingsPanel({ name, busy, preset, onEdit, onCancel }: Prop
       if (valid && !busy) onEdit(changes)
     }}>
       <div className="font-semibold">Edit {name}</div>
-      {Object.keys(preset).map((key) => <label key={key} className="grid gap-1">{labels[key] ?? key}
-        <input className={inputCls} value={values[key]} maxLength={255} disabled={busy}
-          onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))} />
-      </label>)}
+      {Object.keys(preset).map((key) => {
+        const set = (value: string) => setValues((current) => ({ ...current, [key]: value }))
+        if (key === 'flip') {
+          return <label key={key} className="flex items-center gap-2">
+            <input type="checkbox" checked={values[key] === 'true'} disabled={busy} onChange={(event) => set(String(event.target.checked))} />
+            {labels[key]}</label>
+        }
+        return <label key={key} className="grid gap-1">{labels[key] ?? key}
+          {choices[key]
+            ? <select className={inputCls} value={values[key]} disabled={busy} onChange={(event) => set(event.target.value)}>
+                {choices[key].map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}
+              </select>
+            : <input className={inputCls} value={values[key]} maxLength={255} disabled={busy} onChange={(event) => set(event.target.value)} />}
+        </label>
+      })}
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Apply</Btn>
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>

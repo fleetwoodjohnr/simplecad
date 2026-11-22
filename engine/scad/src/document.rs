@@ -482,7 +482,7 @@ impl Model {
                 continue;
             }
             let value = match key.as_str() {
-                "left_hand" | "resize" | "keep" | "keep_tool" => json!(value == "true"),
+                "left_hand" | "resize" | "keep" | "keep_tool" | "flip" => json!(value == "true"),
                 _ => Value::String(value),
             };
             inputs.insert(key, value);
@@ -1918,6 +1918,19 @@ fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "shell" => Some(&["thickness"]),
         // A Move's offsets or a Rotate's angles; its axis, order and pivot stay as made.
         "move" => Some(&["dx", "dy", "dz", "rx", "ry", "rz", "angle"]),
+        "push_pull" => Some(&["distance"]),
+        // A placement's settings; the faces it joins stay as picked.
+        "align" => Some(&[
+            "offset",
+            "rotation",
+            "flip",
+            "horizontal",
+            "vertical",
+            "horizontal_gap",
+            "vertical_gap",
+            "u",
+            "v",
+        ]),
         "resize_round" => Some(&["delta"]),
         "vent_cut" => Some(&["across_flats", "wall", "margin"]),
         "matching_thread" => Some(&["clearance", "form", "length", "left_hand", "resize"]),

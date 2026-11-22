@@ -141,7 +141,7 @@ export function App() {
   const [arrange, setArrange] = useState<{ bodies: number[]; editing?: string }>()
   /** Section Replace: its picks (the replacement's face, then the target's), or the saved step History is editing. */
   const [section, setSection] = useState<{ editing?: string }>()
-  /** A saved Move or Rotate whose settings History is editing. */
+  /** A saved Move, Rotate, Pull or placement whose settings History is editing. */
   const [editingMove, setEditingMove] = useState<string>()
   const [sectionPicks, setSectionPicks] = useState<number[]>([])
   const [construction, setConstruction] = useState<{ kind: Construction; editing?: string; axisFrom: AxisFrom }>()
@@ -1147,7 +1147,7 @@ export function App() {
                           setEditingShape(step.id)
                           setShapePanel(true)
                         } else {
-                          if (step.kind === 'move') {
+                          if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align') {
                             setEditingMove(step.id)
                             return
                           }
