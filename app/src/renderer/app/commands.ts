@@ -38,6 +38,7 @@ export const commands = {
   shape: { label: 'Shape' },
   pushPull: { label: 'Push/Pull' },
   stack: { label: 'Stack & Place' },
+  arrange: { label: 'Arrange' },
   measure: { label: 'Measure' },
   move: { label: 'Move' },
   mirror: { label: 'Mirror' },

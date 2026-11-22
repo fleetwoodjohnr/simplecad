@@ -4,12 +4,13 @@ import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, Mea
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyConstruction, groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyArrange, previewArrange, applyConstruction, groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
+import { ArrangePanel } from './ArrangePanel'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -134,6 +135,8 @@ export function App() {
   const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string }>()
   const [edgeTool, setEdgeTool] = useState<{ kind: EdgeFinish; editing?: string }>()
   const [edgePicks, setEdgePicks] = useState<number[]>([])
+  /** Arrange's bodies, taken as it opens; or the saved step History is editing. */
+  const [arrange, setArrange] = useState<{ bodies: number[]; editing?: string }>()
   const [construction, setConstruction] = useState<{ kind: Construction; editing?: string; axisFrom: AxisFrom }>()
   const [constructPicks, setConstructPicks] = useState<{ faces: number[]; edges: number[]; points: Vec3[] }>({ faces: [], edges: [], points: [] })
   /** Bodies chosen in the Bodies list (Ctrl- or Shift-click adds), e.g. to group them. */
@@ -203,6 +206,7 @@ export function App() {
       setBodyTool(undefined)
       setEdgeTool(undefined)
       setConstruction(undefined)
+      setArrange(undefined)
       setShapePanel(false)
       setSketchEditor(undefined)
       setSketchTool(undefined)
@@ -241,6 +245,7 @@ export function App() {
     setBodyTool(undefined)
     setEdgeTool(undefined)
     setConstruction(undefined)
+    setArrange(undefined)
     setShapePanel(false)
     setEditingShape(undefined)
     setFaceTool(undefined)
@@ -269,7 +274,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || construction || measureKind || sketchTool || matchingPart) return
+    if (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || construction || arrange || measureKind || sketchTool || matchingPart) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -280,7 +285,7 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, edgeTool, construction, measureKind, sketchTool, matchingPart])
+  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, edgeTool, construction, arrange, measureKind, sketchTool, matchingPart])
 
   useEffect(() => {
     if (!stack) return
@@ -422,6 +427,13 @@ export function App() {
     setConstructPicks({ faces: [], edges: [], points: [] })
     setConstruction({ kind, axisFrom: 'edge' })
   }
+  const openArrange = () => {
+    const shown = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []) ?? []
+    const bodies = chosenBodies.length >= 2 ? chosenBodies : shown
+    select()
+    setArrange({ bodies })
+  }
+  const closeArrange = () => { setArrange(undefined); clearPreview() }
   const closeConstruction = () => { setConstruction(undefined); setConstructPicks({ faces: [], edges: [], points: [] }); clearPreview() }
   const pickConstructionEdge = (edge: number, point: Vec3) => setConstructPicks((picks) => constructionPhase === 'edges'
     ? { ...picks, edges: [...picks.edges, edge] } : { ...picks, points: [...picks.points, nearestEnd(edge, point)] })
@@ -557,7 +569,7 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
-  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !construction && !measureKind && !sketchTool && !sketchEditor && !matchingPart
+  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !construction && !arrange && !measureKind && !sketchTool && !sketchEditor && !matchingPart
   const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
   const closeSketchTool = () => { setSketchTool(undefined); clearPreview() }
@@ -611,7 +623,7 @@ export function App() {
     setEditingFace(undefined)
     setFaceTool(tool)
   }
-  const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !construction && !measureKind && !sketchTool && !matchingPart && !missingInput
+  const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !construction && !arrange && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
   const canPullFace = idle && ready && !!selectedFace?.planar
   const startStack = () => {
@@ -683,6 +695,8 @@ export function App() {
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
     pushPull: { enabled: canPullFace, hint: 'Select a planar face', run: () => distanceField.current?.focus() },
+    arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
+      hint: 'Show two or more bodies first', run: openArrange },
     stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
     offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
@@ -737,7 +751,7 @@ export function App() {
         return
       }
       if (searchOpen || settingsOpen || document.querySelector('[role="menu"]')) return
-      if (!busy && (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || construction || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
+      if (!busy && (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || construction || arrange || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         cancelShapePanel()
@@ -748,6 +762,7 @@ export function App() {
         closeBodyTool()
         closeEdgeTool()
         closeConstruction()
+        closeArrange()
         closeMeasure()
         setError('')
         return
@@ -787,7 +802,7 @@ export function App() {
             </MenuContent>
           </Menu>
           <Ribbon actions={actions} active={{
-            shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, measure: !!measureKind,
+            shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, arrange: !!arrange, measure: !!measureKind,
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
             offsetPlane: faceTool === 'offset_plane', shell: faceTool === 'shell', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
@@ -934,6 +949,13 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
+            {model && arrange && revision !== undefined && <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
+              names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')}
+              preset={model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings}
+              onChange={clearPreview} onCancel={closeArrange}
+              onPreview={(inputs) => void requestPreview(() => previewArrange(revision, { arrange: arrange.bodies, inputs }))}
+              onApply={(inputs) => mutate(() => applyArrange(revision, { arrange: arrange.bodies, inputs }))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />}
             {model && construction && revision !== undefined && <ConstructionPanel key={`${construction.kind}:${construction.editing ?? 'new'}`}
               kind={construction.kind} busy={busy} axisFrom={construction.axisFrom}
               picked={{ faces: constructPicks.faces.length, edges: constructPicks.edges.length, points: constructPicks.points.length }}
@@ -1035,7 +1057,7 @@ export function App() {
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
                     {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id} onClick={() => {
+                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id || arrange?.editing === step.id} onClick={() => {
                         if (step.kind === 'sketch') {
                           void openSketch(step.id)
                           return
@@ -1045,6 +1067,10 @@ export function App() {
                           setEditingShape(step.id)
                           setShapePanel(true)
                         } else {
+                          if (step.kind === 'arrange') {
+                            setArrange({ bodies: [], editing: step.id })
+                            return
+                          }
                           if (step.kind in constructionLabels) {
                             setConstruction({ kind: step.kind as Construction, editing: step.id, axisFrom: 'edge' })
                             return

@@ -236,3 +236,39 @@ test('splits a body into two named halves, edits the cut from History, and saves
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+test('arranges the shown bodies in a row with a fixed gap, and edits the gap from History in one step', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  for (let count = 0; count < 2; count++) {
+    await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+    const shape = page.getByRole('form', { name: 'Create shape' })
+    await shape.getByLabel('Shape type').selectOption('cylinder')
+    await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  }
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2'])
+
+  await toolbar.getByRole('button', { name: 'Arrange', exact: true }).click()
+  const arrange = page.getByRole('form', { name: 'Arrange' })
+  await expect(arrange.getByRole('status', { name: 'Arranged bodies' })).toHaveText('Box, Cylinder, Cylinder2')
+  await arrange.getByRole('radio', { name: 'Fixed gap' }).click()
+  await arrange.getByLabel('Gap').fill('5 mm')
+  await arrange.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await arrange.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
+
+  // History edits the step itself: a wider gap re-lays the row from where the bodies started.
+  await page.getByRole('button', { name: 'Edit Arrange' }).click()
+  const saved = page.getByRole('form', { name: 'Arrange' })
+  await expect(saved.getByLabel('Gap')).toHaveValue('5 mm')
+  await saved.getByLabel('Gap').fill('1 cm')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await page.getByRole('button', { name: 'Edit Arrange' }).click()
+  await expect(page.getByRole('form', { name: 'Arrange' }).getByLabel('Gap')).toHaveValue('5 mm')
+})

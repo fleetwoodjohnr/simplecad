@@ -688,10 +688,38 @@ impl Project {
     ) -> Result<OpenedProject> {
         let inputs = serde_json::from_str(&inputs)
             .map_err(|_| Error::from_reason("The construction settings could not be read."))?;
-        let parts = |list: Vec<BodyPart>| list.into_iter().map(|part| (part.body, part.index)).collect::<Vec<_>>();
+        let parts = |list: Vec<BodyPart>| {
+            list.into_iter()
+                .map(|part| (part.body, part.index))
+                .collect::<Vec<_>>()
+        };
         let mut model = self.model.clone();
         let report = model
-            .add_construction(&kind, &parts(faces), &parts(edges), inputs, &self.original, &self.shown_shapes(shown))
+            .add_construction(
+                &kind,
+                &parts(faces),
+                &parts(edges),
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Line the named bodies up in a row; `inputs` is the row's settings as JSON.
+    #[napi]
+    pub fn add_arrangement(
+        &self,
+        bodies: Vec<String>,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The arrangement settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_arrangement(&bodies, inputs, &self.original, &self.shown_shapes(shown))
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }

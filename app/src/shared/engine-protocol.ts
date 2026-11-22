@@ -70,6 +70,8 @@ export interface ConstructionEdit {
   edges: number[]
   inputs: Record<string, string | Vec3[]>
 }
+/** Line bodies (by index) up along a world axis, with equal gaps or a fixed one. */
+export interface ArrangeEdit { arrange: number[]; inputs: { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string } }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
 export interface UngroupEdit { ungroup: string }
@@ -172,7 +174,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit
 
 export interface Checkpoint {
   source: Source
@@ -236,6 +238,7 @@ export type RendererCommand =
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'applyConstruction'; revision: number } & ConstructionEdit)
+  | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
   | ({ op: 'ungroup'; revision: number } & UngroupEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
@@ -334,6 +337,15 @@ function isEdgeFinish(value: unknown): value is EdgeFinishEdit {
     typeof amount === 'string' && amount.trim().length > 0 && amount.length < 256
 }
 
+function isArrange(value: unknown): value is ArrangeEdit {
+  if (!value || typeof value !== 'object') return false
+  const { arrange, inputs } = value as Partial<ArrangeEdit>
+  return Array.isArray(arrange) && arrange.length >= 2 && arrange.length <= MAX_BODIES &&
+    arrange.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(arrange).size === arrange.length &&
+    !!inputs && (inputs.mode === 'equal_gaps' || inputs.mode === 'fixed_gap') && ['x', 'y', 'z'].includes(inputs.axis) &&
+    typeof inputs.gap === 'string' && inputs.gap.trim().length > 0 && inputs.gap.length < 256 && Object.keys(inputs).length === 3
+}
+
 function isConstruction(value: unknown): value is ConstructionEdit {
   if (!value || typeof value !== 'object') return false
   const { construction, faces, edges, inputs } = value as Partial<ConstructionEdit>
@@ -368,7 +380,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value) || isConstruction(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value) || isConstruction(value) || isArrange(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -514,6 +526,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
         (m.op === 'group' && isGroup(m)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
+        ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
         ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||

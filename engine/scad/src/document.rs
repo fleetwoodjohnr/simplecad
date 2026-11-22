@@ -753,6 +753,52 @@ impl Model {
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
     }
 
+    /// Line bodies up in a row along a world axis, with equal gaps between them or a fixed gap, as
+    /// SimpleCAD 0.4's Arrange writes it. Every body is an input and an output, bound by object ID.
+    /// ponytail: world rows only; a row seated on a target face, and the face patterns, are not made here yet.
+    pub fn add_arrangement(
+        &mut self,
+        bodies: &[String],
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if !inputs.is_object() {
+            return Err("The arrangement settings could not be read.".into());
+        }
+        let mut refs = Vec::new();
+        let mut bindings = Map::new();
+        let mut output_ids = Map::new();
+        for body in bodies {
+            let (producer, object) = self.editable(body)?;
+            if bindings.contains_key(body) {
+                return Err("Choose each body once.".into());
+            }
+            refs.push(json!({ "__body__": body, "feature_id": producer, "object_id": object }));
+            bindings.insert(
+                body.clone(),
+                json!({ "feature_id": producer, "object_id": object }),
+            );
+            output_ids.insert(body.clone(), json!(object));
+        }
+        if bodies.len() < 2 {
+            return Err("Choose two or more bodies to arrange.".into());
+        }
+        inputs["bodies"] = Value::Array(refs);
+        inputs["orient"] = json!(false);
+        if inputs.get("normal_offset").is_none() {
+            inputs["normal_offset"] = json!("0");
+        }
+        let mut candidate = self.clone();
+        let name = candidate.unique_name("Arrange");
+        let feature = json!({
+            "id": new_feature_id(), "type": "arrange", "name": name, "outputs": bodies,
+            "output_ids": output_ids, "inputs": inputs, "bindings": bindings,
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, "Arrange", original, shown)
+    }
+
     /// Mirror, pattern, scale or combine one body in place, as SimpleCAD 0.4 records those steps.
     /// A Combine's `tools` arrive as body names and are bound, like the body, by object ID.
     pub fn add_body_operation(
@@ -1769,6 +1815,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "scale" => &["factor"],
         "boolean" => &["operation", "keep_tool"],
         "split" => &["position"],
+        "arrange" => &["mode", "axis", "gap"],
         _ => return None,
     })
 }

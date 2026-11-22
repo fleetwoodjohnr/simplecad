@@ -773,3 +773,75 @@ fn a_split_consumes_the_body_into_two_named_halves() {
     assert_eq!(split["outputs"], json!(["Box A", "Box B"]));
     assert_eq!(split["inputs"]["names"], json!(["Box A", "Box B"]));
 }
+
+#[test]
+fn an_arrangement_spaces_bodies_evenly_along_an_axis_and_edits_its_gap() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let mut shown = HashMap::new();
+    shown.insert(
+        model.payload["bodies"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        Rc::new(solid),
+    );
+    for x in ["30 mm", "100 mm"] {
+        let (name, shape) = scad::rebuild::create_primitive(
+            &mut model,
+            "box",
+            json!({"width": "10 mm", "depth": "10 mm", "height": "10 mm", "x": x}),
+        )
+        .unwrap();
+        let id = model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        shown.insert(id, Rc::new(shape));
+    }
+    let names: Vec<String> = model.payload["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap().to_owned())
+        .collect();
+    let low_x = |report: &scad::rebuild::Report| -> Vec<f64> {
+        let mut lows: Vec<f64> = report
+            .bodies
+            .iter()
+            .map(|b| (occt::bounds(b.shape.as_ref().unwrap()).unwrap()[0] * 1e6).round() / 1e6)
+            .collect();
+        lows.sort_by(f64::total_cmp);
+        lows
+    };
+    let fixed = json!({"mode": "fixed_gap", "axis": "x", "gap": "5 mm"});
+    let report = model.add_arrangement(&names, fixed, &[], &shown).unwrap();
+    let lows = low_x(&report);
+    assert_eq!(
+        [lows[1] - lows[0], lows[2] - lows[1]],
+        [15.0, 15.0],
+        "10 mm boxes, 5 mm apart"
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(step.name, "Arrange");
+    let wider = model
+        .edit_step_settings(
+            &step.id,
+            [("gap".to_owned(), "1 cm".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    let lows = low_x(&wider);
+    assert_eq!([lows[1] - lows[0], lows[2] - lows[1]], [20.0, 20.0]);
+    assert!(
+        model
+            .add_arrangement(&names[..1], json!({}), &[], &shown)
+            .is_err()
+    );
+}

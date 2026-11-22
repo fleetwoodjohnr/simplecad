@@ -1,6 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
-  ArrowUpFromLine, Axis3d, Box, ChevronDown, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
+  ArrowUpFromLine, Axis3d, Box, ChevronDown, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
@@ -34,7 +34,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { id: 'thread', icon: Spline },
     { id: 'faceTexture', icon: Grid3x3 }
   ] },
-  { group: 'Place', tools: [{ id: 'stack', icon: Magnet }] },
+  { group: 'Place', tools: [{ id: 'stack', icon: Magnet }, { id: 'arrange', icon: Rows3 }] },
   { group: 'Construct', tools: [
     { id: 'offsetPlane', icon: SquareDashed },
     { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],
