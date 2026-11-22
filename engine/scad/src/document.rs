@@ -1908,6 +1908,7 @@ fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "tangent_plane" => Some(&["around"]),
         "construction_point" => Some(&["x", "y", "z"]),
         "shell" => Some(&["thickness"]),
+        "matching_thread" => Some(&["clearance", "form", "length", "left_hand", "resize"]),
         "fillet" => Some(&["radius"]),
         "chamfer" => Some(&["distance"]),
         "hole" => Some(&[

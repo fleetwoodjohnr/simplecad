@@ -161,6 +161,8 @@ export interface HoleSettings extends Omit<ThreadSettings, 'length' | 'resize'> 
 export type FaceOperation =
   | { faceOperation: 'offset_plane'; settings: { distance: string } }
   | { faceOperation: 'shell'; settings: { thickness: string } }
+  /** A thread matching another one, cut into a round face of an existing part. */
+  | { faceOperation: 'matching_thread'; settings: Pick<ThreadSettings, 'designation' | 'clearance' | 'form' | 'left_hand' | 'resize'> }
   | { faceOperation: 'text'; settings: TextSettings }
   | { faceOperation: 'face_texture'; settings: TextureSettings }
   | { faceOperation: 'hole'; settings: HoleSettings; position?: Vec3; untilBody?: number }
@@ -436,6 +438,11 @@ function isFaceEdit(value: unknown): value is FaceEdit {
     short(s.designation) && ['tight', 'normal', 'loose', 'very_loose'].includes(s.clearance) &&
     ['printed', 'iso'].includes(s.form) && ['top', 'bottom'].includes(s.from_end) &&
     (s.left_hand === 'true' || s.left_hand === 'false')
+  if (edit.faceOperation === 'matching_thread') {
+    const { designation, clearance, form, left_hand: leftHand, resize } = edit.settings
+    return short(designation) && !!designation.trim() && ['tight', 'normal', 'loose', 'very_loose'].includes(clearance) &&
+      ['printed', 'iso'].includes(form) && ['true', 'false'].includes(leftHand) && ['true', 'false'].includes(resize)
+  }
   if (edit.faceOperation === 'thread') {
     return hasThreadOptions(edit.settings) && short(edit.settings.length) && ['true', 'false'].includes(edit.settings.resize)
   }

@@ -606,6 +606,7 @@ pub fn create_face_feature(
         "hole" => "Hole",
         "thread" => "Thread",
         "shell" => "Shell",
+        "matching_thread" => "Matching Thread",
         _ => return Err("Choose a face operation.".into()),
     };
     if !inputs.is_object() {
@@ -660,7 +661,7 @@ pub fn create_face_feature(
     let brep = occt::write_brep(&geometry).map_err(kernel)?;
     let threaded_hole =
         kind == "hole" && ctx.input("style").and_then(Value::as_str) == Some("threaded");
-    let thread_metadata = if threaded_hole || kind == "thread" {
+    let thread_metadata = if threaded_hole || kind == "thread" || kind == "matching_thread" {
         let (diameter, internal) = if threaded_hole {
             (
                 ctx.value("diameter", 6.0, Dimension::Length)
@@ -682,7 +683,15 @@ pub fn create_face_feature(
     if let Some((designation, internal)) = thread_metadata {
         feature["inputs"]["designation"] = json!(designation);
         feature["inputs"]["thread_internal"] = json!(internal);
-        feature["inputs"]["thread_modelled"] = json!(true);
+        // A matching thread is printed to fit its partner; SimpleCAD 0.4 records it as not modelled.
+        feature["inputs"]["thread_modelled"] = json!(kind != "matching_thread");
+        if kind == "matching_thread" {
+            for (key, default) in [("form", json!("printed")), ("left_hand", json!(false))] {
+                if feature["inputs"].get(key).is_none() {
+                    feature["inputs"][key] = default;
+                }
+            }
+        }
     }
     model.record_body_feature(picked.name, feature, label, brep, &message)?;
     Ok(geometry)

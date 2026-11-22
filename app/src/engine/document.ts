@@ -447,6 +447,7 @@ export class EngineDocument {
         case 'face_texture': return { ...pick, faceOperation: 'face_texture', settings: edit.settings }
         case 'hole': return { ...pick, faceOperation: 'hole', settings: edit.settings, position: edit.position, untilBody: edit.untilBody }
         case 'thread': return { ...pick, faceOperation: 'thread', settings: edit.settings }
+        case 'matching_thread': return { ...pick, faceOperation: 'matching_thread', settings: edit.settings }
       }
     }
     const moving = this.pick(edit.moving)

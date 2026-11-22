@@ -355,7 +355,8 @@ export function App() {
     if (!faceStep?.faceSettings) return
     const defaults = {
       text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings,
-      offset_plane: defaultOffsetPlane, shell: defaultShell
+      offset_plane: defaultOffsetPlane, shell: defaultShell,
+      matching_thread: { designation: '', clearance: 'normal', form: 'printed', left_hand: 'false', resize: 'false' }
     }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
     const changes = Object.fromEntries(Object.entries(operation.settings).filter(([key, value]) => original[key] !== value))
@@ -725,8 +726,9 @@ export function App() {
     path_pattern: { enabled: canUseFaceTool && sketches.length > 0 && patternBodies.length > 0, run: () => openSketchTool('path_pattern') },
     hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
+    // Keeps the selection: a round face picked first is the one a matching thread is cut into.
     matchingPart: { enabled: canUseFaceTool && matchable.length > 0, hint: 'Model a thread first', run: () => {
-      select()
+      setPreview(undefined)
       setMatchingPart(true)
     } },
     measure: { enabled: canUseFaceTool, run: () => {
@@ -862,7 +864,11 @@ export function App() {
               canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
               onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
             onSelect={(face, point) => {
-              if (!ready || shapePanel || sketchTool || matchingPart) return
+              if (!ready || shapePanel || sketchTool) return
+              if (matchingPart) {
+                if (face !== undefined) { clearPreview(); setSelected(face) }
+                return
+              }
               if (section) {
                 if (face !== undefined && !section.editing) pickSectionFace(face)
                 return
@@ -1029,6 +1035,8 @@ export function App() {
               onPreview={(edit) => void requestPreview(() => previewSketchSolid(revision, edit))}
               onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}
             {matchingPart && revision !== undefined && <MatchingPartPanel threads={matchable} busy={busy}
+              roundFace={selected !== undefined && !model?.shape.faces[selected]?.planar}
+              onThread={(settings) => selected !== undefined && mutate(() => applyFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
               onChange={clearPreview} onClose={closeMatching}
               onPreview={(edit) => void requestPreview(() => previewShape(revision, edit))}
               onApply={(edit) => mutate(() => createShape(revision, edit), true)} />}

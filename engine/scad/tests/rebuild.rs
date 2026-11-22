@@ -979,3 +979,42 @@ fn a_section_replace_sets_the_replacement_into_the_target_face_and_uses_it_up() 
             .is_err()
     );
 }
+
+#[test]
+fn a_matching_thread_is_applied_to_an_existing_shaft_as_0_4_records_it() {
+    let shaft = occt::make_cylinder(15.0, 30.0).unwrap();
+    let before = occt::volume(&shaft);
+    let mut model = Model::new_box(occt::write_brep(&shaft).unwrap()).unwrap();
+    let side = (0..occt::faces(&shaft).unwrap().len() as u32)
+        .find(|&i| occt::face_fingerprint(&shaft, i).unwrap().geometry == "cylinder")
+        .unwrap();
+    let picked = scad::align::PickedFace {
+        name: "Box",
+        shape: &shaft,
+        index: side,
+    };
+    let inputs = json!({"designation": "M30", "clearance": "normal", "resize": false});
+    let threaded =
+        scad::rebuild::create_face_feature(&mut model, picked, "matching_thread", inputs, None)
+            .unwrap();
+    assert!(
+        occt::volume(&threaded) < before,
+        "the thread is cut into the shaft"
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.kind.as_str()),
+        ("Matching Thread", "matching_thread")
+    );
+    assert_eq!(step.face_settings.unwrap()["clearance"], "normal");
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    let inputs = &saved.model["features"].as_array().unwrap().last().unwrap()["inputs"];
+    assert_eq!(
+        (
+            &inputs["thread_modelled"],
+            &inputs["thread_internal"],
+            &inputs["form"]
+        ),
+        (&json!(false), &json!(false), &json!("printed"))
+    );
+}

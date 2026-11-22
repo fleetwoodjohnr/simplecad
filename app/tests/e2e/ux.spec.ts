@@ -205,7 +205,7 @@ test('groups bodies from the Bodies list, through undo, a worker restart and reo
 
     await bodies.getByRole('button', { name: 'Box', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Group', exact: true })).toHaveCount(0)
-    await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click({ modifiers: ['Control'] })
+    await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click({ modifiers: ['ControlOrMeta'] })
     await page.getByRole('button', { name: 'Group', exact: true }).click()
     const group = bodies.getByRole('list', { name: 'Group' })
     await expect(group.getByRole('button', { name: /^(Box|Cylinder)$/ })).toHaveCount(2)
