@@ -1126,3 +1126,44 @@ fn a_saved_move_edits_its_offset_from_history_and_keeps_the_rest_as_made() {
         20.0
     );
 }
+
+#[test]
+fn a_vent_plate_is_made_from_the_shapes_and_a_vent_is_cut_into_a_face() {
+    let solid = occt::make_box(40.0, 40.0, 4.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let (name, plate) = scad::rebuild::create_primitive(
+        &mut model,
+        "vent_plate",
+        json!({"width": "60 mm", "depth": "60 mm", "thickness": "3 mm", "across_flats": "5 mm", "wall": "1.2 mm", "margin": "2 mm", "x": "100 mm"}),
+    )
+    .unwrap();
+    assert_eq!(name, "Vent");
+    let full = 60.0 * 60.0 * 3.0;
+    assert!(
+        occt::volume(&plate) < 0.6 * full && occt::volume(&plate) > 0.1 * full,
+        "a plate full of hexagonal holes"
+    );
+
+    let top = (0..occt::faces(&solid).unwrap().len() as u32)
+        .find(|&i| occt::face_fingerprint(&solid, i).unwrap().center[2] > 3.9)
+        .unwrap();
+    let picked = scad::align::PickedFace {
+        name: "Box",
+        shape: &solid,
+        index: top,
+    };
+    let inputs = json!({"across_flats": "5 mm", "wall": "1.2 mm", "margin": "2 mm"});
+    let vented =
+        scad::rebuild::create_face_feature(&mut model, picked, "vent_cut", inputs, None).unwrap();
+    // Hexagonal holes through the 4 mm plate take about a third of it, inside the 2 mm border.
+    let ratio = occt::volume(&vented) / occt::volume(&solid);
+    assert!((0.5..0.8).contains(&ratio), "{ratio}");
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (
+            step.kind.as_str(),
+            step.face_settings.unwrap()["wall"].as_str()
+        ),
+        ("vent_cut", "1.2 mm")
+    );
+}

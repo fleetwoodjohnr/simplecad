@@ -1882,6 +1882,14 @@ fn shape_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "cross" => &["size", "arm_width", "height"],
         "crescent" => &["size", "thickness", "height"],
         "polygon_prism" => &["sides", "across_corners", "across_flats", "height"],
+        "vent_plate" => &[
+            "width",
+            "depth",
+            "thickness",
+            "across_flats",
+            "wall",
+            "margin",
+        ],
         _ => return None,
     })
 }
@@ -1911,6 +1919,7 @@ fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         // A Move's offsets or a Rotate's angles; its axis, order and pivot stay as made.
         "move" => Some(&["dx", "dy", "dz", "rx", "ry", "rz", "angle"]),
         "resize_round" => Some(&["delta"]),
+        "vent_cut" => Some(&["across_flats", "wall", "margin"]),
         "matching_thread" => Some(&["clearance", "form", "length", "left_hand", "resize"]),
         "fillet" => Some(&["radius"]),
         "chamfer" => Some(&["distance"]),

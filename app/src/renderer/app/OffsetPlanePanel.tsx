@@ -51,3 +51,28 @@ function FaceValuePanel({ busy, planar, preset, onApply, onChange, onCancel, nam
     </div>
   </form>
 }
+
+export const defaultVent = { across_flats: '5 mm', wall: '1.2 mm', margin: '2 mm' }
+const ventFields = [['across_flats', 'Hole size'], ['wall', 'Wall'], ['margin', 'Border']] as const
+
+/** Hexagonal vent holes through the selected flat face, as SimpleCAD 0.4's Vent tool makes them. */
+export function VentPanel({ busy, planar, preset, onApply, onChange, onCancel }: Omit<Props, 'onApply'> & {
+  onApply: (settings: typeof defaultVent) => void
+}) {
+  const [values, setValues] = useState({ ...defaultVent, ...preset })
+  const enabled = !busy && planar && ventFields.every(([key]) => values[key].trim())
+  return <form aria-label="Vent" className="grid gap-2 text-xs" onSubmit={(event) => {
+    event.preventDefault()
+    if (enabled) onApply(values)
+  }}>
+    {!planar && <p>Select the flat face to vent.</p>}
+    {ventFields.map(([key, label]) => <label key={key} className="grid gap-1">{label}
+      <input className={inputCls} value={values[key]} maxLength={256} disabled={busy}
+        onChange={(event) => { setValues((current) => ({ ...current, [key]: event.target.value })); onChange() }} />
+    </label>)}
+    <div className="flex gap-1">
+      <Btn type="submit" size="sm" variant="primary" disabled={!enabled}>Apply</Btn>
+      <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
+    </div>
+  </form>
+}

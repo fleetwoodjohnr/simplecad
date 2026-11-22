@@ -18,6 +18,8 @@ const shapes: Record<string, { label: string; fields: Field[] }> = {
   oval: { label: 'Oval', fields: dimensions(40, 25, 10) },
   pill: { label: 'Pill', fields: dimensions(40, 15, 10) },
   star: { label: 'Star', fields: [size, ['inner_ratio', 'Inset', 0.45], height(10)] },
+  vent_plate: { label: 'Vent plate', fields: [['width', 'Width', 60], ['depth', 'Depth', 60], ['thickness', 'Thickness', 3],
+    ['across_flats', 'Hole size', 5], ['wall', 'Wall', 1.2], ['margin', 'Border', 2]] },
   heart: { label: 'Heart', fields: [size, height(10)] },
   cross: { label: 'Cross', fields: [size, ['arm_width', 'Arm width', 10], height(10)] },
   crescent: { label: 'Crescent', fields: [size, ['thickness', 'Thickness', 8], height(10)] },

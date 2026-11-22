@@ -537,6 +537,7 @@ pub fn create_primitive(
         "cross" => (kind, "Cross", None),
         "crescent" => (kind, "Crescent", None),
         "lightning" => (kind, "Lightning", None),
+        "vent_plate" => (kind, "Vent", None),
         "triangle" => ("polygon_prism", "Triangle", Some(3)),
         "pentagon" => ("polygon_prism", "Pentagon", Some(5)),
         "hexagon" => ("polygon_prism", "Hexagon", Some(6)),
@@ -608,6 +609,7 @@ pub fn create_face_feature(
         "shell" => "Shell",
         "matching_thread" => "Matching Thread",
         "resize_round" => "Resize",
+        "vent_cut" => "Vent",
         _ => return Err("Choose a face operation.".into()),
     };
     if !inputs.is_object() {

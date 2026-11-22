@@ -444,6 +444,7 @@ export class EngineDocument {
         case 'offset_plane': return { ...pick, faceOperation: 'offset_plane', settings: edit.settings }
         case 'shell': return { ...pick, faceOperation: 'shell', settings: edit.settings }
         case 'resize_round': return { ...pick, faceOperation: 'resize_round', settings: edit.settings }
+        case 'vent_cut': return { ...pick, faceOperation: 'vent_cut', settings: edit.settings }
         case 'text': return { ...pick, faceOperation: 'text', settings: edit.settings }
         case 'face_texture': return { ...pick, faceOperation: 'face_texture', settings: edit.settings }
         case 'hole': return { ...pick, faceOperation: 'hole', settings: edit.settings, position: edit.position, untilBody: edit.untilBody }

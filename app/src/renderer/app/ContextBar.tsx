@@ -18,7 +18,7 @@ interface Props {
 const planarTools: [CommandId, LucideIcon][] = [
   ['move', Move], ['rotate', Rotate3d], ['sketch', PenLine], ['hole', CircleDot], ['offsetPlane', SquareDashed]
 ]
-const planarMore: CommandId[] = ['shell', 'text', 'faceTexture', 'stack', 'measure', 'clear']
+const planarMore: CommandId[] = ['shell', 'vent', 'text', 'faceTexture', 'stack', 'measure', 'clear']
 const curvedTools: [CommandId, LucideIcon][] = [['thread', Spline], ['move', Move], ['rotate', Rotate3d]]
 
 /** The tools for what is selected, beside it in the view: the pull distance first, then the rest. */

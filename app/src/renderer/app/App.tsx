@@ -27,7 +27,7 @@ import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
-import { defaultOffsetPlane, defaultResize, defaultShell, OffsetPlanePanel, ResizePanel, ShellPanel } from './OffsetPlanePanel'
+import { defaultOffsetPlane, defaultResize, defaultShell, defaultVent, OffsetPlanePanel, ResizePanel, ShellPanel, VentPanel } from './OffsetPlanePanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
@@ -363,7 +363,7 @@ export function App() {
     if (!faceStep?.faceSettings) return
     const defaults = {
       text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings,
-      offset_plane: defaultOffsetPlane, shell: defaultShell, resize_round: defaultResize,
+      offset_plane: defaultOffsetPlane, shell: defaultShell, resize_round: defaultResize, vent_cut: defaultVent,
       matching_thread: { designation: '', clearance: 'normal', form: 'printed', left_hand: 'false', resize: 'false' }
     }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
@@ -732,6 +732,7 @@ export function App() {
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
     offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
     shell: { enabled: canUseFaceTool, run: () => openFaceTool('shell') },
+    vent: { enabled: canUseFaceTool, run: () => openFaceTool('vent_cut') },
     extrude: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('extrude') },
     revolve: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('revolve') },
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw a profile and a path', run: () => openSketchTool('sweep') },
@@ -1064,6 +1065,10 @@ export function App() {
               onChange={clearPreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
+            {faceTool === 'vent_cut' && <VentPanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
+              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'vent_cut', settings })} />}
             {faceTool === 'resize_round' && <ResizePanel key={editingFace ?? 'new'} busy={busy}
               planar={!!faceStep || selected !== undefined}
               preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
@@ -1167,7 +1172,7 @@ export function App() {
                             return
                           }
                           setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round') {
+                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round' || step.kind === 'vent_cut') {
                             setFaceTool(step.kind)
                           }
                         }
