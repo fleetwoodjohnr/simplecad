@@ -922,3 +922,60 @@ fn a_combine_that_lost_two_tools_is_repaired_with_both_replacements_at_once() {
         ("ok", true)
     );
 }
+
+#[test]
+fn a_section_replace_sets_the_replacement_into_the_target_face_and_uses_it_up() {
+    let plate = occt::make_box(40.0, 40.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&plate).unwrap()).unwrap();
+    let (insert, block) = scad::rebuild::create_primitive(
+        &mut model,
+        "box",
+        json!({"width": "10 mm", "depth": "10 mm", "height": "5 mm", "x": "100 mm"}),
+    )
+    .unwrap();
+    let id = |model: &Model, name: &str| {
+        model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let face = |shape: &occt::Shape, z: f64| {
+        (0..occt::faces(shape).unwrap().len() as u32)
+            .find(|&i| {
+                let f = occt::face_fingerprint(shape, i).unwrap();
+                f.geometry == "plane" && (f.center[2] - z).abs() < 1e-9
+            })
+            .unwrap()
+    };
+    let (top, bottom) = (face(&plate, 10.0), face(&block, 0.0));
+    let shown = HashMap::from([
+        (id(&model, "Box"), Rc::new(plate)),
+        (id(&model, &insert), Rc::new(block)),
+    ]);
+    let inputs = json!({"moving_anchor": "center", "target_anchor": "center", "u": "0", "v": "0",
+        "boundary": "0.5 mm", "setback": "0"});
+    let report = model
+        .add_section_replace(("Box", top), (&insert, bottom), inputs, &[], &shown)
+        .unwrap();
+    let names: Vec<_> = report.bodies.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, ["Box"], "the replacement is used up");
+    // The plate less a 9 × 9 through-cut, plus the 10 × 10 × 5 block, less their 0.5 mm overlap ring.
+    let volume = occt::volume(report.bodies[0].shape.as_ref().unwrap());
+    assert!((volume - 15_595.0).abs() < 1e-4, "{volume}");
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.state.as_str()),
+        ("Section Replace", "ok")
+    );
+    assert_eq!(step.face_settings.unwrap()["boundary"], "0.5 mm");
+    assert!(
+        model
+            .add_section_replace(("Box", top), ("Box", top), json!({}), &[], &shown)
+            .is_err()
+    );
+}

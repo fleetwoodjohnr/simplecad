@@ -735,6 +735,30 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
+    /// Section Replace: the replacement body's face set into the target's; `inputs` is its settings as JSON.
+    #[napi]
+    pub fn add_section_replace(
+        &self,
+        target: BodyPart,
+        replacement: BodyPart,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The section settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_section_replace(
+                (&target.body, target.index),
+                (&replacement.body, replacement.index),
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// The groups: each name with its members (bodies or other groups).
     #[napi]
     pub fn groups(&self) -> Vec<Group> {

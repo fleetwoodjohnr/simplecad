@@ -42,7 +42,7 @@ test('the ribbon groups the tools, and the selection bar offers what fits the fa
   const { page } = await launch()
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
-  for (const group of ['Create', 'Modify', 'Place', 'Construct', 'Inspect']) {
+  for (const group of ['Create', 'Modify', 'Combine', 'Place', 'Construct', 'Inspect']) {
     await expect(toolbar.getByRole('group', { name: group, exact: true })).toBeVisible()
   }
   const pushPull = toolbar.getByRole('button', { name: 'Push/Pull', exact: true })

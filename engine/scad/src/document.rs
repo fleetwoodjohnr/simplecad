@@ -967,6 +967,48 @@ impl Model {
         Ok(reference)
     }
 
+    /// Section Replace: the replacement body's picked face set into the target body's picked face,
+    /// written as SimpleCAD 0.4 writes it. The target is changed in place; the replacement is used up.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_section_replace(
+        &mut self,
+        target: (&str, u32),
+        replacement: (&str, u32),
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if target.0 == replacement.0 {
+            return Err(
+                "Pick the replacement's face on a different body from the target's.".into(),
+            );
+        }
+        if !inputs.is_object() {
+            return Err("The section settings could not be read.".into());
+        }
+        let mut bindings = Map::new();
+        for (key, (body, index)) in [("target", target), ("replacement", replacement)] {
+            let (producer, object) = self.editable(body)?;
+            let shape = shown.get(&object).ok_or("Select a body with geometry.")?;
+            inputs[key] = json!({ "__body__": body, "feature_id": producer, "object_id": object });
+            inputs[format!("{key}_face")] =
+                json!({ "__ref__": self.anchored_face_ref(body, &object, shape, index)? });
+            bindings.insert(
+                body.to_owned(),
+                json!({ "feature_id": producer, "object_id": object }),
+            );
+        }
+        let object = bindings[target.0]["object_id"].clone();
+        let mut candidate = self.clone();
+        let name = candidate.unique_name("Section Replace");
+        let feature = json!({
+            "id": new_feature_id(), "type": "section_replace", "name": name, "outputs": [target.0],
+            "output_ids": { target.0: object }, "inputs": inputs, "bindings": bindings,
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, "Section Replace", original, shown)
+    }
+
     /// Midplane, Plane at Angle, Plane through Points, Tangent Plane, Axis or Point, written as SimpleCAD 0.4
     /// writes them: the picked faces and edges by reference, each body bound by object ID, and the
     /// settings in `inputs` (expressions, or a Plane through Points' three `points`).
@@ -1854,6 +1896,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "boolean" => &["operation", "keep_tool"],
         "split" => &["position"],
         "arrange" => &["mode", "axis", "gap"],
+        "section_replace" => &["u", "v", "boundary", "setback"],
         _ => return None,
     })
 }

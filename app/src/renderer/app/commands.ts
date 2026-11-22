@@ -47,6 +47,7 @@ export const commands = {
   scale: { label: 'Scale' },
   combine: { label: 'Combine' },
   split: { label: 'Split' },
+  sectionReplace: { label: 'Section Replace' },
   shell: { label: 'Shell' },
   fillet: { label: 'Fillet' },
   midplane: { label: 'Midplane' },

@@ -1,5 +1,5 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type ConstructionEdit, type ArrangeEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -21,6 +21,8 @@ export interface Project {
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   groups(): { name: string; members: string[] }[]
   addArrangement(bodies: string[], inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  addSectionReplace(target: { body: string; index: number }, replacement: { body: string; index: number }, inputs: string,
+    shown: { id?: string; name: string; shape: Shape }[]): State
   addConstruction(kind: string, faces: { body: string; index: number }[], edges: { body: string; index: number }[],
     inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   group(members: string[]): Project
@@ -197,12 +199,13 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | ArrangeEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
       'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'arrange' in edit ? { arrange: edit.arrange, inputs: edit.inputs } :
+      'sectionTarget' in edit ? { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
       'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } :
       'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
@@ -271,7 +274,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -309,6 +312,8 @@ export class EngineDocument {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else if ('group' in edit) {
       step = { group: edit.group }
+    } else if ('sectionTarget' in edit) {
+      step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
       step = { arrange: edit.arrange, inputs: edit.inputs }
     } else if ('construction' in edit) {
@@ -527,6 +532,14 @@ export class EngineDocument {
       if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
       const created = project.addShape(step.shapeKind, step.values)
       return { bodies: [...bodies, { name: created.name, shape: created.shape }], project: created.project }
+    }
+    if ('sectionTarget' in step) {
+      const [target, replacement] = [step.sectionTarget, step.sectionReplacement].map((face) => {
+        const pick = this.pick(face)
+        return { body: bodies[pick.body].name, index: pick.face }
+      })
+      if (target.body === replacement.body) throw new Error('Pick the replacement on a different body from the target.')
+      return this.rebuiltState(project.addSectionReplace(target, replacement, JSON.stringify(step.inputs), this.shapes(bodies)))
     }
     if ('arrange' in step) {
       const names = step.arrange.map((index) => {

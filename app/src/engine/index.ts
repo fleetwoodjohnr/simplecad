@@ -49,6 +49,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'previewBodyOperation':
       case 'previewEdgeFinish':
       case 'previewArrange':
+      case 'previewSectionReplace':
       case 'previewSketchSolid':
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
@@ -59,6 +60,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'applyEdgeFinish':
       case 'applyConstruction':
       case 'applyArrange':
+      case 'applySectionReplace':
       case 'group':
       case 'ungroup':
       case 'importModel':

@@ -74,6 +74,13 @@ export interface ConstructionEdit {
 }
 /** Line bodies (by index) up along a world axis, with equal gaps or a fixed one. */
 export interface ArrangeEdit { arrange: number[]; inputs: { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string } }
+export const ANCHORS = ['top_left', 'top', 'top_right', 'left', 'center', 'right', 'bottom_left', 'bottom', 'bottom_right'] as const
+/** Section Replace: the replacement body's face (display index) set into the target's face, anchored and offset. */
+export interface SectionReplaceEdit {
+  sectionTarget: number
+  sectionReplacement: number
+  inputs: { moving_anchor: typeof ANCHORS[number]; target_anchor: typeof ANCHORS[number]; u: string; v: string; boundary: string; setback: string }
+}
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
 export interface UngroupEdit { ungroup: string }
@@ -176,7 +183,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit
 
 export interface Checkpoint {
   source: Source
@@ -242,6 +249,7 @@ export type RendererCommand =
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'applyConstruction'; revision: number } & ConstructionEdit)
   | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
+  | ({ op: 'applySectionReplace' | 'previewSectionReplace'; revision: number } & SectionReplaceEdit)
   | ({ op: 'ungroup'; revision: number } & UngroupEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
@@ -342,6 +350,15 @@ function isEdgeFinish(value: unknown): value is EdgeFinishEdit {
     typeof amount === 'string' && amount.trim().length > 0 && amount.length < 256
 }
 
+function isSectionReplace(value: unknown): value is SectionReplaceEdit {
+  if (!value || typeof value !== 'object') return false
+  const { sectionTarget, sectionReplacement, inputs } = value as Partial<SectionReplaceEdit>
+  const expression = (text: unknown) => typeof text === 'string' && text.trim().length > 0 && text.length < 256
+  return isIndex(sectionTarget) && sectionTarget <= 0xffffffff && isIndex(sectionReplacement) && sectionReplacement <= 0xffffffff &&
+    sectionTarget !== sectionReplacement && !!inputs && ANCHORS.includes(inputs.moving_anchor) && ANCHORS.includes(inputs.target_anchor) &&
+    expression(inputs.u) && expression(inputs.v) && expression(inputs.boundary) && expression(inputs.setback) && Object.keys(inputs).length === 6
+}
+
 function isArrange(value: unknown): value is ArrangeEdit {
   if (!value || typeof value !== 'object') return false
   const { arrange, inputs } = value as Partial<ArrangeEdit>
@@ -385,7 +402,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value) || isConstruction(value) || isArrange(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -532,6 +549,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'group' && isGroup(m)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
+        ((m.op === 'applySectionReplace' || m.op === 'previewSectionReplace') && isSectionReplace(m)) ||
         ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||
