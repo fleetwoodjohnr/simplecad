@@ -1168,6 +1168,13 @@ pub struct Measurement {
     pub unit: String,
 }
 
+/// Rebuild named fits with this saved printer calibration (SimpleCAD 0.4's user profile JSON); none for the
+/// shipped values.
+#[napi]
+pub fn set_calibration(profile: Option<String>) -> Result<()> {
+    scad::calibration::set(profile.as_deref()).map_err(Error::from_reason)
+}
+
 /// The B-rep half of the print check, for one body.
 #[napi]
 pub fn body_health(shape: &Shape, min_feature: f64) -> Result<BodyHealth> {

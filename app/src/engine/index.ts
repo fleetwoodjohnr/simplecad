@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { checkRendererRequest, type BodyHealth, type EngineResponse, type Measurement, type MeshFormat } from '../shared/engine-protocol'
 import { defaultPrinter } from '../shared/printing'
@@ -19,6 +19,7 @@ interface Addon {
   exportStep(parts: Shape[]): Buffer
   measureShapes(parts: ReturnType<EngineDocument['measurementPicks']>): Measurement[]
   bodyHealth(shape: Shape, minFeature: number): Omit<BodyHealth, 'name'>
+  setCalibration(profile?: string): void
   crash(): void
 }
 
@@ -31,6 +32,23 @@ const opened = ({ bodies, notes, project }: AddonProject) => ({
 })
 const document = new EngineDocument(() => opened(addon.newProject()), (data) => opened(addon.openProject(buffer(data))))
 let port: PortLike | null = null
+
+/** Named fits rebuild with the printer's saved calibration, as in SimpleCAD 0.4; read again after each save. */
+function calibrate() {
+  let profile: string | undefined
+  try {
+    profile = readFileSync(process.env.SIMPLECAD_PRINTER_PROFILE!, 'utf8')
+  } catch {
+    // Not calibrated.
+  }
+  try {
+    addon.setCalibration(profile)
+  } catch {
+    // A damaged file is an uncalibrated printer, as 0.4's load_measurements has it.
+    addon.setCalibration(undefined)
+  }
+}
+calibrate()
 
 function onRenderer(channel: PortLike, data: unknown) {
   const rawId = data && typeof data === 'object' && 'id' in data ? data.id : undefined
@@ -77,6 +95,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
+      case 'calibrate': calibrate(); result = ''; break
       case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape, defaultPrinter.minFeature) })); break
       case 'export': result = new Uint8Array(req.format === 'step'
         ? addon.exportStep(document.exportShapes(req.revision).map(({ shape }) => shape))

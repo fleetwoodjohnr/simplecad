@@ -3,6 +3,7 @@
 
 import { app, MessageChannelMain, utilityProcess, type UtilityProcess, type WebContents } from 'electron'
 import { rmSync } from 'node:fs'
+import { calibrationPath } from './calibration'
 import path from 'node:path'
 
 export class EngineHost {
@@ -31,7 +32,7 @@ export class EngineHost {
       const child = utilityProcess.fork(path.join(__dirname, 'engine.js'), [], {
         serviceName: 'SimpleCAD geometry engine',
         stdio: 'inherit',
-        env: { ...process.env, ...this.env, SIMPLECAD_ENGINE_ADDON: this.addon, SIMPLECAD_IGES_SCRATCH_FILE: igesFile }
+        env: { ...process.env, ...this.env, SIMPLECAD_ENGINE_ADDON: this.addon, SIMPLECAD_PRINTER_PROFILE: calibrationPath(), SIMPLECAD_IGES_SCRATCH_FILE: igesFile }
       })
       this.child = child
       child.once('spawn', () => resolve())

@@ -41,6 +41,7 @@ export const commands = {
   arrange: { label: 'Arrange' },
   measure: { label: 'Measure' },
   printCheck: { label: 'Print check' },
+  fitClearance: { label: 'Fit & Clearance' },
   move: { label: 'Move' },
   mirror: { label: 'Mirror' },
   rectangularPattern: { label: 'Rectangular Pattern' },

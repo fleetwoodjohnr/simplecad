@@ -312,3 +312,30 @@ test('orients a part stood on end to its lowest flat lay and drops it on the pla
   await panel.getByRole('button', { name: 'Orient each', exact: true }).click()
   await expect(page.getByRole('alert')).toHaveText('Every part is already in the best of its six flat lays.')
 })
+
+test('saves measured fits as SimpleCAD 0.4’s printer calibration, and reads them back', async () => {
+  const userData = await mkdtemp(path.join(os.tmpdir(), 'scad-fit-'))
+  try {
+    const { page } = await launch({ userData })
+    await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+    await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Print check', exact: true }).click()
+    await page.getByRole('region', { name: 'Print check' }).getByRole('button', { name: 'Fit & Clearance' }).click()
+    const form = page.getByRole('form', { name: 'Fit & Clearance' })
+    await expect(form.getByRole('status', { name: 'Calibration' })).toHaveText(/using shipped defaults/)
+    await expect(form.getByLabel('Snug Fit (mm)')).toHaveValue('0.15')
+    await form.getByLabel('Snug Fit (mm)').fill('0.22')
+    await form.getByLabel('Normal thread clearance (mm, diametral)').fill('0.45')
+    await form.getByRole('button', { name: 'Save measurements' }).click()
+    await expect(page.getByRole('status', { name: 'Notice' })).toHaveText(/Saved/)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    const saved = JSON.parse(await readFile(path.join(userData, 'printer-profile.json'), 'utf8'))
+    expect(saved).toMatchObject({ calibrated: true, measured_fits: { snug: 0.22 }, measured_thread_clearance: 0.45 })
+
+    await form.getByRole('button', { name: 'Close' }).click()
+    await page.getByRole('region', { name: 'Print check' }).getByRole('button', { name: 'Fit & Clearance' }).click()
+    await expect(form.getByRole('status', { name: 'Calibration' })).toHaveText(/using your measured values/)
+    await expect(form.getByLabel('Snug Fit (mm)')).toHaveValue('0.22')
+  } finally {
+    await rm(userData, { recursive: true, force: true })
+  }
+})

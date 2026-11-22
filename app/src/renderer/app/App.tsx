@@ -4,7 +4,7 @@ import type { BodyHealth, BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOp
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -14,6 +14,7 @@ import { ArrangePanel } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
 import { PrintCheckPanel } from './PrintCheckPanel'
+import { FitPanel } from './FitPanel'
 import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
@@ -172,6 +173,7 @@ export function App() {
   /** A passing word on what just happened outside the model, such as the slicer it was sent to. */
   const [notice, setNotice] = useState('')
   const [printCheck, setPrintCheck] = useState(false)
+  const [fitPanel, setFitPanel] = useState(false)
   /** The engine's half of the print check, for the shown model. */
   const [health, setHealth] = useState<BodyHealth[]>()
   const [viewportError, setViewportError] = useState('')
@@ -791,6 +793,7 @@ export function App() {
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
     settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
     printCheck: { enabled: !!model, run: () => setPrintCheck(true) },
+    fitClearance: { enabled: true, run: () => setFitPanel(true) },
     slicer: { enabled: ready && !!model?.shape.indices.length, hint: 'Show a body first', run: () => {
       if (revision === undefined) return
       setNotice('')
@@ -1023,7 +1026,16 @@ export function App() {
               onCancel={cancelTransform} />}
             {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
               busy={busy} onPlate={(how) => { if (revision !== undefined) mutate(() => placeOnPlate(revision, how)) }}
-              onClose={() => setPrintCheck(false)} />}
+              onFit={() => setFitPanel(true)} onClose={() => setPrintCheck(false)} />}
+            {fitPanel && <FitPanel busy={busy} onClose={() => setFitPanel(false)} onSave={async (measured) => {
+              try {
+                await window.simplecad.saveCalibration(measured)
+                await reloadCalibration()
+                setNotice('Saved. Fits and threads rebuilt from now on use these clearances.')
+              } catch (failure) {
+                setError((failure as Error).message)
+              }
+            }} />}
             {model && editingMove && revision !== undefined && (() => {
               const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
               return step?.faceSettings && <StepSettingsPanel key={step.id} name={step.name} busy={busy} preset={step.faceSettings}

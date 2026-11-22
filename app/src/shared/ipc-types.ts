@@ -2,6 +2,8 @@ import type { Preferences } from './preferences'
 import type { ExportFormat, ModelImport } from './engine-protocol'
 
 export interface OfferedProject { name: string; data: Uint8Array; token: string }
+/** A printer's fit clearances (fits.json keys) and Normal thread clearance, mm; calibrated once measured. */
+export interface Calibration { calibrated: boolean; fits: Record<string, number>; thread: number }
 
 /** What preload exposes to the page as `window.simplecad`. */
 export interface SimpleCadApi {
@@ -16,6 +18,8 @@ export interface SimpleCadApi {
   saveExport(data: Uint8Array, format: ExportFormat): Promise<string | undefined>
   /** Writes the model as 3MF and opens it in a slicer; resolves to the slicer's name. */
   sendToSlicer(data: Uint8Array): Promise<string>
+  readCalibration(): Promise<Calibration>
+  saveCalibration(measured: Pick<Calibration, 'fits' | 'thread'>): Promise<void>
   confirmDiscard(): Promise<boolean>
   /** The session no longer has a file: the next Save asks where. */
   newFile(): Promise<void>

@@ -2,6 +2,7 @@
 
 mod advanced;
 pub mod align;
+pub mod calibration;
 mod clip;
 mod construction;
 pub mod document;

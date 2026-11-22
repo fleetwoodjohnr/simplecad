@@ -19,7 +19,6 @@ const DATA: [&str; 6] = [
     include_str!("../../../simplecad/data/threads/bsp.json"),
     include_str!("../../../simplecad/data/threads/npt.json"),
 ];
-const FITS: &str = include_str!("../../../simplecad/data/fits.json");
 const PRINTER: &str =
     include_str!("../../../simplecad/data/printers/elegoo_centauri_carbon_2.json");
 
@@ -79,8 +78,6 @@ fn depth(pitch: f64, angle: f64, iso: bool) -> f64 {
 }
 
 fn clearance(value: Option<&Value>) -> Result<f64, StepError> {
-    static TABLE: OnceLock<Value> = OnceLock::new();
-    let table = TABLE.get_or_init(|| serde_json::from_str(FITS).expect("embedded fits table"));
     if let Some(value) = value.and_then(Value::as_f64) {
         return if value >= 0.0 {
             Ok(value)
@@ -89,8 +86,7 @@ fn clearance(value: Option<&Value>) -> Result<f64, StepError> {
         };
     }
     let name = value.and_then(Value::as_str).unwrap_or("normal");
-    table["thread_clearance"][name]["clearance"]
-        .as_f64()
+    crate::calibration::thread_clearance(name)
         .ok_or_else(|| failed(format!("Unknown thread-clearance preset: {name}")))
 }
 

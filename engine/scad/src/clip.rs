@@ -7,9 +7,6 @@ use occt::{ClipPlacementSpec, ClipSpec};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::OnceLock;
-
-const FITS: &str = include_str!("../../../simplecad/data/fits.json");
 
 fn kernel(error: occt::Exception) -> StepError {
     failed(error.what())
@@ -47,13 +44,9 @@ fn dimensions(ctx: &Context<'_>) -> Result<ClipSpec, StepError> {
         _ => return Err(failed(format!("Unknown clip retention: {retention}"))),
     };
     let length = |key, default| ctx.value(key, default, Dimension::Length);
-    static TABLE: OnceLock<Value> = OnceLock::new();
-    let table = TABLE.get_or_init(|| serde_json::from_str(FITS).expect("embedded fits table"));
     let fit = choice("clearance", "snug");
     let clearance = if matches!(fit.as_str(), "press" | "snug" | "sliding" | "loose") {
-        table["fits"][&fit]["clearance"]
-            .as_f64()
-            .expect("embedded clip clearance")
+        crate::calibration::fit(&fit).expect("embedded clip clearance")
     } else {
         length("clearance", 0.15)?
     };

@@ -9,6 +9,7 @@ import { checkForUpdates } from './update-dialog'
 import { readLegacyPreferences } from './preferences'
 import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, projectName, saveExportFile, saveProjectFile } from './project-files'
 import { sendToSlicer } from './slicer'
+import { calibrationPath, readCalibration, saveCalibration } from './calibration'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
 const isMac = process.platform === 'darwin'
@@ -127,6 +128,8 @@ function registerIpc() {
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
   handle('export:save', (_event, data: unknown, format: unknown) => mainWindow ? saveExportFile(mainWindow, data, format) : undefined)
   handle('slicer:send', (_event, data: unknown) => sendToSlicer(data, projectName()))
+  handle('calibration:read', () => readCalibration())
+  handle('calibration:save', (_event, data: unknown) => saveCalibration(data))
   handle('project:new', () => forgetProjectFile())
   handle('recovery:pending', async () => {
     const [newest] = await leftovers(recovery, autosaveFile)
