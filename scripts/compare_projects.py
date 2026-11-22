@@ -24,6 +24,7 @@ reopen. A missing stage or an unported operation fails the comparison.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -32,6 +33,21 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: SimpleCAD 0.4 defects the port deliberately does not reproduce, pinned to one exact file. Those bodies
+#: are left out of the comparison with 0.4, and Rust must instead hold each of them as it displays them
+#: at every stage. Any other difference in the file still fails.
+_KNOWN = {
+    # Atlas Box.scad3, saved 2026-11-19 19:41.
+    "7ddcf560a356a2e1eb9db18544b1607a2b9e92d90f2124fd1d8cfe60d3fe2f3f": {
+        "bodies": ("Box12", "Document 3"),
+        "why": "0.4 keys rebuilt bodies by display name (core/rebuild.py, document.bodies), so the deleted "
+               "Box12 cutter that Combine26 and Align64 still use collides with the replacement Box12, and "
+               "a full Redo aligns Document 3 to the wrong one. The port keeps both by object ID: the "
+               "replacement shows as Box12, and Combine26 and Align64 offer Repair input.",
+    },
+}
+#: The stages that hold the file's current model; a full Undo is another state and is compared as usual.
+_CURRENT_STAGES = ("displayed", "cached_rebuild", "recipe_rebuild", "redo_all")
 _DUMP_STAGES = {"loaded": dict, "displayed": dict, "signatures": dict, "fingerprints": dict, "document": dict}
 _HISTORY_STAGES = {"undo_all": dict, "redo_all": dict, "undo_steps": int, "redo_steps": int,
                    "undo_diagnostics": dict, "redo_diagnostics": dict}
@@ -217,6 +233,47 @@ def align_results(path: str) -> dict:
     return results
 
 
+def pull_control(path: str, body: str, face: str, target: str) -> dict:
+    """Run inside one tree: what ``scad pull <path> <body> <face> 1,1 <target> 1`` does, done here.
+
+    Two 1 mm pulls on face *face* of *body*'s saved geometry, the second undone, saved to *target*.
+    A file the reference cannot itself rebuild cleanly is checked against this control edit.
+    """
+    import simplecad.kernel  # noqa: F401 - registers every feature type
+    from simplecad.core.document import BodyRef
+    from simplecad.core.history import History
+    from simplecad.core.naming import make_ref, sub_shapes
+    from simplecad.core.project import load, save
+    from simplecad.core.rebuild import Rebuilder
+    from simplecad.kernel.occ import volume
+    from simplecad.kernel.operations import PushPullFeature
+
+    document, _ = load(path)
+    rebuilder = Rebuilder(document)
+    rebuilder.adopt_baseline()
+    rebuilder.rebuild()
+    history = History(document)
+    volumes = []
+    for _ in range(2):
+        saved = document.body(body)
+        target_face = sub_shapes(saved.shape, "face")[int(face)]
+        history.record("Pull")
+        document.add_feature(PushPullFeature(
+            inputs={"body": BodyRef(body), "face": make_ref(saved.shape, target_face, saved.producer, body=body),
+                    "distance": 1.0},
+            outputs=[body],
+        ))
+        report = rebuilder.rebuild()
+        pulled = document.body(body)
+        if pulled is None or pulled.shape is None or pulled.producer in report.failures:
+            raise ValueError("the control pull failed in the reference")
+        volumes.append(abs(volume(pulled.shape)))
+    rebuilder.invalidate(history.undo())
+    rebuilder.rebuild()
+    save(document, target)
+    return {"volumes": volumes}
+
+
 def _resaved(path: str, target: str) -> str:
     """Run inside one tree: *path* saved here to *target*, as Save As does."""
     import simplecad.kernel  # noqa: F401 - registers every feature type
@@ -231,7 +288,11 @@ def _resaved(path: str, target: str) -> str:
     return save(document, target)
 
 
-def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference) -> list[str]:
+def _without(bodies, names):
+    return {name: body for name, body in bodies.items() if name not in names} if isinstance(bodies, dict) else bodies
+
+
+def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference, known=()) -> list[str]:
     """What is wrong with the files Rust saves from *path*, reopened here."""
     problems = []
     with tempfile.TemporaryDirectory() as scratch:
@@ -247,39 +308,95 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference) 
         _require_stages(ours, required, "Python reopening Rust Save As")
         _require_stages(theirs, required, "Python reopening Python Save As")
         for key in required:
+            if key == "bodies" and known:
+                ours[key], theirs[key] = _without(ours[key], known), _without(theirs[key], known)
             if ours.get(key) != theirs.get(key):
                 problems.append(f"saved as is, {key}: rust {str(ours.get(key))[:200]} python {str(theirs.get(key))[:200]}")
         if native:
             reopened = _rust_json(rust, "dump", plain)
             _require_stages(reopened, _DUMP_STAGES, "Rust reopening Rust Save As")
-            if _body_stage(reopened, "loaded") != theirs["bodies"]:
+            if _without(_body_stage(reopened, "loaded"), known) != theirs["bodies"]:
                 problems.append("Rust Save As reopens with different bodies in Rust than Python Save As does in Python")
-        # Two 1 mm pulls on the first planar face of the first body Rust shows, the second undone.
-        body = next((name for name, fingerprints in loaded.get("fingerprints", {}).items()
-                     if any(f["geometry"] == "plane" for f in fingerprints)), None)
-        if body is None:
-            return problems
-        face = next(i for i, f in enumerate(loaded["fingerprints"][body]) if f["geometry"] == "plane")
-        pulled = os.path.join(scratch, "pulled.scad3")
-        result = _rust_json(rust, "pull", path, body, str(face), "1,1", pulled, "1")
-        _require_stages(result, {"volumes": list}, "Rust pull")
-        volumes = result["volumes"]
-        if len(volumes) != 2 or any(type(volume) not in (float, int) for volume in volumes):
-            raise ValueError("Rust pull: expected two volumes")
-        reopened = reference(pulled, flag="--reopen-redo")
-        _require_stages(reopened, {**required, "redone": dict, "rebuild_failed": int, "redo_failed": int},
-                        "Python reopening Rust edit")
-        if not (reopened["cached"] and reopened["complete"]) and theirs.get("complete"):
-            problems.append("pulled: not reopened from its cache")
-        got = [reopened["bodies"].get(body, {}).get("volume"), reopened["redone"].get(body, {}).get("volume")]
-        if reopened["rebuild_failed"]:
-            problems.append(
-                "reference could not verify Redo after Rust Save As: "
-                f"{reopened['rebuild_failed']} steps failed to rebuild before Redo, "
-                f"{reopened['redo_failed']} after Redo"
-            )
-        elif got != [round(abs(v), 3) for v in volumes] or reopened["redo_failed"]:
-            problems.append(f"pulled {body} face {face}: rust volumes {volumes}, python reopened then redone {got}")
+        # Two 1 mm pulls on the first planar face of a body Rust shows, the second undone. A body Rust
+        # refuses to change (it waits on a repair) must be one the reference leaves unchanged too; the
+        # drill then moves on to the next body.
+        for body, fingerprints in loaded.get("fingerprints", {}).items():
+            face = next((i for i, f in enumerate(fingerprints) if f["geometry"] == "plane"), None)
+            if face is None:
+                continue
+            pulled = os.path.join(scratch, "pulled.scad3")
+            try:
+                result = _rust_json(rust, "pull", path, body, str(face), "1,1", pulled, "1")
+            except ValueError as exc:
+                if "Repair the step" not in str(exc):
+                    raise
+                made = reference(path, flag="--pull-control", extra=[body, str(face), os.path.join(scratch, "refused.scad3")])
+                before = loaded["loaded"].get(body, {}).get("volume")
+                # The reference refuses too if its own pull fails, or if it keeps the last valid model.
+                fails = "error" in made and "control pull failed" in str(made["error"])
+                keeps = "error" not in made and all(round(v, 3) == before for v in made["volumes"])
+                if not (fails or keeps):
+                    problems.append(f"Rust refuses to change {body}, but the reference changes it: {made}")
+                else:
+                    problems.append(f"NOTE: Rust refuses to change {body} until the step marked in History is "
+                                    f"repaired; the reference {'fails the same edit' if fails else 'leaves it unchanged'} "
+                                    f"({before} mm³)")
+                continue
+            _require_stages(result, {"volumes": list}, "Rust pull")
+            volumes = result["volumes"]
+            if len(volumes) != 2 or any(type(volume) not in (float, int) for volume in volumes):
+                raise ValueError("Rust pull: expected two volumes")
+            reopened = reference(pulled, flag="--reopen-redo")
+            _require_stages(reopened, {**required, "redone": dict, "rebuild_failed": int, "redo_failed": int},
+                            "Python reopening Rust edit")
+            if not (reopened["cached"] and reopened["complete"]) and theirs.get("complete"):
+                problems.append("pulled: not reopened from its cache")
+            got = [reopened["bodies"].get(body, {}).get("volume"), reopened["redone"].get(body, {}).get("volume")]
+            if reopened["rebuild_failed"]:
+                # The reference fails steps of this file on its own. Make the same edit there and require
+                # the Rust edit to reopen, fail and redo exactly as the reference's own edit does.
+                control = os.path.join(scratch, "control.scad3")
+                made = reference(path, flag="--pull-control", extra=[body, str(face), control])
+                expected = made if "error" in made else reference(control, flag="--reopen-redo")
+                if "error" in expected:
+                    problems.append(f"reference control edit failed: {expected['error']}")
+                    return problems
+                same = {key: reopened[key] == expected[key] for key in ("bodies", "redone", "rebuild_failed", "redo_failed")}
+                ours = [round(abs(v), 3) for v in volumes]
+                before = loaded["loaded"].get(body, {}).get("volume")
+                if before is not None and all(round(v, 3) == before for v in made["volumes"]):
+                    # The reference refuses this edit outright: the body's chain has failed steps, so 0.4 keeps
+                    # the last valid model. Verify Rust's edit and its Redo directly instead.
+                    area = loaded["fingerprints"][body][face]["measure"]
+                    history = _rust_json(rust, "history", pulled)
+                    _require_stages(history, {"redo_all": dict}, "Rust history of its edit")
+                    redone = _body_stage(history, "redo_all").get(body, {}).get("volume")
+                    steps = [b - a for a, b in zip([before, *ours], ours, strict=False)]
+                    if any(abs(step - area) > 1e-3 * max(1.0, area) for step in steps) or redone != ours[1]:
+                        problems.append(f"Rust's edit of {body}: volumes {before} → {ours}, face area {area:g}, "
+                                        f"Redo after reopening {redone}")
+                    else:
+                        problems.append(
+                            f"NOTE: 0.4 cannot edit {body} in this file ({reopened['rebuild_failed']} steps fail "
+                            f"there with or without the edit, so it keeps the last valid model). Rust's two 1 mm "
+                            f"pulls add the face's {area:g} mm² each ({before} → {ours[0]} → {ours[1]}), and Redo "
+                            f"after reopening the saved file in Rust gives {redone}")
+                elif not all(same.values()) or [round(v, 3) for v in made["volumes"]] != ours:
+                    problems.append(
+                        f"Redo after Rust Save As differs from the reference's own edit: matching {same}, "
+                        f"rust volumes {ours}, reference {made['volumes']}")
+                else:
+                    problems.append(
+                        f"NOTE: the reference fails {reopened['rebuild_failed']} steps of this file before Redo and "
+                        f"{reopened['redo_failed']} after, with or without the edit; Rust's edit and Redo match the "
+                        f"reference's own edit ({body} {ours[0]} → Redo {got[1]})")
+            elif got != [round(abs(v), 3) for v in volumes] or reopened["redo_failed"]:
+                problems.append(f"pulled {body} face {face}: rust volumes {volumes}, python reopened then redone {got}")
+            break
+        else:
+            if any(p.startswith("NOTE: Rust refuses") for p in problems):
+                problems.append("NOTE: every body of this file waits on a repair in both versions, so no edit "
+                                "and Redo could be compared across them")
     return problems
 
 
@@ -331,7 +448,7 @@ def _rust_json(rust: str, command: str, path: str, *extra: str, expected=dict) -
     return stages
 
 
-def _compare_rust(rust: str, path: str, rebuild: bool, reference) -> tuple[dict, dict]:
+def _compare_rust(rust: str, path: str, rebuild: bool, reference, known=()) -> tuple[dict, dict]:
     """Compare the same file at every requested stage, then exercise Save As."""
     try:
         original = _rust_json(rust, "dump", path)
@@ -363,9 +480,9 @@ def _compare_rust(rust: str, path: str, rebuild: bool, reference) -> tuple[dict,
             old = reference(path, flag="--dump-loaded")
             _require_stages(old, {"loaded": dict}, "Python dump")
             old = {stage: value for stage, value in old.items() if stage in new}
-        new["reopened"], old["reopened"] = _rust_saves(
-            rust, path, new, native=rebuild, reference=reference,
-        ), []
+        saves = _rust_saves(rust, path, new, native=rebuild, reference=reference, known=known)
+        new["reopened"], old["reopened"] = [p for p in saves if not p.startswith("NOTE")], []
+        new["notes"] = old["notes"] = [p for p in saves if p.startswith("NOTE")]
         return old, new
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return {}, {"error": str(exc)}
@@ -422,6 +539,14 @@ def _compare_align(rust: str, path: str, reference) -> tuple[int, float, list[st
     return len(ids), worst, problems
 
 
+def _differences(old, new) -> list[str]:
+    """One line per body (or key) that differs, so a long stage reads as what changed."""
+    if not (isinstance(old, dict) and isinstance(new, dict)):
+        return [f"old {json.dumps(old)[:600]}", f"new {json.dumps(new)[:600]}"]
+    return [f"{key}: old {json.dumps(old.get(key, 'absent'))[:300]} new {json.dumps(new.get(key, 'absent'))[:300]}"
+            for key in sorted(set(old) | set(new), key=str) if old.get(key, "absent") != new.get(key, "absent")]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--old", help="checkout of the version to compare against")
@@ -438,6 +563,7 @@ def main() -> int:
     parser.add_argument("--reopen", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reopen-redo", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--resave", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pull-control", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="+")
     args = parser.parse_args()
     if args.dump or args.dump_loaded:
@@ -448,6 +574,9 @@ def main() -> int:
         return 0
     if args.reopen or args.reopen_redo:
         print(json.dumps(reopen(args.files[0], redo=args.reopen_redo)))
+        return 0
+    if args.pull_control:
+        print(json.dumps(pull_control(*args.files)))
         return 0
     if args.resave:
         print(json.dumps({"saved": _resaved(*args.files)}))
@@ -483,8 +612,23 @@ def main() -> int:
             else:
                 print(f"same       {name}  ({steps} Align steps, worst transform delta {worst:g})")
             continue
+        with open(path, "rb") as handle:
+            known = _KNOWN.get(hashlib.sha256(handle.read()).hexdigest())
         if args.rust:
-            old, new = _compare_rust(args.rust, path, args.rebuild, reference)
+            old, new = _compare_rust(args.rust, path, args.rebuild, reference, known["bodies"] if known else ())
+            if known and "error" not in new:
+                # Rust must hold each known body exactly as it displays it, at every stage it has one.
+                shown = new.get("displayed", {})
+                for stage in _CURRENT_STAGES:
+                    for body in known["bodies"]:
+                        if stage in new and new[stage].get(body) != shown.get(body):
+                            new.setdefault("reopened", []).append(
+                                f"{stage}: Rust's {body} {new[stage].get(body)} is not the displayed {shown.get(body)}")
+                    if stage in new:
+                        old[stage], new[stage] = _without(old.get(stage), known["bodies"]), _without(new[stage], known["bodies"])
+                new["notes"] = [*new.get("notes", []), f"NOTE: {', '.join(known['bodies'])} are compared with Rust's own "
+                                f"displayed result, not with 0.4: {known['why']}"]
+                old["notes"] = new["notes"]
         else:
             old, new = reference(path), _run(ROOT, path)
         differences = [stage for stage in sorted(set(old) | set(new))
@@ -497,11 +641,13 @@ def main() -> int:
             same = False
             print(f"DIFFERENT  {name}: {', '.join(differences)}")
             for stage in differences:
-                print(f"    old {stage}: {json.dumps(old.get(stage))[:400]}")
-                print(f"    new {stage}: {json.dumps(new.get(stage))[:400]}")
+                for line in _differences(old.get(stage), new.get(stage)):
+                    print(f"    {stage}: {line}")
         else:
             print(f"same       {name}  ({len(new.get('loaded', {}))} bodies, "
                   f"{new.get('undo_steps', 0)} undo steps)")
+        for note in new.get("notes", []):
+            print(f"    {note}")
     if args.align:
         print(f"{matches}/{total} Align outcomes matched across the projects compared")
     print("VERDICT:", "PASS" if same else "FAIL")
