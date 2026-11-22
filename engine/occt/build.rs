@@ -57,7 +57,19 @@ fn main() {
     println!("cargo:rustc-link-search=native={lib}");
     println!("cargo:rustc-link-search=native={geos_lib}");
     println!("cargo:rustc-link-lib=dylib=geos_c");
+    let installed = std::path::Path::new(&lib);
     for toolkit in TOOLKITS {
+        // A toolkit missing here would link a system OCCT of another version, which crashes as it loads.
+        assert!(
+            [
+                format!("lib{toolkit}.so"),
+                format!("lib{toolkit}.dylib"),
+                format!("{toolkit}.lib")
+            ]
+            .iter()
+            .any(|name| installed.join(name).exists()),
+            "{toolkit} is not in {lib}: rebuild OCCT there with engine/occt/build-occt.sh"
+        );
         println!("cargo:rustc-link-lib=dylib={toolkit}");
     }
     // Tests and examples in this crate run against the install directly.
