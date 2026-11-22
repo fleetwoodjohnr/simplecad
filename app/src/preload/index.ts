@@ -18,6 +18,7 @@ const api: SimpleCadApi = {
   openModel: () => ipcRenderer.invoke('model:import'),
   saveProject: (data, saveAs) => ipcRenderer.invoke('project:save', data, saveAs),
   saveExport: (data, format) => ipcRenderer.invoke('export:save', data, format),
+  sendToSlicer: (data) => ipcRenderer.invoke('slicer:send', data),
   confirmDiscard: () => ipcRenderer.invoke('project:discard'),
   newFile: () => ipcRenderer.invoke('project:new'),
   pendingRecovery: () => ipcRenderer.invoke('recovery:pending'),

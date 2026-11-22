@@ -167,6 +167,8 @@ export function App() {
   const [frame, setFrame] = useState(0)
   const [connections, setConnections] = useState(0)
   const [error, setError] = useState('')
+  /** A passing word on what just happened outside the model, such as the slicer it was sent to. */
+  const [notice, setNotice] = useState('')
   const [viewportError, setViewportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -348,6 +350,7 @@ export function App() {
     const generation = connection.current
     updateBusy(true)
     setError('')
+    setNotice('')
     void run().then(
       (next) => {
         if (!next || connection.current !== generation) return
@@ -774,6 +777,15 @@ export function App() {
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
     settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
+    slicer: { enabled: ready && !!model?.shape.indices.length, hint: 'Show a body first', run: () => {
+      if (revision === undefined) return
+      setNotice('')
+      mutate(async () => {
+        const slicer = await window.simplecad.sendToSlicer(await exportModel(revision, '3mf'))
+        setNotice(`Sent to ${slicer}.`)
+        return undefined
+      })
+    } },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
   }
 
@@ -824,7 +836,7 @@ export function App() {
           <Menu>
             <MenuTrigger asChild><Btn variant="primary" size="sm" className="self-center">File</Btn></MenuTrigger>
             <MenuContent>
-              {(['newBox', 'open', 'save', 'saveAs', 'settings', 'updates'] as CommandId[]).map((id) => {
+              {(['newBox', 'open', 'save', 'saveAs', 'slicer', 'settings', 'updates'] as CommandId[]).map((id) => {
                 const command = commands[id]
                 return <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}
                   shortcut={'shortcut' in command ? command.shortcut : undefined}>{command.label}</MenuItem>
@@ -1197,6 +1209,7 @@ export function App() {
             {model?.notes.map((note) => <div key={note}>{note}</div>)}
             {viewportError && <div className="text-danger" role="alert">{viewportError}</div>}
             {error && <div className="text-danger" role="alert">{error}</div>}
+            {notice && <div role="status" aria-label="Notice">{notice}</div>}
             <span data-testid="engine-connections" className="sr-only">{connections}</span>
           </div>
           <div className="flex items-center gap-1.5">

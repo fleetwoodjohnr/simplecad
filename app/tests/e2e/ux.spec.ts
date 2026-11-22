@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
@@ -235,6 +235,26 @@ test('groups bodies from the Bodies list, through undo, a worker restart and reo
     await list.getByRole('button', { name: 'Ungroup Group' }).click()
     await expect(list.getByRole('list', { name: 'Group' })).toHaveCount(0)
     await expect(list).toContainText('Cylinder')
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+test('sends the model to the slicer it finds as a 3MF', async () => {
+  test.skip(process.platform !== 'linux', 'Elsewhere the system’s 3MF handler opens it, which the test cannot stand in for.')
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-slicer-'))
+  try {
+    // A stand-in slicer that records the file it was handed.
+    const log = path.join(scratch, 'handed.txt')
+    await writeFile(path.join(scratch, 'orca-slicer'), `#!/bin/sh\nprintf '%s' "$1" > '${log}'\n`, { mode: 0o755 })
+    const { page } = await launch({ env: { PATH: `${scratch}${path.delimiter}${process.env.PATH}` } })
+    await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Send to slicer' }).click()
+    await expect(page.getByRole('status', { name: 'Notice' })).toHaveText('Sent to OrcaSlicer.')
+    await expect.poll(async () => (await readFile(log, 'utf8').catch(() => '')).endsWith('Untitled.3mf')).toBe(true)
+    const model = await readFile(await readFile(log, 'utf8'))
+    expect(model.subarray(0, 2).toString()).toBe('PK')
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }

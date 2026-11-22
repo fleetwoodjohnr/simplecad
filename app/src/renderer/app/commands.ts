@@ -72,6 +72,7 @@ export const commands = {
   text: { label: 'Text' },
   faceTexture: { label: 'Face Texture' },
   settings: { label: 'Settings' },
+  slicer: { label: 'Send to slicer' },
   updates: { label: 'Check for updates' }
 } satisfies Record<string, { label: string; shortcut?: string }>
 

@@ -7,7 +7,8 @@ import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
 import { readLegacyPreferences } from './preferences'
-import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, saveExportFile, saveProjectFile } from './project-files'
+import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, projectName, saveExportFile, saveProjectFile } from './project-files'
+import { sendToSlicer } from './slicer'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
 
 const isMac = process.platform === 'darwin'
@@ -125,6 +126,7 @@ function registerIpc() {
   handle('model:import', () => mainWindow ? openModelFile(mainWindow) : undefined)
   handle('project:save', (_event, data: unknown, saveAs: unknown) => mainWindow ? saveProjectFile(mainWindow, data, saveAs) : undefined)
   handle('export:save', (_event, data: unknown, format: unknown) => mainWindow ? saveExportFile(mainWindow, data, format) : undefined)
+  handle('slicer:send', (_event, data: unknown) => sendToSlicer(data, projectName()))
   handle('project:new', () => forgetProjectFile())
   handle('recovery:pending', async () => {
     const [newest] = await leftovers(recovery, autosaveFile)

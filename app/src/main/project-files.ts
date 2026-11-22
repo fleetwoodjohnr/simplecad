@@ -202,6 +202,9 @@ export async function saveProjectFile(window: BrowserWindow, data: unknown, save
   return path.basename(target)
 }
 
+/** The open project's name, as exports are named after it. */
+export const projectName = () => current ? path.basename(current, path.extname(current)) : 'Untitled'
+
 export async function saveExportFile(window: BrowserWindow, data: unknown, format: unknown) {
   if (!isExportFormat(format) || !(data instanceof Uint8Array) ||
     !data.byteLength || data.byteLength > MAX_PROJECT_BYTES) throw new Error('Invalid export data.')

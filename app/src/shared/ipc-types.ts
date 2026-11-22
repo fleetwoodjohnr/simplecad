@@ -14,6 +14,8 @@ export interface SimpleCadApi {
   /** Writes to the session's file, or asks where; resolves to the file's name, or nothing if cancelled. */
   saveProject(data: Uint8Array, saveAs: boolean): Promise<string | undefined>
   saveExport(data: Uint8Array, format: ExportFormat): Promise<string | undefined>
+  /** Writes the model as 3MF and opens it in a slicer; resolves to the slicer's name. */
+  sendToSlicer(data: Uint8Array): Promise<string>
   confirmDiscard(): Promise<boolean>
   /** The session no longer has a file: the next Save asks where. */
   newFile(): Promise<void>
