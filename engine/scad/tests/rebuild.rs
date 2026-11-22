@@ -535,3 +535,54 @@ fn a_fillet_rounds_the_picked_edges_finds_them_again_and_edits_its_radius() {
             .is_err()
     );
 }
+
+#[test]
+fn grouping_moves_members_out_of_their_old_group_and_ungrouping_hands_them_up() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    for x in ["20 mm", "40 mm"] {
+        scad::rebuild::create_primitive(
+            &mut model,
+            "box",
+            json!({"width": "5 mm", "depth": "5 mm", "height": "5 mm", "x": x}),
+        )
+        .unwrap();
+    }
+    let names: Vec<String> = model.payload["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(model.group(&names[..1]).is_err(), "one body is not a group");
+    let inner = model.group(&names[..2]).unwrap();
+    let outer = model.group(&[inner.clone(), names[2].clone()]).unwrap();
+    assert_eq!(
+        model.groups(),
+        [
+            (outer.clone(), vec![inner.clone(), names[2].clone()]),
+            (inner.clone(), names[..2].to_vec())
+        ]
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+    );
+    model.ungroup(&inner).unwrap();
+    assert_eq!(
+        model.groups(),
+        [(
+            outer.clone(),
+            vec![names[0].clone(), names[1].clone(), names[2].clone()]
+        )]
+    );
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    assert_eq!(
+        saved.model["groups"][0]["members"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    model.undo().unwrap();
+    assert_eq!(model.groups().len(), 2, "Ungroup is one undoable step");
+}

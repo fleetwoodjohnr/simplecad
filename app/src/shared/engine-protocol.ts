@@ -61,6 +61,9 @@ export type Transform = { kind: 'move'; values: Expressions } |
   { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
   { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
 export interface TransformEdit { body: number; transform: Transform }
+/** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
+export interface GroupEdit { group: number[] }
+export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
 export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean'] as const
@@ -160,7 +163,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit
 
 export interface Checkpoint {
   source: Source
@@ -205,6 +208,8 @@ export interface ModelResult {
   steps: StepInfo[]
   /** What opening the file could not read. */
   notes: string[]
+  /** Each group with the bodies in it (a nested group's bodies included). */
+  groups: { name: string; members: number[] }[]
 }
 
 export type RendererCommand =
@@ -220,6 +225,8 @@ export type RendererCommand =
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
+  | ({ op: 'group'; revision: number } & GroupEdit)
+  | ({ op: 'ungroup'; revision: number } & UngroupEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
   | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
@@ -317,6 +324,13 @@ function isEdgeFinish(value: unknown): value is EdgeFinishEdit {
     typeof amount === 'string' && amount.trim().length > 0 && amount.length < 256
 }
 
+const isGroup = (value: unknown): value is GroupEdit => {
+  const members = (value as Partial<GroupEdit> | null)?.group
+  return Array.isArray(members) && members.length >= 2 && members.length <= MAX_BODIES &&
+    members.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(members).size === members.length
+}
+const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
+
 const isRecipe = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= MAX_PROJECT_BYTES
 
@@ -333,7 +347,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -477,6 +491,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
+        (m.op === 'group' && isGroup(m)) || (m.op === 'ungroup' && isUngroup(m)) ||
         ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||

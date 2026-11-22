@@ -92,6 +92,10 @@ export const previewTransform = (revision: number, edit: TransformEdit) =>
   send<DisplayShape>({ op: 'previewTransform', revision, ...edit })
 export const applyTransform = (revision: number, edit: TransformEdit) =>
   send<ModelResult>({ op: 'applyTransform', revision, ...edit }).then(accept)
+export const groupBodies = (revision: number, bodies: number[]) =>
+  send<ModelResult>({ op: 'group', revision, group: bodies }).then(accept)
+export const ungroup = (revision: number, name: string) =>
+  send<ModelResult>({ op: 'ungroup', revision, ungroup: name }).then(accept)
 export const previewEdgeFinish = (revision: number, edit: EdgeFinishEdit) =>
   send<DisplayShape>({ op: 'previewEdgeFinish', revision, ...edit })
 export const applyEdgeFinish = (revision: number, edit: EdgeFinishEdit) =>

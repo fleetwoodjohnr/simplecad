@@ -34,6 +34,9 @@ class FakeProject implements Project {
   addOffsetPlane(): never { throw new Error('Construction planes are covered in the packaged app.') }
   addBodyOperation(): never { throw new Error('Body operations are covered in the packaged app.') }
   addEdgeFinish(): never { throw new Error('Edge finishes are covered in the packaged app.') }
+  groups() { return [] }
+  group(): never { throw new Error('Groups are covered in the packaged app.') }
+  ungroup(): never { throw new Error('Groups are covered in the packaged app.') }
   addFaceFeature(): never { throw new Error('Face tools are covered in the packaged app.') }
   constructor(readonly made: string[] = []) {}
   addShape(kind: string) {

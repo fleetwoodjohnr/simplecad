@@ -599,6 +599,88 @@ impl Model {
         })
     }
 
+    /// The groups, as their names and members (body or group names), as SimpleCAD 0.4 saves them.
+    pub fn groups(&self) -> Vec<(String, Vec<String>)> {
+        self.list("groups")
+            .iter()
+            .filter_map(|group| {
+                let members = group["members"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_str);
+                Some((
+                    group["name"].as_str()?.to_owned(),
+                    members.map(String::from).collect(),
+                ))
+            })
+            .collect()
+    }
+
+    /// `Document.add_group`: organise bodies or groups under one new group, taking each out of the group
+    /// it was in. A group is not geometry, so nothing is rebuilt; it is one undoable step.
+    pub fn group(&mut self, members: &[String]) -> Result<String, String> {
+        let known: HashSet<String> = ["bodies", "groups"]
+            .iter()
+            .flat_map(|key| self.list(key))
+            .filter_map(|entry| entry["name"].as_str().map(String::from))
+            .collect();
+        let mut chosen: Vec<String> = Vec::new();
+        for member in members {
+            if known.contains(member) && !chosen.contains(member) {
+                chosen.push(member.clone());
+            }
+        }
+        if chosen.len() < 2 {
+            return Err("Select two or more bodies to group.".into());
+        }
+        let before = self.document();
+        let name = self.unique_name("Group");
+        let groups = self.groups_mut();
+        for group in groups.iter_mut() {
+            if let Some(list) = group["members"].as_array_mut() {
+                list.retain(|member| !chosen.iter().any(|name| member == name));
+            }
+        }
+        // `Document._prune_groups`: a group left with nothing in it goes.
+        groups.retain(|group| {
+            group["members"]
+                .as_array()
+                .is_some_and(|list| !list.is_empty())
+        });
+        groups.push(json!({
+            "name": name, "id": new_feature_id(), "members": chosen, "visible": true, "expanded": true,
+        }));
+        self.push_undo("Group", before)?;
+        Ok(name)
+    }
+
+    /// `Document.ungroup`: dissolve a group. Its members return to where it sat, so a nested group's
+    /// members are handed up to the parent rather than stranded at the top level.
+    pub fn ungroup(&mut self, name: &str) -> Result<(), String> {
+        let before = self.document();
+        let groups = self.groups_mut();
+        let index = groups
+            .iter()
+            .position(|group| group["name"] == name)
+            .ok_or("There is no such group.")?;
+        let members = groups.remove(index)["members"].clone();
+        for group in groups.iter_mut() {
+            if let Some(list) = group["members"].as_array_mut()
+                && let Some(at) = list.iter().position(|member| member == name)
+            {
+                list.splice(at..=at, members.as_array().cloned().unwrap_or_default());
+            }
+        }
+        self.push_undo("Ungroup", before)
+    }
+
+    fn groups_mut(&mut self) -> &mut Vec<Value> {
+        if !self.payload["groups"].is_array() {
+            self.payload["groups"] = json!([]);
+        }
+        self.payload["groups"].as_array_mut().unwrap()
+    }
+
     /// Round (fillet) or bevel (chamfer) edges of one body, as SimpleCAD 0.4's edge tools record them:
     /// each edge by its curve and its faces, so it is found again after the body changes upstream.
     pub fn add_edge_finish(

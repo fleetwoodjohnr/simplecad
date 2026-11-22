@@ -201,6 +201,12 @@ pub struct Project {
     original: Arc<Vec<u8>>,
 }
 
+#[napi(object, object_from_js = false)]
+pub struct Group {
+    pub name: String,
+    pub members: Vec<String>,
+}
+
 /// A step of the model: its name, type (`push_pull`, `box`...) and state
 /// (`ok`, `suppressed`, `failed`, `needs_attention`) as last built.
 #[napi(object, object_from_js = false)]
@@ -661,6 +667,37 @@ impl Project {
             )
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
+    }
+
+    /// The groups: each name with its members (bodies or other groups).
+    #[napi]
+    pub fn groups(&self) -> Vec<Group> {
+        self.model
+            .groups()
+            .into_iter()
+            .map(|(name, members)| Group { name, members })
+            .collect()
+    }
+
+    /// Group the named bodies or groups: one undoable step, nothing rebuilt.
+    #[napi]
+    pub fn group(&self, members: Vec<String>) -> Result<Project> {
+        let mut model = self.model.clone();
+        model.group(&members).map_err(Error::from_reason)?;
+        Ok(Project {
+            model,
+            original: self.original.clone(),
+        })
+    }
+
+    #[napi]
+    pub fn ungroup(&self, name: String) -> Result<Project> {
+        let mut model = self.model.clone();
+        model.ungroup(&name).map_err(Error::from_reason)?;
+        Ok(Project {
+            model,
+            original: self.original.clone(),
+        })
     }
 
     /// Fillet or chamfer the given edges of one body (indices into its display edges).

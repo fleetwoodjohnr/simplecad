@@ -1,5 +1,5 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -19,6 +19,9 @@ export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   addOffsetPlane(body: string, face: number, distance: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  groups(): { name: string; members: string[] }[]
+  group(members: string[]): Project
+  ungroup(name: string): Project
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
@@ -126,8 +129,22 @@ export class EngineDocument {
       revision: this.revision,
       checkpoint: this.checkpoint(),
       steps: this.steps(),
-      notes: this.notes
+      notes: this.notes,
+      groups: this.groups()
     }
+  }
+
+  /** Each group's bodies by index, a nested group's included (a member may name another group). */
+  private groups() {
+    const groups = this.current.project.groups()
+    const byName = new Map(groups.map((group) => [group.name, group.members]))
+    const index = new Map(this.current.bodies.map((body, i) => [body.name, i]))
+    const bodiesOf = (members: string[], seen: Set<string>): number[] => members.flatMap((member) => {
+      if (index.has(member)) return [index.get(member)!]
+      if (seen.has(member) || !byName.has(member)) return []
+      return bodiesOf(byName.get(member)!, new Set([...seen, member]))
+    })
+    return groups.map(({ name, members }) => ({ name, members: bodiesOf(members, new Set([name])) }))
   }
 
   reset(revision: number): ModelResult {
@@ -249,7 +266,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -285,6 +302,10 @@ export class EngineDocument {
       step = { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs }
     } else if ('edgeFinish' in edit) {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
+    } else if ('group' in edit) {
+      step = { group: edit.group }
+    } else if ('ungroup' in edit) {
+      step = { ungroup: edit.ungroup }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -493,6 +514,14 @@ export class EngineDocument {
       const created = project.addShape(step.shapeKind, step.values)
       return { bodies: [...bodies, { name: created.name, shape: created.shape }], project: created.project }
     }
+    if ('group' in step) {
+      const names = step.group.map((index) => {
+        if (!bodies[index]) throw new Error('Select bodies of the model.')
+        return bodies[index].name
+      })
+      return { bodies, project: project.group(names) }
+    }
+    if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
     if ('edgeFinish' in step) {
       const picks = step.edges.map((edge) => this.pickEdge(edge))
       const body = picks[0].body

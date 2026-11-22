@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Pencil, Redo2, Search, Undo2 } from 'lucide-react'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Pencil, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
 import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -133,6 +133,8 @@ export function App() {
   const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string }>()
   const [edgeTool, setEdgeTool] = useState<{ kind: EdgeFinish; editing?: string }>()
   const [edgePicks, setEdgePicks] = useState<number[]>([])
+  /** Bodies chosen in the Bodies list (Ctrl- or Shift-click adds), e.g. to group them. */
+  const [chosenBodies, setChosenBodies] = useState<number[]>([])
   const [transformBody, setTransformBody] = useState<number>()
   const [transformSnap, setTransformSnap] = useState(0)
   const [transformPivot, setTransformPivot] = useState<Vec3>()
@@ -191,6 +193,7 @@ export function App() {
     setDistance('')
     setError('')
     if (face === undefined) {
+      setChosenBodies([])
       cancelPlacement()
       closeMeasure()
       setTransformKind(undefined)
@@ -596,6 +599,42 @@ export function App() {
     setPreview(undefined)
     setStack(true)
   }
+  /** The Bodies list: each group with the bodies not already shown under an earlier group, then the rest. */
+  const bodyTree = useMemo(() => {
+    const shown = new Set<number>()
+    const tree: { group?: string; body: number; members: number[] }[] = []
+    for (const { name, members } of model?.groups ?? []) {
+      const own = members.filter((body) => !shown.has(body))
+      own.forEach((body) => shown.add(body))
+      tree.push({ group: name, body: -1, members: own })
+    }
+    model?.bodies.forEach((_, body) => { if (!shown.has(body)) tree.push({ body, members: [] }) })
+    return tree
+  }, [model])
+  /** A plain click chooses a body, or its whole group; Ctrl- or Shift-click adds or removes one. */
+  const chooseBody = (body: number, adding: boolean) => {
+    const group = model?.groups.find(({ members }) => members.includes(body))?.members
+    setChosenBodies((chosen) => adding ? chosen.includes(body) ? chosen.filter((b) => b !== body) : [...chosen, body]
+      : group ?? (chosen.length === 1 && chosen[0] === body ? [] : [body]))
+  }
+  const bodyRow = (index: number) => {
+    const body = model!.bodies[index]
+    return (
+      <li key={index} className={`flex items-center gap-2 rounded-md px-2 py-1 ${chosenBodies.includes(index) ? 'bg-accent-soft' : body.visible ? 'bg-hover' : 'text-text-3'}`}>
+        <Box className="size-4 shrink-0 text-text-2" />
+        {measureKind === 'body' && !body.empty
+          ? <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={measurePicks.some((pick) => pick.kind === 'body' && pick.body === index)}
+              disabled={!ready} onClick={() => pickMeasure({ kind: 'body', body: index })}>{body.name}</button>
+          : <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={chosenBodies.includes(index)}
+              title={body.empty ? 'No saved geometry' : undefined}
+              onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}>{body.name}</button>}
+        <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
+          disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
+          {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+        </IconBtn>
+      </li>
+    )
+  }
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -770,19 +809,22 @@ export function App() {
             onError={setViewportError}
           />
           <aside aria-label="Model inspector" className="flex min-h-0 w-56 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-panel p-3">
-            <div className="border-b border-border pb-2 text-xs font-semibold">Bodies</div>
+            <div className="flex items-center justify-between border-b border-border pb-2 text-xs font-semibold">Bodies
+              {chosenBodies.length > 1 && <Btn size="sm" disabled={!ready} onClick={() => {
+                if (revision !== undefined) mutate(() => groupBodies(revision, chosenBodies))
+              }}>Group</Btn>}
+            </div>
             <ul aria-label="Bodies" className="grid max-h-[40%] min-h-16 shrink-0 auto-rows-min gap-1 overflow-auto">
-              {model?.bodies.map((body, index) => (
-                <li key={index} className={`flex items-center gap-2 rounded-md px-2 py-1 ${body.visible ? 'bg-hover' : 'text-text-3'}`}>
-                  <Box className="size-4 shrink-0 text-text-2" />
-                  {measureKind === 'body' && !body.empty
-                    ? <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={measurePicks.some((pick) => pick.kind === 'body' && pick.body === index)}
-                        disabled={!ready} onClick={() => pickMeasure({ kind: 'body', body: index })}>{body.name}</button>
-                    : <span className="min-w-0 flex-1 truncate" title={body.empty ? 'No saved geometry' : undefined}>{body.name}</span>}
-                  <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
-                    disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
-                    {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-                  </IconBtn>
+              {bodyTree.map((entry) => entry.group === undefined ? bodyRow(entry.body) : (
+                <li key={`group:${entry.group}`} className="grid gap-1">
+                  <div className="flex items-center gap-2 px-2 py-1 font-medium">
+                    <Folder className="size-4 shrink-0 text-text-2" />
+                    <span className="min-w-0 flex-1 truncate">{entry.group}</span>
+                    <IconBtn label={`Ungroup ${entry.group}`} disabled={!ready} onClick={() => {
+                      if (revision !== undefined) mutate(() => ungroup(revision, entry.group!))
+                    }}><Ungroup className="size-3.5" /></IconBtn>
+                  </div>
+                  <ul aria-label={entry.group} className="ml-4 grid gap-1">{entry.members.map(bodyRow)}</ul>
                 </li>
               ))}
             </ul>

@@ -188,3 +188,54 @@ test('measures an edge it is clicked on, and the distance between two corners', 
   const possible = [20, 30, 40, Math.hypot(20, 30), Math.hypot(20, 40), Math.hypot(30, 40), Math.hypot(20, 30, 40)]
   expect(possible.some((distance) => Math.abs(distance - apart) < 0.001)).toBe(true)
 })
+
+test('groups bodies from the Bodies list, through undo, a worker restart and reopen, then ungroups them', async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-group-'))
+  const target = path.join(scratch, 'Grouped.scad3')
+  try {
+    const { app, page } = await launch({ env: { SIMPLECAD_ENGINE_DRILL: '1' } })
+    const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+    const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+    await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+    await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+    const shape = page.getByRole('form', { name: 'Create shape' })
+    await shape.getByLabel('Shape type').selectOption('cylinder')
+    await shape.getByRole('button', { name: 'Create', exact: true }).click()
+    await expect(bodies).toContainText('Cylinder')
+
+    await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Group', exact: true })).toHaveCount(0)
+    await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click({ modifiers: ['Control'] })
+    await page.getByRole('button', { name: 'Group', exact: true }).click()
+    const group = bodies.getByRole('list', { name: 'Group' })
+    await expect(group.getByRole('button', { name: /^(Box|Cylinder)$/ })).toHaveCount(2)
+    // A plain click on a member chooses the whole group.
+    await group.getByRole('button', { name: 'Box', exact: true }).click()
+    await expect(group.getByRole('button', { name: 'Cylinder', exact: true })).toHaveAttribute('aria-pressed', 'true')
+
+    await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(group).toHaveCount(0)
+    await toolbar.getByRole('button', { name: 'Redo', exact: true }).click()
+    await expect(group).toHaveCount(1)
+    await page.evaluate(() =>
+      (window as unknown as { simplecadDrill: { crashEngine(): Promise<unknown> } }).simplecadDrill.crashEngine().catch(() => {}))
+    await expect(page.getByTestId('engine-connections')).toHaveText('2')
+    await expect(group).toHaveCount(1)
+
+    await app.evaluate(({ dialog }, filePath) => {
+      dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+    }, target)
+    await page.getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^Save As/ }).click()
+    await expect(page.getByText('Grouped.scad3', { exact: true })).toBeVisible()
+    await app.close()
+    const reopened = await launch({ args: [target] })
+    const list = reopened.page.getByRole('list', { name: 'Bodies', exact: true })
+    await expect(list.getByRole('list', { name: 'Group' }).getByRole('button', { name: /^(Box|Cylinder)$/ })).toHaveCount(2)
+    await list.getByRole('button', { name: 'Ungroup Group' }).click()
+    await expect(list.getByRole('list', { name: 'Group' })).toHaveCount(0)
+    await expect(list).toContainText('Cylinder')
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
