@@ -432,12 +432,14 @@ export function Viewport(props: Props) {
           if (e.button !== 0 || !props.canPull || axis.current.lengthSq() < 0.01) return
           const button = e.currentTarget
           const pointer = e.pointerId
-          // Escape drops the drag: losing the capture cancels it, as an interrupted drag does.
+          // Escape drops the drag here and now; the capture it lets go of then finds no drag to cancel.
           const escape = (key: KeyboardEvent) => {
             if (key.key !== 'Escape') return
             key.preventDefault()
             key.stopImmediatePropagation()
-            button.releasePointerCapture(pointer)
+            end()
+            current.current.onDragCancel()
+            if (button.hasPointerCapture(pointer)) button.releasePointerCapture(pointer)
           }
           window.addEventListener('keydown', escape, true)
           drag.current = { pointer, start: new Vector2(e.clientX, e.clientY), projection: axis.current.clone(), escape }
