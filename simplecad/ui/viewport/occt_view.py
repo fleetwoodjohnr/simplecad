@@ -232,10 +232,12 @@ def _pointer_capsule(pointer: int):
     return new_capsule(pointer, None, None)
 
 
-#: The OCCT wrappers macOS views are bound through. Each must outlive its
-#: binding: destroying one deletes the default VAO, FBO and textures it made in
-#: Qt's current context, which crashed the window when a temporary went away.
-_cocoa_wrappers: list = []  # ponytail: kept for the process, one per (re)bind; a few small objects
+#: What macOS views are bound through, kept for the life of the process. OCP
+#: returns Qt's NSOpenGLContext with pybind11's take-ownership policy, so
+#: letting that Python object go would C++-delete Qt's live context (the objc
+#: "unknown class" abort). The OCCT wrapper it came from is kept too: destroying
+#: it deletes the default VAO, FBO and textures it made in Qt's context.
+_cocoa_wrappers: list = []  # ponytail: two small objects per (re)bind, never freed
 
 
 def _current_occt_context():
@@ -248,8 +250,9 @@ def _current_occt_context():
         wrapper = OpenGl_Context()
         if not wrapper.Init(True):
             return None
-        _cocoa_wrappers.append(wrapper)
-        return wrapper.RenderingContext()
+        context = wrapper.RenderingContext()
+        _cocoa_wrappers.extend((wrapper, context))
+        return context
     pointer = _current_gl_context_pointer()
     return _pointer_capsule(pointer) if pointer is not None else None
 
