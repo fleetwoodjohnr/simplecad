@@ -344,3 +344,35 @@ test('pushes a round face out along its radius from the selection bar, and edits
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(/9047.79 mm³/)
 })
+
+test('edits a saved Move from History, as one undoable step', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const centre = async () => {
+    await toolbar.getByRole('button', { name: 'Measure', exact: true }).click()
+    const panel = page.getByRole('region', { name: 'Measure' })
+    await panel.getByLabel('Measure selection').selectOption('body')
+    await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+    const value = await panel.getByText('Centre of mass', { exact: true }).locator('..').locator('dd').innerText()
+    await panel.getByRole('button', { name: 'Close' }).click()
+    return value
+  }
+  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('X (mm)').fill('1 cm')
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Move'])
+  expect(await centre()).toBe('30, 15, 10 mm')
+
+  await page.getByRole('button', { name: 'Edit Move' }).click()
+  const saved = page.getByRole('form', { name: 'Move', exact: true })
+  await expect(saved.getByLabel('Move X')).toHaveValue('1 cm')
+  await saved.getByLabel('Move X').fill('2 cm')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Move'])
+  await expect.poll(centre).toBe('40, 15, 10 mm')
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect.poll(centre).toBe('30, 15, 10 mm')
+})

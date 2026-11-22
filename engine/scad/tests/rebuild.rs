@@ -1087,3 +1087,42 @@ fn a_round_face_is_pushed_out_along_its_radius_and_its_change_edits_from_history
         .is_err()
     );
 }
+
+#[test]
+fn a_saved_move_edits_its_offset_from_history_and_keeps_the_rest_as_made() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let moved = scad::rebuild::create_transform(
+        &mut model,
+        "Box",
+        &solid,
+        "Move",
+        json!({"dx": "5 mm", "dy": "0", "dz": "0"}),
+    )
+    .unwrap();
+    assert_eq!(occt::bounds(&moved).unwrap()[0].round(), 5.0);
+    let step = model.steps().into_iter().last().unwrap();
+    let settings = step.face_settings.unwrap();
+    assert_eq!(
+        (settings["dx"].as_str(), settings.contains_key("rx")),
+        ("5 mm", false),
+        "only what the step has"
+    );
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(moved))]);
+    let edited = model
+        .edit_step_settings(
+            &step.id,
+            [("dx".to_owned(), "2 cm".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    assert_eq!(
+        occt::bounds(edited.bodies[0].shape.as_ref().unwrap()).unwrap()[0].round(),
+        20.0
+    );
+}

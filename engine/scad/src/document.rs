@@ -1908,6 +1908,8 @@ fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "tangent_plane" => Some(&["around"]),
         "construction_point" => Some(&["x", "y", "z"]),
         "shell" => Some(&["thickness"]),
+        // A Move's offsets or a Rotate's angles; its axis, order and pivot stay as made.
+        "move" => Some(&["dx", "dy", "dz", "rx", "ry", "rz", "angle"]),
         "resize_round" => Some(&["delta"]),
         "matching_thread" => Some(&["clearance", "form", "length", "left_hand", "resize"]),
         "fillet" => Some(&["radius"]),

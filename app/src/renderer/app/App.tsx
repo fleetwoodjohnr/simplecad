@@ -12,6 +12,7 @@ import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './B
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
 import { ArrangePanel } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
+import { StepSettingsPanel } from './StepSettingsPanel'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -140,6 +141,8 @@ export function App() {
   const [arrange, setArrange] = useState<{ bodies: number[]; editing?: string }>()
   /** Section Replace: its picks (the replacement's face, then the target's), or the saved step History is editing. */
   const [section, setSection] = useState<{ editing?: string }>()
+  /** A saved Move or Rotate whose settings History is editing. */
+  const [editingMove, setEditingMove] = useState<string>()
   const [sectionPicks, setSectionPicks] = useState<number[]>([])
   const [construction, setConstruction] = useState<{ kind: Construction; editing?: string; axisFrom: AxisFrom }>()
   const [constructPicks, setConstructPicks] = useState<{ faces: number[]; edges: number[]; points: Vec3[] }>({ faces: [], edges: [], points: [] })
@@ -215,6 +218,7 @@ export function App() {
       setConstruction(undefined)
       setArrange(undefined)
       setSection(undefined)
+      setEditingMove(undefined)
       setShapePanel(false)
       setSketchEditor(undefined)
       setSketchTool(undefined)
@@ -990,6 +994,12 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
+            {model && editingMove && revision !== undefined && (() => {
+              const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
+              return step?.faceSettings && <StepSettingsPanel key={step.id} name={step.name} busy={busy} preset={step.faceSettings}
+                onCancel={() => setEditingMove(undefined)}
+                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: step.id, changes }))} />
+            })()}
             {model && section && revision !== undefined && <SectionReplacePanel key={section.editing ?? 'new'} busy={busy}
               picked={sectionPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
               preset={model.steps.find((step) => step.id === section.editing && !step.undone)?.faceSettings}
@@ -1122,7 +1132,7 @@ export function App() {
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
                     {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id || arrange?.editing === step.id || section?.editing === step.id} onClick={() => {
+                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id || arrange?.editing === step.id || section?.editing === step.id || editingMove === step.id} onClick={() => {
                         if (step.kind === 'sketch') {
                           void openSketch(step.id)
                           return
@@ -1132,6 +1142,10 @@ export function App() {
                           setEditingShape(step.id)
                           setShapePanel(true)
                         } else {
+                          if (step.kind === 'move') {
+                            setEditingMove(step.id)
+                            return
+                          }
                           if (step.kind === 'section_replace') {
                             setSection({ editing: step.id })
                             return
