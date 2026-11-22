@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { expect, launch, test } from './helpers'
+import { edgePoints, expect, launch, test } from './helpers'
 
 test('patterns a body, edits the count from History in one step, and keeps it through restart and reopen', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-pattern-'))
@@ -170,12 +170,7 @@ test('fillets every edge of a body, then chamfers one clicked edge and edits it 
 
   await toolbar.getByRole('button', { name: 'Chamfer', exact: true }).click()
   const canvas = page.locator('canvas')
-  await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
-  await page.waitForTimeout(200)
-  const anchors: ([number, number] | null)[] = JSON.parse((await canvas.getAttribute('data-edge-anchors'))!)
-  const box = (await canvas.boundingBox())!
-  const [x, y] = anchors.find((point) => point && point[0] > box.x + 20 && point[0] < box.x + box.width - 20 &&
-    point[1] > box.y + 20 && point[1] < box.y + box.height - 20)!
+  const [[x, y]] = await edgePoints(page)
   await page.mouse.click(x, y)
   const chamfer = page.getByRole('form', { name: 'Chamfer' })
   await expect(chamfer.getByRole('status', { name: 'Picked edges' })).toHaveText('1 edge of Box')

@@ -1,4 +1,4 @@
-import { _electron as electron, test as base, type ElectronApplication, type Page } from '@playwright/test'
+import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
 import { once } from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -81,4 +81,24 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
     if (m.type() === 'error' && /Content Security Policy/.test(m.text())) throw new Error(m.text())
   })
   return { app, page }
+}
+
+/** The window points the viewport publishes on edges while picking them, those well inside the canvas, once they
+ * and the canvas have settled: a panel opening resizes the canvas and moves every edge. */
+export async function edgePoints(page: Page): Promise<[number, number][]> {
+  const canvas = page.locator('canvas')
+  const read = async () => {
+    const box = (await canvas.boundingBox())!
+    const anchors = JSON.parse((await canvas.getAttribute('data-edge-anchors')) ?? '[]') as ([number, number] | null)[]
+    return anchors.filter((p): p is [number, number] => !!p && p[0] > box.x + 20 && p[0] < box.x + box.width - 20 &&
+      p[1] > box.y + 20 && p[1] < box.y + box.height - 20)
+  }
+  let last = ''
+  await expect.poll(async () => {
+    const points = JSON.stringify(await read())
+    const settled = points !== '[]' && points === last
+    last = points
+    return settled
+  }, { intervals: [150] }).toBe(true)
+  return JSON.parse(last)
 }

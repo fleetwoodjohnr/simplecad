@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { expect, launch, test } from './helpers'
+import { edgePoints, expect, launch, test } from './helpers'
 
 test('draws and dimensions a sketch, then edits its extrusion through history and reopen', async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), 'simplecad-sketch-'))
@@ -220,11 +220,7 @@ test('creates a midplane, a plane at an angle, an axis and a point from picks, a
     return page.getByRole('form', { name, exact: true })
   }
   const clickEdge = async () => {
-    await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
-    await page.waitForTimeout(200)
-    const box = (await canvas.boundingBox())!
-    const [x, y] = (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as ([number, number] | null)[])
-      .find((p) => p && p[0] > box.x + 20 && p[0] < box.x + box.width - 20 && p[1] > box.y + 20 && p[1] < box.y + box.height - 20)!
+    const [[x, y]] = await edgePoints(page)
     await page.mouse.click(x, y)
   }
 

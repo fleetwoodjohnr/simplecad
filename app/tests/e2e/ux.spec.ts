@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { expect, launch, test } from './helpers'
+import { edgePoints, expect, launch, test } from './helpers'
 
 type Point = [number, number]
 
@@ -161,14 +161,7 @@ test('measures an edge it is clicked on, and the distance between two corners', 
   await toolbar.getByRole('button', { name: 'Measure', exact: true }).click()
   const panel = page.getByRole('region', { name: 'Measure' })
   const reading = (label: string) => panel.getByText(label, { exact: true }).locator('..').locator('dd')
-  const anchors = async () => {
-    await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
-    await page.waitForTimeout(200)
-    const box = (await canvas.boundingBox())!
-    return (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as ([number, number] | null)[])
-      .filter((point): point is [number, number] => !!point && point[0] > box.x + 20 && point[0] < box.x + box.width - 20 &&
-        point[1] > box.y + 20 && point[1] < box.y + box.height - 20)
-  }
+  const anchors = () => edgePoints(page)
 
   await panel.getByLabel('Measure selection').selectOption('edge')
   const [first] = await anchors()
