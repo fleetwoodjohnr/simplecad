@@ -612,8 +612,11 @@ def main() -> int:
             else:
                 print(f"same       {name}  ({steps} Align steps, worst transform delta {worst:g})")
             continue
-        with open(path, "rb") as handle:
-            known = _KNOWN.get(hashlib.sha256(handle.read()).hexdigest())
+        try:
+            with open(path, "rb") as handle:
+                known = _KNOWN.get(hashlib.sha256(handle.read()).hexdigest())
+        except OSError:
+            known = None  # unreadable here; the comparison itself reports it
         if args.rust:
             old, new = _compare_rust(args.rust, path, args.rebuild, reference, known["bodies"] if known else ())
             if known and "error" not in new:
