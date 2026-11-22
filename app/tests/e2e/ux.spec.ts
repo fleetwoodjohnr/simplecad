@@ -259,3 +259,15 @@ test('sends the model to the slicer it finds as a 3MF', async () => {
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+test('checks the shown bodies for printing', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Print check', exact: true }).click()
+  const findings = page.getByRole('region', { name: 'Print check' }).getByRole('list', { name: 'Findings' }).locator('li')
+  await expect(findings).toHaveText([
+    'Fits the Elegoo Centauri Carbon 2: 40.0 x 30.0 x 20.0 mm.',
+    'Sitting on the build plate.',
+    'No significant overhangs.'
+  ])
+})

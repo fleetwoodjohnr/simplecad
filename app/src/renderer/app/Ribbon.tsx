@@ -1,6 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
-  ArrowUpFromLine, Axis3d, Box, ChevronDown, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
+  ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
@@ -43,7 +43,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],
       hint: 'Show a body first' }
   ] },
-  { group: 'Inspect', tools: [{ id: 'measure', icon: Ruler }] }
+  { group: 'Inspect', tools: [{ id: 'measure', icon: Ruler }, { id: 'printCheck', icon: ClipboardCheck }] }
 ]
 
 /** Shorter captions for long names, so the ribbon fits; each button keeps its full name for tooltips and screen readers. */

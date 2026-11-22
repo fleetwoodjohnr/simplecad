@@ -40,6 +40,7 @@ export const commands = {
   stack: { label: 'Stack & Place' },
   arrange: { label: 'Arrange' },
   measure: { label: 'Measure' },
+  printCheck: { label: 'Print check' },
   move: { label: 'Move' },
   mirror: { label: 'Mirror' },
   rectangularPattern: { label: 'Rectangular Pattern' },

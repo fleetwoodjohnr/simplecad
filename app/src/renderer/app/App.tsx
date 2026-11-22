@@ -13,6 +13,8 @@ import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
 import { ArrangePanel } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
+import { PrintCheckPanel } from './PrintCheckPanel'
+import { printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -169,6 +171,7 @@ export function App() {
   const [error, setError] = useState('')
   /** A passing word on what just happened outside the model, such as the slicer it was sent to. */
   const [notice, setNotice] = useState('')
+  const [printCheck, setPrintCheck] = useState(false)
   const [viewportError, setViewportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -777,6 +780,7 @@ export function App() {
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
     settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
+    printCheck: { enabled: !!model, run: () => setPrintCheck(true) },
     slicer: { enabled: ready && !!model?.shape.indices.length, hint: 'Show a body first', run: () => {
       if (revision === undefined) return
       setNotice('')
@@ -850,7 +854,7 @@ export function App() {
             </MenuContent>
           </Menu>
           <Ribbon actions={actions} active={{
-            shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, arrange: !!arrange, sectionReplace: !!section, measure: !!measureKind,
+            shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, arrange: !!arrange, sectionReplace: !!section, measure: !!measureKind, printCheck,
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
             offsetPlane: faceTool === 'offset_plane', shell: faceTool === 'shell', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
@@ -1007,6 +1011,7 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
+            {model && printCheck && <PrintCheckPanel findings={printChecks(model.shape)} onClose={() => setPrintCheck(false)} />}
             {model && editingMove && revision !== undefined && (() => {
               const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
               return step?.faceSettings && <StepSettingsPanel key={step.id} name={step.name} busy={busy} preset={step.faceSettings}
