@@ -201,6 +201,13 @@ pub struct Project {
     original: Arc<Vec<u8>>,
 }
 
+/// A face or edge of a named body, by its index in the body's own order.
+#[napi(object, object_to_js = false)]
+pub struct BodyPart {
+    pub body: String,
+    pub index: u32,
+}
+
 #[napi(object, object_from_js = false)]
 pub struct Group {
     pub name: String,
@@ -665,6 +672,26 @@ impl Project {
                 &self.original,
                 &self.shown_shapes(shown),
             )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// A construction plane, axis or point from picked faces and edges; `inputs` is its settings as JSON.
+    #[napi]
+    pub fn add_construction(
+        &self,
+        kind: String,
+        faces: Vec<BodyPart>,
+        edges: Vec<BodyPart>,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The construction settings could not be read."))?;
+        let parts = |list: Vec<BodyPart>| list.into_iter().map(|part| (part.body, part.index)).collect::<Vec<_>>();
+        let mut model = self.model.clone();
+        let report = model
+            .add_construction(&kind, &parts(faces), &parts(edges), inputs, &self.original, &self.shown_shapes(shown))
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }

@@ -1,6 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
-  ArrowUpFromLine, Box, ChevronDown, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
+  ArrowUpFromLine, Axis3d, Box, ChevronDown, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
@@ -34,7 +34,11 @@ const groups: { group: string; tools: Tool[] }[] = [
     { id: 'faceTexture', icon: Grid3x3 }
   ] },
   { group: 'Place', tools: [{ id: 'stack', icon: Magnet }] },
-  { group: 'Construct', tools: [{ id: 'offsetPlane', icon: SquareDashed }] },
+  { group: 'Construct', tools: [
+    { id: 'offsetPlane', icon: SquareDashed },
+    { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],
+      hint: 'Show a body first' }
+  ] },
   { group: 'Inspect', tools: [{ id: 'measure', icon: Ruler }] }
 ]
 

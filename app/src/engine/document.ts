@@ -1,5 +1,5 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type ConstructionEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -20,6 +20,8 @@ export interface Project {
   addOffsetPlane(body: string, face: number, distance: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   groups(): { name: string; members: string[] }[]
+  addConstruction(kind: string, faces: { body: string; index: number }[], edges: { body: string; index: number }[],
+    inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   group(members: string[]): Project
   ungroup(name: string): Project
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
@@ -266,7 +268,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -304,6 +306,8 @@ export class EngineDocument {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else if ('group' in edit) {
       step = { group: edit.group }
+    } else if ('construction' in edit) {
+      step = { construction: edit.construction, faces: edit.faces, edges: edit.edges, inputs: edit.inputs }
     } else if ('ungroup' in edit) {
       step = { ungroup: edit.ungroup }
     } else {
@@ -513,6 +517,12 @@ export class EngineDocument {
       if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
       const created = project.addShape(step.shapeKind, step.values)
       return { bodies: [...bodies, { name: created.name, shape: created.shape }], project: created.project }
+    }
+    if ('construction' in step) {
+      const named = (pick: { body: number }, index: number) => ({ body: bodies[pick.body].name, index })
+      const faces = step.faces.map((face) => { const pick = this.pick(face); return named(pick, pick.face) })
+      const edges = step.edges.map((edge) => { const pick = this.pickEdge(edge); return named(pick, pick.edge) })
+      return this.rebuiltState(project.addConstruction(step.construction, faces, edges, JSON.stringify(step.inputs), this.shapes(bodies)))
     }
     if ('group' in step) {
       const names = step.group.map((index) => {

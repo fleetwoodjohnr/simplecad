@@ -56,6 +56,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'applyTransform':
       case 'applyBodyOperation':
       case 'applyEdgeFinish':
+      case 'applyConstruction':
       case 'group':
       case 'ungroup':
       case 'importModel':

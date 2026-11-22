@@ -734,30 +734,9 @@ impl Model {
         let shape = shown
             .get(&object)
             .ok_or("Select edges of a body with geometry.")?;
-        let prints = occt::edge_fingerprints(shape).map_err(|error| error.what().to_owned())?;
         let mut refs = Vec::with_capacity(edges.len());
         for &index in edges {
-            let print = prints
-                .get(index as usize)
-                .ok_or("Select edges of one body.")?;
-            let curve = &print.curve;
-            let neighbours: Vec<String> = print
-                .neighbours
-                .iter()
-                .map(crate::rebuild::neighbour_summary)
-                .collect();
-            let mut reference = self.face_ref(
-                body,
-                index,
-                json!({
-                    "kind": "edge", "geometry": curve.geometry, "measure": curve.measure,
-                    "center": curve.center, "direction": curve.has_direction.then_some(curve.direction),
-                    "radius": curve.has_radius.then_some(curve.radius), "neighbours": neighbours,
-                }),
-            );
-            reference["kind"] = json!("edge");
-            reference["body_id"] = json!(object);
-            refs.push(json!({ "__ref__": reference }));
+            refs.push(json!({ "__ref__": self.edge_ref(body, &object, shape, index)? }));
         }
         let mut candidate = self.clone();
         let name = candidate.unique_name(label);
@@ -829,6 +808,140 @@ impl Model {
             "id": new_feature_id(), "type": kind, "name": name, "outputs": [body],
             "output_ids": { body: object }, "inputs": inputs, "bindings": bindings,
             "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
+    /// An edge reference as SimpleCAD 0.4's edge tools write it: the curve, and its faces' summaries.
+    fn edge_ref(
+        &self,
+        body: &str,
+        object: &str,
+        shape: &occt::Shape,
+        index: u32,
+    ) -> Result<Value, String> {
+        let prints = occt::edge_fingerprints(shape).map_err(|error| error.what().to_owned())?;
+        let print = prints
+            .get(index as usize)
+            .ok_or("Select edges of one body.")?;
+        let curve = &print.curve;
+        let neighbours: Vec<String> = print
+            .neighbours
+            .iter()
+            .map(crate::rebuild::neighbour_summary)
+            .collect();
+        let mut reference = self.face_ref(
+            body,
+            index,
+            json!({
+                "kind": "edge", "geometry": curve.geometry, "measure": curve.measure,
+                "center": curve.center, "direction": curve.has_direction.then_some(curve.direction),
+                "radius": curve.has_radius.then_some(curve.radius), "neighbours": neighbours,
+            }),
+        );
+        reference["kind"] = json!("edge");
+        reference["body_id"] = json!(object);
+        Ok(reference)
+    }
+
+    /// A face reference, anchored to its body by object ID, as Offset Plane writes it.
+    fn anchored_face_ref(
+        &self,
+        body: &str,
+        object: &str,
+        shape: &occt::Shape,
+        index: u32,
+    ) -> Result<Value, String> {
+        let mark = occt::face_fingerprint(shape, index).map_err(|error| error.what().to_owned())?;
+        let mut reference = self.face_ref(
+            body,
+            index,
+            json!({
+                "kind": "face", "geometry": mark.geometry, "measure": mark.measure,
+                "center": mark.center, "direction": mark.has_direction.then_some(mark.direction),
+                "radius": mark.has_radius.then_some(mark.radius), "neighbours": [],
+            }),
+        );
+        reference["body_id"] = json!(object);
+        Ok(reference)
+    }
+
+    /// Midplane, Plane at Angle, Plane through Points, Tangent Plane, Axis or Point, written as SimpleCAD 0.4
+    /// writes them: the picked faces and edges by reference, each body bound by object ID, and the
+    /// settings in `inputs` (expressions, or a Plane through Points' three `points`).
+    pub fn add_construction(
+        &mut self,
+        kind: &str,
+        faces: &[(String, u32)],
+        edges: &[(String, u32)],
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (label, wanted): (&str, &[(usize, usize)]) = match kind {
+            "midplane" => ("Midplane", &[(2, 0)]),
+            "plane_at_angle" => ("Plane at Angle", &[(1, 1)]),
+            "plane_through_points" => ("Plane through Points", &[(0, 0)]),
+            "tangent_plane" => ("Tangent Plane", &[(1, 0)]),
+            "construction_axis" => ("Axis", &[(1, 0), (0, 1)]),
+            "construction_point" => ("Point", &[(1, 0), (0, 0)]),
+            _ => return Err("Choose a construction tool.".into()),
+        };
+        if !wanted.contains(&(faces.len(), edges.len())) {
+            return Err(match kind {
+                "midplane" => "Pick the two faces the midplane sits between.",
+                "plane_at_angle" => "Pick a flat face and the edge to turn it about.",
+                "tangent_plane" => "Pick the round face the plane touches.",
+                "construction_axis" => "Pick an edge or a round face.",
+                _ => "Pick one face, or none.",
+            }
+            .into());
+        }
+        if !inputs.is_object() {
+            return Err("The construction settings could not be read.".into());
+        }
+        let latest = self.latest();
+        let mut bindings = Map::new();
+        let mut bind = |body: &str| -> Result<(String, &crate::rebuild::Shape), String> {
+            let (producer, object) = latest.get(body).ok_or("Select a body with geometry.")?;
+            bindings.insert(
+                body.to_owned(),
+                json!({ "feature_id": producer, "object_id": object }),
+            );
+            Ok((
+                object.clone(),
+                shown.get(object).ok_or("Select a body with geometry.")?,
+            ))
+        };
+        let mut face_refs = Vec::new();
+        for (body, index) in faces {
+            let (object, shape) = bind(body)?;
+            face_refs
+                .push(json!({ "__ref__": self.anchored_face_ref(body, &object, shape, *index)? }));
+        }
+        let mut edge_refs = Vec::new();
+        for (body, index) in edges {
+            let (object, shape) = bind(body)?;
+            edge_refs.push(json!({ "__ref__": self.edge_ref(body, &object, shape, *index)? }));
+        }
+        if kind == "midplane" {
+            inputs["faces"] = Value::Array(face_refs);
+        } else {
+            if let Some(face) = face_refs.pop() {
+                inputs["face"] = face;
+            }
+            if let Some(edge) = edge_refs.pop() {
+                inputs["edge"] = edge;
+            }
+        }
+        let mut candidate = self.clone();
+        let name = candidate.unique_name(label);
+        let id = new_feature_id();
+        let output = format!("__construction__{name}");
+        let feature = json!({
+            "id": id, "type": kind, "name": name, "outputs": [output],
+            "output_ids": { &output: crate::graph::output_id(&id, &output) },
+            "inputs": inputs, "bindings": bindings, "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
     }
@@ -1645,6 +1758,9 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
 fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
         "offset_plane" => Some(&["distance"]),
+        "plane_at_angle" => Some(&["angle"]),
+        "tangent_plane" => Some(&["around"]),
+        "construction_point" => Some(&["x", "y", "z"]),
         "shell" => Some(&["thickness"]),
         "fillet" => Some(&["radius"]),
         "chamfer" => Some(&["distance"]),

@@ -637,3 +637,104 @@ fn a_step_bound_to_a_deleted_input_needs_attention_and_its_body_refuses_changes(
         "Repair the step marked in History that made \"Box\" before changing it."
     );
 }
+
+#[test]
+fn every_construction_tool_is_created_from_its_picks_and_rebuilds() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let (rod, round) = scad::rebuild::create_primitive(
+        &mut model,
+        "cylinder",
+        json!({"radius": "3 mm", "height": "8 mm", "x": "30 mm"}),
+    )
+    .unwrap();
+    let id = |model: &Model, name: &str| {
+        model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let face = |shape: &occt::Shape, test: &dyn Fn(&occt::FaceFingerprint) -> bool| {
+        (0..occt::faces(shape).unwrap().len() as u32)
+            .find(|&i| test(&occt::face_fingerprint(shape, i).unwrap()))
+            .unwrap()
+    };
+    let top = face(&solid, &|f| f.geometry == "plane" && f.center[2] > 9.9);
+    let bottom = face(&solid, &|f| f.geometry == "plane" && f.center[2] < 0.1);
+    let side = face(&round, &|f| f.geometry == "cylinder");
+    let shown = HashMap::from([
+        (id(&model, "Box"), Rc::new(solid)),
+        (id(&model, &rod), Rc::new(round)),
+    ]);
+    let at = |name: &str, i: u32| vec![(name.to_owned(), i)];
+    let mut make = |kind: &str, faces: &[(String, u32)], edges: &[(String, u32)], inputs| {
+        model
+            .add_construction(kind, faces, edges, inputs, &[], &shown)
+            .unwrap_or_else(|error| panic!("{kind}: {error}"));
+    };
+    make(
+        "midplane",
+        &[at("Box", top), at("Box", bottom)].concat(),
+        &[],
+        json!({}),
+    );
+    make(
+        "plane_at_angle",
+        &at("Box", top),
+        &at("Box", 0),
+        json!({"angle": "30"}),
+    );
+    make(
+        "plane_through_points",
+        &[],
+        &[],
+        json!({"points": [[0, 0, 1], [1, 0, 1], [0, 1, 1]]}),
+    );
+    make(
+        "tangent_plane",
+        &at(&rod, side),
+        &[],
+        json!({"around": "90"}),
+    );
+    make("construction_axis", &[], &at("Box", 0), json!({}));
+    make("construction_axis", &at(&rod, side), &[], json!({}));
+    make(
+        "construction_point",
+        &at("Box", top),
+        &[],
+        json!({"x": "1 mm", "y": "2 mm", "z": "0"}),
+    );
+    let steps = model.steps();
+    let names: Vec<_> = steps.iter().skip(2).map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Midplane",
+            "Plane at Angle",
+            "Plane through Points",
+            "Tangent Plane",
+            "Axis",
+            "Axis2",
+            "Point"
+        ]
+    );
+    assert!(steps.iter().all(|s| s.state == "ok"));
+    let midplane = steps[2]
+        .construction_plane
+        .as_ref()
+        .expect("a plane the sketcher can use");
+    assert!(
+        (midplane["origin"][2] - 5.0).abs() < 1e-9,
+        "halfway between top and bottom"
+    );
+    assert!(
+        model
+            .add_construction("midplane", &at("Box", top), &[], json!({}), &[], &shown)
+            .is_err()
+    );
+}

@@ -206,3 +206,60 @@ test('creates and edits an offset plane through history and a worker restart', a
   const editor = page.getByRole('dialog', { name: 'Sketch editor' })
   await editor.getByLabel('Sketch plane', { exact: true }).selectOption({ label: 'Offset Plane' })
 })
+
+test('creates a midplane, a plane at an angle, an axis and a point from picks, and edits the angle from History', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  const faces = page.getByLabel('Planar face')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const datum = async (name: string) => {
+    await toolbar.getByRole('button', { name: 'Datums' }).click()
+    await page.getByRole('menuitem', { name, exact: true }).click()
+    return page.getByRole('form', { name, exact: true })
+  }
+  const clickEdge = async () => {
+    await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
+    await page.waitForTimeout(200)
+    const box = (await canvas.boundingBox())!
+    const [x, y] = (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as ([number, number] | null)[])
+      .find((p) => p && p[0] > box.x + 20 && p[0] < box.x + box.width - 20 && p[1] > box.y + 20 && p[1] < box.y + box.height - 20)!
+    await page.mouse.click(x, y)
+  }
+
+  let form = await datum('Midplane')
+  await faces.selectOption({ label: 'Top · 1200 mm²' })
+  await faces.selectOption({ label: 'Bottom · 1200 mm²' })
+  await expect(form.getByRole('status', { name: 'Picks' })).toHaveText('2 of 2 faces')
+  await form.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText([/^Box/, /^Midplane/])
+
+  form = await datum('Plane at Angle')
+  await faces.selectOption({ label: 'Top · 1200 mm²' })
+  await clickEdge()
+  await expect(form.getByRole('status', { name: 'Picks' })).toHaveText('1 of 1 faces · 1 of 1 edges')
+  await form.getByLabel('Angle (°)').fill('30')
+  await form.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText([/^Box/, /^Midplane/, /^Plane at Angle/])
+
+  form = await datum('Axis')
+  await clickEdge()
+  await form.getByRole('button', { name: 'Apply' }).click()
+  form = await datum('Point')
+  await faces.selectOption({ label: 'Top · 1200 mm²' })
+  await form.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText([/^Box/, /^Midplane/, /^Plane at Angle/, /^Axis/, /^Point/])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Edit Plane at Angle' }).click()
+  const saved = page.getByRole('form', { name: 'Plane at Angle' })
+  await expect(saved.getByLabel('Angle (°)')).toHaveValue('30')
+  await saved.getByLabel('Angle (°)').fill('60')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(steps).toHaveText([/^Box/, /^Midplane/, /^Plane at Angle/, /^Axis/, /^Point/])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await page.getByRole('button', { name: 'Edit Plane at Angle' }).click()
+  await expect(page.getByRole('form', { name: 'Plane at Angle' }).getByLabel('Angle (°)')).toHaveValue('30')
+})
