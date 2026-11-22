@@ -88,6 +88,8 @@ export interface GroupEdit { group: number[] }
 export interface PlateEdit { plate: 'drop' | 'center' | 'orient' }
 /** SimpleCAD 0.4's thread calibration: a P30 plug and four gauges, laid out on the plate, as one step. */
 export interface ThreadGaugeEdit { threadGauges: 'P30' }
+/** Move several bodies (display indices) by one offset, mm: a keyboard nudge, one Move each, one undo step. */
+export interface MoveBodiesEdit { moveBodies: number[]; offset: Vec3 }
 export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
@@ -196,7 +198,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit
 
 export interface Checkpoint {
   source: Source
@@ -262,6 +264,7 @@ export type RendererCommand =
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'plate'; revision: number } & PlateEdit)
   | ({ op: 'threadGauges'; revision: number } & ThreadGaugeEdit)
+  | ({ op: 'moveBodies'; revision: number } & MoveBodiesEdit)
   | { op: 'health'; revision: number }
   | { op: 'calibrate' }
   | { op: 'calibrationModel' }
@@ -402,6 +405,12 @@ const isGroup = (value: unknown): value is GroupEdit => {
   return Array.isArray(members) && members.length >= 2 && members.length <= MAX_BODIES &&
     members.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(members).size === members.length
 }
+const isMoveBodies = (value: unknown): value is MoveBodiesEdit => {
+  const { moveBodies, offset } = (value as Partial<MoveBodiesEdit> | null) ?? {}
+  return Array.isArray(moveBodies) && moveBodies.length >= 1 && moveBodies.length <= MAX_BODIES &&
+    moveBodies.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(moveBodies).size === moveBodies.length &&
+    Array.isArray(offset) && offset.length === 3 && offset.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e6)
+}
 const isThreadGauges = (value: unknown): value is ThreadGaugeEdit => (value as Partial<ThreadGaugeEdit> | null)?.threadGauges === 'P30'
 const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center', 'orient'].includes((value as Partial<PlateEdit> | null)?.plate!)
 const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
@@ -422,7 +431,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -578,7 +587,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
-        (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
+        (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
         ((m.op === 'applySectionReplace' || m.op === 'previewSectionReplace') && isSectionReplace(m)) ||

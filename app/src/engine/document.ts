@@ -1,6 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -284,7 +284,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -326,6 +326,8 @@ export class EngineDocument {
       step = { plate: edit.plate }
     } else if ('threadGauges' in edit) {
       step = { threadGauges: edit.threadGauges }
+    } else if ('moveBodies' in edit) {
+      step = { moveBodies: edit.moveBodies, offset: edit.offset }
     } else if ('sectionTarget' in edit) {
       step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
@@ -580,6 +582,17 @@ export class EngineDocument {
     }
     if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
     if ('plate' in step) return this.onPlate(project, bodies, step.plate)
+    if ('moveBodies' in step) {
+      let next = bodies
+      for (const body of step.moveBodies) {
+        const shape = next[body]?.shape
+        if (!shape) throw new Error('Select bodies with geometry to move.')
+        const moved = project.transform(next[body].name, shape, { kind: 'move', values: [String(step.offset[0]), String(step.offset[1]), String(step.offset[2])] })
+        project = moved.project
+        next = next.map((b, i) => i === body ? { ...b, shape: moved.shape } : b)
+      }
+      return { bodies: next, project }
+    }
     if ('threadGauges' in step) {
       // fit_panel.generate_threads: the plug and gauges it adds, with its names, sizes and layout.
       const at = (index: number) => ({ x: String(30 + 55 * (1 + index % 2)), y: String(30 + 55 * Math.floor(index / 2)) })

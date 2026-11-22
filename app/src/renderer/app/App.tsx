@@ -4,7 +4,7 @@ import type { BodyHealth, BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOp
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -15,6 +15,7 @@ import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
 import { PrintCheckPanel } from './PrintCheckPanel'
 import { FitPanel } from './FitPanel'
+import { NUDGE_STEP, worldAxes } from './nudge'
 import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
@@ -173,6 +174,13 @@ export function App() {
   /** A passing word on what just happened outside the model, such as the slicer it was sent to. */
   const [notice, setNotice] = useState('')
   const [printCheck, setPrintCheck] = useState(false)
+  /** An arrow-key nudge of bodies in progress; a face's lives in `distance`. */
+  const [nudge, setNudge] = useState<{ bodies: number[]; offset: Vec3 }>()
+  const [nudgeCommit, setNudgeCommit] = useState(0)
+  const faceNudge = useRef(false)
+  const nudgeAxes = useRef<[Vec3, Vec3, Vec3]>(undefined)
+  const nudgeKeys = useRef(new Set<string>())
+  const nudgeTimer = useRef(0)
   const [fitPanel, setFitPanel] = useState(false)
   /** The engine's half of the print check, for the shown model. */
   const [health, setHealth] = useState<BodyHealth[]>()
@@ -805,6 +813,108 @@ export function App() {
     } },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
   }
+
+  // SimpleCAD 0.4's arrow-key nudge. Up and Down push or pull a selected face; with bodies chosen, the arrows step
+  // them along the world axes nearest the screen's (Ctrl+Up and Down into it). A burst commits as one step
+  // 250 ms after the last arrow is let go; Escape drops it.
+  const nudgeBlocked = !!(stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || construction || arrange ||
+    section || measureKind || sketchTool || matchingPart || sketchEditor || searchOpen || settingsOpen)
+  const cancelNudge = () => {
+    window.clearTimeout(nudgeTimer.current)
+    nudgeKeys.current.clear()
+    nudgeAxes.current = undefined
+    if (faceNudge.current) setDistance('')
+    faceNudge.current = false
+    if (nudge) setPreview(undefined)
+    setNudge(undefined)
+    setNotice('')
+  }
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && (nudge || faceNudge.current)) {
+        event.preventDefault()
+        cancelNudge()
+        return
+      }
+      const direction = ({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' } as Record<string, string>)[event.key]
+      if (!direction || event.defaultPrevented || event.isComposing) return
+      const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
+      if (typing || nudgeBlocked || busy || revision === undefined || document.querySelector('[role="menu"]')) return
+      if (event.repeat && !nudgeKeys.current.has(event.key)) return
+      const depth = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey
+      const plain = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey
+      const vertical = direction === 'up' || direction === 'down'
+      if (!plain && !(depth && vertical)) return
+      const sign = direction === 'right' || direction === 'up' ? 1 : -1
+      const step = (value: number, by: number) => Math.round((value + by * NUDGE_STEP) * 1e9) / 1e9
+      if (!nudge && selected !== undefined && !chosenBodies.length) {
+        if (depth || !vertical) return
+        faceNudge.current = true
+        const amount = step(Number(distance) || 0, sign)
+        setDistance(String(amount))
+        setNotice(`${amount >= 0 ? 'Adding' : 'Removing'} ${Math.abs(amount).toFixed(2)} mm — arrows continue, Esc cancels`)
+      } else {
+        const bodies = nudge?.bodies ?? chosenBodies
+        if (!bodies.length || faceNudge.current) return
+        if (!nudgeAxes.current) {
+          const view = readViewFrame.current?.()
+          if (!view) return
+          nudgeAxes.current = worldAxes(view)
+        }
+        const [right, up, forward] = nudgeAxes.current
+        const axis = depth ? forward : vertical ? up : right
+        const offset = (nudge?.offset ?? [0, 0, 0]).map((value, i) => step(value, axis[i] * sign)) as Vec3
+        setNudge({ bodies, offset })
+        setNotice(`Moving ${Math.hypot(...offset).toFixed(2)} mm — arrows continue, Esc cancels`)
+      }
+      event.preventDefault()
+      nudgeKeys.current.add(event.key)
+      window.clearTimeout(nudgeTimer.current)
+    }
+    const up = (event: KeyboardEvent) => {
+      if (!nudgeKeys.current.delete(event.key) || nudgeKeys.current.size) return
+      nudgeTimer.current = window.setTimeout(() => setNudgeCommit((n) => n + 1), 250)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  })
+  useEffect(() => {
+    if (!nudge || nudge.bodies.length !== 1 || revision === undefined) return
+    let active = true
+    const values = nudge.offset.map(String) as [string, string, string]
+    const timer = window.setTimeout(() => {
+      void previewTransform(revision, { body: nudge.bodies[0], transform: { kind: 'move', values } })
+        .then((next) => { if (active) setPreview(next) }, () => { if (active) setPreview(undefined) })
+    }, 48)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [nudge, revision])
+  useEffect(() => {
+    if (!nudgeCommit || revision === undefined) return
+    if (busyRef.current) {
+      nudgeTimer.current = window.setTimeout(() => setNudgeCommit((n) => n + 1), 100)
+      return
+    }
+    if (faceNudge.current) {
+      faceNudge.current = false
+      const amount = Number(distance)
+      if (amount) pull(amount)
+      else setDistance('')
+      return
+    }
+    const done = nudge
+    nudgeAxes.current = undefined
+    setNudge(undefined)
+    setPreview(undefined)
+    if (!done || done.offset.every((value) => Math.abs(value) < 1e-9)) return setNotice('')
+    const values = done.offset.map(String) as [string, string, string]
+    mutate(() => done.bodies.length === 1
+      ? applyTransform(revision, { body: done.bodies[0], transform: { kind: 'move', values } })
+      : moveBodies(revision, done.bodies, done.offset))
+  }, [nudgeCommit])
 
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {

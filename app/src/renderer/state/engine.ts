@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { ArrangeEdit, BodyHealth, PlateEdit, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
 
@@ -104,6 +104,8 @@ export const applyArrange = (revision: number, edit: ArrangeEdit) =>
 export const reloadCalibration = () => send<string>({ op: 'calibrate' })
 /** The calibration test print, as a STEP of its named pieces, to import. */
 export const calibrationModel = () => send<Uint8Array>({ op: 'calibrationModel' })
+export const moveBodies = (revision: number, bodies: number[], offset: Vec3) =>
+  send<ModelResult>({ op: 'moveBodies', revision, moveBodies: bodies, offset }).then(accept)
 export const addThreadGauges = (revision: number) =>
   send<ModelResult>({ op: 'threadGauges', revision, threadGauges: 'P30' }).then(accept)
 export const bodyHealth = (revision: number) => send<BodyHealth[]>({ op: 'health', revision })

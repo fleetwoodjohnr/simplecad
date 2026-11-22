@@ -85,6 +85,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'group':
       case 'plate':
       case 'threadGauges':
+      case 'moveBodies':
       case 'ungroup':
       case 'importModel':
       case 'repairInput':

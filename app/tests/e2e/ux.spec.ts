@@ -380,3 +380,55 @@ test('adds the P30 thread gauges as named parts in one undoable step', async () 
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(bodies).not.toContainText('P30')
 })
+
+test('arrow keys nudge a selected face or chosen body as one exact step, and Escape drops a nudge', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  await expect(status).toHaveText(/24000 mm³/)
+
+  // Up four times on the top face: one 1 mm pull, committed once the arrows are let go.
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await canvas.focus()
+  for (let press = 0; press < 4; press++) await page.keyboard.press('ArrowUp')
+  await expect(page.getByRole('status', { name: 'Notice' })).toHaveText('Adding 1.00 mm — arrows continue, Esc cancels')
+  await expect(steps).toHaveText(['Box', 'Pull'])
+  await expect(status).toHaveText(/25200 mm³/)
+
+  // A chosen body steps along the one world axis nearest screen right: X or Y in the default iso view, where
+  // right lies between them.
+  await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+  for (let press = 0; press < 2; press++) await page.keyboard.press('ArrowRight')
+  await expect(steps).toHaveText(['Box', 'Pull', 'Move'])
+  await page.getByRole('button', { name: 'Edit Move' }).click()
+  const move = page.getByRole('form', { name: 'Move' })
+  const moved = await Promise.all(['Move X', 'Move Y', 'Move Z'].map(async (label) => Number(await move.getByLabel(label).inputValue())))
+  expect(moved.map(Math.abs).sort()).toEqual([0, 0, 0.5])
+  expect(moved[2]).toBe(0)
+  await move.getByRole('button', { name: 'Cancel' }).click()
+
+  // Escape before the burst commits leaves the history alone.
+  await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+  await page.keyboard.down('ArrowLeft')
+  await page.keyboard.press('Escape')
+  await page.keyboard.up('ArrowLeft')
+  await page.waitForTimeout(600)
+  await expect(steps).toHaveText(['Box', 'Pull', 'Move'])
+
+  // Several chosen bodies move together: a Move each, one undo step.
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('cylinder')
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Pull', 'Move', 'Cylinder'])
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await page.keyboard.press('ArrowUp')
+  await expect(steps).toHaveText(['Box', 'Pull', 'Move', 'Cylinder', 'Move2', 'Move3'])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(bodies).not.toContainText('Cylinder')
+})
