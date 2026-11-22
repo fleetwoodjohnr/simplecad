@@ -273,3 +273,17 @@ test('checks the shown bodies for printing', async () => {
     'One connected solid.'
   ])
 })
+
+test('centres the shown bodies on the build plate as one undo step', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const undo = page.getByRole('button', { name: 'Undo', exact: true })
+  await expect(undo).toBeDisabled()
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Print check', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Print check' })
+  await panel.getByRole('button', { name: 'Center all', exact: true }).click()
+  await expect(undo).toBeEnabled()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await undo.click()
+  await expect(undo).toBeDisabled()
+})

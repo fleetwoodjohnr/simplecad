@@ -5,6 +5,7 @@ import { combine, EngineDocument, type PartDisplay, type Project, type Shape } f
 class FakeShape implements Shape {
   pulls: [number, number][] = []
   constructor(readonly volume: number, readonly faces = 2) {}
+  bounds() { return [0, 0, 0, 1, 1, 1] }
   display(): PartDisplay {
     const n = this.faces
     return {

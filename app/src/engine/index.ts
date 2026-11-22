@@ -63,6 +63,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'applyArrange':
       case 'applySectionReplace':
       case 'group':
+      case 'plate':
       case 'ungroup':
       case 'importModel':
       case 'repairInput':

@@ -4,7 +4,7 @@ import type { BodyHealth, BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOp
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -1022,6 +1022,7 @@ export function App() {
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
             {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
+              busy={busy} onPlate={(how) => { if (revision !== undefined) mutate(() => placeOnPlate(revision, how)) }}
               onClose={() => setPrintCheck(false)} />}
             {model && editingMove && revision !== undefined && (() => {
               const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)

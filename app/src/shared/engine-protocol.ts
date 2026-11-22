@@ -83,6 +83,8 @@ export interface SectionReplaceEdit {
 }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
+/** Drop every shown body onto the build plate, or centre them on it too: one Move each, one undo step. */
+export interface PlateEdit { plate: 'drop' | 'center' }
 export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
@@ -191,7 +193,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit
 
 export interface Checkpoint {
   source: Source
@@ -255,6 +257,7 @@ export type RendererCommand =
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
+  | ({ op: 'plate'; revision: number } & PlateEdit)
   | { op: 'health'; revision: number }
   | ({ op: 'applyConstruction'; revision: number } & ConstructionEdit)
   | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
@@ -393,6 +396,7 @@ const isGroup = (value: unknown): value is GroupEdit => {
   return Array.isArray(members) && members.length >= 2 && members.length <= MAX_BODIES &&
     members.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(members).size === members.length
 }
+const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center'].includes((value as Partial<PlateEdit> | null)?.plate!)
 const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
 
 const isRecipe = (value: unknown): value is string =>
@@ -411,7 +415,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -567,7 +571,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
-        (m.op === 'group' && isGroup(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
+        (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
         ((m.op === 'applySectionReplace' || m.op === 'previewSectionReplace') && isSectionReplace(m)) ||

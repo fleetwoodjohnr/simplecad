@@ -130,6 +130,12 @@ impl Shape {
         wrap(ffi::push_pull(&self.inner, face, distance))
     }
 
+    /// The optimal bounding box: min x, y, z then max x, y, z.
+    #[napi]
+    pub fn bounds(&self) -> Result<Vec<f64>> {
+        ffi::bounds(&self.inner).map_err(reason)
+    }
+
     #[napi]
     pub fn face_count(&self) -> Result<u32> {
         Ok(ffi::faces(&self.inner).map_err(reason)?.len() as u32)

@@ -1,11 +1,16 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+
+/** The build plate of SimpleCAD 0.4's bundled default printer, in mm. */
+const PLATE = [256, 256]
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
 
 export interface Shape {
   display(): PartDisplay
+  /** The optimal bounding box: min x, y, z then max x, y, z. */
+  bounds(): number[]
 }
 
 /** A body at one point in the history. `shape` is null when the file had no readable geometry for it. */
@@ -274,7 +279,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -312,6 +317,8 @@ export class EngineDocument {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else if ('group' in edit) {
       step = { group: edit.group }
+    } else if ('plate' in edit) {
+      step = { plate: edit.plate }
     } else if ('sectionTarget' in edit) {
       step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
@@ -565,6 +572,7 @@ export class EngineDocument {
       return { bodies, project: project.group(names) }
     }
     if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
+    if ('plate' in step) return this.onPlate(project, bodies, step.plate)
     if ('edgeFinish' in step) {
       const picks = step.edges.map((edge) => this.pickEdge(edge))
       const body = picks[0].body
@@ -603,6 +611,33 @@ export class EngineDocument {
     }
     else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)
     return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project }
+  }
+
+  /** SimpleCAD 0.4's place_on_plate and center_on_plate, on its default printer's plate: one offset for everything shown, keeping its layout. */
+  private onPlate(project: Project, bodies: Body[], how: PlateEdit['plate']) {
+    const shown = this.shown(bodies)
+    if (!shown.length) throw new Error('There is nothing on the plate yet.')
+    const low = [Infinity, Infinity, Infinity]
+    const high = [-Infinity, -Infinity, -Infinity]
+    for (const { shape } of shown) {
+      const box = shape.bounds()
+      for (let axis = 0; axis < 3; axis++) {
+        low[axis] = Math.min(low[axis], box[axis])
+        high[axis] = Math.max(high[axis], box[axis + 3])
+      }
+    }
+    const offset = how === 'drop' ? [0, 0, -low[2]]
+      : [0, 1].map((axis) => PLATE[axis] / 2 - (low[axis] + high[axis]) / 2).concat(-low[2])
+    if (offset.every((value) => Math.abs(value) < 1e-9)) {
+      throw new Error(how === 'drop' ? 'Everything already sits on the plate.' : 'Everything is already centred on the plate.')
+    }
+    const next = [...bodies]
+    for (const { body, shape } of shown) {
+      const moved = project.transform(bodies[body].name, shape, { kind: 'move', values: [String(offset[0]), String(offset[1]), String(offset[2])] })
+      project = moved.project
+      next[body] = { ...next[body], shape: moved.shape }
+    }
+    return { bodies: next, project }
   }
 
   private place(project: Project, bodies: Body[], shape: Shape, step: StackStep) {
