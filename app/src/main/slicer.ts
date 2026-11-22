@@ -14,12 +14,12 @@ export const SLICERS: [name: string, binaries: string[], flatpak: string][] = [
   ['Cura', ['cura', 'UltiMaker-Cura'], 'com.ultimaker.cura']
 ]
 
-/** The first slicer this machine has, as its name and the command that starts it. */
+/** The first slicer this Linux machine has, as its name and the command that starts it. */
 export function findSlicer(searchPath: string, executable: (file: string) => boolean, flatpak: (id: string) => boolean) {
-  const dirs = searchPath.split(path.delimiter).filter(Boolean)
+  const dirs = searchPath.split(':').filter(Boolean)
   for (const [name, binaries, id] of SLICERS) {
     for (const binary of binaries) {
-      const found = dirs.map((dir) => path.join(dir, binary)).find(executable)
+      const found = dirs.map((dir) => path.posix.join(dir, binary)).find(executable)
       if (found) return { name, command: [found] }
     }
     if (flatpak(id)) return { name, command: ['flatpak', 'run', id] }
