@@ -98,6 +98,8 @@ export interface BodyOperationEdit {
 export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number } | { kind: 'edge'; edge: number } |
   { kind: 'vertex'; body: number; point: Vec3 }
 export interface Measurement { label: string; values: number[]; unit: string }
+/** What a printer needs of a shown body: valid, watertight (no open edges), one solid. */
+export interface BodyHealth { name: string; valid: boolean; openEdges: number; solids: number }
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]
@@ -253,6 +255,7 @@ export type RendererCommand =
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
+  | { op: 'health'; revision: number }
   | ({ op: 'applyConstruction'; revision: number } & ConstructionEdit)
   | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
   | ({ op: 'applySectionReplace' | 'previewSectionReplace'; revision: number } & SectionReplaceEdit)
@@ -272,7 +275,7 @@ export type RendererCommand =
 
 export type RendererRequest = RendererCommand & { id: number }
 export type EngineResponse =
-  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] | string | SketchSolution }
+  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] | BodyHealth[] | string | SketchSolution }
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
@@ -564,7 +567,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
-        (m.op === 'group' && isGroup(m)) || (m.op === 'ungroup' && isUngroup(m)) ||
+        (m.op === 'group' && isGroup(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
         ((m.op === 'applySectionReplace' || m.op === 'previewSectionReplace') && isSectionReplace(m)) ||

@@ -352,6 +352,8 @@ pub mod ffi {
         fn volume_center(shape: &Shape) -> Result<Vec<f64>>;
         fn minimum_distance(first: &Shape, second: &Shape) -> Result<f64>;
         fn solid_count(shape: &Shape) -> u32;
+        /// Edges on only one face: holes in the surface.
+        fn open_edges(shape: &Shape) -> u32;
         /// Faces as `TopExp_Explorer` visits them, a face used twice counted
         /// twice: how the Python app's project comparison counts.
         fn face_occurrences(shape: &Shape) -> u32;

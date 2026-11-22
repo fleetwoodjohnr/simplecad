@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { ArrangeEdit, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
 
@@ -100,6 +100,7 @@ export const previewArrange = (revision: number, edit: ArrangeEdit) =>
   send<DisplayShape>({ op: 'previewArrange', revision, ...edit })
 export const applyArrange = (revision: number, edit: ArrangeEdit) =>
   send<ModelResult>({ op: 'applyArrange', revision, ...edit }).then(accept)
+export const bodyHealth = (revision: number) => send<BodyHealth[]>({ op: 'health', revision })
 export const applyConstruction = (revision: number, edit: ConstructionEdit) =>
   send<ModelResult>({ op: 'applyConstruction', revision, ...edit }).then(accept)
 export const groupBodies = (revision: number, bodies: number[]) =>

@@ -13,7 +13,7 @@ export function PrintCheckPanel({ findings, onClose }: { findings: Finding[]; on
   return <section aria-label="Print check" className="grid shrink-0 gap-2 text-xs">
     <div className="font-semibold">Print check</div>
     <ul aria-label="Findings" className="grid gap-1.5">
-      {findings.map((finding) => <li key={finding.check} className="flex gap-2">
+      {findings.map((finding, index) => <li key={index} className="flex gap-2">
         {icons[finding.severity]}
         <div className="min-w-0"><div>{finding.message}</div>{finding.hint && <div className="text-text-2">{finding.hint}</div>}</div>
       </li>)}

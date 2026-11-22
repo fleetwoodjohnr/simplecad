@@ -33,3 +33,20 @@ describe('print checks', () => {
     expect(findings[2].message).toBe('32% of the surface overhangs by more than 50°.')
   })
 })
+
+describe('the engine’s half of the print check', () => {
+  it('says the all-clears once however many bodies, and names the body with a problem', async () => {
+    const { healthChecks } = await import('@/renderer/app/printability')
+    const findings = healthChecks([
+      { name: 'Box', valid: true, openEdges: 0, solids: 1 },
+      { name: 'Lid', valid: true, openEdges: 0, solids: 1 },
+      { name: 'Shell', valid: true, openEdges: 3, solids: 2 }
+    ])
+    expect(findings.map((f) => [f.severity, f.message])).toEqual([
+      ['ok', 'Solid and watertight.'],
+      ['ok', 'One connected solid.'],
+      ['warning', "Shell's surface is not closed — 3 open edge(s)."],
+      ['note', 'Shell is 2 separate pieces.']
+    ])
+  })
+})

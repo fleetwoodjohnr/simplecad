@@ -208,6 +208,14 @@ pub struct BodyPart {
     pub index: u32,
 }
 
+/// What a printer needs of a body: valid, watertight, one piece.
+#[napi(object, object_from_js = false)]
+pub struct BodyHealth {
+    pub valid: bool,
+    pub open_edges: u32,
+    pub solids: u32,
+}
+
 #[napi(object, object_from_js = false)]
 pub struct Group {
     pub name: String,
@@ -1148,6 +1156,16 @@ pub struct Measurement {
     pub label: String,
     pub values: Vec<f64>,
     pub unit: String,
+}
+
+/// The B-rep half of the print check, for one body.
+#[napi]
+pub fn body_health(shape: &Shape) -> Result<BodyHealth> {
+    Ok(BodyHealth {
+        valid: occt::is_valid(&shape.inner).map_err(reason)?,
+        open_edges: occt::open_edges(&shape.inner),
+        solids: occt::solid_count(&shape.inner),
+    })
 }
 
 #[napi]

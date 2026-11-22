@@ -167,6 +167,7 @@ std::unique_ptr<Shape> transform_shape(const Shape &shape, const Trsf &trsf, boo
 std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t face);
 std::unique_ptr<Shape> sub_edge(const Shape &shape, uint32_t edge);
 void messages_to_stderr();
+uint32_t open_edges(const Shape &shape);
 std::unique_ptr<Shape> sub_vertex(const Shape &shape, uint32_t vertex);
 PlaneFrame plane_frame(const Shape &face);
 CylinderData cylinder_data(const Shape &face);

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Pencil, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
-import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import type { BodyHealth, BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
@@ -14,7 +14,7 @@ import { ArrangePanel } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
 import { PrintCheckPanel } from './PrintCheckPanel'
-import { printChecks } from './printability'
+import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
@@ -172,6 +172,8 @@ export function App() {
   /** A passing word on what just happened outside the model, such as the slicer it was sent to. */
   const [notice, setNotice] = useState('')
   const [printCheck, setPrintCheck] = useState(false)
+  /** The engine's half of the print check, for the shown model. */
+  const [health, setHealth] = useState<BodyHealth[]>()
   const [viewportError, setViewportError] = useState('')
   const [busy, setBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -328,6 +330,14 @@ export function App() {
     }, 48)
     return () => { active = false; window.clearTimeout(timer); cancelQueuedStackPreview() }
   }, [stack, placement, busy, revision])
+
+  useEffect(() => {
+    setHealth(undefined)
+    if (!printCheck || revision === undefined) return
+    let active = true
+    void bodyHealth(revision).then((bodies) => { if (active) setHealth(bodies) }, (failure: Error) => { if (active) setError(failure.message) })
+    return () => { active = false }
+  }, [printCheck, revision])
 
   useEffect(() => {
     if (!measureKind || revision === undefined || !measurePicks.length) {
@@ -1011,7 +1021,8 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
-            {model && printCheck && <PrintCheckPanel findings={printChecks(model.shape)} onClose={() => setPrintCheck(false)} />}
+            {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
+              onClose={() => setPrintCheck(false)} />}
             {model && editingMove && revision !== undefined && (() => {
               const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
               return step?.faceSettings && <StepSettingsPanel key={step.id} name={step.name} busy={busy} preset={step.faceSettings}

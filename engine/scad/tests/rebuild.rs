@@ -1167,3 +1167,13 @@ fn a_vent_plate_is_made_from_the_shapes_and_a_vent_is_cut_into_a_face() {
         ("vent_cut", "1.2 mm")
     );
 }
+
+#[test]
+fn a_closed_solid_has_no_open_edges_and_a_lone_face_has_four() {
+    let solid = occt::make_box(10.0, 20.0, 30.0).unwrap();
+    assert_eq!(
+        (occt::open_edges(&solid), occt::solid_count(&solid)),
+        (0, 1)
+    );
+    assert_eq!(occt::open_edges(&occt::sub_face(&solid, 0).unwrap()), 4);
+}

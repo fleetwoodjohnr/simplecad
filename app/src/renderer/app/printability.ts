@@ -1,7 +1,7 @@
 // SimpleCAD 0.4's print checks that read the triangulation (kernel/printing.py): build volume, plate contact and
-// overhangs, run here on the display mesh. ponytail: validity, disconnected parts, thin walls and tiny features
-// need the B-rep and are not checked yet.
-import type { MeshData } from '@/shared/engine-protocol'
+// overhangs, run here on the display mesh; validity and pieces come from the engine (healthChecks).
+// ponytail: thin walls and tiny features are not checked yet.
+import type { BodyHealth, MeshData } from '@/shared/engine-protocol'
 
 /** SimpleCAD 0.4's bundled default printer (data/printers/elegoo_centauri_carbon_2.json). */
 export const defaultPrinter = { name: 'Elegoo Centauri Carbon 2', size: [256, 256, 256], maxOverhang: 50 }
@@ -61,5 +61,28 @@ export function printChecks(mesh: Pick<MeshData, 'positions' | 'indices'>, print
   findings.push(fraction > 0.15 ? { check: 'overhangs', severity: 'warning', message: share, hint: 'It will need supports, or rotating.' }
     : fraction > 0.02 ? { check: 'overhangs', severity: 'note', message: share, hint: 'Light support may help.' }
     : { check: 'overhangs', severity: 'ok', message: 'No significant overhangs.' })
+  return findings
+}
+
+/** SimpleCAD 0.4's check_geometry and check_disconnected, from each shown body's B-rep, all-clears said once. */
+export function healthChecks(bodies: BodyHealth[]): Finding[] {
+  const findings: Finding[] = []
+  const seen = new Set<string>()
+  const add = (finding: Finding) => {
+    const key = `${finding.check}:${finding.message}`
+    if (finding.severity === 'ok' && seen.has(key)) return
+    seen.add(key)
+    findings.push(finding)
+  }
+  for (const body of bodies) {
+    add(!body.valid
+      ? { check: 'geometry', severity: 'warning', message: `${body.name} has invalid geometry.`, hint: 'Slicers may produce odd results. Check the most recent features.' }
+      : body.openEdges
+        ? { check: 'geometry', severity: 'warning', message: `${body.name}'s surface is not closed — ${body.openEdges} open edge(s).`, hint: 'A printer needs a watertight solid.' }
+        : { check: 'geometry', severity: 'ok', message: 'Solid and watertight.' })
+    add(body.solids > 1
+      ? { check: 'disconnected', severity: 'note', message: `${body.name} is ${body.solids} separate pieces.`, hint: 'They will print as separate objects unless they are joined.' }
+      : { check: 'disconnected', severity: 'ok', message: 'One connected solid.' })
+  }
   return findings
 }

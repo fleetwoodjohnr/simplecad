@@ -402,6 +402,19 @@ std::string mm(double value) {
 
 uint32_t solid_count(const Shape &shape) { return count_solids(shape.shape); }
 
+// Edges on only one face, degenerate ones aside: holes in the surface (SimpleCAD 0.4's printing._free_edges).
+uint32_t open_edges(const Shape &shape) {
+  AncestorMap faces;
+  TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, faces);
+  uint32_t count = 0;
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    if (faces.FindFromIndex(i).Extent() < 2 && !BRep_Tool::Degenerated(TopoDS::Edge(faces.FindKey(i)))) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 uint32_t face_occurrences(const Shape &shape) {
   uint32_t count = 0;
   for (TopExp_Explorer e(shape.shape, TopAbs_FACE); e.More(); e.Next()) {

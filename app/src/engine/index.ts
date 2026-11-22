@@ -17,6 +17,7 @@ interface Addon {
   exportMesh(format: MeshFormat, parts: ReturnType<EngineDocument['meshParts']>): Buffer
   exportStep(parts: Shape[]): Buffer
   measureShapes(parts: ReturnType<EngineDocument['measurementPicks']>): Measurement[]
+  bodyHealth(shape: Shape): { valid: boolean; openEdges: number; solids: number }
   crash(): void
 }
 
@@ -74,6 +75,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
+      case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape) })); break
       case 'export': result = new Uint8Array(req.format === 'step'
         ? addon.exportStep(document.exportShapes(req.revision).map(({ shape }) => shape))
         : addon.exportMesh(req.format, document.meshParts(req.revision))); break

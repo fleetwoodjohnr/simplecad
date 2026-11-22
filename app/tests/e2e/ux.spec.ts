@@ -268,6 +268,8 @@ test('checks the shown bodies for printing', async () => {
   await expect(findings).toHaveText([
     'Fits the Elegoo Centauri Carbon 2: 40.0 x 30.0 x 20.0 mm.',
     'Sitting on the build plate.',
-    'No significant overhangs.'
+    'No significant overhangs.',
+    'Solid and watertight.',
+    'One connected solid.'
   ])
 })
