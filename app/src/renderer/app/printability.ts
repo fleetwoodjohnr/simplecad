@@ -1,11 +1,8 @@
 // SimpleCAD 0.4's print checks that read the triangulation (kernel/printing.py): build volume, plate contact and
-// overhangs, run here on the display mesh; validity and pieces come from the engine (healthChecks).
-// ponytail: thin walls and tiny features are not checked yet.
+// overhangs, run here on the display mesh; the B-rep checks come from the engine (healthChecks).
 import type { BodyHealth, MeshData } from '@/shared/engine-protocol'
-import { overhangFraction, overhangSeverity } from '@/shared/printing'
+import { defaultPrinter, overhangFraction, overhangSeverity } from '@/shared/printing'
 
-/** SimpleCAD 0.4's bundled default printer (data/printers/elegoo_centauri_carbon_2.json). */
-export const defaultPrinter = { name: 'Elegoo Centauri Carbon 2', size: [256, 256, 256], maxOverhang: 50 }
 
 export interface Finding { check: string; severity: 'ok' | 'note' | 'warning'; message: string; hint?: string }
 
@@ -49,8 +46,9 @@ export function printChecks(mesh: Pick<MeshData, 'positions' | 'indices'>, print
   return findings
 }
 
-/** SimpleCAD 0.4's check_geometry and check_disconnected, from each shown body's B-rep, all-clears said once. */
-export function healthChecks(bodies: BodyHealth[]): Finding[] {
+/** SimpleCAD 0.4's check_geometry, check_disconnected, check_thin_walls and check_tiny_features, from each shown
+ * body's B-rep, all-clears said once. */
+export function healthChecks(bodies: BodyHealth[], printer = defaultPrinter): Finding[] {
   const findings: Finding[] = []
   const seen = new Set<string>()
   const add = (finding: Finding) => {
@@ -68,6 +66,17 @@ export function healthChecks(bodies: BodyHealth[]): Finding[] {
     add(body.solids > 1
       ? { check: 'disconnected', severity: 'note', message: `${body.name} is ${body.solids} separate pieces.`, hint: 'They will print as separate objects unless they are joined.' }
       : { check: 'disconnected', severity: 'ok', message: 'One connected solid.' })
+    const wall = body.thinnestWall
+    add(wall === undefined || wall === null
+      ? { check: 'thin_walls', severity: 'ok', message: 'No thin walls found.' }
+      : wall < printer.minWall
+        ? { check: 'thin_walls', severity: 'warning', message: `${body.name}'s thinnest wall is ${wall.toFixed(2)} mm.`,
+            hint: `Below ${printer.minWall.toFixed(2)} mm this printer will struggle. Thicken it, or accept a weak wall.` }
+        : { check: 'thin_walls', severity: 'ok', message: `Thinnest wall ${wall.toFixed(2)} mm.` })
+    add(body.shortEdges.length
+      ? { check: 'tiny_features', severity: 'note', message: `${body.name} has ${body.shortEdges.length} feature(s) smaller than ${printer.minFeature.toFixed(2)} mm.`,
+          hint: `The smallest is ${Math.min(...body.shortEdges).toFixed(3)} mm and will not print cleanly.` }
+      : { check: 'tiny_features', severity: 'ok', message: 'No features below the nozzle size.' })
   }
   return findings
 }

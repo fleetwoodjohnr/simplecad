@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { checkRendererRequest, type EngineResponse, type Measurement, type MeshFormat } from '../shared/engine-protocol'
+import { checkRendererRequest, type BodyHealth, type EngineResponse, type Measurement, type MeshFormat } from '../shared/engine-protocol'
+import { defaultPrinter } from '../shared/printing'
 import { EngineDocument, type Project, type Shape } from './document'
 
 interface PortLike {
@@ -17,7 +18,7 @@ interface Addon {
   exportMesh(format: MeshFormat, parts: ReturnType<EngineDocument['meshParts']>): Buffer
   exportStep(parts: Shape[]): Buffer
   measureShapes(parts: ReturnType<EngineDocument['measurementPicks']>): Measurement[]
-  bodyHealth(shape: Shape): { valid: boolean; openEdges: number; solids: number }
+  bodyHealth(shape: Shape, minFeature: number): Omit<BodyHealth, 'name'>
   crash(): void
 }
 
@@ -76,7 +77,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
-      case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape) })); break
+      case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape, defaultPrinter.minFeature) })); break
       case 'export': result = new Uint8Array(req.format === 'step'
         ? addon.exportStep(document.exportShapes(req.revision).map(({ shape }) => shape))
         : addon.exportMesh(req.format, document.meshParts(req.revision))); break

@@ -1,5 +1,8 @@
 // SimpleCAD 0.4's printing.check_overhangs measure, shared by the print check and Orient each.
 
+/** SimpleCAD 0.4's bundled default printer (data/printers/elegoo_centauri_carbon_2.json), in mm and degrees. */
+export const defaultPrinter = { name: 'Elegoo Centauri Carbon 2', size: [256, 256, 256], maxOverhang: 50, minWall: 0.8, minFeature: 0.6 }
+
 /** The share of the surface leaning more than `maxAngle` past vertical, not counting what rests on the plate. */
 export function overhangFraction(positions: ArrayLike<number>, indices: ArrayLike<number>, maxAngle: number) {
   // Overhang counts from vertical: a face leaning max past it points down by sin(max).

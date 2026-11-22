@@ -38,15 +38,20 @@ describe('the engine’s half of the print check', () => {
   it('says the all-clears once however many bodies, and names the body with a problem', async () => {
     const { healthChecks } = await import('@/renderer/app/printability')
     const findings = healthChecks([
-      { name: 'Box', valid: true, openEdges: 0, solids: 1 },
-      { name: 'Lid', valid: true, openEdges: 0, solids: 1 },
-      { name: 'Shell', valid: true, openEdges: 3, solids: 2 }
+      { name: 'Box', valid: true, openEdges: 0, solids: 1, thinnestWall: 20, shortEdges: [] },
+      { name: 'Lid', valid: true, openEdges: 0, solids: 1, thinnestWall: 20, shortEdges: [] },
+      { name: 'Shell', valid: true, openEdges: 3, solids: 2, thinnestWall: 0.5, shortEdges: [0.25, 0.4] }
     ])
     expect(findings.map((f) => [f.severity, f.message])).toEqual([
       ['ok', 'Solid and watertight.'],
       ['ok', 'One connected solid.'],
+      ['ok', 'Thinnest wall 20.00 mm.'],
+      ['ok', 'No features below the nozzle size.'],
       ['warning', "Shell's surface is not closed — 3 open edge(s)."],
-      ['note', 'Shell is 2 separate pieces.']
+      ['note', 'Shell is 2 separate pieces.'],
+      ['warning', "Shell's thinnest wall is 0.50 mm."],
+      ['note', 'Shell has 2 feature(s) smaller than 0.60 mm.']
     ])
+    expect(findings.at(-1)!.hint).toBe('The smallest is 0.250 mm and will not print cleanly.')
   })
 })

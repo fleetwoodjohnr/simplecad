@@ -102,7 +102,7 @@ export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face:
   { kind: 'vertex'; body: number; point: Vec3 }
 export interface Measurement { label: string; values: number[]; unit: string }
 /** What a printer needs of a shown body: valid, watertight (no open edges), one solid. */
-export interface BodyHealth { name: string; valid: boolean; openEdges: number; solids: number }
+export interface BodyHealth { name: string; valid: boolean; openEdges: number; solids: number; thinnestWall?: number | null; shortEdges: number[] }
 export interface ViewFrame {
   direction: [number, number, number]
   up: [number, number, number]

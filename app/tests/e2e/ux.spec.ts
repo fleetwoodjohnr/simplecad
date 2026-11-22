@@ -263,7 +263,9 @@ test('checks the shown bodies for printing', async () => {
     'Sitting on the build plate.',
     'No significant overhangs.',
     'Solid and watertight.',
-    'One connected solid.'
+    'One connected solid.',
+    'Thinnest wall 20.00 mm.',
+    'No features below the nozzle size.'
   ])
 })
 

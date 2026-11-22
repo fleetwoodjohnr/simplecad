@@ -1177,3 +1177,12 @@ fn a_closed_solid_has_no_open_edges_and_a_lone_face_has_four() {
     );
     assert_eq!(occt::open_edges(&occt::sub_face(&solid, 0).unwrap()), 4);
 }
+
+#[test]
+fn the_thinnest_wall_is_the_nearest_pair_of_opposed_planes_and_short_edges_are_listed() {
+    let solid = occt::make_box(10.0, 20.0, 30.0).unwrap();
+    let wall = scad::measure::thinnest_wall(&solid).unwrap().unwrap();
+    assert!((wall - 10.0).abs() < 1e-9, "{wall}");
+    assert_eq!(scad::measure::short_edges(&solid, 15.0).unwrap(), [10.0; 4]);
+    assert!(scad::measure::short_edges(&solid, 0.6).unwrap().is_empty());
+}

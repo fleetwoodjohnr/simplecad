@@ -220,6 +220,10 @@ pub struct BodyHealth {
     pub valid: bool,
     pub open_edges: u32,
     pub solids: u32,
+    /// The least gap between opposed planar faces, mm.
+    pub thinnest_wall: Option<f64>,
+    /// The lengths of edges shorter than the printer's smallest feature.
+    pub short_edges: Vec<f64>,
 }
 
 #[napi(object, object_from_js = false)]
@@ -1166,11 +1170,13 @@ pub struct Measurement {
 
 /// The B-rep half of the print check, for one body.
 #[napi]
-pub fn body_health(shape: &Shape) -> Result<BodyHealth> {
+pub fn body_health(shape: &Shape, min_feature: f64) -> Result<BodyHealth> {
     Ok(BodyHealth {
         valid: occt::is_valid(&shape.inner).map_err(reason)?,
         open_edges: occt::open_edges(&shape.inner),
         solids: occt::solid_count(&shape.inner),
+        thinnest_wall: scad::measure::thinnest_wall(&shape.inner).map_err(reason)?,
+        short_edges: scad::measure::short_edges(&shape.inner, min_feature).map_err(reason)?,
     })
 }
 

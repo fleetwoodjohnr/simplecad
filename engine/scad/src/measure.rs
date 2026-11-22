@@ -239,6 +239,56 @@ pub fn measure(parts: &[(&Shape, Pick)]) -> Result<Vec<Reading>, occt::Exception
     }
 }
 
+/// SimpleCAD 0.4's `printing.check_thin_walls`: the least gap between two planar faces facing each other,
+/// none when no such pair is apart. ponytail: pairwise over planar faces, as 0.4 is; a medial axis would
+/// find thin curved walls too.
+pub fn thinnest_wall(shape: &Shape) -> Result<Option<f64>, occt::Exception> {
+    let mut planes = Vec::new();
+    for index in 0..occt::faces(shape)?.len() as u32 {
+        let print = occt::face_fingerprint(shape, index)?;
+        if print.geometry == "plane" && print.has_direction {
+            planes.push((index, print));
+        }
+    }
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut thinnest: Option<f64> = None;
+    for (i, (first, a)) in planes.iter().enumerate() {
+        for (second, b) in &planes[i + 1..] {
+            if dot(a.direction, b.direction) > -0.999 {
+                continue;
+            }
+            // The faces are no nearer than their planes: skip a pair that cannot beat the thinnest so far.
+            let offset = [
+                b.center[0] - a.center[0],
+                b.center[1] - a.center[1],
+                b.center[2] - a.center[2],
+            ];
+            if thinnest.is_some_and(|least| dot(offset, a.direction).abs() >= least) {
+                continue;
+            }
+            let Ok(gap) = occt::minimum_distance(
+                &*occt::sub_face(shape, *first)?,
+                &*occt::sub_face(shape, *second)?,
+            ) else {
+                continue;
+            };
+            if gap > 1e-6 && thinnest.is_none_or(|least| gap < least) {
+                thinnest = Some(gap);
+            }
+        }
+    }
+    Ok(thinnest)
+}
+
+/// `printing.check_tiny_features`: the lengths of the edges shorter than `minimum`.
+pub fn short_edges(shape: &Shape, minimum: f64) -> Result<Vec<f64>, occt::Exception> {
+    Ok(occt::edge_fingerprints(shape)?
+        .into_iter()
+        .map(|edge| edge.curve.measure)
+        .filter(|&length| length > 0.0 && length < minimum)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
