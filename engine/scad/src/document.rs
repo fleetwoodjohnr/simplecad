@@ -425,7 +425,7 @@ impl Model {
                 continue;
             }
             let value = match key.as_str() {
-                "left_hand" | "resize" | "keep" => json!(value == "true"),
+                "left_hand" | "resize" | "keep" | "keep_tool" => json!(value == "true"),
                 _ => Value::String(value),
             };
             inputs.insert(key, value);
@@ -579,7 +579,8 @@ impl Model {
         })
     }
 
-    /// Mirror, pattern or scale one body in place, as SimpleCAD 0.4 records those steps.
+    /// Mirror, pattern, scale or combine one body in place, as SimpleCAD 0.4 records those steps.
+    /// A Combine's `tools` arrive as body names and are bound, like the body, by object ID.
     pub fn add_body_operation(
         &mut self,
         kind: &str,
@@ -593,6 +594,7 @@ impl Model {
             "rectangular_pattern" => "Rectangular Pattern",
             "circular_pattern" => "Circular Pattern",
             "scale" => "Scale",
+            "boolean" => "Combine",
             _ => return Err("Choose an operation.".into()),
         };
         if !inputs.is_object() {
@@ -603,12 +605,40 @@ impl Model {
             .remove(body)
             .ok_or("Select a body with an available modeling step.")?;
         inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
+        let mut bindings = Map::from_iter([(
+            body.to_owned(),
+            json!({ "feature_id": producer, "object_id": object }),
+        )]);
+        if kind == "boolean" {
+            let latest = self.latest();
+            let mut tools = Vec::new();
+            for tool in inputs["tools"]
+                .as_array()
+                .ok_or("Choose the bodies to combine with.")?
+            {
+                let tool = tool
+                    .as_str()
+                    .filter(|tool| *tool != body)
+                    .ok_or("Choose a different body to combine with.")?;
+                let (producer, object) = latest
+                    .get(tool)
+                    .ok_or("A tool body has no available modeling step.")?;
+                let bound = json!({ "feature_id": producer, "object_id": object });
+                if bindings.insert(tool.to_owned(), bound).is_some() {
+                    return Err("Choose each tool body once.".into());
+                }
+                tools.push(json!({"__body__": tool, "feature_id": producer, "object_id": object}));
+            }
+            if tools.is_empty() {
+                return Err("Choose the bodies to combine with.".into());
+            }
+            inputs["tools"] = Value::Array(tools);
+        }
         let mut candidate = self.clone();
         let name = candidate.unique_name(label);
         let feature = json!({
             "id": new_feature_id(), "type": kind, "name": name, "outputs": [body],
-            "output_ids": { body: object }, "inputs": inputs,
-            "bindings": { body: { "feature_id": producer, "object_id": object } },
+            "output_ids": { body: object }, "inputs": inputs, "bindings": bindings,
             "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
@@ -1439,6 +1469,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "rectangular_pattern" => &["count_x", "count_y", "spacing_x", "spacing_y"],
         "circular_pattern" => &["count", "total_angle"],
         "scale" => &["factor"],
+        "boolean" => &["operation", "keep_tool"],
         _ => return None,
     })
 }

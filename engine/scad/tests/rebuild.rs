@@ -360,3 +360,66 @@ fn a_circular_pattern_repeats_a_body_in_place_and_edits_its_count_in_one_undo_st
             .is_err()
     );
 }
+
+#[test]
+fn a_combine_cuts_a_tool_out_of_the_body_and_consumes_it_unless_kept() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let (tool, cutter) = scad::rebuild::create_primitive(
+        &mut model,
+        "box",
+        json!({"width": "4 mm", "depth": "4 mm", "height": "20 mm", "x": "3 mm", "y": "3 mm", "z": "-5 mm"}),
+    )
+    .unwrap();
+    let id = |name: &str| {
+        model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let shown = HashMap::from([(id("Box"), Rc::new(solid)), (id(&tool), Rc::new(cutter))]);
+    let inputs = json!({"tools": [tool], "operation": "cut", "keep_tool": false});
+    let report = model
+        .add_body_operation("boolean", "Box", inputs, &[], &shown)
+        .unwrap();
+    let names: Vec<_> = report
+        .bodies
+        .iter()
+        .map(|body| body.name.as_str())
+        .collect();
+    assert_eq!(names, ["Box"], "the tool is consumed");
+    assert!((occt::volume(report.bodies[0].shape.as_ref().unwrap()) - 840.0).abs() < 1e-6);
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.kind.as_str()),
+        ("Combine", "boolean")
+    );
+    let kept = model
+        .edit_step_settings(
+            &step.id,
+            [("keep_tool".to_owned(), "true".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    assert_eq!(kept.bodies.len(), 2, "a kept tool stays");
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    let combine = saved.model["features"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(combine["inputs"]["tools"][0]["__body__"], json!(tool));
+    assert_eq!(combine["inputs"]["keep_tool"], json!(true));
+    assert!(
+        model
+            .add_body_operation("boolean", "Box", json!({"tools": ["Box"]}), &[], &shown)
+            .is_err()
+    );
+}

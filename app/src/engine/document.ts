@@ -479,7 +479,12 @@ export class EngineDocument {
     if ('bodyOperation' in step) {
       const target = bodies[step.body]
       if (!target?.shape) throw new Error('That body has no geometry to edit.')
-      return this.rebuiltState(project.addBodyOperation(step.bodyOperation, target.name, JSON.stringify(step.inputs), this.shapes(bodies)))
+      const { tools, ...inputs } = step.inputs
+      const named = Array.isArray(tools) ? { tools: tools.map((index) => {
+        if (!bodies[index]?.shape) throw new Error('Choose tool bodies with geometry.')
+        return bodies[index].name
+      }) } : {}
+      return this.rebuiltState(project.addBodyOperation(step.bodyOperation, target.name, JSON.stringify({ ...inputs, ...named }), this.shapes(bodies)))
     }
     const body = 'target' in step ? step.moving.body : step.body
     const shape = bodies[body]?.shape

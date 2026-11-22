@@ -597,6 +597,8 @@ export function App() {
     rectangularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('rectangular_pattern') },
     circularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('circular_pattern') },
     scale: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('scale') },
+    combine: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
+      hint: 'Show two bodies first', run: () => openBodyTool('boolean') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
     settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
@@ -664,7 +666,7 @@ export function App() {
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
             offsetPlane: faceTool === 'offset_plane', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
-            scale: bodyTool?.kind === 'scale'
+            scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean'
           }} />
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>

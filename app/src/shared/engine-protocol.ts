@@ -61,12 +61,13 @@ export type Transform = { kind: 'move'; values: Expressions } |
   { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
   { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
 export interface TransformEdit { body: number; transform: Transform }
-export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale'] as const
-/** Mirror, pattern or scale one body in place: expressions as strings, directions as vectors. */
+export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean'] as const
+/** Mirror, pattern, scale or combine one body in place: expressions as strings, directions as vectors,
+ * and a Combine's `tools` as body indices. */
 export interface BodyOperationEdit {
   bodyOperation: typeof BODY_OPERATIONS[number]
   body: number
-  inputs: Record<string, string | boolean | Vec3>
+  inputs: Record<string, string | boolean | Vec3 | number[]>
 }
 export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number }
 export interface Measurement { label: string; values: number[]; unit: string }
@@ -295,7 +296,9 @@ function isBodyOperation(value: unknown): value is BodyOperationEdit {
   const { bodyOperation, body, inputs } = value as Partial<BodyOperationEdit>
   if (!BODY_OPERATIONS.includes(bodyOperation!) || !isIndex(body) || body >= MAX_BODIES || !inputs || typeof inputs !== 'object') return false
   const entries = Object.entries(inputs)
-  return entries.length <= 16 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && key !== 'body' && (
+  return entries.length <= 16 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && key !== 'body' && (key === 'tools'
+    ? bodyOperation === 'boolean' && Array.isArray(value) && value.length > 0 && value.length < MAX_BODIES &&
+      value.every((tool) => isIndex(tool) && tool < MAX_BODIES && tool !== body) :
     typeof value === 'boolean' || (typeof value === 'string' && value.trim().length > 0 && value.length < 256) ||
     (Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9))))
 }

@@ -1,6 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
-  ArrowUpFromLine, ChevronDown, CircleDot, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
+  ArrowUpFromLine, ChevronDown, CircleDot, Combine, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
@@ -25,6 +25,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { id: 'mirror', icon: FlipHorizontal },
     { menu: 'Pattern', icon: Grid2x2, items: ['rectangularPattern', 'circularPattern'], hint: 'Show a body first' },
     { id: 'scale', icon: Scaling },
+    { id: 'combine', icon: Combine },
     { id: 'hole', icon: CircleDot },
     { id: 'thread', icon: Spline },
     { id: 'faceTexture', icon: Grid3x3 }

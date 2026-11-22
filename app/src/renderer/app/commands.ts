@@ -44,6 +44,7 @@ export const commands = {
   rectangularPattern: { label: 'Rectangular Pattern' },
   circularPattern: { label: 'Circular Pattern' },
   scale: { label: 'Scale' },
+  combine: { label: 'Combine' },
   rotate: { label: 'Rotate' },
   sketch: { label: 'Sketch' },
   offsetPlane: { label: 'Offset Plane' },
