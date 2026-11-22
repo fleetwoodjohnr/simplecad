@@ -10,10 +10,11 @@ import type { Calibration } from '../shared/ipc-types'
 /** 0.4's data_dir()/printers/<id>.json; SIMPLECAD_PRINTER_PROFILE names another file (tests). */
 export function calibrationPath(env = process.env, platform = process.platform, home = os.homedir()) {
   if (env.SIMPLECAD_PRINTER_PROFILE) return env.SIMPLECAD_PRINTER_PROFILE
-  const data = platform === 'win32' ? path.win32.join(env.APPDATA || home, 'SimpleCAD')
-    : platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'SimpleCAD')
-    : path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'simplecad')
-  return path.join(data, 'printers', `${printer.id}.json`)
+  const { join } = platform === 'win32' ? path.win32 : path.posix
+  const data = platform === 'win32' ? join(env.APPDATA || home, 'SimpleCAD')
+    : platform === 'darwin' ? join(home, 'Library', 'Application Support', 'SimpleCAD')
+    : join(env.XDG_DATA_HOME || join(home, '.local', 'share'), 'simplecad')
+  return join(data, 'printers', `${printer.id}.json`)
 }
 
 const shippedFits = () => Object.fromEntries(Object.entries(fits.fits).map(([key, fit]) => [key, fit.clearance]))

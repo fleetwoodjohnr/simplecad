@@ -10,7 +10,7 @@ describe('printer calibration', () => {
     expect(calibrationPath({ XDG_DATA_HOME: '/data' }, 'linux', '/home/a')).toBe('/data/simplecad/printers/elegoo_centauri_carbon_2.json')
     expect(calibrationPath({}, 'darwin', '/Users/a')).toBe('/Users/a/Library/Application Support/SimpleCAD/printers/elegoo_centauri_carbon_2.json')
     expect(calibrationPath({ APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, 'win32', 'C:\\Users\\a'))
-      .toMatch(/^C:\\Users\\a\\AppData\\Roaming\\SimpleCAD[\\/]printers[\\/]elegoo_centauri_carbon_2\.json$/)
+      .toBe('C:\\Users\\a\\AppData\\Roaming\\SimpleCAD\\printers\\elegoo_centauri_carbon_2.json')
   })
 
   it('reads the shipped fits until measurements are saved, in 0.4’s format, then reads those back', async () => {
