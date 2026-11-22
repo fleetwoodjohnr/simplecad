@@ -324,6 +324,8 @@ fn steps(args: &[String]) -> Result<(), String> {
 type Command = fn(&[String]) -> Result<(), String>;
 
 fn main() {
+    // stdout is this tool's JSON; a font or healing warning must not land in it.
+    occt::messages_to_stderr();
     let args: Vec<String> = std::env::args().collect();
     let command: Option<Command> = match args.get(1).map(String::as_str) {
         Some("pull") => Some(pull),

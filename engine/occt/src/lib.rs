@@ -407,6 +407,8 @@ pub mod ffi {
         fn sub_face(shape: &Shape, face: u32) -> Result<UniquePtr<Shape>>;
         fn sub_edge(shape: &Shape, edge: u32) -> Result<UniquePtr<Shape>>;
         fn sub_vertex(shape: &Shape, vertex: u32) -> Result<UniquePtr<Shape>>;
+        /// Sends OCCT's own messages to stderr, so a tool's stdout stays its data.
+        fn messages_to_stderr();
         fn plane_frame(face: &Shape) -> Result<PlaneFrame>;
         fn cylinder_data(face: &Shape) -> Result<CylinderData>;
         /// `align._x_extent`: the X range of the exact optimal bounding box.

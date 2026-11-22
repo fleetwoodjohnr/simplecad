@@ -1,3 +1,6 @@
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
 #include "shim.hpp"
 
 #include <algorithm>
@@ -1292,6 +1295,13 @@ static std::unique_ptr<Shape> sub_shape(const Shape &shape, TopAbs_ShapeEnum kin
     throw std::runtime_error(std::string("no such ") + name);
   }
   return owned(map.FindKey(static_cast<int>(index) + 1), name);
+}
+
+// OCCT's own messages (a missing font, a healing warning) go to stderr, so a tool's stdout stays its data.
+void messages_to_stderr() {
+  const occ::handle<Message_Messenger> &messenger = Message::DefaultMessenger();
+  messenger->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+  messenger->AddPrinter(new Message_PrinterOStream("cerr", false, Message_Info));
 }
 
 std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t index) {
