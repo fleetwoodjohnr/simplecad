@@ -198,15 +198,33 @@ impl Model {
             .latest()
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
-        if matches!(
-            self.payload["diagnostics"][&producer]["state"].as_str(),
-            Some("failed" | "needs_attention")
-        ) {
+        if self.blocked_steps().contains(&producer) {
             return Err(format!(
                 "Repair the step marked in History that made \"{body}\" before changing it."
             ));
         }
         Ok((producer, object))
+    }
+
+    /// The steps that cannot rebuild as saved, and every step downstream of one: those marked failed
+    /// or waiting on a repair, and those bound to no step or to one that no longer exists (a deleted
+    /// input, as Spondge Holder's Combine5 and its Cylinder2). A file opened from its saved results shows them
+    /// as they were, but the first rebuild keeps their last valid model.
+    fn blocked_steps(&self) -> HashSet<String> {
+        let order = self.list("features");
+        let ids: HashSet<&str> = order.iter().filter_map(|f| f["id"].as_str()).collect();
+        let lost: HashSet<String> = order
+            .iter()
+            .filter(|step| {
+                let id = step["id"].as_str().unwrap_or_default();
+                matches!(
+                    self.payload["diagnostics"][id]["state"].as_str(),
+                    Some("failed" | "needs_attention")
+                ) || lost_binding(step, &ids)
+            })
+            .filter_map(|step| step["id"].as_str().map(String::from))
+            .collect();
+        crate::rebuild::dependents(&order, &lost)
     }
 
     /// `DependencyGraph.latest`: the step and object that last wrote each body name.
@@ -351,7 +369,15 @@ impl Model {
                 let text = |v: &Value| v.as_str().unwrap_or("").to_string();
                 let id = text(&f["id"]);
                 let diagnostic = &self.payload["diagnostics"][&id];
-                let state = diagnostic["state"].as_str().unwrap_or("ok");
+                // Saved as built but bound to an input that is gone: its first rebuild needs a repair.
+                let lost = diagnostic["state"].as_str().is_none_or(|state| state == "ok")
+                    && f["suppressed"] != true
+                    && lost_binding(f, &ids);
+                let state = if lost {
+                    "needs_attention"
+                } else {
+                    diagnostic["state"].as_str().unwrap_or("ok")
+                };
                 let construction_plane = (state == "ok")
                     .then(|| {
                         let kind = crate::construction::Kind::from_feature(f["type"].as_str()?)?;
@@ -369,10 +395,14 @@ impl Model {
                     name: text(&f["name"]),
                     kind: text(&f["type"]),
                     state: state.into(),
-                    message: diagnostic["message"]
-                        .as_str()
-                        .filter(|message| !message.is_empty())
-                        .map(String::from),
+                    message: if lost {
+                        Some("An input this step was built from has been deleted. Choose a replacement with Repair input, or undo the deletion.".into())
+                    } else {
+                        diagnostic["message"]
+                            .as_str()
+                            .filter(|message| !message.is_empty())
+                            .map(String::from)
+                    },
                     missing_input: (state == "needs_attention")
                         .then(|| missing_reference(f, &ids))
                         .flatten(),
@@ -1684,6 +1714,17 @@ fn tools_key(step: &Value) -> &'static str {
 
 fn tool_name(value: &Value) -> Option<&str> {
     value["__body__"].as_str().or_else(|| value.as_str())
+}
+
+/// A step bound to no step, or to one that no longer exists: it cannot rebuild as saved.
+fn lost_binding(step: &Value, ids: &HashSet<&str>) -> bool {
+    step["bindings"].as_object().is_some_and(|bindings| {
+        bindings.values().any(|binding| {
+            binding["feature_id"]
+                .as_str()
+                .is_some_and(|producer| producer.is_empty() || !ids.contains(producer))
+        })
+    })
 }
 
 fn missing_reference(step: &Value, available: &HashSet<&str>) -> Option<MissingInput> {

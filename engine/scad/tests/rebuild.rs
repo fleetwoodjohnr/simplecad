@@ -586,3 +586,54 @@ fn grouping_moves_members_out_of_their_old_group_and_ungrouping_hands_them_up() 
     model.undo().unwrap();
     assert_eq!(model.groups().len(), 2, "Ungroup is one undoable step");
 }
+
+/// Spondge Holder's Combine5 was saved as built, but its tool's step is gone (bound to no step). Its
+/// first rebuild needs a repair, so History says so as the file opens, and the body refuses changes.
+#[test]
+fn a_step_bound_to_a_deleted_input_needs_attention_and_its_body_refuses_changes() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let (tool, cutter) = scad::rebuild::create_primitive(
+        &mut model,
+        "box",
+        json!({"width": "4 mm", "depth": "4 mm", "height": "20 mm", "x": "3 mm", "y": "3 mm", "z": "-5 mm"}),
+    )
+    .unwrap();
+    let id = |model: &Model, name: &str| {
+        model.payload["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let shown = HashMap::from([
+        (id(&model, "Box"), Rc::new(solid)),
+        (id(&model, &tool), Rc::new(cutter)),
+    ]);
+    let inputs = json!({"tools": [tool], "operation": "cut", "keep_tool": true});
+    model
+        .add_body_operation("boolean", "Box", inputs, &[], &shown)
+        .unwrap();
+    assert!(model.editable("Box").is_ok());
+
+    let combine = model.payload["features"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    combine["bindings"][&tool]["feature_id"] = json!("");
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.state.as_str()),
+        ("Combine", "needs_attention")
+    );
+    assert!(step.message.unwrap().contains("Repair input"));
+    assert_eq!(
+        model.editable("Box").unwrap_err(),
+        "Repair the step marked in History that made \"Box\" before changing it."
+    );
+}

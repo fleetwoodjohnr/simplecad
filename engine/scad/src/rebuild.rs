@@ -2123,7 +2123,7 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
 }
 
 /// `DependencyGraph.dependents`: `ids` and everything downstream of them.
-fn dependents(order: &[Value], ids: &HashSet<String>) -> HashSet<String> {
+pub(crate) fn dependents(order: &[Value], ids: &HashSet<String>) -> HashSet<String> {
     let mut found = ids.clone();
     for feature in order {
         let id = feature["id"].as_str().unwrap_or("");
