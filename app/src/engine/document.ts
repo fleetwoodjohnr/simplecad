@@ -1,8 +1,13 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
+import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
-/** The build plate of SimpleCAD 0.4's bundled default printer, in mm. */
+/** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
+const MAX_OVERHANG = 50
+/** best_print_orientation's six flat lays, as turns about X, Y and Z, in its order. */
+const LAYS = [[0, 0, 0], [90, 0, 0], [180, 0, 0], [270, 0, 0], [0, 90, 0], [0, 270, 0]]
+const SEVERITY = { ok: 0, note: 1, warning: 2 }
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -615,29 +620,58 @@ export class EngineDocument {
 
   /** SimpleCAD 0.4's place_on_plate and center_on_plate, on its default printer's plate: one offset for everything shown, keeping its layout. */
   private onPlate(project: Project, bodies: Body[], how: PlateEdit['plate']) {
-    const shown = this.shown(bodies)
-    if (!shown.length) throw new Error('There is nothing on the plate yet.')
+    if (!this.shown(bodies).length) throw new Error('There is nothing on the plate yet.')
+    let next = [...bodies]
+    if (how === 'orient') {
+      // printing.best_print_orientation: of the six flat lays, the one with the least overhang, then the lowest.
+      let turned = 0
+      for (const { body, shape } of this.shown(bodies)) {
+        let best: { lay: number[]; score: number } | undefined
+        for (const lay of LAYS) {
+          const candidate = lay.some(Boolean) ? project.transform(bodies[body].name, shape, { kind: 'rotate', values: lay.map(String) as [string, string, string] }).shape : shape
+          const { positions, indices } = candidate.display()
+          const box = candidate.bounds()
+          const score = SEVERITY[overhangSeverity(overhangFraction(positions, indices, MAX_OVERHANG))] + (box[5] - box[2]) / 1000
+          if (!best || score < best.score) best = { lay, score }
+        }
+        if (best!.lay.some(Boolean)) {
+          const moved = project.transform(next[body].name, next[body].shape!, { kind: 'rotate', values: best!.lay.map(String) as [string, string, string] })
+          project = moved.project
+          next = next.map((b, i) => i === body ? { ...b, shape: moved.shape } : b)
+          turned++
+        }
+      }
+      if (!turned) throw new Error('Every part is already in the best of its six flat lays.')
+      const offset = this.plateOffset(next, 'drop')
+      if (offset.some((value) => Math.abs(value) >= 1e-9)) for (const { body } of this.shown(next)) moveBy(body, offset)
+      return { bodies: next, project }
+    }
+    const offset = this.plateOffset(next, how)
+    if (offset.every((value) => Math.abs(value) < 1e-9)) {
+      throw new Error(how === 'drop' ? 'Everything already sits on the plate.' : 'Everything is already centred on the plate.')
+    }
+    for (const { body } of this.shown(next)) moveBy(body, offset)
+    return { bodies: next, project }
+
+    function moveBy(body: number, offset: number[]) {
+      const moved = project.transform(next[body].name, next[body].shape!, { kind: 'move', values: [String(offset[0]), String(offset[1]), String(offset[2])] })
+      project = moved.project
+      next = next.map((b, i) => i === body ? { ...b, shape: moved.shape } : b)
+    }
+  }
+
+  /** place_on_plate's or center_on_plate's one offset for everything shown, keeping its layout. */
+  private plateOffset(bodies: Body[], how: 'drop' | 'center') {
     const low = [Infinity, Infinity, Infinity]
     const high = [-Infinity, -Infinity, -Infinity]
-    for (const { shape } of shown) {
+    for (const { shape } of this.shown(bodies)) {
       const box = shape.bounds()
       for (let axis = 0; axis < 3; axis++) {
         low[axis] = Math.min(low[axis], box[axis])
         high[axis] = Math.max(high[axis], box[axis + 3])
       }
     }
-    const offset = how === 'drop' ? [0, 0, -low[2]]
-      : [0, 1].map((axis) => PLATE[axis] / 2 - (low[axis] + high[axis]) / 2).concat(-low[2])
-    if (offset.every((value) => Math.abs(value) < 1e-9)) {
-      throw new Error(how === 'drop' ? 'Everything already sits on the plate.' : 'Everything is already centred on the plate.')
-    }
-    const next = [...bodies]
-    for (const { body, shape } of shown) {
-      const moved = project.transform(bodies[body].name, shape, { kind: 'move', values: [String(offset[0]), String(offset[1]), String(offset[2])] })
-      project = moved.project
-      next[body] = { ...next[body], shape: moved.shape }
-    }
-    return { bodies: next, project }
+    return how === 'drop' ? [0, 0, -low[2]] : [0, 1].map((axis) => PLATE[axis] / 2 - (low[axis] + high[axis]) / 2).concat(-low[2])
   }
 
   private place(project: Project, bodies: Body[], shape: Shape, step: StackStep) {

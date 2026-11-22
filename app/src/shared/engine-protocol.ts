@@ -83,8 +83,9 @@ export interface SectionReplaceEdit {
 }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
-/** Drop every shown body onto the build plate, or centre them on it too: one Move each, one undo step. */
-export interface PlateEdit { plate: 'drop' | 'center' }
+/** Drop every shown body onto the build plate, centre them on it too, or turn each to its best flat lay and then
+ * drop them: one Move per body and turn, one undo step. */
+export interface PlateEdit { plate: 'drop' | 'center' | 'orient' }
 export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
@@ -396,7 +397,7 @@ const isGroup = (value: unknown): value is GroupEdit => {
   return Array.isArray(members) && members.length >= 2 && members.length <= MAX_BODIES &&
     members.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(members).size === members.length
 }
-const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center'].includes((value as Partial<PlateEdit> | null)?.plate!)
+const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center', 'orient'].includes((value as Partial<PlateEdit> | null)?.plate!)
 const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
 
 const isRecipe = (value: unknown): value is string =>

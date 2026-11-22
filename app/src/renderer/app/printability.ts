@@ -2,6 +2,7 @@
 // overhangs, run here on the display mesh; validity and pieces come from the engine (healthChecks).
 // ponytail: thin walls and tiny features are not checked yet.
 import type { BodyHealth, MeshData } from '@/shared/engine-protocol'
+import { overhangFraction, overhangSeverity } from '@/shared/printing'
 
 /** SimpleCAD 0.4's bundled default printer (data/printers/elegoo_centauri_carbon_2.json). */
 export const defaultPrinter = { name: 'Elegoo Centauri Carbon 2', size: [256, 256, 256], maxOverhang: 50 }
@@ -39,28 +40,12 @@ export function printChecks(mesh: Pick<MeshData, 'positions' | 'indices'>, print
       ? { check: 'on_plate', severity: 'note', message: `The model floats ${fixed(lowest)} mm above the plate.` }
       : { check: 'on_plate', severity: 'ok', message: 'Sitting on the build plate.' })
 
-  // Overhang counts from vertical: a face leaning max past it points down by sin(max). A face resting on the
-  // plate is held up by it.
-  const limit = -Math.sin(printer.maxOverhang * Math.PI / 180)
-  const plate = lowest + 0.3
-  let steep = 0
-  let total = 0
-  const corner = (i: number) => [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]]
-  for (let t = 0; t < indices.length; t += 3) {
-    const [a, b, c] = [corner(indices[t]), corner(indices[t + 1]), corner(indices[t + 2])]
-    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
-    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
-    const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
-    const twice = Math.hypot(n[0], n[1], n[2])
-    if (!twice) continue
-    total += twice / 2
-    if (n[2] / twice < limit && Math.min(a[2], b[2], c[2]) > plate) steep += twice / 2
-  }
-  const fraction = total ? steep / total : 0
+  const fraction = overhangFraction(positions, indices, printer.maxOverhang)
   const share = `${(fraction * 100).toFixed(0)}% of the surface overhangs by more than ${printer.maxOverhang.toFixed(0)}°.`
-  findings.push(fraction > 0.15 ? { check: 'overhangs', severity: 'warning', message: share, hint: 'It will need supports, or rotating.' }
-    : fraction > 0.02 ? { check: 'overhangs', severity: 'note', message: share, hint: 'Light support may help.' }
-    : { check: 'overhangs', severity: 'ok', message: 'No significant overhangs.' })
+  const severity = overhangSeverity(fraction)
+  findings.push(severity === 'warning' ? { check: 'overhangs', severity, message: share, hint: 'It will need supports, or rotating.' }
+    : severity === 'note' ? { check: 'overhangs', severity, message: share, hint: 'Light support may help.' }
+    : { check: 'overhangs', severity, message: 'No significant overhangs.' })
   return findings
 }
 

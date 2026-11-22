@@ -280,3 +280,33 @@ test('centres the shown bodies on the build plate as one undo step', async () =>
   await undo.click()
   await expect(undo).toBeDisabled()
 })
+
+test('orients a part stood on end to its lowest flat lay and drops it on the plate, as one undo step', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await toolbar.getByRole('button', { name: 'Rotate', exact: true }).click()
+  const rotate = page.getByRole('form', { name: 'Rotate', exact: true })
+  await rotate.getByLabel('X (°)').fill('90')
+  await rotate.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Rotate'])
+
+  await toolbar.getByRole('button', { name: 'Print check', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Print check' })
+  const findings = panel.getByRole('list', { name: 'Findings' }).locator('li')
+  await expect(findings.nth(0)).toHaveText('Fits the Elegoo Centauri Carbon 2: 40.0 x 20.0 x 30.0 mm.')
+  await expect(findings.nth(1)).toHaveText(/below the build plate/)
+  await panel.getByRole('button', { name: 'Orient each', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Rotate', 'Rotate2', 'Move'])
+  await expect(findings.nth(0)).toHaveText('Fits the Elegoo Centauri Carbon 2: 40.0 x 30.0 x 20.0 mm.')
+  await expect(findings.nth(1)).toHaveText('Sitting on the build plate.')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(findings.nth(0)).toHaveText('Fits the Elegoo Centauri Carbon 2: 40.0 x 20.0 x 30.0 mm.')
+  // Already in its best lay: nothing to turn, and the history is left alone.
+  await toolbar.getByRole('button', { name: 'Redo', exact: true }).click()
+  await panel.getByRole('button', { name: 'Orient each', exact: true }).click()
+  await expect(page.getByRole('alert')).toHaveText('Every part is already in the best of its six flat lays.')
+})

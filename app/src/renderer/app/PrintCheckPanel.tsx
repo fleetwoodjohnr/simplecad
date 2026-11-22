@@ -10,7 +10,7 @@ const icons = {
 
 /** What the slicer will meet, as SimpleCAD 0.4's print check reports it, for the bodies shown. */
 export function PrintCheckPanel({ findings, busy, onPlate, onClose }: {
-  findings: Finding[]; busy: boolean; onPlate: (how: 'drop' | 'center') => void; onClose: () => void
+  findings: Finding[]; busy: boolean; onPlate: (how: 'drop' | 'center' | 'orient') => void; onClose: () => void
 }) {
   return <section aria-label="Print check" className="grid shrink-0 gap-2 text-xs">
     <div className="font-semibold">Print check</div>
@@ -23,6 +23,7 @@ export function PrintCheckPanel({ findings, busy, onPlate, onClose }: {
     <div className="flex flex-wrap gap-1">
       <Btn size="sm" type="button" disabled={busy} title="Sit everything shown on the plate (z = 0)" onClick={() => onPlate('drop')}>Drop all</Btn>
       <Btn size="sm" type="button" disabled={busy} title="Centre everything shown on the build plate" onClick={() => onPlate('center')}>Center all</Btn>
+      <Btn size="sm" type="button" disabled={busy} title="Turn each part to its flat lay with the least overhang" onClick={() => onPlate('orient')}>Orient each</Btn>
       <Btn size="sm" type="button" onClick={onClose}>Close</Btn>
     </div>
   </section>
