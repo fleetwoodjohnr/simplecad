@@ -46,6 +46,8 @@ export const commands = {
   scale: { label: 'Scale' },
   combine: { label: 'Combine' },
   shell: { label: 'Shell' },
+  fillet: { label: 'Fillet' },
+  chamfer: { label: 'Chamfer' },
   rotate: { label: 'Rotate' },
   sketch: { label: 'Sketch' },
   offsetPlane: { label: 'Offset Plane' },

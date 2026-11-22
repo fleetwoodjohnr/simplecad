@@ -1,5 +1,5 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** One body's display, as the addon returns it. */
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
@@ -19,6 +19,7 @@ export interface Project {
   addShape(kind: string, values: Record<string, string>): { project: Project; name: string; shape: Shape }
   addOffsetPlane(body: string, face: number, distance: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   addFaceFeature(shape: Shape, request: { kind: FaceOperation['faceOperation']; body: string; face: number
@@ -175,10 +176,11 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
+      'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
       'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } :
       'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
@@ -246,7 +248,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -280,6 +282,8 @@ export class EngineDocument {
       step = { body: edit.body, transform: edit.transform }
     } else if ('bodyOperation' in edit) {
       step = { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs }
+    } else if ('edgeFinish' in edit) {
+      step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -415,6 +419,17 @@ export class EngineDocument {
     return { moving, target, settings: edit.settings }
   }
 
+  /** A display edge, as its body and that body's own edge index (the order the engine fingerprints them). */
+  private pickEdge(edge: number): { body: number; edge: number } {
+    let local = edge
+    for (const { body, shape } of this.shown(this.current.bodies)) {
+      const count = this.display(shape).edgeStart.length - 1
+      if (local < count) return { body, edge: local }
+      local -= count
+    }
+    throw new Error('Select an edge of the model.')
+  }
+
   private pick(face: number): FacePick {
     let local = face
     for (const { body, shape } of this.shown(this.current.bodies)) {
@@ -476,6 +491,13 @@ export class EngineDocument {
       if (bodies.length >= MAX_BODIES) throw new Error('This project has reached its body limit.')
       const created = project.addShape(step.shapeKind, step.values)
       return { bodies: [...bodies, { name: created.name, shape: created.shape }], project: created.project }
+    }
+    if ('edgeFinish' in step) {
+      const picks = step.edges.map((edge) => this.pickEdge(edge))
+      const body = picks[0].body
+      if (picks.some((pick) => pick.body !== body)) throw new Error('Select edges of one body.')
+      return this.rebuiltState(project.addEdgeFinish(step.edgeFinish, bodies[body].name, picks.map((pick) => pick.edge),
+        step.value, this.shapes(bodies)))
     }
     if ('bodyOperation' in step) {
       const target = bodies[step.body]

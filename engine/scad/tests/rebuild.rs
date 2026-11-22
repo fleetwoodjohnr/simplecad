@@ -480,3 +480,58 @@ fn a_shell_opens_the_picked_face_and_its_thickness_edits_from_history() {
     // 1000 - 6 × 6 × 8.
     assert!((occt::volume(edited.bodies[0].shape.as_ref().unwrap()) - 712.0).abs() < 1e-6);
 }
+
+#[test]
+fn a_fillet_rounds_the_picked_edges_finds_them_again_and_edits_its_radius() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(solid))]);
+    let volume =
+        |report: &scad::rebuild::Report| occt::volume(report.bodies[0].shape.as_ref().unwrap());
+    // Every edge of the cube, rounded 1 mm: the cube less 12 quarter-round edge strips and 8 corners.
+    let all: Vec<u32> = (0..12).collect();
+    let rounded = model
+        .add_edge_finish("fillet", "Box", &all, "1 mm", &[], &shown)
+        .unwrap();
+    let (r, pi) = (1.0_f64, std::f64::consts::PI);
+    let expected =
+        1000.0 - 12.0 * 8.0 * (r * r - pi * r * r / 4.0) - 8.0 * (r.powi(3) - pi * r.powi(3) / 6.0);
+    assert!(
+        (volume(&rounded) - expected).abs() < 1e-3,
+        "{} vs {expected}",
+        volume(&rounded)
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (
+            step.name.as_str(),
+            step.face_settings.as_ref().unwrap()["radius"].as_str()
+        ),
+        ("Fillet", "1 mm")
+    );
+    let edited = model
+        .edit_step_settings(
+            &step.id,
+            [("radius".to_owned(), "2 mm".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    assert!(
+        volume(&edited) < volume(&rounded),
+        "a larger radius removes more"
+    );
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    let fillet = &saved.model["features"][1];
+    assert_eq!(fillet["inputs"]["edges"].as_array().map(Vec::len), Some(12));
+    assert_eq!(fillet["inputs"]["edges"][0]["__ref__"]["kind"], "edge");
+    assert!(
+        model
+            .add_edge_finish("fillet", "Box", &[99], "1 mm", &[], &shown)
+            .is_err()
+    );
+}

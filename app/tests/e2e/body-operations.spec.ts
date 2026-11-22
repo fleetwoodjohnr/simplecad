@@ -146,3 +146,49 @@ test('shells a body through the selected face and edits its wall from History in
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(/ 3784 mm³/)
 })
+
+test('fillets every edge of a body, then chamfers one clicked edge and edits it from History', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const status = page.getByTestId('engine-status')
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const volume = async () => Number((await status.innerText()).match(/([\d.]+) mm³/)![1])
+  await expect(status).toHaveText(/24000 mm³/)
+
+  await toolbar.getByRole('button', { name: 'Fillet', exact: true }).click()
+  const fillet = page.getByRole('form', { name: 'Fillet' })
+  await fillet.getByRole('button', { name: 'All edges' }).click()
+  await expect(fillet.getByRole('status', { name: 'Picked edges' })).toHaveText('12 edges of Box')
+  await expect(page.locator('canvas')).toHaveAttribute('data-picked-edges', '12')
+  await fillet.getByLabel('Radius').fill('1 mm')
+  await fillet.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Fillet'])
+  // The box less (1 - π/4) r² along every edge between the rounds, and (1 - π/6) r³ at each corner.
+  expect(Math.abs(await volume() - (24000 - (1 - Math.PI / 4) * 4 * (38 + 28 + 18) - 8 * (1 - Math.PI / 6)))).toBeLessThan(0.02)
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+
+  await toolbar.getByRole('button', { name: 'Chamfer', exact: true }).click()
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-edge-anchors', /\[/)
+  await page.waitForTimeout(200)
+  const anchors: ([number, number] | null)[] = JSON.parse((await canvas.getAttribute('data-edge-anchors'))!)
+  const box = (await canvas.boundingBox())!
+  const [x, y] = anchors.find((point) => point && point[0] > box.x + 20 && point[0] < box.x + box.width - 20 &&
+    point[1] > box.y + 20 && point[1] < box.y + box.height - 20)!
+  await page.mouse.click(x, y)
+  const chamfer = page.getByRole('form', { name: 'Chamfer' })
+  await expect(chamfer.getByRole('status', { name: 'Picked edges' })).toHaveText('1 edge of Box')
+  await chamfer.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Chamfer'])
+  const cut = 24000 - await volume()
+  // A 1 mm chamfer takes half a square millimetre along the edge: the box's edges are 20, 30 or 40 mm.
+  expect([10, 15, 20].some((half) => Math.abs(cut - half) < 0.01)).toBe(true)
+
+  await page.getByRole('button', { name: 'Edit Chamfer' }).click()
+  const saved = page.getByRole('form', { name: 'Chamfer' })
+  await saved.getByLabel('Distance').fill('2 mm')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect.poll(async () => Math.round((24000 - await volume()) * 100) / 100).toBe(cut * 4)
+  await expect(steps).toHaveText(['Box', 'Chamfer'])
+})

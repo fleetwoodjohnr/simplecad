@@ -25,6 +25,9 @@ interface Props {
   onError: (error: string) => void
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
+  /** While set, a click picks the model edge under it (display edge index) instead of a face. */
+  onPickEdge?: (edge: number) => void
+  pickedEdges?: number[]
 }
 
 export function Viewport(props: Props) {
@@ -124,7 +127,22 @@ export function Viewport(props: Props) {
       }
     }
     const edges = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x292b30 }))
-    scene.add(body, highlight, hover, edges, ghost, prism)
+    const chosen = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0xe8a33a, depthTest: false }))
+    chosen.renderOrder = 3
+    let chosenKey = ''
+    /** Which edge each line segment of the displayed shape belongs to, made on the first edge pick. */
+    let segmentEdge: { shape: DisplayShape; owner: Uint32Array } | undefined
+    const edgeOf = (shape: DisplayShape, segment: number) => {
+      if (segmentEdge?.shape !== shape) {
+        const owner: number[] = []
+        for (let edge = 0; edge + 1 < shape.edgeStart.length; edge++) {
+          for (let p = shape.edgeStart[edge]; p + 1 < shape.edgeStart[edge + 1]; p++) owner.push(edge)
+        }
+        segmentEdge = { shape, owner: Uint32Array.from(owner) }
+      }
+      return segmentEdge.owner[segment]
+    }
+    scene.add(body, highlight, hover, edges, ghost, prism, chosen)
     let hovered: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
@@ -143,6 +161,25 @@ export function Viewport(props: Props) {
       panel.style.left = `${at ? clamp(at.x + 24, el.clientWidth - w) : Math.max(8, (el.clientWidth - w) / 2)}px`
       panel.style.top = `${at ? clamp(at.y + 24, el.clientHeight - h) : el.clientHeight - h - 12}px`
     }
+    /** While picking edges, a window point on each of the first edges, for scripted picks. */
+    const publishEdges = () => {
+      const shape = current.current.shape
+      if (!current.current.onPickEdge || !shape || displayed !== shape) {
+        delete canvas.dataset.edgeAnchors
+        return
+      }
+      const rect = canvas.getBoundingClientRect()
+      const anchors: ([number, number] | null)[] = []
+      for (let edge = 0; edge + 1 < shape.edgeStart.length && edge < 64; edge++) {
+        const [first, end] = [shape.edgeStart[edge], shape.edgeStart[edge + 1]]
+        if (end - first < 2) { anchors.push(null); continue }
+        const middle = first + Math.floor((end - first - 1) / 2)
+        const a = new Vector3().fromArray(shape.edgePoints, middle * 3)
+        const point = a.lerp(new Vector3().fromArray(shape.edgePoints, middle * 3 + 3), 0.5).project(camera)
+        anchors.push([Math.round(rect.left + (point.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - point.y) / 2 * rect.height)])
+      }
+      canvas.dataset.edgeAnchors = JSON.stringify(anchors)
+    }
     const draw = () => {
       if (animation) return
       animation = requestAnimationFrame(() => {
@@ -150,6 +187,7 @@ export function Viewport(props: Props) {
         light.position.copy(camera.position)
         renderer.render(scene, camera)
         transform.publish()
+        publishEdges()
         canvas.setAttribute('aria-busy', String(!displayed))
         const button = handle.current
         const { selected, shape, canPull } = current.current
@@ -223,8 +261,17 @@ export function Viewport(props: Props) {
         canvas.dataset.ghost = range ? 'preview' : ''
       }
       const transforming = transform.set(shown ? undefined : shape, body.geometry, tool, showEdges)
+      const picking = !!current.current.onPickEdge
       body.visible = !transforming
-      edges.visible = showEdges && !transforming
+      edges.visible = (showEdges || picking) && !transforming
+      const picked = picking && displayed === shape ? current.current.pickedEdges ?? [] : []
+      const pickedKey = picked.length && shape ? `${picked.join(',')}:${shape.edgeStart.length}` : ''
+      if (pickedKey !== chosenKey) {
+        chosen.geometry.dispose()
+        chosen.geometry = pickedKey && shape ? edgeGeometry(shape, picked.map((edge) => [edge, edge + 1])) : new BufferGeometry()
+        chosenKey = pickedKey
+      }
+      canvas.dataset.pickedEdges = String(picked.length)
       highlight.visible = !!shape && selected !== undefined && displayed === shape
       highlight.geometry.dispose()
       highlight.geometry = new BufferGeometry()
@@ -272,8 +319,26 @@ export function Viewport(props: Props) {
         if (face !== undefined && shape.faces[face]?.body !== placingBody) return { face, point: hit.point }
       }
     }
+    /** The model edge nearest a window point, within a few pixels, or undefined. */
+    const edgeAt = (x: number, y: number) => {
+      const shape = current.current.shape
+      if (!shape || displayed !== shape) return
+      const rect = canvas.getBoundingClientRect()
+      camera.updateMatrixWorld()
+      ray.setFromCamera(new Vector2((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2), camera)
+      // Six pixels, in model units at the orbit target's depth.
+      const depth = camera.position.distanceTo(controls.target)
+      ray.params.Line.threshold = depth * Math.tan((camera.fov * Math.PI) / 360) * 2 * 6 / Math.max(1, rect.height)
+      const hit = ray.intersectObject(edges)[0]
+      return hit?.index === undefined ? undefined : edgeOf(shape, hit.index / 2)
+    }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
+      if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
+        const edge = edgeAt(e.clientX, e.clientY)
+        if (edge !== undefined) current.current.onPickEdge(edge)
+        return
+      }
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
       const picked = faceAt(e.clientX, e.clientY)
@@ -314,7 +379,7 @@ export function Viewport(props: Props) {
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -326,7 +391,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {

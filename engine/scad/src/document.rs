@@ -599,6 +599,69 @@ impl Model {
         })
     }
 
+    /// Round (fillet) or bevel (chamfer) edges of one body, as SimpleCAD 0.4's edge tools record them:
+    /// each edge by its curve and its faces, so it is found again after the body changes upstream.
+    pub fn add_edge_finish(
+        &mut self,
+        kind: &str,
+        body: &str,
+        edges: &[u32],
+        value: &str,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (label, key) = match kind {
+            "fillet" => ("Fillet", "radius"),
+            "chamfer" => ("Chamfer", "distance"),
+            _ => return Err("Choose Fillet or Chamfer.".into()),
+        };
+        if edges.is_empty() {
+            return Err("Select the edges to round or bevel.".into());
+        }
+        let (producer, object) = self.editable(body)?;
+        let shape = shown
+            .get(&object)
+            .ok_or("Select edges of a body with geometry.")?;
+        let prints = occt::edge_fingerprints(shape).map_err(|error| error.what().to_owned())?;
+        let mut refs = Vec::with_capacity(edges.len());
+        for &index in edges {
+            let print = prints
+                .get(index as usize)
+                .ok_or("Select edges of one body.")?;
+            let curve = &print.curve;
+            let neighbours: Vec<String> = print
+                .neighbours
+                .iter()
+                .map(crate::rebuild::neighbour_summary)
+                .collect();
+            let mut reference = self.face_ref(
+                body,
+                index,
+                json!({
+                    "kind": "edge", "geometry": curve.geometry, "measure": curve.measure,
+                    "center": curve.center, "direction": curve.has_direction.then_some(curve.direction),
+                    "radius": curve.has_radius.then_some(curve.radius), "neighbours": neighbours,
+                }),
+            );
+            reference["kind"] = json!("edge");
+            reference["body_id"] = json!(object);
+            refs.push(json!({ "__ref__": reference }));
+        }
+        let mut candidate = self.clone();
+        let name = candidate.unique_name(label);
+        let feature = json!({
+            "id": new_feature_id(), "type": kind, "name": name, "outputs": [body],
+            "output_ids": { body: object },
+            "inputs": {
+                "body": { "__body__": body, "feature_id": producer, "object_id": object },
+                "edges": refs, key: value,
+            },
+            "bindings": { body: { "feature_id": producer, "object_id": object } },
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
     /// Mirror, pattern, scale or combine one body in place, as SimpleCAD 0.4 records those steps.
     /// A Combine's `tools` arrive as body names and are bound, like the body, by object ID.
     pub fn add_body_operation(
@@ -1471,6 +1534,8 @@ fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
         "offset_plane" => Some(&["distance"]),
         "shell" => Some(&["thickness"]),
+        "fillet" => Some(&["radius"]),
+        "chamfer" => Some(&["distance"]),
         "hole" => Some(&[
             "style",
             "depth_mode",

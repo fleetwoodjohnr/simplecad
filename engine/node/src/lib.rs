@@ -663,6 +663,23 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
+    /// Fillet or chamfer the given edges of one body (indices into its display edges).
+    #[napi]
+    pub fn add_edge_finish(
+        &self,
+        kind: String,
+        body: String,
+        edges: Vec<u32>,
+        value: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let mut model = self.model.clone();
+        let report = model
+            .add_edge_finish(&kind, &body, &edges, &value, &self.original, &self.shown_shapes(shown))
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// `inputs` is the step's settings as JSON: expressions as strings, directions as `[x, y, z]`.
     #[napi]
     pub fn add_body_operation(

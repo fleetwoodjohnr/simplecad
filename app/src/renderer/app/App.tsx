@@ -4,11 +4,12 @@ import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, Mea
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applyBodyOperation, previewBodyOperation, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
+import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
@@ -129,6 +130,8 @@ export function App() {
   const [editingShape, setEditingShape] = useState<string>()
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
   const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string }>()
+  const [edgeTool, setEdgeTool] = useState<{ kind: EdgeFinish; editing?: string }>()
+  const [edgePicks, setEdgePicks] = useState<number[]>([])
   const [transformBody, setTransformBody] = useState<number>()
   const [transformSnap, setTransformSnap] = useState(0)
   const [transformPivot, setTransformPivot] = useState<Vec3>()
@@ -191,6 +194,7 @@ export function App() {
       closeMeasure()
       setTransformKind(undefined)
       setBodyTool(undefined)
+      setEdgeTool(undefined)
       setShapePanel(false)
       setSketchEditor(undefined)
       setSketchTool(undefined)
@@ -227,6 +231,7 @@ export function App() {
     closeMeasure()
     setTransformKind(undefined)
     setBodyTool(undefined)
+    setEdgeTool(undefined)
     setShapePanel(false)
     setEditingShape(undefined)
     setFaceTool(undefined)
@@ -255,7 +260,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack || shapePanel || faceTool || transformKind || bodyTool || measureKind || sketchTool || matchingPart) return
+    if (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || measureKind || sketchTool || matchingPart) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -266,7 +271,7 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, measureKind, sketchTool, matchingPart])
+  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, edgeTool, measureKind, sketchTool, matchingPart])
 
   useEffect(() => {
     if (!stack) return
@@ -374,6 +379,26 @@ export function App() {
   const cancelShapePanel = () => { setShapePanel(false); setEditingShape(undefined); clearPreview() }
   const cancelTransform = () => { setTransformKind(undefined); clearPreview() }
   const closeBodyTool = () => { setBodyTool(undefined); clearPreview() }
+  const closeEdgeTool = () => { setEdgeTool(undefined); setEdgePicks([]); clearPreview() }
+  /** The body a display edge belongs to. */
+  const edgeBody = (edge: number) => model?.shape.ranges.find((range) => edge >= range.edges[0] && edge < range.edges[1])?.body
+  /** Toggle an edge; an edge of another body starts a new pick, since one finish rounds one body. */
+  const pickEdge = (edge: number) => {
+    clearPreview()
+    setEdgePicks((picks) => picks.includes(edge) ? picks.filter((pick) => pick !== edge)
+      : picks.length && edgeBody(picks[0]) !== edgeBody(edge) ? [edge] : [...picks, edge])
+  }
+  /** Every real edge of the picked body, or of the only visible one. */
+  const pickAllEdges = () => {
+    const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []) ?? []
+    const body = edgePicks.length ? edgeBody(edgePicks[0]) : visible.length === 1 ? visible[0] : undefined
+    const range = model?.shape.ranges.find((entry) => entry.body === body)
+    if (!range || !model) return
+    const { edgeStart } = model.shape
+    const all: number[] = []
+    for (let edge = range.edges[0]; edge < range.edges[1]; edge++) if (edgeStart[edge + 1] - edgeStart[edge] > 1) all.push(edge)
+    setEdgePicks(all)
+  }
 
   const pull = (amount: number) => {
     if (stack || shapePanel || faceTool || transformKind || measureKind || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
@@ -495,7 +520,7 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
-  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !measureKind && !sketchTool && !sketchEditor && !matchingPart
+  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !measureKind && !sketchTool && !sketchEditor && !matchingPart
   const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
   const closeSketchTool = () => { setSketchTool(undefined); clearPreview() }
@@ -549,7 +574,7 @@ export function App() {
     setEditingFace(undefined)
     setFaceTool(tool)
   }
-  const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !measureKind && !sketchTool && !matchingPart && !missingInput
+  const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
   const canPullFace = idle && ready && !!selectedFace?.planar
   const startStack = () => {
@@ -598,6 +623,8 @@ export function App() {
     rectangularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('rectangular_pattern') },
     circularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('circular_pattern') },
     scale: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('scale') },
+    fillet: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'fillet' }) } },
+    chamfer: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'chamfer' }) } },
     combine: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two bodies first', run: () => openBodyTool('boolean') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
@@ -615,7 +642,7 @@ export function App() {
         return
       }
       if (searchOpen || settingsOpen || document.querySelector('[role="menu"]')) return
-      if (!busy && (stack || shapePanel || faceTool || transformKind || bodyTool || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
+      if (!busy && (stack || shapePanel || faceTool || transformKind || bodyTool || edgeTool || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         cancelShapePanel()
@@ -624,6 +651,7 @@ export function App() {
         cancelFaceTool()
         cancelTransform()
         closeBodyTool()
+        closeEdgeTool()
         closeMeasure()
         setError('')
         return
@@ -667,7 +695,8 @@ export function App() {
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
             offsetPlane: faceTool === 'offset_plane', shell: faceTool === 'shell', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
-            scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean'
+            scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean',
+            fillet: edgeTool?.kind === 'fillet', chamfer: edgeTool?.kind === 'chamfer'
           }} />
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
@@ -694,6 +723,7 @@ export function App() {
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
             } : undefined}
             canPull={canPullFace}
+            onPickEdge={edgeTool && !edgeTool.editing && ready ? pickEdge : undefined} pickedEdges={edgePicks}
             overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
               canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
               onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
@@ -788,6 +818,14 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
+            {model && edgeTool && revision !== undefined && <EdgeFinishPanel key={`${edgeTool.kind}:${edgeTool.editing ?? 'new'}`}
+              kind={edgeTool.kind} busy={busy} picked={edgePicks.length}
+              body={edgePicks.length ? model.bodies[edgeBody(edgePicks[0]) ?? -1]?.name : undefined}
+              preset={model.steps.find((step) => step.id === edgeTool.editing && !step.undone)?.faceSettings}
+              onAll={pickAllEdges} onClear={() => setEdgePicks([])} onChange={clearPreview} onCancel={closeEdgeTool}
+              onPreview={(value) => void requestPreview(() => previewEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
+              onApply={(value) => mutate(() => applyEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: edgeTool.editing!, changes }))} />}
             {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
               kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy}
               preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
@@ -871,7 +909,7 @@ export function App() {
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
                     {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id} onClick={() => {
+                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id} onClick={() => {
                         if (step.kind === 'sketch') {
                           void openSketch(step.id)
                           return
@@ -881,6 +919,10 @@ export function App() {
                           setEditingShape(step.id)
                           setShapePanel(true)
                         } else {
+                          if (step.kind === 'fillet' || step.kind === 'chamfer') {
+                            setEdgeTool({ kind: step.kind, editing: step.id })
+                            return
+                          }
                           if (step.kind in bodyOperationLabels) {
                             setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
                             return

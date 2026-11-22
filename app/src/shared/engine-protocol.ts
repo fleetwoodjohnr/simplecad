@@ -61,6 +61,8 @@ export type Transform = { kind: 'move'; values: Expressions } |
   { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
   { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
 export interface TransformEdit { body: number; transform: Transform }
+/** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
+export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
 export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean'] as const
 /** Mirror, pattern, scale or combine one body in place: expressions as strings, directions as vectors,
  * and a Combine's `tools` as body indices. */
@@ -156,7 +158,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit
 
 export interface Checkpoint {
   source: Source
@@ -215,6 +217,7 @@ export type RendererCommand =
   | { op: 'measure'; revision: number; picks: MeasurePick[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
+  | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
   | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
@@ -304,6 +307,14 @@ function isBodyOperation(value: unknown): value is BodyOperationEdit {
     (Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9))))
 }
 
+function isEdgeFinish(value: unknown): value is EdgeFinishEdit {
+  if (!value || typeof value !== 'object') return false
+  const { edgeFinish, edges, value: amount } = value as Partial<EdgeFinishEdit>
+  return (edgeFinish === 'fillet' || edgeFinish === 'chamfer') && Array.isArray(edges) && edges.length > 0 &&
+    edges.length <= 4096 && edges.every((edge) => isIndex(edge) && edge <= 0xffffffff) &&
+    typeof amount === 'string' && amount.trim().length > 0 && amount.length < 256
+}
+
 const isRecipe = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= MAX_PROJECT_BYTES
 
@@ -320,7 +331,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -458,6 +469,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
           m.moving !== m.target && isStackSettings(m.settings)) ||
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
+        ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
         ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||

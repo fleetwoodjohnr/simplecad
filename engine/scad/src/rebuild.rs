@@ -386,6 +386,17 @@ fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
     resolve_scores(reference, &scores, "face")
 }
 
+/// How an edge reference names one of its faces: the surface type, and a plane's normal to 3 places.
+pub(crate) fn neighbour_summary(face: &occt::FaceFingerprint) -> String {
+    if !face.has_direction {
+        return face.geometry.clone();
+    }
+    let [x, y, z] = face
+        .direction
+        .map(|v| (v * 1000.0).round_ties_even() / 1000.0 + 0.0);
+    format!("{}:{x:?},{y:?},{z:?}", face.geometry)
+}
+
 fn resolve_edge(reference: &Value, edges: &[occt::EdgeFingerprint]) -> Result<u32, StepError> {
     let fingerprint = &reference["fingerprint"];
     let neighbours: Vec<&str> = fingerprint["neighbours"]
@@ -394,15 +405,7 @@ fn resolve_edge(reference: &Value, edges: &[occt::EdgeFingerprint]) -> Result<u3
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    let summary = |face: &occt::FaceFingerprint| {
-        if !face.has_direction {
-            return face.geometry.clone();
-        }
-        let [x, y, z] = face
-            .direction
-            .map(|v| (v * 1000.0).round_ties_even() / 1000.0 + 0.0);
-        format!("{}:{x:?},{y:?},{z:?}", face.geometry)
-    };
+    let summary = neighbour_summary;
     let scores: Vec<_> = edges
         .iter()
         .map(|edge| {
