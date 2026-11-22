@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { BodyOperationEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
 
@@ -92,6 +92,10 @@ export const previewTransform = (revision: number, edit: TransformEdit) =>
   send<DisplayShape>({ op: 'previewTransform', revision, ...edit })
 export const applyTransform = (revision: number, edit: TransformEdit) =>
   send<ModelResult>({ op: 'applyTransform', revision, ...edit }).then(accept)
+export const previewBodyOperation = (revision: number, edit: BodyOperationEdit) =>
+  send<DisplayShape>({ op: 'previewBodyOperation', revision, ...edit })
+export const applyBodyOperation = (revision: number, edit: BodyOperationEdit) =>
+  send<ModelResult>({ op: 'applyBodyOperation', revision, ...edit }).then(accept)
 export const readSketch = (revision: number, sketchId: string) =>
   send<string>({ op: 'readSketch', revision, sketchId })
 export const solveSketch = (revision: number, recipe: string) =>

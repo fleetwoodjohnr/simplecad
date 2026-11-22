@@ -356,7 +356,10 @@ impl Model {
                     missing_input: (state == "needs_attention")
                         .then(|| missing_reference(f, &ids))
                         .flatten(),
-                    face_settings: edit_values(f, face_edit_fields(&f["type"])),
+                    face_settings: edit_values(
+                        f,
+                        face_edit_fields(&f["type"]).or_else(|| body_edit_fields(&f["type"])),
+                    ),
                     shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
                     matching_thread: (state == "ok").then(|| Self::matching_thread(f)).flatten(),
                     construction_plane,
@@ -402,6 +405,7 @@ impl Model {
     ) -> Result<crate::rebuild::Report, String> {
         let (position, mut updated) = self.recipe(step_id)?;
         let allowed = face_edit_fields(&updated["type"])
+            .or_else(|| body_edit_fields(&updated["type"]))
             .or_else(|| shape_edit_fields(&updated["type"]))
             .ok_or("This history step has no editable settings.")?;
         if changes.is_empty() || changes.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -421,7 +425,7 @@ impl Model {
                 continue;
             }
             let value = match key.as_str() {
-                "left_hand" | "resize" => json!(value == "true"),
+                "left_hand" | "resize" | "keep" => json!(value == "true"),
                 _ => Value::String(value),
             };
             inputs.insert(key, value);
@@ -573,6 +577,41 @@ impl Model {
             "feature_id": producer, "kind": "face", "fingerprint": fingerprint,
             "index_hint": index, "role": "", "body": body, "body_id": "",
         })
+    }
+
+    /// Mirror, pattern or scale one body in place, as SimpleCAD 0.4 records those steps.
+    pub fn add_body_operation(
+        &mut self,
+        kind: &str,
+        body: &str,
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let label = match kind {
+            "mirror" => "Mirror",
+            "rectangular_pattern" => "Rectangular Pattern",
+            "circular_pattern" => "Circular Pattern",
+            "scale" => "Scale",
+            _ => return Err("Choose an operation.".into()),
+        };
+        if !inputs.is_object() {
+            return Err("The operation settings could not be read.".into());
+        }
+        let (producer, object) = self
+            .latest()
+            .remove(body)
+            .ok_or("Select a body with an available modeling step.")?;
+        inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
+        let mut candidate = self.clone();
+        let name = candidate.unique_name(label);
+        let feature = json!({
+            "id": new_feature_id(), "type": kind, "name": name, "outputs": [body],
+            "output_ids": { body: object }, "inputs": inputs,
+            "bindings": { body: { "feature_id": producer, "object_id": object } },
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, label, original, shown)
     }
 
     pub fn add_offset_plane(
@@ -1389,6 +1428,17 @@ fn shape_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "cross" => &["size", "arm_width", "height"],
         "crescent" => &["size", "thickness", "height"],
         "polygon_prism" => &["sides", "across_corners", "across_flats", "height"],
+        _ => return None,
+    })
+}
+
+/// The settings of a body operation that History can edit; its directions stay as they were made.
+fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
+    Some(match kind.as_str()? {
+        "mirror" => &["keep"],
+        "rectangular_pattern" => &["count_x", "count_y", "spacing_x", "spacing_y"],
+        "circular_pattern" => &["count", "total_angle"],
+        "scale" => &["factor"],
         _ => return None,
     })
 }

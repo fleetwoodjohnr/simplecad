@@ -306,3 +306,57 @@ fn saved_mirror_and_patterns_apply_their_recipe_to_the_whole_body() {
         );
     }
 }
+
+#[test]
+fn a_circular_pattern_repeats_a_body_in_place_and_edits_its_count_in_one_undo_step() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(solid))]);
+    let volume =
+        |report: &scad::rebuild::Report| occt::volume(report.bodies[0].shape.as_ref().unwrap());
+    let inputs = json!({"count": "3", "total_angle": "360", "axis": [0.0, 0.0, 1.0], "center": [-20.0, 0.0, 0.0]});
+    let made = model
+        .add_body_operation("circular_pattern", "Box", inputs, &[], &shown)
+        .unwrap();
+    assert!(
+        (volume(&made) - 3000.0).abs() < 1e-6,
+        "three separate boxes"
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (step.name.as_str(), step.kind.as_str()),
+        ("Circular Pattern", "circular_pattern")
+    );
+    assert_eq!(step.face_settings.as_ref().unwrap()["count"], "3");
+
+    let edited = model
+        .edit_step_settings(
+            &step.id,
+            [("count".to_owned(), "2".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    assert!((volume(&edited) - 2000.0).abs() < 1e-6);
+    let bytes = model.save(&[]).unwrap();
+    let reopened = scad::project::read(&bytes).unwrap();
+    let saved = &reopened.model["features"][1];
+    assert_eq!(saved["inputs"]["count"], "2");
+    assert_eq!(saved["inputs"]["axis"], json!([0.0, 0.0, 1.0]));
+    assert_eq!(
+        saved["bindings"]["Box"]["object_id"],
+        saved["output_ids"]["Box"]
+    );
+    model.undo().unwrap();
+    let undone = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    assert_eq!(undone.model["features"][1]["inputs"]["count"], "3");
+    assert!(
+        model
+            .add_body_operation("fillet", "Box", json!({}), &[], &shown)
+            .is_err()
+    );
+}

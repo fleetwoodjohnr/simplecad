@@ -61,6 +61,13 @@ export type Transform = { kind: 'move'; values: Expressions } |
   { kind: 'rotate'; values: Expressions; pivot?: Vec3 } |
   { kind: 'rotate'; values: [string]; axis: Vec3; pivot?: Vec3 }
 export interface TransformEdit { body: number; transform: Transform }
+export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale'] as const
+/** Mirror, pattern or scale one body in place: expressions as strings, directions as vectors. */
+export interface BodyOperationEdit {
+  bodyOperation: typeof BODY_OPERATIONS[number]
+  body: number
+  inputs: Record<string, string | boolean | Vec3>
+}
 export type MeasurePick = { kind: 'body'; body: number } | { kind: 'face'; face: number }
 export interface Measurement { label: string; values: number[]; unit: string }
 export interface ViewFrame {
@@ -147,7 +154,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit
 
 export interface Checkpoint {
   source: Source
@@ -205,6 +212,7 @@ export type RendererCommand =
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
   | { op: 'measure'; revision: number; picks: MeasurePick[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
+  | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
   | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
@@ -282,6 +290,16 @@ function isTransformEdit(value: unknown): value is TransformEdit {
     (axis === undefined ? values.length === 3 : values.length === 1 && vec3(axis) && Math.hypot(...axis) > 1e-9)
 }
 
+function isBodyOperation(value: unknown): value is BodyOperationEdit {
+  if (!value || typeof value !== 'object') return false
+  const { bodyOperation, body, inputs } = value as Partial<BodyOperationEdit>
+  if (!BODY_OPERATIONS.includes(bodyOperation!) || !isIndex(body) || body >= MAX_BODIES || !inputs || typeof inputs !== 'object') return false
+  const entries = Object.entries(inputs)
+  return entries.length <= 16 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && key !== 'body' && (
+    typeof value === 'boolean' || (typeof value === 'string' && value.trim().length > 0 && value.length < 256) ||
+    (Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9))))
+}
+
 const isRecipe = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= MAX_PROJECT_BYTES
 
@@ -298,7 +316,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -432,6 +450,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'previewStack' || m.op === 'applyStack') && isIndex(m.moving) && isIndex(m.target) &&
           m.moving !== m.target && isStackSettings(m.settings)) ||
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
+        ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'createShape' || m.op === 'previewShape') && isShapeEdit(m)) ||
         (m.op === 'readSketch' && isName(m.sketchId)) ||
         (m.op === 'solveSketch' && isRecipe(m.recipe)) ||

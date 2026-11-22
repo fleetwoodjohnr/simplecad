@@ -46,12 +46,14 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'previewShape':
       case 'previewSavedStep':
       case 'previewTransform':
+      case 'previewBodyOperation':
       case 'previewSketchSolid':
       case 'previewStack': result = document.preview(req, req.revision); break
       case 'apply':
       case 'applyFace':
       case 'applyStack':
       case 'applyTransform':
+      case 'applyBodyOperation':
       case 'importModel':
       case 'repairInput':
       case 'editSavedStep':

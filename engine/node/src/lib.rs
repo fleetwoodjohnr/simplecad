@@ -663,6 +663,30 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
+    /// `inputs` is the step's settings as JSON: expressions as strings, directions as `[x, y, z]`.
+    #[napi]
+    pub fn add_body_operation(
+        &self,
+        kind: String,
+        body: String,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The operation settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_body_operation(
+                &kind,
+                &body,
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     #[napi]
     pub fn add_face_feature(&self, shape: &Shape, request: FaceFeatureRequest) -> Result<Pulled> {
         let FaceFeatureRequest {

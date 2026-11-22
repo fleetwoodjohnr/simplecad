@@ -4,10 +4,11 @@ import type { BodyInfo, DisplayShape, ExportFormat, FaceInfo, FaceOperation, Mea
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { applyBodyOperation, previewBodyOperation, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { ContextBar } from './ContextBar'
+import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { Viewport } from '../viewport/Viewport'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
@@ -127,6 +128,7 @@ export function App() {
   const [shapePanel, setShapePanel] = useState(false)
   const [editingShape, setEditingShape] = useState<string>()
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
+  const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string }>()
   const [transformBody, setTransformBody] = useState<number>()
   const [transformSnap, setTransformSnap] = useState(0)
   const [transformPivot, setTransformPivot] = useState<Vec3>()
@@ -188,6 +190,7 @@ export function App() {
       cancelPlacement()
       closeMeasure()
       setTransformKind(undefined)
+      setBodyTool(undefined)
       setShapePanel(false)
       setSketchEditor(undefined)
       setSketchTool(undefined)
@@ -223,6 +226,7 @@ export function App() {
     cancelPlacement()
     closeMeasure()
     setTransformKind(undefined)
+    setBodyTool(undefined)
     setShapePanel(false)
     setEditingShape(undefined)
     setFaceTool(undefined)
@@ -251,7 +255,7 @@ export function App() {
       : undefined,
   [stack, selected, target, stackSettings, targetView])
   useEffect(() => {
-    if (stack || shapePanel || faceTool || transformKind || measureKind || sketchTool || matchingPart) return
+    if (stack || shapePanel || faceTool || transformKind || bodyTool || measureKind || sketchTool || matchingPart) return
     setPreview(undefined)
     if (busy || selected === undefined || revision === undefined || !Number.isFinite(value) || value === 0) return
     let active = true
@@ -262,7 +266,7 @@ export function App() {
       )
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, measureKind, sketchTool, matchingPart])
+  }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, measureKind, sketchTool, matchingPart])
 
   useEffect(() => {
     if (!stack) return
@@ -369,6 +373,7 @@ export function App() {
   const cancelFaceTool = () => { setFaceTool(undefined); setEditingFace(undefined); clearPreview() }
   const cancelShapePanel = () => { setShapePanel(false); setEditingShape(undefined); clearPreview() }
   const cancelTransform = () => { setTransformKind(undefined); clearPreview() }
+  const closeBodyTool = () => { setBodyTool(undefined); clearPreview() }
 
   const pull = (amount: number) => {
     if (stack || shapePanel || faceTool || transformKind || measureKind || missingInput || revision === undefined || selected === undefined || !Number.isFinite(amount) || amount === 0) return
@@ -490,7 +495,7 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
-  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !sketchEditor && !matchingPart
+  const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !measureKind && !sketchTool && !sketchEditor && !matchingPart
   const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
   const closeSketchTool = () => { setSketchTool(undefined); clearPreview() }
@@ -531,13 +536,20 @@ export function App() {
     setTransformPivot(undefined)
     setTransformKind(kind)
   }
+  const openBodyTool = (kind: BodyOperation) => {
+    const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
+    const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
+    select()
+    setTransformBody(body)
+    setBodyTool({ kind })
+  }
   const openFaceTool = (tool: FaceOperation['faceOperation']) => {
     setDistance('')
     clearPreview()
     setEditingFace(undefined)
     setFaceTool(tool)
   }
-  const idle = !stack && !shapePanel && !faceTool && !transformKind && !measureKind && !sketchTool && !matchingPart && !missingInput
+  const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
   const canPullFace = idle && ready && !!selectedFace?.planar
   const startStack = () => {
@@ -581,6 +593,10 @@ export function App() {
     } },
     move: { enabled: canTransform, run: () => openTransform('move') },
     rotate: { enabled: canTransform, run: () => openTransform('rotate') },
+    mirror: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('mirror') },
+    rectangularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('rectangular_pattern') },
+    circularPattern: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('circular_pattern') },
+    scale: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('scale') },
     text: { enabled: canUseFaceTool, run: () => openFaceTool('text') },
     faceTexture: { enabled: canUseFaceTool, run: () => openFaceTool('face_texture') },
     settings: { enabled: preferencesLoaded, run: () => setSettingsOpen(true) },
@@ -596,7 +612,7 @@ export function App() {
         return
       }
       if (searchOpen || settingsOpen || document.querySelector('[role="menu"]')) return
-      if (!busy && (stack || shapePanel || faceTool || transformKind || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
+      if (!busy && (stack || shapePanel || faceTool || transformKind || bodyTool || measureKind || sketchTool || matchingPart) && event.key === 'Escape') {
         event.preventDefault()
         cancelPlacement()
         cancelShapePanel()
@@ -604,6 +620,7 @@ export function App() {
         closeMatching()
         cancelFaceTool()
         cancelTransform()
+        closeBodyTool()
         closeMeasure()
         setError('')
         return
@@ -645,7 +662,9 @@ export function App() {
           <Ribbon actions={actions} active={{
             shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, measure: !!measureKind,
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
-            offsetPlane: faceTool === 'offset_plane', matchingPart
+            offsetPlane: faceTool === 'offset_plane', matchingPart, mirror: bodyTool?.kind === 'mirror',
+            rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
+            scale: bodyTool?.kind === 'scale'
           }} />
           <IconBtn label={commands.undo.label} shortcut={commands.undo.shortcut} disabled={!actions.undo.enabled} onClick={actions.undo.run}><Undo2 className="size-4" /></IconBtn>
           <IconBtn label={commands.redo.label} shortcut={commands.redo.shortcut} disabled={!actions.redo.enabled} onClick={actions.redo.run}><Redo2 className="size-4" /></IconBtn>
@@ -685,7 +704,7 @@ export function App() {
                     pickMeasure({ kind: 'face', face })
                   }
                 }
-              } else if (transformKind) {
+              } else if (transformKind || bodyTool) {
                 if (face !== undefined) {
                   clearPreview()
                   setTransformBody(model.shape.faces[face]?.body)
@@ -766,6 +785,13 @@ export function App() {
               onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
               onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
               onCancel={cancelTransform} />}
+            {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
+              kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy}
+              preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
+              onBody={(body) => { clearPreview(); setTransformBody(body) }} onChange={clearPreview} onCancel={closeBodyTool}
+              onPreview={(edit) => void requestPreview(() => previewBodyOperation(revision, edit))}
+              onApply={(edit) => mutate(() => applyBodyOperation(revision, edit))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: bodyTool.editing!, changes }))} />}
             {shapePanel && revision !== undefined && <ShapePanel key={editingShape ?? 'new'} busy={busy} saved={savedShape}
               onApply={(edit) => shapeStep
                 ? mutate(() => editSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
@@ -838,7 +864,7 @@ export function App() {
                     <span className="truncate">{step.name}</span>
                     {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
                     {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id} onClick={() => {
+                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id} onClick={() => {
                         if (step.kind === 'sketch') {
                           void openSketch(step.id)
                           return
@@ -848,6 +874,10 @@ export function App() {
                           setEditingShape(step.id)
                           setShapePanel(true)
                         } else {
+                          if (step.kind in bodyOperationLabels) {
+                            setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
+                            return
+                          }
                           setEditingFace(step.id)
                           if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane') {
                             setFaceTool(step.kind)
