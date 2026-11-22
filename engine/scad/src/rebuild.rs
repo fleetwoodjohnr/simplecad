@@ -602,6 +602,7 @@ pub fn create_face_feature(
         "face_texture" => "Face Texture",
         "hole" => "Hole",
         "thread" => "Thread",
+        "shell" => "Shell",
         _ => return Err("Choose a face operation.".into()),
     };
     if !inputs.is_object() {
@@ -615,7 +616,13 @@ pub fn create_face_feature(
         "radius": mark.has_radius.then_some(mark.radius), "neighbours": [],
     }));
     inputs["body"] = json!({ "__body__": picked.name });
-    inputs["face"] = json!({ "__ref__": face });
+    // A shell opens a list of faces; the rest work on one.
+    let key = if kind == "shell" { "faces" } else { "face" };
+    inputs[key] = if kind == "shell" {
+        json!([{ "__ref__": face }])
+    } else {
+        json!({ "__ref__": face })
+    };
     if let Some(target) = &target {
         inputs["until"] = json!({ "__body__": target.name });
     }

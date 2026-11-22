@@ -18,11 +18,12 @@ interface Props {
 const planarTools: [CommandId, LucideIcon][] = [
   ['move', Move], ['rotate', Rotate3d], ['sketch', PenLine], ['hole', CircleDot], ['offsetPlane', SquareDashed]
 ]
+const planarMore: CommandId[] = ['shell', 'text', 'faceTexture', 'stack', 'measure', 'clear']
 const curvedTools: [CommandId, LucideIcon][] = [['thread', Spline], ['move', Move], ['rotate', Rotate3d]]
 
 /** The tools for what is selected, beside it in the view: the pull distance first, then the rest. */
 export function ContextBar({ actions, planar, distance, canPull, distanceRef, onDistance, onPull }: Props) {
-  const more: CommandId[] = planar ? ['text', 'faceTexture', 'stack', 'measure', 'clear'] : ['faceTexture', 'stack', 'measure', 'clear']
+  const more: CommandId[] = planar ? planarMore : ['shell', 'faceTexture', 'stack', 'measure', 'clear']
   const value = Number(distance)
   return (
     <div role="toolbar" aria-label="Selection tools"

@@ -45,6 +45,7 @@ export const commands = {
   circularPattern: { label: 'Circular Pattern' },
   scale: { label: 'Scale' },
   combine: { label: 'Combine' },
+  shell: { label: 'Shell' },
   rotate: { label: 'Rotate' },
   sketch: { label: 'Sketch' },
   offsetPlane: { label: 'Offset Plane' },

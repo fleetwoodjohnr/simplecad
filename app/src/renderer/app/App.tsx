@@ -22,7 +22,7 @@ import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
 import { TransformPanel } from './TransformPanel'
 import { defaultTextSettings, TextPanel } from './TextPanel'
-import { defaultOffsetPlane, OffsetPlanePanel } from './OffsetPlanePanel'
+import { defaultOffsetPlane, defaultShell, OffsetPlanePanel, ShellPanel } from './OffsetPlanePanel'
 import { defaultTextureSettings, TexturePanel } from './TexturePanel'
 import { commands, matchesShortcut, type CommandActions, type CommandId } from './commands'
 
@@ -327,7 +327,7 @@ export function App() {
     if (!faceStep?.faceSettings) return
     const defaults = {
       text: defaultTextSettings, face_texture: defaultTextureSettings, hole: defaultHoleSettings, thread: defaultThreadSettings,
-      offset_plane: defaultOffsetPlane
+      offset_plane: defaultOffsetPlane, shell: defaultShell
     }[operation.faceOperation]
     const original: Record<string, string> = { ...defaults, ...faceStep.faceSettings }
     const changes = Object.fromEntries(Object.entries(operation.settings).filter(([key, value]) => original[key] !== value))
@@ -573,6 +573,7 @@ export function App() {
     stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
     offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
+    shell: { enabled: canUseFaceTool, run: () => openFaceTool('shell') },
     extrude: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('extrude') },
     revolve: { enabled: canUseFaceTool && sketches.length >= 1, hint: 'Draw a sketch first', run: () => openSketchTool('revolve') },
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw a profile and a path', run: () => openSketchTool('sweep') },
@@ -664,7 +665,7 @@ export function App() {
           <Ribbon actions={actions} active={{
             shape: shapePanel, move: transformKind === 'move', rotate: transformKind === 'rotate', stack, measure: !!measureKind,
             hole: faceTool === 'hole', thread: faceTool === 'thread', text: faceTool === 'text', faceTexture: faceTool === 'face_texture',
-            offsetPlane: faceTool === 'offset_plane', matchingPart, mirror: bodyTool?.kind === 'mirror',
+            offsetPlane: faceTool === 'offset_plane', shell: faceTool === 'shell', matchingPart, mirror: bodyTool?.kind === 'mirror',
             rectangularPattern: bodyTool?.kind === 'rectangular_pattern', circularPattern: bodyTool?.kind === 'circular_pattern',
             scale: bodyTool?.kind === 'scale', combine: bodyTool?.kind === 'boolean'
           }} />
@@ -815,6 +816,10 @@ export function App() {
               onChange={clearPreview} onCancel={cancelFaceTool}
               onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
+            {faceTool === 'shell' && <ShellPanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || selected !== undefined}
+              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'shell', settings })} />}
             {faceTool === 'offset_plane' && <OffsetPlanePanel key={editingFace ?? 'new'} busy={busy}
               planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
               preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
@@ -881,7 +886,7 @@ export function App() {
                             return
                           }
                           setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane') {
+                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell') {
                             setFaceTool(step.kind)
                           }
                         }

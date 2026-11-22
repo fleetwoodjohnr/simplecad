@@ -1477,6 +1477,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
 fn face_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
     match kind.as_str()? {
         "offset_plane" => Some(&["distance"]),
+        "shell" => Some(&["thickness"]),
         "hole" => Some(&[
             "style",
             "depth_mode",

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Btn, inputCls } from '../ui'
 
 export const defaultOffsetPlane = { distance: '10 mm' }
+export const defaultShell = { thickness: '2 mm' }
 
 interface Props {
   busy: boolean
@@ -12,15 +13,28 @@ interface Props {
   onCancel: () => void
 }
 
-export function OffsetPlanePanel({ busy, planar, preset, onApply, onChange, onCancel }: Props) {
-  const [distance, setDistance] = useState(preset?.distance ?? defaultOffsetPlane.distance)
+export function OffsetPlanePanel(props: Props) {
+  return <FaceValuePanel {...props} name="Offset Plane" label="Distance" field="distance" initial={defaultOffsetPlane.distance}
+    hint="Select a planar face." onApply={(value) => props.onApply({ distance: value })} />
+}
+
+export function ShellPanel(props: Omit<Props, 'onApply'> & { onApply: (settings: { thickness: string }) => void }) {
+  return <FaceValuePanel {...props} name="Shell" label="Wall thickness" field="thickness" initial={defaultShell.thickness}
+    hint="Select the face to open." onApply={(value) => props.onApply({ thickness: value })} />
+}
+
+/** One expression on a picked face: an offset plane's distance, a shell's wall. */
+function FaceValuePanel({ busy, planar, preset, onApply, onChange, onCancel, name, label, field, initial, hint }: Omit<Props, 'onApply'> & {
+  name: string; label: string; field: string; initial: string; hint: string; onApply: (value: string) => void
+}) {
+  const [distance, setDistance] = useState(preset?.[field] ?? initial)
   const enabled = !busy && planar && !!distance.trim()
-  return <form aria-label="Offset Plane" className="grid gap-2 text-xs" onSubmit={(event) => {
+  return <form aria-label={name} className="grid gap-2 text-xs" onSubmit={(event) => {
     event.preventDefault()
-    if (enabled) onApply({ distance })
+    if (enabled) onApply(distance)
   }}>
-    {!planar && <p>Select a planar face.</p>}
-    <label className="grid gap-1">Distance
+    {!planar && <p>{hint}</p>}
+    <label className="grid gap-1">{label}
       <input className={inputCls} value={distance} maxLength={256} disabled={busy}
         onChange={(event) => { setDistance(event.target.value); onChange() }} />
     </label>

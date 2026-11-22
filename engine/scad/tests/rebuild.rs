@@ -423,3 +423,60 @@ fn a_combine_cuts_a_tool_out_of_the_body_and_consumes_it_unless_kept() {
             .is_err()
     );
 }
+
+#[test]
+fn a_shell_opens_the_picked_face_and_its_thickness_edits_from_history() {
+    let solid = occt::make_box(10.0, 10.0, 10.0).unwrap();
+    let mut model = Model::new_box(occt::write_brep(&solid).unwrap()).unwrap();
+    let top = (0..occt::faces(&solid).unwrap().len() as u32)
+        .max_by(|a, b| {
+            let z = |i| occt::face_fingerprint(&solid, i).unwrap().center[2];
+            z(*a).total_cmp(&z(*b))
+        })
+        .unwrap();
+    let picked = scad::align::PickedFace {
+        name: "Box",
+        shape: &solid,
+        index: top,
+    };
+    let shelled = scad::rebuild::create_face_feature(
+        &mut model,
+        picked,
+        "shell",
+        json!({"thickness": "1 mm"}),
+        None,
+    )
+    .unwrap();
+    // A 10 mm cube with its top open and 1 mm walls: 1000 - 8 × 8 × 9.
+    assert!(
+        (occt::volume(&shelled) - 424.0).abs() < 1e-6,
+        "{}",
+        occt::volume(&shelled)
+    );
+    let step = model.steps().into_iter().last().unwrap();
+    assert_eq!(
+        (
+            step.name.as_str(),
+            step.face_settings.as_ref().unwrap()["thickness"].as_str()
+        ),
+        ("Shell", "1 mm")
+    );
+    let saved = scad::project::read(&model.save(&[]).unwrap()).unwrap();
+    let shell = &saved.model["features"][1];
+    assert_eq!(shell["inputs"]["faces"].as_array().map(Vec::len), Some(1));
+    let id = model.payload["bodies"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = HashMap::from([(id, Rc::new(shelled))]);
+    let edited = model
+        .edit_step_settings(
+            &step.id,
+            [("thickness".to_owned(), "2 mm".to_owned())].into(),
+            &[],
+            &shown,
+        )
+        .unwrap();
+    // 1000 - 6 × 6 × 8.
+    assert!((occt::volume(edited.bodies[0].shape.as_ref().unwrap()) - 712.0).abs() < 1e-6);
+}
