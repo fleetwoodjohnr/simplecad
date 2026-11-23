@@ -56,7 +56,10 @@ sha256sum model.scad3 .config/simplecad/settings.json > /tmp/before.sha
 verify() {
   test "$(installed_version)" = "$(expected_version "$1")"
   printf '%s: %s\n' "$2" "$(installed_version)"
-  runuser -u tester -- /usr/bin/simplecad --self-test
+  # Chromium's sandbox can't run in a container; the Python builds have none to turn off.
+  sandbox=()
+  if [[ -e /opt/simplecad/resources/app.asar ]]; then sandbox=(--no-sandbox); fi
+  runuser -u tester -- /usr/bin/simplecad --self-test "${sandbox[@]}"
   sha256sum -c /tmp/before.sha
 }
 
