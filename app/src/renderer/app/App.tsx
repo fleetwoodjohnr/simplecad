@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Pencil, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
-import type { BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
+import type { BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
 import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
+import { HistoryList } from './HistoryList'
 import { ContextBar } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
@@ -53,7 +54,6 @@ function useTheme(chosen: Theme) {
 
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
-const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Failed', needs_attention: 'Needs attention' }
 const defaultStack: StackSettings = {
   operation: 'stack', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
   horizontalGap: 0, verticalGap: 0
@@ -1009,6 +1009,57 @@ export function App() {
     return () => window.removeEventListener('keydown', handle)
   })
 
+
+  // History rows keep the same handlers across renders, so a row draws again only when its step changes.
+  const editStepNow = useRef<(step: StepInfo) => void>(() => {})
+  editStepNow.current = (step) => {
+    if (step.kind === 'sketch') {
+      void openSketch(step.id)
+      return
+    }
+    select()
+    if (step.shapeSettings) {
+      setEditingShape(step.id)
+      setShapePanel(true)
+    } else {
+      if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection') {
+        setEditingMove(step.id)
+        return
+      }
+      if (step.kind === 'section_replace') {
+        setSection({ editing: step.id })
+        return
+      }
+      if (step.kind === 'arrange') {
+        setArrange({ bodies: [], editing: step.id })
+        return
+      }
+      if (step.kind in constructionLabels) {
+        setConstruction({ kind: step.kind as Construction, editing: step.id, axisFrom: 'edge' })
+        return
+      }
+      if (step.kind === 'fillet' || step.kind === 'chamfer') {
+        setEdgeTool({ kind: step.kind, editing: step.id })
+        return
+      }
+      if (step.kind in bodyOperationLabels) {
+        setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
+        return
+      }
+      setEditingFace(step.id)
+      if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round' || step.kind === 'vent_cut') {
+        setFaceTool(step.kind)
+      }
+    }
+  }
+  const repairStepNow = useRef<(step: StepInfo) => void>(() => {})
+  repairStepNow.current = (step) => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }
+  // A large model has hundreds of faces: their list is made once per result, not on every render.
+  const faceOptions = useMemo(() => model?.shape.faces.map((face, index) =>
+    <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>), [model, unit])
+  const editHistoryStep = useMemo(() => (step: StepInfo) => editStepNow.current(step), [])
+  const repairHistoryStep = useMemo(() => (step: StepInfo) => repairStepNow.current(step), [])
+
   return (
     <TooltipProvider>
       <main className="flex h-screen flex-col bg-bg text-text">
@@ -1163,7 +1214,7 @@ export function App() {
                   } else select(face)
                 }}>
                 <option value="">Select a face</option>
-                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>)}
+                {faceOptions}
               </select>
             </label>
             {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
@@ -1402,63 +1453,9 @@ export function App() {
               </div>
             </form>}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <ol ref={historyList} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
-              {model?.steps.map((step) => (
-                <li key={step.id} className={`px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
-                  <div className="flex justify-between gap-2">
-                    <span className="truncate">{step.name}</span>
-                    {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
-                    {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id || arrange?.editing === step.id || section?.editing === step.id || editingMove === step.id} onClick={() => {
-                        if (step.kind === 'sketch') {
-                          void openSketch(step.id)
-                          return
-                        }
-                        select()
-                        if (step.shapeSettings) {
-                          setEditingShape(step.id)
-                          setShapePanel(true)
-                        } else {
-                          if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection') {
-                            setEditingMove(step.id)
-                            return
-                          }
-                          if (step.kind === 'section_replace') {
-                            setSection({ editing: step.id })
-                            return
-                          }
-                          if (step.kind === 'arrange') {
-                            setArrange({ bodies: [], editing: step.id })
-                            return
-                          }
-                          if (step.kind in constructionLabels) {
-                            setConstruction({ kind: step.kind as Construction, editing: step.id, axisFrom: 'edge' })
-                            return
-                          }
-                          if (step.kind === 'fillet' || step.kind === 'chamfer') {
-                            setEdgeTool({ kind: step.kind, editing: step.id })
-                            return
-                          }
-                          if (step.kind in bodyOperationLabels) {
-                            setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
-                            return
-                          }
-                          setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round' || step.kind === 'vent_cut') {
-                            setFaceTool(step.kind)
-                          }
-                        }
-                      }}>
-                      <Pencil className="size-3.5" />
-                    </IconBtn>}
-                  </div>
-                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import' || step.constructionPlane) && step.message &&
-                    <p className="mt-1 break-words text-text-2">{step.message}</p>}
-                  {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
-                    aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }}>Repair input</Btn>}
-                </li>
-              ))}
-            </ol>
+            <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
+              editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
+              onEdit={editHistoryStep} onRepair={repairHistoryStep} />
           </aside>
         </div>
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">

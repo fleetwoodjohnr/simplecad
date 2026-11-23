@@ -196,6 +196,22 @@ fn canonical(value: &Value, bindings: &BTreeMap<String, OutputRef>) -> Value {
 /// Every feature's signature, by feature id. `None` for a model these rules do
 /// not cover (an output without an id); the caller then rebuilds rather than trusts.
 pub fn signatures(model: &Value) -> Option<BTreeMap<String, String>> {
+    seeded(model, BTreeMap::new())
+}
+
+/// `signatures(model)`, given `previous` ones of a model that differs from it only in
+/// the steps `changed` and those downstream of them: only those are worked out again.
+pub fn signatures_after(
+    model: &Value,
+    previous: &BTreeMap<String, String>,
+    changed: &BTreeSet<String>,
+) -> Option<BTreeMap<String, String>> {
+    let mut seed = previous.clone();
+    seed.retain(|id, _| !changed.contains(id));
+    seeded(model, seed)
+}
+
+fn seeded(model: &Value, seed: BTreeMap<String, String>) -> Option<BTreeMap<String, String>> {
     let features: Vec<&Value> = model.get("features")?.as_array()?.iter().collect();
     let by_id: BTreeMap<&str, &Value> = features
         .iter()
@@ -211,7 +227,8 @@ pub fn signatures(model: &Value) -> Option<BTreeMap<String, String>> {
         })
         .unwrap_or_default();
 
-    let mut result = BTreeMap::new();
+    let mut result = seed;
+    result.retain(|id, _| by_id.contains_key(id.as_str()));
     // Upstream first; the Python app walks the graph's topological order, which
     // gives the same values since a signature depends only on upstream ones.
     fn visit(

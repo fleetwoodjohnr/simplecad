@@ -4,7 +4,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use occt::ffi;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -220,6 +220,8 @@ pub struct HistoryDepth {
 pub struct Project {
     model: scad::document::Model,
     original: Arc<Vec<u8>>,
+    /// The model's step signatures, when a rebuild just worked them out: the next history move starts from them.
+    signatures: Option<Arc<BTreeMap<String, String>>>,
 }
 
 /// A face or edge of a named body, by its index in the body's own order.
@@ -463,6 +465,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             bodies,
         })
@@ -499,6 +502,7 @@ impl Project {
             .filter(|body| body["visible"].as_bool() == Some(false))
             .filter_map(|body| body["id"].as_str())
             .collect();
+        let signatures = Some(Arc::new(report.signatures));
         let bodies = report
             .bodies
             .into_iter()
@@ -515,6 +519,7 @@ impl Project {
             project: Some(Project {
                 model,
                 original: self.original.clone(),
+                signatures,
             }),
         }
     }
@@ -592,6 +597,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             bodies,
         })
@@ -616,6 +622,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             name,
             shape: Shape::new(inner),
@@ -659,6 +666,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(placed),
         })
@@ -699,6 +707,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(moved),
         })
@@ -815,6 +824,7 @@ impl Project {
         Ok(Project {
             model,
             original: self.original.clone(),
+            signatures: None,
         })
     }
 
@@ -825,6 +835,7 @@ impl Project {
         Ok(Project {
             model,
             original: self.original.clone(),
+            signatures: None,
         })
     }
 
@@ -1008,6 +1019,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(inner),
         })
@@ -1041,6 +1053,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(pulled),
         })
@@ -1082,11 +1095,7 @@ impl Project {
 
     #[napi]
     pub fn history_depth(&self) -> HistoryDepth {
-        let count = |stack| {
-            self.model.payload["history"][stack]
-                .as_array()
-                .map_or(0, |actions| actions.len() as u32)
-        };
+        let count = |stack| self.model.history_len(stack) as u32;
         HistoryDepth {
             undo: count("undo"),
             redo: count("redo"),
@@ -1121,11 +1130,26 @@ impl Project {
         let old_shapes = self.shown_shapes(shown);
         let mut model = self.model.clone();
         let mut stale = BTreeSet::new();
+        let mut signatures = match &self.signatures {
+            Some(known) => (**known).clone(),
+            None => scad::signatures::signatures(&model.payload)
+                .ok_or_else(|| Error::from_reason("This project's history could not be read."))?,
+        };
         for _ in 0..count {
-            stale.extend(model.move_history(redo).map_err(Error::from_reason)?);
+            let (moved, next) = model
+                .move_history_from(redo, signatures)
+                .map_err(Error::from_reason)?;
+            stale.extend(moved);
+            signatures = next;
         }
-        let report = scad::rebuild::rebuild(&mut model, &self.original, &old_shapes, &stale)
-            .map_err(Error::from_reason)?;
+        let report = scad::rebuild::rebuild_with(
+            &mut model,
+            &self.original,
+            &old_shapes,
+            &stale,
+            Some(signatures),
+        )
+        .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }
 
@@ -1288,6 +1312,7 @@ pub struct Measurement {
 /// shipped values.
 #[napi]
 pub fn set_calibration(profile: Option<String>) -> Result<()> {
+    scad::rebuild::forget_failures();
     scad::calibration::set(profile.as_deref()).map_err(Error::from_reason)
 }
 
@@ -1357,10 +1382,12 @@ pub fn measure_shapes(picks: Vec<MeasureSelection>) -> Result<Vec<Measurement>> 
 /// Every body of a `.scad3`, shown or hidden, as the Python app loads it.
 #[napi]
 pub fn open_project(data: Buffer) -> Result<OpenedProject> {
+    scad::rebuild::forget_failures();
     let project = scad::project::read(&data).map_err(Error::from_reason)?;
     let saveable = Some(Project {
         model: scad::document::Model::open(&project),
         original: Arc::new(data.to_vec()),
+        signatures: None,
     });
     let mut notes = project.notes;
     let bodies = project
@@ -1400,6 +1427,7 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
 /// A new project holding one box, as the Python app's Shape panel makes it.
 #[napi]
 pub fn new_project() -> Result<OpenedProject> {
+    scad::rebuild::forget_failures();
     let shape = ffi::make_box(40.0, 30.0, 20.0).map_err(reason)?;
     let brep = ffi::write_brep(&shape).map_err(reason)?;
     let model = scad::document::Model::new_box(brep).map_err(Error::from_reason)?;
@@ -1414,6 +1442,7 @@ pub fn new_project() -> Result<OpenedProject> {
         project: Some(Project {
             model,
             original: Arc::new(Vec::new()),
+            signatures: None,
         }),
     })
 }

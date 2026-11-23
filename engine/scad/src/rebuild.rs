@@ -96,6 +96,8 @@ pub struct Report {
     /// Each failed step's message, by step id.
     pub failures: BTreeMap<String, String>,
     pub rebuilt: Vec<String>,
+    /// The model's step signatures as the rebuild leaves it.
+    pub signatures: BTreeMap<String, String>,
 }
 
 /// What a step reads when it runs (`BuildContext`).
@@ -1579,6 +1581,16 @@ thread_local! {
         shapes: HashMap::new(),
         order: Default::default(),
     });
+    /// Each step a rebuild could not run, with its signature then and why. Until its
+    /// signature changes it fails the same way, so it isn't run again (SimpleCAD 0.4
+    /// keeps a failed step's state too): its inputs needn't be read back for it.
+    static FAILED: std::cell::RefCell<HashMap<String, (String, StepError)>> = Default::default();
+}
+
+/// Forgets the steps remembered as failing: a project opened again, or a new printer
+/// calibration, may now build them (SimpleCAD 0.4 starts each open afresh too).
+pub fn forget_failures() {
+    FAILED.with(|failed| failed.borrow_mut().clear());
 }
 
 struct Store<'a> {
@@ -1586,6 +1598,9 @@ struct Store<'a> {
     model_blobs: &'a BTreeMap<String, Arc<[u8]>>,
     decoded: HashMap<String, Shape>,
     import_sources: HashMap<String, Vec<Shape>>,
+    /// The bodies on screen, by object id, with the step and signature that made them:
+    /// a saved output they match needs no reading back.
+    shown: HashMap<String, (String, String, Shape)>,
 }
 
 impl Store<'_> {
@@ -1642,13 +1657,31 @@ impl Store<'_> {
     }
 
     /// `ResultStore.get`: a step's saved outputs by name, if all of them decode.
-    fn get(&mut self, entry: &Value, feature: &Value) -> Option<Outputs> {
+    fn get(&mut self, entry: &Value, feature: &Value, signature: &str) -> Option<Outputs> {
         if entry["version"] != CACHE_VERSION || entry["feature_id"] != feature["id"] {
             return None;
         }
         let mut decoded = HashMap::new();
         for (oid, output) in entry["outputs"].as_object()? {
-            let part = match output["kind"].as_str()? {
+            let kind = output["kind"].as_str()?;
+            if let Some((fid, made, shape)) = self.shown.get(oid)
+                && (kind == "brep" || kind == "located")
+                && feature["id"] == fid.as_str()
+                && made == signature
+            {
+                let sha = (kind == "brep")
+                    .then(|| output["sha256"].as_str().map(String::from))
+                    .flatten();
+                decoded.insert(
+                    oid.clone(),
+                    Part {
+                        value: Geometry::Brep(shape.clone()),
+                        sha,
+                    },
+                );
+                continue;
+            }
+            let part = match kind {
                 "brep" => {
                     let sha = output["sha256"].as_str()?;
                     Part {
@@ -1772,6 +1805,7 @@ struct Rebuilder<'a> {
     store: Store<'a>,
     parameters: HashMap<String, f64>,
     invalid: HashSet<String>,
+    known_failures: HashMap<String, (String, StepError)>,
     cache: HashMap<String, Outputs>,
     failed: HashSet<String>,
     evaluating: HashSet<String>,
@@ -1794,11 +1828,11 @@ impl Rebuilder<'_> {
                 .map(|(name, _)| name.clone())
         };
         if let Some(name) = output(feature) {
-            for entry in self.entries.values().rev() {
+            for (signature, entry) in self.entries.iter().rev() {
                 if entry["feature_id"] == fid
                     && let Some(part) = self
                         .store
-                        .get(entry, feature)
+                        .get(entry, feature, signature)
                         .and_then(|mut outputs| outputs.remove(&name))
                 {
                     return part.shape().cloned();
@@ -1817,8 +1851,9 @@ impl Rebuilder<'_> {
                 if self.failed.contains(source) {
                     return None;
                 }
-                let entry = self.entries.get(self.signatures.get(source)?)?;
-                self.store.get(entry, feature)
+                let signature = self.signatures.get(source)?;
+                let entry = self.entries.get(signature)?;
+                self.store.get(entry, feature, signature)
             });
             if let Some(part) = saved.and_then(|mut outputs| outputs.remove(&output(feature)?)) {
                 return part.shape().cloned();
@@ -1873,7 +1908,17 @@ impl Rebuilder<'_> {
         if !self.evaluating.insert(fid.to_string()) {
             return Err(lost("A feature refers back to itself."));
         }
-        let result = self.run(fid);
+        let known = self
+            .known_failures
+            .get(fid)
+            .filter(|(signature, _)| {
+                !self.invalid.contains(fid) && self.signatures.get(fid) == Some(signature)
+            })
+            .map(|(_, error)| error.clone());
+        let result = match known {
+            Some(error) => Err(error),
+            None => self.run(fid),
+        };
         self.evaluating.remove(fid);
         if let Err(error) = &result {
             let state = if error.lost {
@@ -1895,7 +1940,7 @@ impl Rebuilder<'_> {
         let signature = self.signatures[fid].clone();
         if !self.invalid.contains(fid)
             && let Some(entry) = self.entries.get(&signature).cloned()
-            && let Some(outputs) = self.store.get(&entry, &feature)
+            && let Some(outputs) = self.store.get(&entry, &feature, &signature)
         {
             let message = entry["message"].as_str().unwrap_or("").to_string();
             let state = if suppressed { "suppressed" } else { "ok" };
@@ -2116,9 +2161,11 @@ fn setup<'a>(
             model_blobs: blobs,
             decoded: HashMap::new(),
             import_sources: HashMap::new(),
+            shown: HashMap::new(),
         },
         parameters,
         invalid: stale.iter().cloned().collect(),
+        known_failures: HashMap::new(),
         cache: HashMap::new(),
         failed: HashSet::new(),
         evaluating: HashSet::new(),
@@ -2228,12 +2275,31 @@ pub fn rebuild(
     shown: &HashMap<String, Shape>,
     stale: &BTreeSet<String>,
 ) -> Result<Report, String> {
+    rebuild_with(model, original, shown, stale, None)
+}
+
+/// `rebuild`, given the model's step signatures when the caller has them already.
+pub fn rebuild_with(
+    model: &mut Model,
+    original: &[u8],
+    shown: &HashMap<String, Shape>,
+    stale: &BTreeSet<String>,
+    known: Option<BTreeMap<String, String>>,
+) -> Result<Report, String> {
     let unreadable = || "This project's steps could not be read.".to_string();
-    let order: Vec<Value> = model.payload["features"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let signatures_now = signatures(&model.payload).ok_or_else(unreadable)?;
+    let signatures_now = match known {
+        Some(known) => known,
+        None => signatures(&model.payload).ok_or_else(unreadable)?,
+    };
+    // Taken rather than copied: both go back into the payload, as the rebuild leaves them, before anything can fail.
+    let order: Vec<Value> = match model.payload.get_mut("features").map(Value::take) {
+        Some(Value::Array(features)) => features,
+        _ => Vec::new(),
+    };
+    let saved_entries = match model.payload["cache"].get_mut("entries").map(Value::take) {
+        Some(Value::Object(entries)) => entries,
+        _ => Map::new(),
+    };
     let (parameters, _) = resolve(
         model.payload["parameters"]
             .as_array()
@@ -2241,6 +2307,21 @@ pub fn rebuild(
             .unwrap_or(&[]),
     );
     let blobs = model.blobs.clone();
+    let on_screen = shown
+        .iter()
+        .filter_map(|(oid, shape)| {
+            let made = &model.payload["geometry"][oid];
+            (made["current"] == true).then_some(())?;
+            Some((
+                oid.clone(),
+                (
+                    made["feature_id"].as_str()?.to_string(),
+                    made["signature"].as_str()?.to_string(),
+                    shape.clone(),
+                ),
+            ))
+        })
+        .collect();
     let mut rebuilder = setup(
         &order,
         &model.payload,
@@ -2250,6 +2331,9 @@ pub fn rebuild(
         original,
         stale,
     );
+    rebuilder.store.shown = on_screen;
+    rebuilder.known_failures = FAILED.with(|failed| failed.borrow().clone());
+    rebuilder.entries = saved_entries;
 
     // The graph's heads: each object's newest writer, in the order first written.
     let mut heads: Vec<(String, String, String)> = Vec::new();
@@ -2349,6 +2433,25 @@ pub fn rebuild(
         {
             continue;
         }
+        // A body its producer made last time, under the same signature, is the shape shown now:
+        // nothing to read back from the saved results, and nothing for the window to mesh again.
+        let made = &model.payload["geometry"][oid];
+        if let Some(shape) = shown.get(oid).filter(|_| {
+            !rebuilder.invalid.contains(fid)
+                && made["feature_id"] == fid.as_str()
+                && made["current"] == true
+                && rebuilder.signatures.get(fid).is_some_and(|signature| {
+                    made["signature"] == signature.as_str()
+                        && rebuilder.entries.contains_key(signature)
+                })
+        }) {
+            last.retain(|(o, _)| o != oid);
+            last.push((
+                oid.clone(),
+                (name.clone(), Some(shape.clone()), fid.clone()),
+            ));
+            continue;
+        }
         match rebuilder.get(fid) {
             Ok(outputs) => {
                 if let Some(shape) = outputs.get(name).and_then(Part::shape) {
@@ -2423,20 +2526,24 @@ pub fn rebuild(
     }
 
     // The model as the rebuild leaves it: ids given to new outputs, results, bodies, states.
-    let features: Vec<Value> = order
-        .iter()
-        .map(|f| rebuilder.features[f["id"].as_str().unwrap_or("")].clone())
-        .collect();
-    model.payload["features"] = json!(features);
-    let entries = model.payload["cache"]
-        .as_object_mut()
-        .map(|c| c.entry("entries").or_insert_with(|| json!({})).clone());
-    let mut entries = entries
-        .and_then(|e| e.as_object().cloned())
-        .unwrap_or_default();
-    entries.extend(rebuilder.new_entries.clone());
-    model.payload["cache"] = json!({ "version": CACHE_VERSION, "entries": entries });
-    model.blobs.extend(rebuilder.new_blobs.clone());
+    let mut features: Vec<Value> = Vec::with_capacity(order.len());
+    for f in &order {
+        let id = f["id"].as_str().unwrap_or("");
+        // A repeated id (a damaged file) is listed again, as it was.
+        let feature = rebuilder
+            .features
+            .remove(id)
+            .or_else(|| features.iter().find(|done| done["id"] == f["id"]).cloned());
+        features.extend(feature);
+    }
+    model.payload["features"] = Value::Array(features);
+    let mut entries = std::mem::take(&mut rebuilder.entries);
+    entries.extend(std::mem::take(&mut rebuilder.new_entries));
+    let mut cache = Map::new();
+    cache.insert("version".into(), json!(CACHE_VERSION));
+    cache.insert("entries".into(), Value::Object(entries));
+    model.payload["cache"] = Value::Object(cache);
+    model.blobs.extend(std::mem::take(&mut rebuilder.new_blobs));
     let old_bodies: HashMap<String, Value> = model.payload["bodies"]
         .as_array()
         .into_iter()
@@ -2452,8 +2559,16 @@ pub fn rebuild(
             json!({ "id": oid, "name": name, "visible": body["visible"], "color": body["color"], "producer": producer, "metadata": body["metadata"] })
         })
         .collect();
-    model.payload["bodies"] = json!(bodies);
-    let actual = signatures(&model.payload).ok_or_else(unreadable)?;
+    model.payload["bodies"] = Value::Array(bodies);
+    // Only a step that ran can have new output ids, so only it and those downstream change signature.
+    let ran = dependents(&order, &rebuilder.rebuilt.iter().cloned().collect());
+    let actual = crate::signatures::signatures_after(
+        &model.payload,
+        &signatures_now,
+        &ran.into_iter().collect(),
+    )
+    .ok_or_else(unreadable)?;
+    debug_assert_eq!(Some(&actual), signatures(&model.payload).as_ref());
     let mut diagnostics = model.payload["diagnostics"]
         .as_object()
         .cloned()
@@ -2496,6 +2611,28 @@ pub fn rebuild(
     }
     model.payload["geometry"] = Value::Object(geometry);
     model.payload["diagnostics"] = Value::Object(diagnostics);
+    FAILED.with(|failed| {
+        let mut failed = failed.borrow_mut();
+        // ponytail: bounded by clearing, not by age; a few thousand failed steps is far past any project.
+        if failed.len() > 4096 {
+            failed.clear();
+        }
+        for fid in &rebuilder.rebuilt {
+            failed.remove(fid);
+        }
+        for (fid, message) in &rebuilder.failures {
+            let (Some((state, _)), Some(signature)) =
+                (rebuilder.states.get(fid), signatures_now.get(fid))
+            else {
+                continue;
+            };
+            let error = StepError {
+                message: message.clone(),
+                lost: state == "needs_attention",
+            };
+            failed.insert(fid.clone(), (signature.clone(), error));
+        }
+    });
     Ok(Report {
         bodies: last
             .into_iter()
@@ -2503,6 +2640,7 @@ pub fn rebuild(
             .collect(),
         failures: rebuilder.failures,
         rebuilt: rebuilder.rebuilt,
+        signatures: actual,
     })
 }
 

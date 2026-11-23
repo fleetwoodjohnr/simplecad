@@ -64,19 +64,109 @@ const COLLECTIONS: &[(&str, &str)] = &[
     ("parameters", "name"),
 ];
 
+/// `model.json`'s `history`, kept out of the payload: a recorded step never changes, so a
+/// copy of the model shares the steps instead of copying megabytes of patches.
+#[derive(Clone, Default)]
+struct History {
+    /// The history as read, less the undo and redo lists that are lists (a damaged one stays here).
+    rest: Value,
+    undo: Option<Vec<Arc<Value>>>,
+    redo: Option<Vec<Arc<Value>>>,
+}
+
+impl History {
+    fn read(value: Option<Value>) -> Self {
+        let mut history = Self {
+            rest: value.unwrap_or(Value::Null),
+            ..Self::default()
+        };
+        if let Some(map) = history.rest.as_object_mut() {
+            for (name, stack) in [("undo", &mut history.undo), ("redo", &mut history.redo)] {
+                if map.get(name).is_some_and(Value::is_array)
+                    && let Some(Value::Array(items)) = map.shift_remove(name)
+                {
+                    *stack = Some(items.into_iter().map(Arc::new).collect());
+                }
+            }
+        }
+        history
+    }
+
+    /// The `history` to save, or none when the project never had one.
+    fn value(&self) -> Option<Value> {
+        if self.rest.is_null() && self.undo.is_none() && self.redo.is_none() {
+            return None;
+        }
+        let mut value = self.rest.clone();
+        if value.is_null() {
+            value = json!({});
+        }
+        if let Some(map) = value.as_object_mut() {
+            for (name, stack) in [("undo", &self.undo), ("redo", &self.redo)] {
+                if let Some(stack) = stack {
+                    map.insert(
+                        name.into(),
+                        Value::Array(stack.iter().map(|e| (**e).clone()).collect()),
+                    );
+                }
+            }
+        }
+        Some(value)
+    }
+
+    fn stack(&self, name: &str) -> Option<&Vec<Arc<Value>>> {
+        if name == "undo" {
+            self.undo.as_ref()
+        } else {
+            self.redo.as_ref()
+        }
+    }
+
+    /// A list to add to: made if the history has none, refused if what it has is damaged.
+    fn stack_mut(&mut self, name: &str) -> Result<&mut Vec<Arc<Value>>, String> {
+        let unreadable = || "This project's history could not be read.".to_string();
+        if self.rest.is_null() {
+            self.rest = json!({});
+        }
+        let rest = self.rest.as_object().ok_or_else(unreadable)?;
+        let stack = if name == "undo" {
+            &mut self.undo
+        } else {
+            &mut self.redo
+        };
+        if stack.is_none() && rest.contains_key(name) {
+            return Err(unreadable());
+        }
+        Ok(stack.get_or_insert_with(Vec::new))
+    }
+
+    /// Whether `name` could take a step: a list, or nothing yet.
+    fn writable(&self, name: &str) -> bool {
+        self.stack(name).is_some() || self.rest.get(name).is_none()
+    }
+}
+
 /// A saved project being edited: its `model.json` and the geometry blobs it gained.
 #[derive(Clone)]
 pub struct Model {
+    /// `model.json`, less its `history`.
     pub payload: Value,
     /// New `geometry/<sha>.brep` entries, by sha.
     pub blobs: BTreeMap<String, Arc<[u8]>>,
     new_assets: BTreeSet<String>,
+    history: History,
 }
 
 impl Model {
-    pub fn new(payload: Value) -> Self {
+    pub fn new(mut payload: Value) -> Self {
+        let history = History::read(
+            payload
+                .as_object_mut()
+                .and_then(|p| p.shift_remove("history")),
+        );
         Self {
             payload,
+            history,
             blobs: BTreeMap::new(),
             new_assets: BTreeSet::new(),
         }
@@ -362,7 +452,9 @@ impl Model {
 
     /// Every step and its most recent diagnostic, in recipe order.
     pub fn steps(&self) -> Vec<StepSummary> {
-        let features = self.list("features");
+        let features = self.payload["features"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
         let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
         let current = std::cell::OnceCell::new();
         features
@@ -1531,9 +1623,22 @@ impl Model {
     }
 
     fn has_history(&self, stack: &str) -> bool {
-        self.payload["history"][stack]
-            .as_array()
-            .is_some_and(|entries| !entries.is_empty())
+        self.history_len(stack) > 0
+    }
+
+    /// How many steps there are to undo (`"undo"`) or redo (`"redo"`).
+    pub fn history_len(&self, stack: &str) -> usize {
+        self.history.stack(stack).map_or(0, Vec::len)
+    }
+
+    /// The `history` as `model.json` has it.
+    pub fn history(&self) -> Value {
+        self.history.value().unwrap_or(Value::Null)
+    }
+
+    /// Replaces the history, as `model.json` would have it.
+    pub fn set_history(&mut self, history: Value) {
+        self.history = History::read(Some(history));
     }
 
     pub fn undo(&mut self) -> Result<(), String> {
@@ -1546,6 +1651,7 @@ impl Model {
 
     fn move_cached_history(&mut self, redo: bool) -> Result<(), String> {
         let previous = self.payload.clone();
+        let previous_history = self.history.clone();
         let producers = self.latest();
         let before =
             signatures(&self.payload).ok_or("This project's steps could not be fingerprinted.")?;
@@ -1554,42 +1660,62 @@ impl Model {
             .and_then(|_| self.show_cached_results(&producers, &before));
         if result.is_err() {
             self.payload = previous;
+            self.history = previous_history;
         }
         result
     }
 
     /// Move a saved patch between the history stacks. The caller rebuilds at
     /// the desired history point, reusing cached outputs for its signatures.
+    /// On an error the model may be left part-way: callers discard or restore it.
     pub fn move_history(&mut self, redo: bool) -> Result<BTreeSet<String>, String> {
+        let current =
+            signatures(&self.payload).ok_or("This project's history could not be read.")?;
+        Ok(self.move_history_from(redo, current)?.0)
+    }
+
+    /// `move_history`, given the model's signatures as it is now. Also returns
+    /// them as it is after, worked out again only for the steps the move touches.
+    pub fn move_history_from(
+        &mut self,
+        redo: bool,
+        current: BTreeMap<String, String>,
+    ) -> Result<(BTreeSet<String>, BTreeMap<String, String>), String> {
         let unreadable = || "This project's history could not be read.".to_string();
         let (source, destination) = if redo {
             ("redo", "undo")
         } else {
             ("undo", "redo")
         };
-        let history = &self.payload["history"];
-        let action = history[source]
-            .as_array()
+        let action = self
+            .history
+            .stack(source)
             .and_then(|stack| stack.last())
             .cloned()
             .ok_or_else(|| format!("There is nothing to {source}."))?;
         if !action["patch"].is_object()
             || !action["label"].is_string()
-            || !(history[destination].is_array() || history.get(destination).is_none())
+            || !self.history.writable(destination)
         {
             return Err(unreadable());
         }
-        let current = signatures(&self.payload).ok_or_else(unreadable)?;
         let patch = &action["patch"];
         let inverse = self.inverse_patch(patch);
-        let old = self.payload.clone();
+        let before = graph(&self.payload);
         let stale = self.apply_patch(patch);
-        let mut stale_all = dependents(&old, &stale);
-        stale_all.extend(dependents(&self.payload, &stale));
-        let Some(next) = signatures(&self.payload) else {
-            self.payload = old;
-            return Err(unreadable());
-        };
+        let after = graph(&self.payload);
+        let mut stale_all = dependents_in(&before, &stale);
+        stale_all.extend(dependents_in(&after, &stale));
+        // A step's signature follows from its own state, those upstream and the
+        // parameters, so only steps downstream of a changed one can differ.
+        let next = if patch["collections"]["parameters"].is_object() {
+            signatures(&self.payload)
+        } else {
+            let changed = dependents_in(&after, &stale_all);
+            crate::signatures::signatures_after(&self.payload, &current, &changed)
+        }
+        .ok_or_else(unreadable)?;
+        debug_assert_eq!(Some(&next), signatures(&self.payload).as_ref());
         stale_all.extend(
             current
                 .keys()
@@ -1601,24 +1727,22 @@ impl Model {
         cache_keys.sort();
         cache_keys.dedup();
         let entry = json!({ "label": action["label"], "patch": inverse, "cache_keys": cache_keys });
-        self.payload["history"][source]
-            .as_array_mut()
-            .unwrap()
-            .pop();
-        self.payload["history"]
-            .as_object_mut()
-            .unwrap()
-            .entry(destination)
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .unwrap()
-            .push(entry);
-        Ok(stale_all)
+        self.history.stack_mut(destination)?.push(Arc::new(entry));
+        self.history.stack_mut(source)?.pop();
+        Ok((stale_all, next))
     }
 
     /// `History._inverse_patch`: what puts back the entities `patch` names, as they are now.
     fn inverse_patch(&self, patch: &Value) -> Value {
-        let document = self.document();
+        // `self.document()`, read in place: only the entities the patch names are copied.
+        let null = Value::Null;
+        let document = |key: &str| {
+            if DOCUMENT_KEYS.contains(&key) {
+                &self.payload[key]
+            } else {
+                &null
+            }
+        };
         let mut inverse = json!({ "values": {}, "collections": {} });
         for key in patch["values"]
             .as_object()
@@ -1628,7 +1752,7 @@ impl Model {
         {
             let value = match key.as_str() {
                 "title" | "counters" | "retired_ids" | "metadata" | "assets" => {
-                    document[key].clone()
+                    document(key).clone()
                 }
                 _ => Value::Null,
             };
@@ -1636,7 +1760,7 @@ impl Model {
         }
         for (key, change) in patch["sets"].as_object().into_iter().flatten() {
             let present: HashSet<&str> = match key.as_str() {
-                "retired_ids" => document["retired_ids"]
+                "retired_ids" => document("retired_ids")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -1652,7 +1776,7 @@ impl Model {
         }
         for (key, change) in patch["keyed"].as_object().into_iter().flatten() {
             let empty = Map::new();
-            let mapping = document[key].as_object().unwrap_or(&empty);
+            let mapping = document(key).as_object().unwrap_or(&empty);
             let touched = touched(change);
             inverse["keyed"][key] = json!({
                 "set": touched.iter().filter_map(|k| Some((k.clone(), mapping.get(k)?.clone()))).collect::<Map<_, _>>(),
@@ -1664,25 +1788,46 @@ impl Model {
                 .iter()
                 .find(|(c, _)| c == key)
                 .map_or("id", |(_, i)| *i);
-            let items: Vec<(String, Value)> = document[key]
+            let items: Vec<(&str, &Value)> = document(key)
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|item| {
-                    let mut item = item.clone();
+                .map(|item| (item[identity].as_str().unwrap_or(""), item))
+                .collect();
+            let touched = touched(change);
+            let set: Map<String, Value> = items
+                .iter()
+                .filter(|(i, _)| touched.contains(*i))
+                .map(|(i, item)| {
+                    let mut item = (*item).clone();
                     // `Group.to_dict`, without the member ids the document adds.
                     if key == "groups" {
                         item.as_object_mut().map(|g| g.remove("member_ids"));
                     }
-                    (item[identity].as_str().unwrap_or("").to_string(), item)
+                    (i.to_string(), item)
                 })
                 .collect();
-            let touched = touched(change);
-            inverse["collections"][key] = json!({
-                "set": items.iter().filter(|(i, _)| touched.contains(i)).map(|(i, v)| (i.clone(), v.clone())).collect::<Map<_, _>>(),
-                "remove": touched.iter().filter(|t| !items.iter().any(|(i, _)| i == *t)).collect::<Vec<_>>(),
-                "order": if change["order"].is_null() { Value::Null } else { json!(items.iter().map(|(i, _)| i).collect::<Vec<_>>()) },
-            });
+            let present: HashSet<&str> = items.iter().map(|(i, _)| *i).collect();
+            let mut entry = Map::new();
+            entry.insert("set".into(), Value::Object(set));
+            entry.insert(
+                "remove".into(),
+                json!(
+                    touched
+                        .iter()
+                        .filter(|t| !present.contains(t.as_str()))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            entry.insert(
+                "order".into(),
+                if change["order"].is_null() {
+                    Value::Null
+                } else {
+                    json!(items.iter().map(|(i, _)| i).collect::<Vec<_>>())
+                },
+            );
+            inverse["collections"][key] = Value::Object(entry);
         }
         inverse
     }
@@ -1700,12 +1845,15 @@ impl Model {
             let Some(change) = collections.get(*key).filter(|c| c.is_object()) else {
                 continue;
             };
-            let list = self.list(key);
-            let existing: Vec<String> = list
-                .iter()
-                .map(|v| v[*identity].as_str().unwrap_or("").to_string())
+            // Taken, not copied; the list goes back below.
+            let list = match self.payload.get_mut(*key).map(Value::take) {
+                Some(Value::Array(list)) => list,
+                _ => Vec::new(),
+            };
+            let mut current: Vec<(String, Value)> = list
+                .into_iter()
+                .map(|v| (v[*identity].as_str().unwrap_or("").to_string(), v))
                 .collect();
-            let mut current: Vec<(String, Value)> = existing.iter().cloned().zip(list).collect();
             for ident in change["remove"]
                 .as_array()
                 .into_iter()
@@ -1769,16 +1917,35 @@ impl Model {
                     .collect(),
                 _ => current.iter().map(|(i, _)| i.clone()).collect(),
             };
-            let mut ordered: Vec<Value> = order
-                .iter()
-                .filter_map(|i| current.iter().find(|(c, _)| c == i).map(|(_, v)| v.clone()))
-                .collect();
-            ordered.extend(
-                current
-                    .iter()
-                    .filter(|(i, _)| !order.contains(i))
-                    .map(|(_, v)| v.clone()),
-            );
+            // The first entity of each ordered id, then the ones the order leaves out, moved
+            // rather than copied (a repeated id, in a damaged file, is copied as before).
+            let (ids, mut values): (Vec<String>, Vec<Option<Value>>) =
+                current.into_iter().map(|(i, v)| (i, Some(v))).unzip();
+            let mut first: HashMap<&str, usize> = HashMap::new();
+            for (at, id) in ids.iter().enumerate() {
+                first.entry(id.as_str()).or_insert(at);
+            }
+            let in_order: HashSet<&str> = order.iter().map(String::as_str).collect();
+            let mut ordered: Vec<Value> = Vec::with_capacity(values.len());
+            let mut placed: HashMap<usize, usize> = HashMap::new();
+            for id in &order {
+                if let Some(&at) = first.get(id.as_str()) {
+                    match values[at].take() {
+                        Some(value) => {
+                            placed.insert(at, ordered.len());
+                            ordered.push(value);
+                        }
+                        None => ordered.push(ordered[placed[&at]].clone()),
+                    }
+                }
+            }
+            for (at, id) in ids.iter().enumerate() {
+                if !in_order.contains(id.as_str())
+                    && let Some(value) = values[at].take()
+                {
+                    ordered.push(value);
+                }
+            }
             self.payload[*key] = Value::Array(ordered);
         }
         let payload = self.payload.as_object_mut().unwrap();
@@ -1914,9 +2081,7 @@ impl Model {
         offset: [f64; 3],
     ) -> Result<Vec<String>, String> {
         let before = self.document();
-        let undo_len = self.payload["history"]["undo"]
-            .as_array()
-            .map_or(0, Vec::len);
+        let undo_len = self.history_len("undo");
         let mut names = Vec::with_capacity(parts.len());
         for ImportedPart {
             name: label,
@@ -1957,10 +2122,7 @@ impl Model {
             names.push(name);
         }
         if !names.is_empty() {
-            self.payload["history"]["undo"]
-                .as_array_mut()
-                .unwrap()
-                .truncate(undo_len);
+            self.history.stack_mut("undo")?.truncate(undo_len);
             self.push_undo("Import", before)?;
         }
         Ok(names)
@@ -2027,23 +2189,14 @@ impl Model {
 
     fn push_undo(&mut self, label: &str, before: Value) -> Result<(), String> {
         let patch = make_patch(&self.document(), &before);
-        let history = self
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .entry("history")
-            .or_insert_with(|| json!({}));
-        let history = history
-            .as_object_mut()
-            .ok_or("This project's history could not be read.")?;
-        history.entry("version").or_insert(json!(1));
-        history
-            .entry("undo")
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or("This project's history could not be read.")?
-            .push(json!({ "label": label, "patch": patch, "cache_keys": [] }));
-        history.insert("redo".into(), json!([]));
+        self.history.stack_mut("undo")?.push(Arc::new(
+            json!({ "label": label, "patch": patch, "cache_keys": [] }),
+        ));
+        if let Some(rest) = self.history.rest.as_object_mut() {
+            rest.entry("version").or_insert(json!(1));
+            rest.shift_remove("redo");
+        }
+        self.history.redo = Some(Vec::new());
         Ok(())
     }
 
@@ -2067,6 +2220,9 @@ impl Model {
         let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         let mut payload = self.payload.clone();
+        if let Some(history) = self.history.value() {
+            payload["history"] = history;
+        }
         payload["format"] = json!(crate::project::FORMAT_VERSION);
         payload["application"] = json!("SimpleCAD");
         out.start_file("model.json", options)
@@ -2371,8 +2527,12 @@ fn missing_references(step: &Value, available: &HashSet<&str>) -> Vec<MissingInp
 }
 
 fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
-    let mut found = ids.clone();
-    let features: Vec<(String, BTreeSet<String>)> = model["features"]
+    dependents_in(&graph(model), ids)
+}
+
+/// Each step's id and the steps it reads from.
+fn graph(model: &Value) -> Vec<(String, BTreeSet<String>)> {
+    model["features"]
         .as_array()
         .into_iter()
         .flatten()
@@ -2380,10 +2540,17 @@ fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
             let id = f["id"].as_str()?;
             Some((id.to_string(), crate::signatures::upstream(f, id)))
         })
-        .collect();
+        .collect()
+}
+
+fn dependents_in(
+    features: &[(String, BTreeSet<String>)],
+    ids: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut found = ids.clone();
     loop {
         let before = found.len();
-        for (id, upstream) in &features {
+        for (id, upstream) in features {
             if upstream.iter().any(|u| found.contains(u)) {
                 found.insert(id.clone());
             }
