@@ -39,7 +39,8 @@ interface RowProps {
 // Every result brings new step objects, so rows compare what they show.
 const Row = memo(function Row({ step, editing, repairing, onEdit, onRepair }: RowProps) {
   return (
-    <li className={`px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
+    // Rows scrolled out of view skip style, layout and paint: a large project has hundreds.
+    <li className={`px-2 py-1.5 [content-visibility:auto] [contain-intrinsic-size:auto_28px] ${step.undone ? 'text-text-3' : ''}`}>
       <div className="flex justify-between gap-2">
         <span className="truncate">{step.name}</span>
         {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
