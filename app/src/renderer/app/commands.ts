@@ -53,6 +53,7 @@ export const commands = {
   shell: { label: 'Shell' },
   vent: { label: 'Vent' },
   fillet: { label: 'Fillet' },
+  hinge: { label: 'Hinge' },
   midplane: { label: 'Midplane' },
   planeAtAngle: { label: 'Plane at Angle' },
   planeThroughPoints: { label: 'Plane through Points' },

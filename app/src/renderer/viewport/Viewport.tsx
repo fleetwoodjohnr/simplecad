@@ -169,14 +169,16 @@ export function Viewport(props: Props) {
         return
       }
       const rect = canvas.getBoundingClientRect()
-      const anchors: ([number, number] | null)[] = []
+      const anchors: (number[] | null)[] = []
       for (let edge = 0; edge + 1 < shape.edgeStart.length && edge < 64; edge++) {
         const [first, end] = [shape.edgeStart[edge], shape.edgeStart[edge + 1]]
         if (end - first < 2) { anchors.push(null); continue }
         const middle = first + Math.floor((end - first - 1) / 2)
-        const a = new Vector3().fromArray(shape.edgePoints, middle * 3)
-        const point = a.lerp(new Vector3().fromArray(shape.edgePoints, middle * 3 + 3), 0.5).project(camera)
-        anchors.push([Math.round(rect.left + (point.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - point.y) / 2 * rect.height)])
+        const world = new Vector3().fromArray(shape.edgePoints, middle * 3).lerp(new Vector3().fromArray(shape.edgePoints, middle * 3 + 3), 0.5)
+        const point = world.clone().project(camera)
+        // The window point, then the model point it shows, so a script can find an edge by where it is.
+        anchors.push([Math.round(rect.left + (point.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - point.y) / 2 * rect.height),
+          ...world.toArray().map((v) => Math.round(v * 1000) / 1000)])
       }
       canvas.dataset.edgeAnchors = JSON.stringify(anchors)
     }

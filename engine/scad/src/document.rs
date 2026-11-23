@@ -482,7 +482,9 @@ impl Model {
                 continue;
             }
             let value = match key.as_str() {
-                "left_hand" | "resize" | "keep" | "keep_tool" | "flip" => json!(value == "true"),
+                "left_hand" | "resize" | "keep" | "keep_tool" | "flip" | "stop" => {
+                    json!(value == "true")
+                }
                 _ => Value::String(value),
             };
             inputs.insert(key, value);
@@ -789,6 +791,85 @@ impl Model {
             "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
+    /// SimpleCAD 0.4's Hinge tool: knuckles along edge `edge` of `fixed`, joining it to `swinging`, with the
+    /// settings `inputs` (type, fit, knuckles, stop, flip and the sizes, as expressions). A pin hinge adds its pin
+    /// as a new body; a living hinge makes the two parts one.
+    pub fn add_hinge(
+        &mut self,
+        fixed: &str,
+        edge: u32,
+        swinging: &str,
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if fixed == swinging {
+            return Err("A hinge joins two different parts: pick the edge on the fixed part and the part that swings.".into());
+        }
+        let kind = inputs["type"].as_str().unwrap_or("knuckle").to_string();
+        if !matches!(kind.as_str(), "pin" | "knuckle" | "snap" | "living") {
+            return Err(format!("Unknown hinge type: {kind}"));
+        }
+        let (producer_a, object_a) = self.editable(fixed)?;
+        let (producer_b, object_b) = self.editable(swinging)?;
+        let shape = shown
+            .get(&object_a)
+            .ok_or("Pick an edge of a body with geometry.")?;
+        let edge = self.edge_ref(fixed, &object_a, shape, edge)?;
+        let mut candidate = self.clone();
+        let name = candidate.unique_name("Hinge");
+        let id = new_feature_id();
+        // The hinge tool's own pin naming: "Hinge pin", then "Hinge pin 2", ...
+        let taken: HashSet<String> = ["bodies", "groups"]
+            .iter()
+            .flat_map(|key| {
+                candidate
+                    .list(key)
+                    .iter()
+                    .filter_map(|v| v.get("name")?.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let pin = std::iter::once("Hinge pin".to_string())
+            .chain((2..).map(|index| format!("Hinge pin {index}")))
+            .find(|name| !taken.contains(name))
+            .expect("a free pin name");
+        let settings = inputs
+            .as_object_mut()
+            .ok_or("The hinge settings could not be read.")?;
+        settings.insert(
+            "body_a".into(),
+            json!({ "__body__": fixed, "feature_id": producer_a, "object_id": object_a }),
+        );
+        settings.insert(
+            "body_b".into(),
+            json!({ "__body__": swinging, "feature_id": producer_b, "object_id": object_b }),
+        );
+        settings.insert("edge".into(), json!({ "__ref__": edge }));
+        settings.insert("names".into(), json!([pin]));
+        let (outputs, output_ids) = match kind.as_str() {
+            "living" => (json!([fixed]), json!({ fixed: object_a })),
+            "pin" => (
+                json!([fixed, swinging, pin]),
+                json!({ fixed: object_a, swinging: object_b, pin.as_str(): crate::graph::output_id(&id, &pin) }),
+            ),
+            _ => (
+                json!([fixed, swinging]),
+                json!({ fixed: object_a, swinging: object_b }),
+            ),
+        };
+        let feature = json!({
+            "id": id, "type": "hinge", "name": name, "outputs": outputs, "output_ids": output_ids,
+            "inputs": inputs,
+            "bindings": {
+                fixed: { "feature_id": producer_a, "object_id": object_a },
+                swinging: { "feature_id": producer_b, "object_id": object_b },
+            },
+            "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, "Hinge", original, shown)
     }
 
     /// Line bodies up in a row along a world axis, with equal gaps between them or a fixed gap, as
@@ -1905,6 +1986,20 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "split" => &["position"],
         "arrange" => &["mode", "axis", "gap"],
         "section_replace" => &["u", "v", "boundary", "setback"],
+        // Not its type: a pin hinge has a pin body the others do not.
+        "hinge" => &[
+            "clearance",
+            "knuckles",
+            "knuckle_od",
+            "pin",
+            "length",
+            "axial_clearance",
+            "open_max",
+            "stop",
+            "flip",
+            "flex",
+            "flex_length",
+        ],
         _ => return None,
     })
 }

@@ -813,6 +813,33 @@ impl Project {
         })
     }
 
+    /// A hinge along edge `edge` (a display edge index) of `fixed`, swinging `swinging`; `inputs` is its settings
+    /// as JSON.
+    #[napi]
+    pub fn add_hinge(
+        &self,
+        fixed: String,
+        edge: u32,
+        swinging: String,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The hinge settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_hinge(
+                &fixed,
+                edge,
+                &swinging,
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// Fillet or chamfer the given edges of one body (indices into its display edges).
     #[napi]
     pub fn add_edge_finish(

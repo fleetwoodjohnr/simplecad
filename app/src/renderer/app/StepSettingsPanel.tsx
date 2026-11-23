@@ -4,10 +4,16 @@ import { Btn, inputCls } from '../ui'
 const labels: Record<string, string> = {
   dx: 'Move X', dy: 'Move Y', dz: 'Move Z', rx: 'Turn about X (°)', ry: 'Turn about Y (°)', rz: 'Turn about Z (°)', angle: 'Turn (°)',
   distance: 'Distance', offset: 'Offset', rotation: 'Rotation (°)', flip: 'Flip', horizontal: 'Horizontal', vertical: 'Vertical',
-  horizontal_gap: 'Horizontal gap', vertical_gap: 'Vertical gap', u: 'Offset U', v: 'Offset V'
+  horizontal_gap: 'Horizontal gap', vertical_gap: 'Vertical gap', u: 'Offset U', v: 'Offset V',
+  clearance: 'Fit', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
+  axial_clearance: 'Gap between knuckles', open_max: 'Opens to (°)', stop: 'Stop at the limit', flex: 'Strip thickness',
+  flex_length: 'Bending length'
 }
+/** Settings that are a checkbox. */
+const toggles = ['flip', 'stop']
 /** Settings that are a choice rather than an expression. */
-const choices: Record<string, string[]> = { horizontal: ['left', 'center', 'right'], vertical: ['bottom', 'center', 'top'] }
+const choices: Record<string, string[]> = { horizontal: ['left', 'center', 'right'], vertical: ['bottom', 'center', 'top'],
+  clearance: ['snug', 'sliding', 'loose', 'press'] }
 
 interface Props {
   /** The step's name, which names the form. */
@@ -32,13 +38,13 @@ export function StepSettingsPanel({ name, busy, preset, onEdit, onCancel }: Prop
       <div className="font-semibold">Edit {name}</div>
       {Object.keys(preset).map((key) => {
         const set = (value: string) => setValues((current) => ({ ...current, [key]: value }))
-        if (key === 'flip') {
+        if (toggles.includes(key)) {
           return <label key={key} className="flex items-center gap-2">
             <input type="checkbox" checked={values[key] === 'true'} disabled={busy} onChange={(event) => set(String(event.target.checked))} />
             {labels[key]}</label>
         }
         return <label key={key} className="grid gap-1">{labels[key] ?? key}
-          {choices[key]
+          {choices[key]?.includes(preset[key])
             ? <select className={inputCls} value={values[key]} disabled={busy} onChange={(event) => set(event.target.value)}>
                 {choices[key].map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}
               </select>

@@ -1,6 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
-  ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
+  ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, DoorOpen, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
 import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
@@ -37,7 +37,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { id: 'mirror', icon: FlipHorizontal },
     { menu: 'Pattern', icon: Grid2x2, items: ['rectangularPattern', 'circularPattern'], hint: 'Show a body first' }
   ] },
-  { group: 'Place', tools: [{ id: 'stack', icon: Magnet }, { id: 'arrange', icon: Rows3 }] },
+  { group: 'Place', tools: [{ id: 'stack', icon: Magnet }, { id: 'arrange', icon: Rows3 }, { id: 'hinge', icon: DoorOpen }] },
   { group: 'Construct', tools: [
     { id: 'offsetPlane', icon: SquareDashed },
     { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],
@@ -49,7 +49,7 @@ const groups: { group: string; tools: Tool[] }[] = [
 /** Shorter captions for long names, so the ribbon fits; each button keeps its full name for tooltips and screen readers. */
 const captions: Record<string, string> = {
   'Push/Pull': 'Pull', 'Matching Part': 'Match', 'Face Texture': 'Texture', 'Stack & Place': 'Stack', 'Offset Plane': 'Offset',
-  'Section Replace': 'Section', 'From Sketch': 'Solid'
+  'Section Replace': 'Section', 'From Sketch': 'Solid', 'Print check': 'Print'
 }
 
 type ToolBtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string; caret?: boolean }

@@ -34,6 +34,7 @@ class FakeProject implements Project {
   applySketchSolid(): never { throw new Error('Sketch modeling is covered in the packaged app.') }
   addOffsetPlane(): never { throw new Error('Construction planes are covered in the packaged app.') }
   addBodyOperation(): never { throw new Error('Body operations are covered in the packaged app.') }
+  addHinge(): never { throw new Error('Hinges are covered in the packaged app.') }
   addEdgeFinish(): never { throw new Error('Edge finishes are covered in the packaged app.') }
   groups() { return [] }
   group(): never { throw new Error('Groups are covered in the packaged app.') }

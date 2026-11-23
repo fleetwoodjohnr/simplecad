@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { ArrangeEdit, BodyHealth, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, HingeEdit, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
 
@@ -117,6 +117,10 @@ export const groupBodies = (revision: number, bodies: number[]) =>
   send<ModelResult>({ op: 'group', revision, group: bodies }).then(accept)
 export const ungroup = (revision: number, name: string) =>
   send<ModelResult>({ op: 'ungroup', revision, ungroup: name }).then(accept)
+export const previewHinge = (revision: number, edit: HingeEdit) =>
+  send<DisplayShape>({ op: 'previewHinge', revision, ...edit })
+export const applyHinge = (revision: number, edit: HingeEdit) =>
+  send<ModelResult>({ op: 'applyHinge', revision, ...edit }).then(accept)
 export const previewEdgeFinish = (revision: number, edit: EdgeFinishEdit) =>
   send<DisplayShape>({ op: 'previewEdgeFinish', revision, ...edit })
 export const applyEdgeFinish = (revision: number, edit: EdgeFinishEdit) =>

@@ -83,6 +83,13 @@ export interface SectionReplaceEdit {
 }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
+export const HINGE_TYPES = ['pin', 'knuckle', 'snap', 'living'] as const
+/** SimpleCAD 0.4's settings for a hinge: its type, a named fit or a clearance, and the rest as expressions. */
+export const HINGE_SETTINGS = ['clearance', 'knuckles', 'knuckle_od', 'pin', 'length', 'axial_clearance', 'open_max', 'flex', 'flex_length'] as const
+/** A hinge along a picked display edge of the fixed part, turning another body (display index). */
+export interface HingeEdit {
+  hinge: { edge: number; swinging: number; inputs: { type: typeof HINGE_TYPES[number]; stop: boolean; flip: boolean } & Partial<Record<typeof HINGE_SETTINGS[number], string>> }
+}
 /** Drop every shown body onto the build plate, centre them on it too, or turn each to its best flat lay and then
  * drop them: one Move per body and turn, one undo step. */
 export interface PlateEdit { plate: 'drop' | 'center' | 'orient' }
@@ -198,7 +205,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit
 
 export interface Checkpoint {
   source: Source
@@ -261,6 +268,7 @@ export type RendererCommand =
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
+  | ({ op: 'applyHinge' | 'previewHinge'; revision: number } & HingeEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'plate'; revision: number } & PlateEdit)
   | ({ op: 'threadGauges'; revision: number } & ThreadGaugeEdit)
@@ -411,6 +419,14 @@ const isMoveBodies = (value: unknown): value is MoveBodiesEdit => {
     moveBodies.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(moveBodies).size === moveBodies.length &&
     Array.isArray(offset) && offset.length === 3 && offset.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e6)
 }
+const isHinge = (value: unknown): value is HingeEdit => {
+  const hinge = (value as Partial<HingeEdit> | null)?.hinge
+  if (!hinge || !isIndex(hinge.edge) || !isIndex(hinge.swinging) || hinge.swinging >= MAX_BODIES || !hinge.inputs) return false
+  const { type, stop, flip, ...settings } = hinge.inputs
+  return HINGE_TYPES.includes(type) && typeof stop === 'boolean' && typeof flip === 'boolean' &&
+    Object.entries(settings).every(([key, entry]) => (HINGE_SETTINGS as readonly string[]).includes(key) &&
+      typeof entry === 'string' && entry.trim().length > 0 && entry.length < 256)
+}
 const isThreadGauges = (value: unknown): value is ThreadGaugeEdit => (value as Partial<ThreadGaugeEdit> | null)?.threadGauges === 'P30'
 const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center', 'orient'].includes((value as Partial<PlateEdit> | null)?.plate!)
 const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
@@ -431,7 +447,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -587,6 +603,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyTransform' || m.op === 'previewTransform') && isTransformEdit(m)) ||
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
+        ((m.op === 'applyHinge' || m.op === 'previewHinge') && isHinge(m)) ||
         (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
