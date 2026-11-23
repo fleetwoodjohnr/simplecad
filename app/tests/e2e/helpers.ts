@@ -89,11 +89,17 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged, args } : { args: ['.', ...args] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
-    env: { ...process.env, SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
+    env: { ...process.env, SIMPLECAD_TIMING: '1', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))
     app.process().stderr?.on('data', (d) => process.stdout.write(`main! ${d}`))
+  } else {
+    // Start-up and save stages, so a slow runner shows where its time went.
+    const launched = Date.now()
+    app.process().stderr?.on('data', (d) => {
+      for (const line of String(d).split('\n')) if (line.startsWith('[timing]')) console.log(`${line} (test +${Date.now() - launched} ms)`)
+    })
   }
   open.add(app)
   const page = await app.firstWindow()

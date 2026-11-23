@@ -241,19 +241,29 @@ async function writeChosen(window: BrowserWindow, chosen: string, extension: str
 
 // Written beside the target and moved into place so an interrupted write keeps the previous file.
 async function writeAtomic(target: string, data: Uint8Array, overwrite: boolean) {
+  const started = performance.now()
   const temporary = await mkdtemp(path.join(path.dirname(target), '.simplecad-save-'))
   const staged = path.join(temporary, 'output')
   try {
     const file = await open(staged, 'wx', 0o600)
     try {
       await file.writeFile(data)
+      timing('save: written', started)
       await file.sync()
+      timing('save: synced', started)
     } finally {
       await file.close()
     }
     if (overwrite) await rename(staged, target)
     else await link(staged, target)
+    timing('save: in place', started)
   } finally {
     await rm(temporary, { recursive: true, force: true })
+    timing('save: cleaned up', started)
   }
+}
+
+/** With SIMPLECAD_TIMING set, how long each stage took, for the test logs. */
+function timing(stage: string, since: number) {
+  if (process.env.SIMPLECAD_TIMING) console.error(`[timing] ${stage} after ${Math.round(performance.now() - since)} ms`)
 }
