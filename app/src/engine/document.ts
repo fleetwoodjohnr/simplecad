@@ -1,6 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -16,6 +16,8 @@ export interface Shape {
   display(): PartDisplay
   /** The optimal bounding box: min x, y, z then max x, y, z. */
   bounds(): number[]
+  /** Whether a face is a hole (true) or a shaft (false); null for a face that is not cylindrical. */
+  isHole(face: number): boolean | null
 }
 
 /** A body at one point in the history. `shape` is null when the file had no readable geometry for it. */
@@ -40,6 +42,7 @@ export interface Project {
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addHinge(fixed: string, edge: number, swinging: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addClipJoint(bodyA: string, faceA: number, bodyB: string, faceB: number, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  addThreadedConnection(bodyA: string, faceA: number, bodyB: string, faceB: number, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   addFaceFeature(shape: Shape, request: { kind: FaceOperation['faceOperation']; body: string; face: number
@@ -211,13 +214,14 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ClipJointEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
       'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'hinge' in edit ? { hinge: edit.hinge } :
       'clipJoint' in edit ? { clipJoint: edit.clipJoint } :
+      'threadedConnection' in edit ? { threadedConnection: edit.threadedConnection } :
       'arrange' in edit ? { arrange: edit.arrange, inputs: edit.inputs } :
       'sectionTarget' in edit ? { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
@@ -288,7 +292,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -326,6 +330,8 @@ export class EngineDocument {
       step = { hinge: edit.hinge }
     } else if ('clipJoint' in edit) {
       step = { clipJoint: edit.clipJoint }
+    } else if ('threadedConnection' in edit) {
+      step = { threadedConnection: edit.threadedConnection }
     } else if ('edgeFinish' in edit) {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else if ('group' in edit) {
@@ -617,6 +623,26 @@ export class EngineDocument {
         next = [...next, { name: created.name, shape: created.shape }]
       }
       return { bodies: next, project }
+    }
+    if ('threadedConnection' in step) {
+      const picks = step.threadedConnection.faces.map((face) => this.pick(face))
+      if (picks[0].body === picks[1].body) throw new Error('Select the shaft on one part and its mating hole on the other.')
+      const holes = picks.map((pick) => bodies[pick.body].shape?.isHole(pick.face))
+      if (holes.some((hole) => hole === null || hole === undefined)) throw new Error('A threaded connection needs a round face on each part.')
+      if (holes[0] === holes[1]) throw new Error(`Both selections are ${holes[0] ? 'holes' : 'shafts'}. Pick one shaft and one hole.`)
+      let next = bodies
+      if (step.threadedConnection.align) {
+        // Align & thread: the shaft onto the hole's axis first, so the pair is assembled.
+        const [shaft, hole] = holes[0] ? [picks[1], picks[0]] : [picks[0], picks[1]]
+        const settings: StackSettings = { operation: 'concentric', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
+          horizontalGap: 0, verticalGap: 0 }
+        const placed = this.place(project, bodies, bodies[shaft.body].shape!, { moving: shaft, target: hole, settings })
+        project = placed.project
+        next = bodies.map((body, index) => index === shaft.body ? { ...body, shape: placed.shape } : body)
+      }
+      const [a, b] = picks
+      return this.rebuiltState(project.addThreadedConnection(next[a.body].name, a.face, next[b.body].name, b.face,
+        JSON.stringify(step.threadedConnection.inputs), this.shapes(next)))
     }
     if ('clipJoint' in step) {
       const [a, b] = step.clipJoint.faces.map((face) => this.pick(face))

@@ -1048,6 +1048,55 @@ impl Model {
         Ok(reference)
     }
 
+    /// SimpleCAD 0.4's Threaded connection: a shaft (round face `a` or `b`) and its mating hole on another part,
+    /// threaded together as one step. `inputs` holds the designation (empty for the closest standard size), the
+    /// clearance preset, the profile form and the threaded length (0 for full engagement).
+    pub fn add_threaded_connection(
+        &mut self,
+        a: (&str, u32),
+        b: (&str, u32),
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if a.0 == b.0 {
+            return Err("Select the shaft on one part and its mating hole on the other.".into());
+        }
+        if !inputs.is_object() {
+            return Err("The thread settings could not be read.".into());
+        }
+        if inputs["designation"].as_str() == Some("") {
+            inputs
+                .as_object_mut()
+                .expect("an object")
+                .remove("designation");
+        }
+        let mut bindings = Map::new();
+        let mut objects = Map::new();
+        for (key, (body, index)) in [("a", a), ("b", b)] {
+            let (producer, object) = self.editable(body)?;
+            let shape = shown
+                .get(&object)
+                .ok_or("Pick round faces of bodies with geometry.")?;
+            inputs[format!("body_{key}")] =
+                json!({ "__body__": body, "feature_id": producer, "object_id": object });
+            inputs[format!("face_{key}")] =
+                json!({ "__ref__": self.anchored_face_ref(body, &object, shape, index)? });
+            bindings.insert(
+                body.to_owned(),
+                json!({ "feature_id": producer, "object_id": object }),
+            );
+            objects.insert(body.to_owned(), json!(object));
+        }
+        let mut candidate = self.clone();
+        let name = candidate.unique_name("Threaded Connection");
+        let feature = json!({
+            "id": new_feature_id(), "type": "threaded_connection", "name": name, "outputs": [a.0, b.0],
+            "output_ids": objects, "inputs": inputs, "bindings": bindings, "dropped": [], "suppressed": false,
+        });
+        self.add_rebuilt_recipe(candidate, feature, "Threaded Connection", original, shown)
+    }
+
     /// SimpleCAD 0.4's Clip Joint, printed-connector style: face `a` of one part meets face `b` of another. The
     /// joint cuts paired sockets and makes removable connectors, written as 0.4's tool writes it: `inputs` holds
     /// size, retention, material, the clearances, `count` (0 for as many as `spacing` gives), spacing, edge offset
@@ -2115,6 +2164,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "split" => &["position"],
         "arrange" => &["mode", "axis", "gap"],
         "section_replace" => &["u", "v", "boundary", "setback"],
+        "threaded_connection" => &["designation", "clearance", "form", "length"],
         // Not the connector count, which decides the step's outputs.
         "clip_joint" => &[
             "size",

@@ -8,7 +8,11 @@ const labels: Record<string, string> = {
   clearance: 'Clearance', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
   axial_clearance: 'Gap between knuckles', open_max: 'Opens to (°)', stop: 'Stop at the limit', flex: 'Strip thickness',
   flex_length: 'Bending length', size: 'Size', retention: 'Retention', material: 'Material', depth_clearance: 'Depth clearance',
-  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset'
+  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset', designation: 'Thread size', form: 'Profile'
+}
+/** Choices that differ by step: a threaded pair's clearance is a thread fit, not a part fit. */
+const choicesFor: Record<string, Record<string, string[]>> = {
+  threaded_connection: { clearance: ['tight', 'normal', 'loose', 'very_loose'], form: ['printed', 'iso'] }
 }
 /** Settings that are a checkbox. */
 const toggles = ['flip', 'stop']
@@ -18,6 +22,8 @@ const choices: Record<string, string[]> = { horizontal: ['left', 'center', 'righ
   material: ['pla', 'petg'] }
 
 interface Props {
+  /** The step's type, which decides some of its choices. */
+  kind?: string
   /** The step's name, which names the form. */
   name: string
   busy: boolean
@@ -28,7 +34,8 @@ interface Props {
 }
 
 /** Edits a saved step's settings in place as one undoable step; what else it was made with stays. */
-export function StepSettingsPanel({ name, busy, preset, onEdit, onCancel }: Props) {
+export function StepSettingsPanel({ kind, name, busy, preset, onEdit, onCancel }: Props) {
+  const options = { ...choices, ...choicesFor[kind ?? ''] }
   const [values, setValues] = useState(preset)
   const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => preset[key] !== value))
   const valid = Object.values(values).every((value) => value.trim()) && Object.keys(changes).length > 0
@@ -46,9 +53,9 @@ export function StepSettingsPanel({ name, busy, preset, onEdit, onCancel }: Prop
             {labels[key]}</label>
         }
         return <label key={key} className="grid gap-1">{labels[key] ?? key}
-          {choices[key]?.includes(preset[key])
+          {options[key]?.includes(preset[key])
             ? <select className={inputCls} value={values[key]} disabled={busy} onChange={(event) => set(event.target.value)}>
-                {choices[key].map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}
+                {options[key].map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}
               </select>
             : <input className={inputCls} value={values[key]} maxLength={255} disabled={busy} onChange={(event) => set(event.target.value)} />}
         </label>

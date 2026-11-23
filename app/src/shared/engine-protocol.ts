@@ -94,6 +94,15 @@ export interface ClipJointEdit {
     }
   }
 }
+/** SimpleCAD 0.4's Threaded connection: a shaft and its mating hole (display faces) threaded together, the shaft first
+ * set on the hole's axis when `align` (its Align & thread). */
+export interface ThreadedConnectionEdit {
+  threadedConnection: {
+    faces: [number, number]
+    align: boolean
+    inputs: { designation: string; clearance: ThreadSettings['clearance']; form: ThreadSettings['form']; length: string }
+  }
+}
 export const HINGE_TYPES = ['pin', 'knuckle', 'snap', 'living'] as const
 /** SimpleCAD 0.4's settings for a hinge: its type, a named fit or a clearance, and the rest as expressions. */
 export const HINGE_SETTINGS = ['clearance', 'knuckles', 'knuckle_od', 'pin', 'length', 'axial_clearance', 'open_max', 'flex', 'flex_length'] as const
@@ -216,7 +225,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit
 
 export interface Checkpoint {
   source: Source
@@ -281,6 +290,7 @@ export type RendererCommand =
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'applyHinge' | 'previewHinge'; revision: number } & HingeEdit)
   | ({ op: 'applyClipJoint' | 'previewClipJoint'; revision: number } & ClipJointEdit)
+  | ({ op: 'applyThreadedConnection' | 'previewThreadedConnection'; revision: number } & ThreadedConnectionEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'plate'; revision: number } & PlateEdit)
   | ({ op: 'threadGauges'; revision: number } & ThreadGaugeEdit)
@@ -431,6 +441,15 @@ const isMoveBodies = (value: unknown): value is MoveBodiesEdit => {
     moveBodies.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(moveBodies).size === moveBodies.length &&
     Array.isArray(offset) && offset.length === 3 && offset.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e6)
 }
+const isThreadedConnection = (value: unknown): value is ThreadedConnectionEdit => {
+  const pair = (value as Partial<ThreadedConnectionEdit> | null)?.threadedConnection
+  if (!pair || !Array.isArray(pair.faces) || pair.faces.length !== 2 || !pair.faces.every(isIndex) || pair.faces[0] === pair.faces[1] ||
+    typeof pair.align !== 'boolean' || !pair.inputs) return false
+  const { designation, clearance, form, length, ...rest } = pair.inputs
+  return typeof designation === 'string' && designation.length < 64 && ['tight', 'normal', 'loose', 'very_loose'].includes(clearance) &&
+    ['printed', 'iso'].includes(form) && typeof length === 'string' && length.trim().length > 0 && length.length < 256 &&
+    Object.keys(rest).length === 0
+}
 const isClipJoint = (value: unknown): value is ClipJointEdit => {
   const clip = (value as Partial<ClipJointEdit> | null)?.clipJoint
   if (!clip || !Array.isArray(clip.faces) || clip.faces.length !== 2 || !clip.faces.every(isIndex) || clip.faces[0] === clip.faces[1]) return false
@@ -469,7 +488,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isThreadedConnection(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -627,6 +646,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
         ((m.op === 'applyHinge' || m.op === 'previewHinge') && isHinge(m)) ||
         ((m.op === 'applyClipJoint' || m.op === 'previewClipJoint') && isClipJoint(m)) ||
+        ((m.op === 'applyThreadedConnection' || m.op === 'previewThreadedConnection') && isThreadedConnection(m)) ||
         (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||

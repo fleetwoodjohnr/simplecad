@@ -130,6 +130,14 @@ impl Shape {
         wrap(ffi::push_pull(&self.inner, face, distance))
     }
 
+    /// Whether face `face` is a hole (true) or a shaft (false); none for a face that is not cylindrical.
+    #[napi]
+    pub fn is_hole(&self, face: u32) -> Result<Option<bool>> {
+        let data = ffi::cylinder_data(&*ffi::sub_face(&self.inner, face).map_err(reason)?)
+            .map_err(reason)?;
+        Ok(data.cylindrical.then_some(data.internal))
+    }
+
     /// The optimal bounding box: min x, y, z then max x, y, z.
     #[napi]
     pub fn bounds(&self) -> Result<Vec<f64>> {
@@ -811,6 +819,33 @@ impl Project {
             model,
             original: self.original.clone(),
         })
+    }
+
+    /// A threaded pair: the round faces `face_a` of `body_a` and `face_b` of `body_b` (face indices in each body),
+    /// a shaft and its hole; `inputs` is its settings as JSON.
+    #[napi]
+    pub fn add_threaded_connection(
+        &self,
+        body_a: String,
+        face_a: u32,
+        body_b: String,
+        face_b: u32,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The thread settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_threaded_connection(
+                (&body_a, face_a),
+                (&body_b, face_b),
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
     }
 
     /// A printed-connector clip joint between face `face_a` of `body_a` and face `face_b` of `body_b` (face indices

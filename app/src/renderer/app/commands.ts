@@ -55,6 +55,7 @@ export const commands = {
   fillet: { label: 'Fillet' },
   hinge: { label: 'Hinge' },
   clipJoint: { label: 'Clip Joint' },
+  threadedConnection: { label: 'Threaded Connection' },
   midplane: { label: 'Midplane' },
   planeAtAngle: { label: 'Plane at Angle' },
   planeThroughPoints: { label: 'Plane through Points' },

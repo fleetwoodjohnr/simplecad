@@ -18,7 +18,7 @@ export const defaultHoleSettings: HoleSettings = {
   counterbore_diameter: '', counterbore_depth: '', countersink_diameter: '', countersink_angle: '90 °',
   thread_length: '0 mm'
 }
-const threadTables = [
+export const threadTables = [
   ['Metric', metric.sizes], ['Printed', printed.sizes], ['UNC', unc.sizes],
   ['UNF', unf.sizes], ['BSP', bsp.sizes], ['NPT', npt.sizes]
 ] as const

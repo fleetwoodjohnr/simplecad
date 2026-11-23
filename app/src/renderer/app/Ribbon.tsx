@@ -38,7 +38,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { menu: 'Pattern', icon: Grid2x2, items: ['rectangularPattern', 'circularPattern'], hint: 'Show a body first' }
   ] },
   { group: 'Place', tools: [{ id: 'stack', icon: Magnet }, { id: 'arrange', icon: Rows3 },
-    { menu: 'Joints', icon: DoorOpen, items: ['hinge', 'clipJoint'], hint: 'Show the two parts to join' }] },
+    { menu: 'Joints', icon: DoorOpen, items: ['hinge', 'clipJoint', 'threadedConnection'], hint: 'Show the two parts to join' }] },
   { group: 'Construct', tools: [
     { id: 'offsetPlane', icon: SquareDashed },
     { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],

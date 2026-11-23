@@ -528,3 +528,41 @@ test('joins two boxes with printed connectors, and edits the clearance from Hist
   await page.getByRole('button', { name: 'Edit Clip Joint' }).click()
   await expect(page.getByRole('form', { name: 'Clip Joint' }).getByLabel('Clearance', { exact: true })).toHaveValue('0.15')
 })
+
+test('threads a shaft into the bore of a tube as a matched pair, and edits the clearance from History', async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const create = async (kind: string, values: [string, string][]) => {
+    await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+    const shape = page.getByRole('form', { name: 'Create shape' })
+    await shape.getByLabel('Shape type').selectOption(kind)
+    for (const [label, value] of values) await shape.getByLabel(label, { exact: true }).fill(value)
+    await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  }
+  // A ⌀10 shaft 12 mm long, and a tube with a ⌀10 bore 10 mm deep, on the same axis.
+  await create('cylinder', [['Radius', '5'], ['Height', '12']])
+  await create('tube', [['Outer radius', '10'], ['Inner radius', '5'], ['Height', '10']])
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Tube'])
+
+  await toolbar.getByRole('button', { name: 'Joints' }).click()
+  await page.getByRole('menuitem', { name: 'Threaded Connection' }).click()
+  const pair = page.getByRole('form', { name: 'Threaded Connection' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Cylinder · Curved · 376.99 mm²' })
+  await page.getByLabel('Planar face').selectOption({ label: 'Tube · Curved · 314.16 mm²' })
+  await expect(pair.getByRole('status', { name: 'Threaded faces' })).toContainText('both threads are made together')
+  await pair.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Tube', 'Threaded Connection'])
+  await expect(errors(page)).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Edit Threaded Connection' }).click()
+  const saved = page.getByRole('form', { name: 'Threaded Connection' })
+  await expect(saved.getByRole('combobox', { name: /^Clearance/ })).toHaveValue('normal')
+  await saved.getByRole('combobox', { name: /^Clearance/ }).selectOption('loose')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(errors(page)).toHaveCount(0)
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await page.getByRole('button', { name: 'Edit Threaded Connection' }).click()
+  await expect(page.getByRole('form', { name: 'Threaded Connection' }).getByRole('combobox', { name: /^Clearance/ })).toHaveValue('normal')
+})
