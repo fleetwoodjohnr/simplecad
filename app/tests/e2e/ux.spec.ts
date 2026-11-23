@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { edgePoints, errors, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, scratchDir, test } from './helpers'
 
 type Point = [number, number]
 
@@ -314,8 +314,9 @@ test('orients a part stood on end to its lowest flat lay and drops it on the pla
 })
 
 test('saves measured fits as SimpleCAD 0.4’s printer calibration, and reads them back', async () => {
-  const userData = await mkdtemp(path.join(os.tmpdir(), 'scad-fit-'))
-  try {
+  // The helper removes it once the app has closed: Windows keeps an open profile's files locked.
+  const userData = scratchDir('scad-fit-')
+  {
     const { page } = await launch({ userData })
     await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
     await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Print check', exact: true }).click()
@@ -335,8 +336,6 @@ test('saves measured fits as SimpleCAD 0.4’s printer calibration, and reads th
     await page.getByRole('region', { name: 'Print check' }).getByRole('button', { name: 'Fit & Clearance' }).click()
     await expect(form.getByRole('status', { name: 'Calibration' })).toHaveText(/using your measured values/)
     await expect(form.getByLabel('Snug Fit (mm)')).toHaveValue('0.22')
-  } finally {
-    await rm(userData, { recursive: true, force: true })
   }
 })
 

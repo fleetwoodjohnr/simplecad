@@ -9,7 +9,7 @@ const open = new Set<ElectronApplication>()
 /** The profile and recovery folders launch made, removed after the test: each launch's Chromium profile is several
  * MB, and a few hundred runs fill a tmpfs /tmp. */
 const scratch = new Set<string>()
-const scratchDir = (prefix: string) => {
+export const scratchDir = (prefix: string) => {
   const dir = mkdtempSync(path.join(tmpdir(), prefix))
   scratch.add(dir)
   return dir
