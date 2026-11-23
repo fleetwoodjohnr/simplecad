@@ -1,5 +1,6 @@
 import { forwardRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
+  Triangle,
   ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, DoorOpen, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
 } from 'lucide-react'
@@ -26,6 +27,7 @@ const groups: { group: string; tools: Tool[] }[] = [
     { id: 'fillet', icon: SquareRoundCorner },
     { id: 'chamfer', icon: SquareSlash },
     { id: 'shell', icon: Box },
+    { id: 'draft', icon: Triangle },
     { id: 'hole', icon: CircleDot },
     { id: 'thread', icon: Spline },
     { id: 'faceTexture', icon: Grid3x3 }

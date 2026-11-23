@@ -18,6 +18,7 @@ import { PrintCheckPanel } from './PrintCheckPanel'
 import { FitPanel } from './FitPanel'
 import { HingePanel } from './HingePanel'
 import { ClipJointPanel } from './ClipJointPanel'
+import { DraftPanel, type DraftInputs } from './DraftPanel'
 import { ThreadedConnectionPanel } from './ThreadedConnectionPanel'
 import { NUDGE_STEP, worldAxes } from './nudge'
 import { healthChecks, printChecks } from './printability'
@@ -150,6 +151,8 @@ export function App() {
   const [hingeSwing, setHingeSwing] = useState<number>()
   /** The Clip Joint tool: open or not, its two picked faces, and the printer's clearance for each fit. */
   const [clip, setClip] = useState(false)
+  // Draft: the faces to taper, all of one body; undefined while the tool is closed.
+  const [draftPicks, setDraftPicks] = useState<number[]>()
   const [clipPicks, setClipPicks] = useState<number[]>([])
   const [clipFits, setClipFits] = useState<Record<string, number>>()
   /** The Threaded connection tool: open or not, and its two picked round faces. */
@@ -456,6 +459,16 @@ export function App() {
   const closeEdgeTool = () => { setEdgeTool(undefined); setEdgePicks([]); clearPreview() }
   const closeHinge = () => { setHinge(false); setHingeEdge(undefined); setHingeSwing(undefined); clearPreview() }
   const closeClip = () => { setClip(false); setClipPicks([]); clearPreview() }
+  const closeDraft = () => { setDraftPicks(undefined); clearPreview() }
+  /** Toggle a face to taper; a face of another body starts a new pick, since one draft tapers one body. */
+  const pickDraftFace = (face: number) => {
+    const body = model?.shape.faces[face]?.body
+    if (body === undefined) return
+    setSelected(face)
+    clearPreview()
+    setDraftPicks((picks = []) => picks.includes(face) ? picks.filter((pick) => pick !== face)
+      : picks.length && model?.shape.faces[picks[0]]?.body !== body ? [face] : [...picks, face])
+  }
   const closeThreadPair = () => { setThreadPair(false); setThreadPicks([]); clearPreview() }
   const pickThreadFace = (face: number) => {
     if (threadPicks.length >= 2 || threadPicks.includes(face)) return
@@ -843,6 +856,7 @@ export function App() {
         void window.simplecad.readCalibration().then((calibration) => setClipFits(calibration.fits), () => setClipFits(undefined))
       } },
     chamfer: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'chamfer' }) } },
+    draft: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setDraftPicks([]) } },
     sectionReplace: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two bodies first', run: () => { select(); setSectionPicks([]); setSection({}) } },
     split: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('split') },
@@ -988,6 +1002,7 @@ export function App() {
         closeEdgeTool()
         closeHinge()
         closeClip()
+        closeDraft()
         closeThreadPair()
         closeConstruction()
         closeArrange()
@@ -1022,7 +1037,7 @@ export function App() {
       setEditingShape(step.id)
       setShapePanel(true)
     } else {
-      if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection') {
+      if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection' || step.kind === 'draft') {
         setEditingMove(step.id)
         return
       }
@@ -1136,6 +1151,10 @@ export function App() {
                 if (face !== undefined) pickClipFace(face)
                 return
               }
+              if (draftPicks) {
+                if (face !== undefined) pickDraftFace(face)
+                return
+              }
               if (threadPair) {
                 if (face !== undefined) pickThreadFace(face)
                 return
@@ -1201,6 +1220,8 @@ export function App() {
                     if (face !== undefined && !section.editing) pickSectionFace(face)
                   } else if (clip) {
                     if (face !== undefined) pickClipFace(face)
+                  } else if (draftPicks) {
+                    if (face !== undefined) pickDraftFace(face)
                   } else if (threadPair) {
                     if (face !== undefined) pickThreadFace(face)
                   } else if (construction) {
@@ -1334,6 +1355,19 @@ export function App() {
                 onApply={(inputs) => mutate(async () => {
                   const next = await applyClipJoint(revision, request(inputs))
                   closeClip()
+                  return next
+                })} />
+            })()}
+            {model && draftPicks && revision !== undefined && (() => {
+              const body = model.shape.faces[draftPicks[0]]?.body ?? 0
+              const request = (inputs: DraftInputs) => ({ bodyOperation: 'draft' as const, body, inputs: { ...inputs, faces: draftPicks } })
+              return <DraftPanel busy={busy}
+                picked={draftPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+                onClear={() => { setDraftPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeDraft}
+                onPreview={(inputs) => void requestPreview(() => previewBodyOperation(revision, request(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyBodyOperation(revision, request(inputs))
+                  closeDraft()
                   return next
                 })} />
             })()}

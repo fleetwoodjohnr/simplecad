@@ -6,7 +6,7 @@ export type BodyOperation = BodyOperationEdit['bodyOperation']
 
 export const bodyOperationLabels: Record<BodyOperation, string> = {
   mirror: 'Mirror', rectangular_pattern: 'Rectangular Pattern', circular_pattern: 'Circular Pattern', scale: 'Scale',
-  boolean: 'Combine', split: 'Split'
+  boolean: 'Combine', split: 'Split', draft: 'Draft'
 }
 const combinations = [{ value: 'join', label: 'Join' }, { value: 'cut', label: 'Cut' }, { value: 'intersect', label: 'Intersect' }]
 
@@ -17,7 +17,9 @@ const defaults: Record<BodyOperation, Record<string, string>> = {
   circular_pattern: { count: '4', total_angle: '360' },
   scale: { factor: '2' },
   boolean: { operation: 'join', keep_tool: 'false' },
-  split: { position: '0' }
+  split: { position: '0' },
+  // Draft has its own panel (it picks faces); this is DraftFeature's default.
+  draft: { angle: '3' }
 }
 const flags = new Set(['keep', 'keep_tool', 'operation'])
 const fieldLabels: Record<string, string> = {

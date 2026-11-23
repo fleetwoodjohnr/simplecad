@@ -223,7 +223,7 @@ export class EngineDocument {
   preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
-      'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
+      'bodyOperation' in edit ? this.bodyOperation(edit) :
       'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'hinge' in edit ? { hinge: edit.hinge } :
       'clipJoint' in edit ? { clipJoint: edit.clipJoint } :
@@ -331,7 +331,7 @@ export class EngineDocument {
     } else if ('transform' in edit) {
       step = { body: edit.body, transform: edit.transform }
     } else if ('bodyOperation' in edit) {
-      step = { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs }
+      step = this.bodyOperation(edit)
     } else if ('hinge' in edit) {
       step = { hinge: edit.hinge }
     } else if ('clipJoint' in edit) {
@@ -478,6 +478,14 @@ export class EngineDocument {
 
   private show(bodies: Body[]): DisplayShape {
     return combine(this.shown(bodies).map(({ body, shape }) => ({ body, display: this.display(shape) })))
+  }
+
+  /** A body operation as recorded: a Draft's display faces become that body's own face numbers. */
+  private bodyOperation({ bodyOperation, body, inputs }: BodyOperationEdit): BodyOperationEdit {
+    if (bodyOperation !== 'draft' || !Array.isArray(inputs.faces)) return { bodyOperation, body, inputs }
+    const picks = inputs.faces.map((face) => this.pick(face))
+    if (picks.some((pick) => pick.body !== body)) throw new Error('Pick the faces to taper on one body.')
+    return { bodyOperation, body, inputs: { ...inputs, faces: picks.map((pick) => pick.face) } }
   }
 
   /** Which body a face of the shown model belongs to, and its number within that body. */

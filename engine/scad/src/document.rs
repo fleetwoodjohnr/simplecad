@@ -1027,6 +1027,7 @@ impl Model {
             "scale" => "Scale",
             "boolean" => "Combine",
             "split" => "Split",
+            "draft" => "Draft",
             _ => return Err("Choose an operation.".into()),
         };
         if !inputs.is_object() {
@@ -1034,6 +1035,39 @@ impl Model {
         }
         let (producer, object) = self.editable(body)?;
         inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
+        if kind == "draft" {
+            // `DraftFeature`'s inputs: the faces to taper as references, the pull and a point on the neutral plane.
+            let shape = shown
+                .get(&object)
+                .ok_or("Pick faces of a body with geometry.")?;
+            let picked = inputs["faces"]
+                .as_array()
+                .filter(|faces| !faces.is_empty())
+                .ok_or("Pick the faces to taper.")?
+                .clone();
+            let mut faces = Vec::new();
+            for face in picked {
+                let index = face
+                    .as_u64()
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or("Pick the faces to taper.")?;
+                faces.push(
+                    json!({ "__ref__": self.anchored_face_ref(body, &object, shape, index)? }),
+                );
+            }
+            inputs["faces"] = Value::Array(faces);
+            for key in ["neutral_plane", "pull_direction"] {
+                let point = inputs[key]
+                    .as_array()
+                    .map(|values| values.iter().filter_map(Value::as_f64).count());
+                if point != Some(3) {
+                    return Err(format!(
+                        "The draft's {} needs three coordinates.",
+                        key.replace('_', " ")
+                    ));
+                }
+            }
+        }
         let mut bindings = Map::from_iter([(
             body.to_owned(),
             json!({ "feature_id": producer, "object_id": object }),
@@ -2376,6 +2410,7 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "scale" => &["factor"],
         "boolean" => &["operation", "keep_tool"],
         "split" => &["position"],
+        "draft" => &["angle"],
         "arrange" => &["mode", "axis", "gap"],
         "section_replace" => &["u", "v", "boundary", "setback"],
         "threaded_connection" => &["designation", "clearance", "form", "length"],

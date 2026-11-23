@@ -135,9 +135,9 @@ export interface MoveBodiesEdit { moveBodies: number[]; offset: Vec3 }
 export interface UngroupEdit { ungroup: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
-export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean', 'split'] as const
-/** Mirror, pattern, scale or combine one body in place: expressions as strings, directions as vectors,
- * and a Combine's `tools` as body indices. */
+export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean', 'split', 'draft'] as const
+/** Mirror, pattern, scale, combine or draft one body in place: expressions as strings, directions as vectors,
+ * a Combine's `tools` as body indices, and a Draft's `faces` as display face indices of that body. */
 export interface BodyOperationEdit {
   bodyOperation: typeof BODY_OPERATIONS[number]
   body: number
@@ -404,6 +404,8 @@ function isBodyOperation(value: unknown): value is BodyOperationEdit {
   return entries.length <= 16 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && key !== 'body' && (key === 'tools'
     ? bodyOperation === 'boolean' && Array.isArray(value) && value.length > 0 && value.length < MAX_BODIES &&
       value.every((tool) => isIndex(tool) && tool < MAX_BODIES && tool !== body) :
+    key === 'faces' ? bodyOperation === 'draft' && Array.isArray(value) && value.length > 0 && value.length <= 4096 &&
+      value.every((face) => isIndex(face) && face <= 0xffffffff) :
     typeof value === 'boolean' || (typeof value === 'string' && value.trim().length > 0 && value.length < 256) ||
     (Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9))))
 }

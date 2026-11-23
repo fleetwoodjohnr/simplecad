@@ -51,6 +51,7 @@ export const commands = {
   split: { label: 'Split' },
   sectionReplace: { label: 'Section Replace' },
   shell: { label: 'Shell' },
+  draft: { label: 'Draft' },
   vent: { label: 'Vent' },
   fillet: { label: 'Fillet' },
   hinge: { label: 'Hinge' },

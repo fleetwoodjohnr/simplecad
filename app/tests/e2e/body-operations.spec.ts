@@ -530,6 +530,51 @@ test('joins two boxes with printed connectors, and edits the clearance from Hist
   await expect(page.getByRole('form', { name: 'Clip Joint' }).getByLabel('Clearance', { exact: true })).toHaveValue('0.15')
 })
 
+test('drafts the side walls of a box, edits the angle from History in one step, and keeps it through reopen', async () => {
+  const { app, page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  await toolbar.getByRole('button', { name: 'Draft', exact: true }).click()
+  const draft = page.getByRole('form', { name: 'Draft' })
+  for (const side of ['Front · 800 mm²', 'Back · 800 mm²', 'Left · 600 mm²', 'Right · 600 mm²']) {
+    await page.getByLabel('Planar face').selectOption({ label: side })
+  }
+  await expect(draft.getByRole('status', { name: 'Drafted faces' })).toHaveText('Front · 800 mm², Back · 800 mm², Left · 600 mm², Right · 600 mm²')
+  await expect(draft.getByLabel('Draft angle (°)')).toHaveValue('3')
+  await draft.getByRole('button', { name: 'Preview' }).click()
+  await expect(errors(page)).toHaveCount(0)
+  await draft.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Draft'])
+  await expect(errors(page)).toHaveCount(0)
+  // Tapered about the base, pulled up: the walls lean in, so the box loses material.
+  await expect(status).not.toHaveText(/24000 mm³/)
+  const drafted = (await status.textContent())!
+
+  await page.getByRole('button', { name: 'Edit Draft' }).click()
+  const saved = page.getByRole('form', { name: 'Draft' })
+  await expect(saved.getByLabel('Draft angle (°)')).toHaveValue('3')
+  await saved.getByLabel('Draft angle (°)').fill('5')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(status).not.toHaveText(drafted)
+  await expect(steps).toHaveText(['Box', 'Draft'])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(drafted)
+
+  const target = path.join(scratchDir('simplecad-draft-'), 'Draft.scad3')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+  }, target)
+  await page.getByRole('button', { name: 'File', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^Save As/ }).click()
+  await expect(page.getByText('Draft.scad3', { exact: true })).toBeVisible()
+  await app.close()
+  const reopened = await launch({ args: [target] })
+  await expect(reopened.page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Draft'])
+  await expect(reopened.page.getByTestId('engine-status')).toHaveText(drafted)
+})
+
 test('joins two boxes with a dovetail rail, previews it slid out, edits the rail from History, and keeps it through reopen', async () => {
   const { app, page } = await launch()
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
