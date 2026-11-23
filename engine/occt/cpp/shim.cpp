@@ -425,6 +425,59 @@ uint32_t face_occurrences(const Shape &shape) {
 
 bool is_valid(const Shape &shape) { return BRepCheck_Analyzer(shape.shape).IsValid(); }
 
+// `hinge.hinge_frame`'s reading of the picked edge: is it straight, its ends, and the faces either side of it
+// (`faces` indices, one per occurrence).
+HingeEdge hinge_edge(const Shape &shape, uint32_t edge) {
+  ShapeMap edges, faces;
+  TopExp::MapShapes(shape.shape, TopAbs_EDGE, edges);
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, faces);
+  if (edge >= static_cast<uint32_t>(edges.Extent())) {
+    throw std::runtime_error("That edge is not on the part it was picked from.");
+  }
+  const TopoDS_Edge picked = TopoDS::Edge(edges.FindKey(static_cast<int>(edge) + 1));
+  BRepAdaptor_Curve curve(picked);
+  HingeEdge out{};
+  out.straight = curve.GetType() == GeomAbs_Line;
+  const gp_Pnt start = curve.Value(curve.FirstParameter());
+  const gp_Pnt end = curve.Value(curve.LastParameter());
+  out.start = {start.X(), start.Y(), start.Z()};
+  out.end = {end.X(), end.Y(), end.Z()};
+  AncestorMap ancestors;
+  TopExp::MapShapesAndAncestors(shape.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+  const int index = ancestors.FindIndex(picked);
+  if (index > 0) {
+    for (const TopoDS_Shape &face : ancestors.FindFromIndex(index)) {
+      out.faces.push_back(static_cast<uint32_t>(faces.FindIndex(face) - 1));
+    }
+  }
+  return out;
+}
+
+// Local (x, y, z) to the frame at `origin` whose Z is `z_dir` and X is `x_dir` (gp_Trsf::SetDisplacement).
+std::unique_ptr<Trsf> trsf_displacement(rust::Slice<const double> origin, rust::Slice<const double> z_dir,
+                                        rust::Slice<const double> x_dir) {
+  gp_Trsf trsf;
+  trsf.SetDisplacement(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0)),
+                       gp_Ax3(gp_Pnt(origin[0], origin[1], origin[2]), gp_Dir(z_dir[0], z_dir[1], z_dir[2]),
+                              gp_Dir(x_dir[0], x_dir[1], x_dir[2])));
+  return std::make_unique<Trsf>(trsf);
+}
+
+// `align.interference_volume`: the volume two solids share, 0 when their boxes are apart.
+double common_volume(const Shape &first, const Shape &second) {
+  const auto [low_a, high_a] = corners(first.shape);
+  const auto [low_b, high_b] = corners(second.shape);
+  for (int i = 1; i <= 3; ++i) {
+    if (high_a.Coord(i) < low_b.Coord(i) || high_b.Coord(i) < low_a.Coord(i)) {
+      return 0.0;
+    }
+  }
+  const TopoDS_Shape shared = boolean<BRepAlgoAPI_Common>(first.shape, second.shape, "The overlap check failed.");
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(shared, props);
+  return std::abs(props.Mass());
+}
+
 rust::Vec<double> bounds(const Shape &shape) {
   const auto [low, high] = corners(shape.shape);
   rust::Vec<double> out;
@@ -783,6 +836,19 @@ std::unique_ptr<Shape> make_box(double dx, double dy, double dz) {
 // The primitives (`kernel/primitives.py`), each at the origin as OCCT builds it.
 std::unique_ptr<Shape> make_cylinder(double radius, double height) {
   return owned(BRepPrimAPI_MakeCylinder(radius, height).Shape(), "cylinder");
+}
+
+// BRepPrimAPI_MakeCylinder on gp_Ax2(origin, direction), as the Python app builds hinge knuckles.
+std::unique_ptr<Shape> make_cylinder_on(rust::Slice<const double> origin, rust::Slice<const double> direction,
+                                        double radius, double height) {
+  const gp_Ax2 axis(gp_Pnt(origin[0], origin[1], origin[2]), gp_Dir(direction[0], direction[1], direction[2]));
+  return owned(BRepPrimAPI_MakeCylinder(axis, radius, height).Shape(), "cylinder");
+}
+
+// BRepPrimAPI_MakeBox between two corners.
+std::unique_ptr<Shape> make_box_between(rust::Slice<const double> first, rust::Slice<const double> second) {
+  return owned(BRepPrimAPI_MakeBox(gp_Pnt(first[0], first[1], first[2]), gp_Pnt(second[0], second[1], second[2])).Shape(),
+               "box");
 }
 
 std::unique_ptr<Shape> make_sphere(double radius) {

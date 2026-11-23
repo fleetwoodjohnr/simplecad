@@ -9,6 +9,7 @@ pub mod document;
 pub mod evaluate;
 pub mod export;
 pub mod graph;
+mod hinge;
 pub mod iges;
 pub mod measure;
 pub mod mesh_import;

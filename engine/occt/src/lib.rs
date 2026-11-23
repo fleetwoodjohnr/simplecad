@@ -65,6 +65,14 @@ pub mod ffi {
         pub neighbours: Vec<FaceFingerprint>,
     }
 
+    /// A hinge's picked edge: straight or not, its ends, and the faces either side (`faces` indices).
+    pub struct HingeEdge {
+        pub straight: bool,
+        pub start: [f64; 3],
+        pub end: [f64; 3],
+        pub faces: Vec<u32>,
+    }
+
     pub struct EdgeAxis {
         pub origin: [f64; 3],
         pub direction: [f64; 3],
@@ -356,6 +364,24 @@ pub mod ffi {
         fn solid_count(shape: &Shape) -> u32;
         /// Edges on only one face: holes in the surface.
         fn open_edges(shape: &Shape) -> u32;
+        fn hinge_edge(shape: &Shape, edge: u32) -> Result<HingeEdge>;
+        /// Local coordinates to the frame at `origin` with Z along `z_dir` and X along `x_dir`.
+        fn trsf_displacement(
+            origin: &[f64],
+            z_dir: &[f64],
+            x_dir: &[f64],
+        ) -> Result<UniquePtr<Trsf>>;
+        /// The volume two solids share; 0 when they only touch or stand apart.
+        fn common_volume(first: &Shape, second: &Shape) -> Result<f64>;
+        /// A cylinder standing on `origin` along `direction` (`gp_Ax2(origin, direction)`).
+        fn make_cylinder_on(
+            origin: &[f64],
+            direction: &[f64],
+            radius: f64,
+            height: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        /// The box between two corners.
+        fn make_box_between(first: &[f64], second: &[f64]) -> Result<UniquePtr<Shape>>;
         /// Faces as `TopExp_Explorer` visits them, a face used twice counted
         /// twice: how the Python app's project comparison counts.
         fn face_occurrences(shape: &Shape) -> u32;

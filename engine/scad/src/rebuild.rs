@@ -100,7 +100,7 @@ pub struct Report {
 
 /// What a step reads when it runs (`BuildContext`).
 pub struct Context<'a> {
-    feature: &'a Value,
+    pub(crate) feature: &'a Value,
     features: Option<&'a HashMap<String, Value>>,
     bodies: HashMap<String, Shape>,
     sketches: HashMap<String, Rc<Value>>,
@@ -252,6 +252,14 @@ impl Context<'_> {
     pub fn face(&self, key: &str) -> Result<(Shape, u32), StepError> {
         let (reference, shape) = self.referenced_shape(self.input(key))?;
         let index = resolve_face(reference, &shape)?;
+        Ok((shape, index))
+    }
+
+    /// `ctx.resolve` of an edge reference: its body, and the edge's index there.
+    pub(crate) fn edge(&self, key: &str) -> Result<(Shape, u32), StepError> {
+        let (reference, shape) = self.referenced_shape(self.input(key))?;
+        let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
+        let index = resolve_edge(reference, &edges)?;
         Ok((shape, index))
     }
 
@@ -500,6 +508,7 @@ pub const PORTED: &[&str] = &[
     "face_texture",
     "section_replace",
     "clip_joint",
+    "hinge",
     "draft",
     "mirror",
     "rectangular_pattern",
@@ -1111,6 +1120,7 @@ fn execute(
                 Ok(BTreeMap::from([(target, result)]))
             }
             "clip_joint" => crate::clip::build(ctx),
+            "hinge" => crate::hinge::build(ctx),
             "draft" | "mirror" | "rectangular_pattern" | "circular_pattern" | "path_pattern" => Ok(
                 BTreeMap::from([(body_name()?, crate::advanced::build(kind, ctx)?)]),
             ),

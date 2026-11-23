@@ -39,6 +39,7 @@ struct FaceData;
 struct FaceFingerprint;
 struct EdgeFingerprint;
 struct EdgeAxis;
+struct HingeEdge;
 struct EdgeFinishSpec;
 struct PlaneFrame;
 struct CylinderData;
@@ -169,6 +170,13 @@ std::unique_ptr<Shape> sub_face(const Shape &shape, uint32_t face);
 std::unique_ptr<Shape> sub_edge(const Shape &shape, uint32_t edge);
 void messages_to_stderr();
 uint32_t open_edges(const Shape &shape);
+HingeEdge hinge_edge(const Shape &shape, uint32_t edge);
+std::unique_ptr<Trsf> trsf_displacement(rust::Slice<const double> origin, rust::Slice<const double> z_dir,
+                                        rust::Slice<const double> x_dir);
+double common_volume(const Shape &first, const Shape &second);
+std::unique_ptr<Shape> make_cylinder_on(rust::Slice<const double> origin, rust::Slice<const double> direction,
+                                        double radius, double height);
+std::unique_ptr<Shape> make_box_between(rust::Slice<const double> first, rust::Slice<const double> second);
 std::unique_ptr<Shape> sub_vertex(const Shape &shape, uint32_t vertex);
 PlaneFrame plane_frame(const Shape &face);
 CylinderData cylinder_data(const Shape &face);
