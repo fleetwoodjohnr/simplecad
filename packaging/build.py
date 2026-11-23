@@ -190,6 +190,17 @@ def linux_package(kind: str) -> None:
     stage = os.path.join(BUILD, f"pkg-{kind}")
     shutil.rmtree(stage, ignore_errors=True)
     shutil.copytree(BUNDLE, os.path.join(stage, "simplecad"), symlinks=True)
+    sandbox = ""
+    if electron():
+        # Where unprivileged user namespaces are off (containers, Ubuntu 24.04's AppArmor), Chromium sandboxes
+        # through this helper and won't start unless it is setuid root. A tree entry drops the setuid bit, so
+        # the helper is listed on its own.
+        os.replace(os.path.join(stage, "simplecad", "chrome-sandbox"), os.path.join(stage, "chrome-sandbox"))
+        sandbox = f"""  - src: {stage}/chrome-sandbox
+    dst: /opt/simplecad/chrome-sandbox
+    file_info:
+      mode: 04755
+"""
     # Where each app's updater looks: beside the binary, or in Electron's resources.
     marker = os.path.join(stage, "simplecad", *(["resources"] if electron() else []), "install-kind")
     with open(marker, "w") as handle:
@@ -213,7 +224,7 @@ depends:
   - src: /opt/simplecad/simplecad
     dst: /usr/bin/simplecad
     type: symlink
-  - src: {stage}/simplecad.desktop
+""" + sandbox + f"""  - src: {stage}/simplecad.desktop
     dst: /usr/share/applications/simplecad.desktop
   - src: {ROOT}/simplecad/assets/simplecad.svg
     dst: /usr/share/icons/hicolor/scalable/apps/simplecad.svg

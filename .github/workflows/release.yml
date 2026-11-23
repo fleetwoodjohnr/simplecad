@@ -149,15 +149,19 @@ jobs:
           sudo apt-get remove -y simplecad
           # Current distributions, whose Mesa needs a newer C++ runtime than the
           # build machine's: the .rpm (with validators that know today's keys)
-          # and the AppImage on Fedora, the .deb on Ubuntu 24.04.
+          # and the AppImage on Fedora, the .deb on Ubuntu 24.04. Chromium's sandbox
+          # cannot run in a container (no new namespaces there, even for its setuid
+          # helper), so the app runs unsandboxed here; the helper must still be
+          # installed setuid root, which desktops without user namespaces need.
           docker run --rm -e QT_QPA_PLATFORM=offscreen -e LANG=C.UTF-8 -v "$PWD:/pkgs:ro" \
             -v "${smoke}:/smoke.sh:ro" fedora:44 bash -euxc '
             dnf install -y -q mesa-libGL mesa-libEGL mesa-dri-drivers libxkbcommon fontconfig \
               glib2 dbus-libs xorg-x11-server-Xvfb xorg-x11-xauth desktop-file-utils appstream \
               shadow-utils util-linux
             dnf install -y -q /pkgs/SimpleCAD-*-linux-x86_64.rpm
+            test "$(stat -c "%a %U" /opt/simplecad/chrome-sandbox)" = "4755 root"
             useradd -m tester
-            runuser -u tester -- /usr/bin/simplecad --self-test
+            runuser -u tester -- /usr/bin/simplecad --self-test --no-sandbox
             runuser -u tester -- env -u QT_QPA_PLATFORM /smoke.sh rpm-fedora-44 /usr/bin/simplecad --no-sandbox
             cp /pkgs/SimpleCAD-*-linux-x86_64.AppImage /tmp/SimpleCAD.AppImage
             runuser -u tester -- env -u QT_QPA_PLATFORM APPIMAGE_EXTRACT_AND_RUN=1 /smoke.sh \
@@ -170,8 +174,9 @@ jobs:
             ubuntu:24.04 bash -euxc '
             apt-get update -q
             apt-get install -y -q /pkgs/SimpleCAD-*-linux-x86_64.deb xvfb xauth libgl1-mesa-dri
+            test "$(stat -c "%a %U" /opt/simplecad/chrome-sandbox)" = "4755 root"
             useradd -m tester
-            runuser -u tester -- /usr/bin/simplecad --self-test
+            runuser -u tester -- /usr/bin/simplecad --self-test --no-sandbox
             runuser -u tester -- env -u QT_QPA_PLATFORM /smoke.sh deb-ubuntu-24.04 /usr/bin/simplecad --no-sandbox'
       - name: Upgrade and roll back from the signed v0.4.4 installers
         env:
