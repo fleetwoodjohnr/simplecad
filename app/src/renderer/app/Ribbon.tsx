@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { forwardRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import {
   ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, DoorOpen, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
@@ -68,8 +68,22 @@ export const ToolBtn = forwardRef<HTMLButtonElement, ToolBtnProps>(function Tool
 })
 
 /** The tooltip has to sit on a wrapper: a disabled button gets no pointer events, and its hint matters most then. */
-function Tipped({ label, hint, shortcut, children }: { label: string; hint?: string; shortcut?: string; children: ReactNode }) {
-  return <Tip label={hint ? `${label} · ${hint}` : label} shortcut={shortcut}><span className="inline-flex">{children}</span></Tip>
+function Tipped({ label, hint, shortcut, open, children }: { label: string; hint?: string; shortcut?: string; open?: boolean; children: ReactNode }) {
+  return <Tip label={hint ? `${label} · ${hint}` : label} shortcut={shortcut} open={open}><span className="inline-flex">{children}</span></Tip>
+}
+
+/** A ribbon dropdown. Its tooltip stays shut while it is open: the tooltip would sit over the first item. */
+function MenuTool({ tool, actions }: { tool: Extract<Tool, { menu: string }>; actions: CommandActions }) {
+  const [open, setOpen] = useState(false)
+  const enabled = tool.items.some((id) => actions[id].enabled)
+  return <Tipped label={tool.menu} hint={enabled ? undefined : tool.hint} open={open ? false : undefined}>
+    <Menu open={open} onOpenChange={setOpen}>
+      <MenuTrigger asChild><ToolBtn icon={tool.icon} label={tool.menu} caret disabled={!enabled} /></MenuTrigger>
+      <MenuContent>
+        {tool.items.map((id) => <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}>{commands[id].label}</MenuItem>)}
+      </MenuContent>
+    </Menu>
+  </Tipped>
 }
 
 export function Ribbon({ actions, active }: { actions: CommandActions; active: Partial<Record<CommandId, boolean>> }) {
@@ -78,17 +92,7 @@ export function Ribbon({ actions, active }: { actions: CommandActions; active: P
       <div key={group} role="group" aria-label={group} className="flex h-full shrink-0 flex-col items-center justify-center border-r border-border px-1">
         <div className="flex items-center gap-0.5">
           {tools.map((tool) => {
-            if ('menu' in tool) {
-              const enabled = tool.items.some((id) => actions[id].enabled)
-              return <Tipped key={tool.menu} label={tool.menu} hint={enabled ? undefined : tool.hint}>
-                <Menu>
-                  <MenuTrigger asChild><ToolBtn icon={tool.icon} label={tool.menu} caret disabled={!enabled} /></MenuTrigger>
-                  <MenuContent>
-                    {tool.items.map((id) => <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}>{commands[id].label}</MenuItem>)}
-                  </MenuContent>
-                </Menu>
-              </Tipped>
-            }
+            if ('menu' in tool) return <MenuTool key={tool.menu} tool={tool} actions={actions} />
             const action = actions[tool.id]
             const command = commands[tool.id]
             return <Tipped key={tool.id} label={command.label} hint={action.enabled ? undefined : action.hint}

@@ -61,6 +61,24 @@ test('the ribbon groups the tools, and the selection bar offers what fits the fa
   await expect(selection).toHaveCount(0)
 })
 
+test('a ribbon menu’s tooltip gets out of the way of its first item', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  // A tooltip already showing makes the next one open at once, the way a pointer sweeping the ribbon does.
+  await toolbar.getByRole('button', { name: 'Mirror', exact: true }).hover()
+  await expect(page.getByRole('tooltip', { name: /^Mirror/ })).toBeVisible()
+  const pattern = toolbar.getByRole('button', { name: 'Pattern' })
+  await pattern.click()
+  // The pointer settling on the open menu's button reopened its tooltip, over the first item.
+  const box = (await pattern.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2 + 1)
+  await page.waitForTimeout(700)
+  await expect(page.getByRole('tooltip')).toHaveCount(0)
+  await page.getByRole('menuitem', { name: 'Rectangular Pattern' }).click({ timeout: 5000 })
+  await expect(page.getByRole('form', { name: 'Rectangular Pattern' })).toBeVisible()
+})
+
 test('a Move drag leaves a ghost where it started, Escape puts it back, and a typed drag is one exact step', { tag: '@viewport' }, async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-ux-'))
   try {

@@ -8,18 +8,19 @@ export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Bool
 // ---------- tooltip ----------
 
 export const TooltipProvider = ({ children }: { children: ReactNode }) => (
-  <Tooltip.Provider delayDuration={450} skipDelayDuration={200}>
+  <Tooltip.Provider delayDuration={450} skipDelayDuration={200} disableHoverableContent>
     {children}
   </Tooltip.Provider>
 )
 
-export function Tip({ label, shortcut, children, side = 'bottom' }: { label?: ReactNode; shortcut?: string; children: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right' }) {
+/** A hint, never something to click: it lets the pointer through to what it covers. `open={false}` holds it shut. */
+export function Tip({ label, shortcut, children, side = 'bottom', open }: { label?: ReactNode; shortcut?: string; children: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right'; open?: boolean }) {
   if (!label) return <>{children}</>
   return (
-    <Tooltip.Root>
+    <Tooltip.Root open={open}>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content side={side} sideOffset={6} className="pop-in z-[100] flex items-center gap-2 rounded-md bg-[#1c1c22] px-2 py-1 text-[11.5px] font-medium text-white shadow-lg dark:bg-[#f0f0f3] dark:text-[#18181b]">
+        <Tooltip.Content side={side} sideOffset={6} className="pop-in pointer-events-none z-[100] flex items-center gap-2 rounded-md bg-[#1c1c22] px-2 py-1 text-[11.5px] font-medium text-white shadow-lg dark:bg-[#f0f0f3] dark:text-[#18181b]">
           {label}
           {shortcut && <span className="opacity-55">{formatShortcut(shortcut)}</span>}
         </Tooltip.Content>
