@@ -40,7 +40,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   scene.add(hub, moving, rest, restEdges, ghost, handle)
   // The live reading beside the handle; digits typed during a drag set it exactly.
   const label = document.createElement('div')
-  label.className = 'pointer-events-none absolute z-20 hidden -translate-x-1/2 rounded-md bg-[#1c1c22]/90 px-2 py-1 text-[11.5px] font-medium tabular-nums text-white shadow-lg'
+  label.className = 'pointer-events-none absolute left-0 top-0 z-20 hidden -translate-x-1/2 rounded-md bg-[#1c1c22]/90 px-2 py-1 text-[11.5px] font-medium tabular-nums text-white shadow-lg'
   label.setAttribute('role', 'status')
   label.setAttribute('aria-label', 'Transform reading')
   canvas.parentElement?.append(label)
@@ -72,7 +72,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       canvas.dataset.ghost = ''
       return
     }
-    canvas.dataset.ghost = config.kind
+    if (canvas.dataset.ghost !== config.kind) canvas.dataset.ghost = config.kind
     let text: string
     if (config.kind === 'move') {
       const parts = [0, 1, 2].filter((i) => Math.abs(delta.getComponent(i)) > 1e-9)
@@ -81,12 +81,13 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       const angle = Math.atan2(axisVector.set(rotation.x, rotation.y, rotation.z).length(), rotation.w) * 2 * degrees
       text = `${+angle.toFixed(2)}°`
     }
-    label.textContent = typed ? `${typed}${config.kind === 'move' ? '' : '°'} ⏎` : text
+    // Moved by a transform, and only rewritten when it changes: moving it by left/top laid out the whole window
+    // on every frame of a Move drag, which cost frames on large projects.
+    const reading = typed ? `${typed}${config.kind === 'move' ? '' : '°'} ⏎` : text
+    if (label.textContent !== reading) label.textContent = reading
     const at = pivot.clone().add(delta).project(camera)
-    const rect = canvas.getBoundingClientRect()
-    label.style.left = `${(at.x + 1) / 2 * rect.width}px`
-    label.style.top = `${(1 - at.y) / 2 * rect.height + 28}px`
-    label.classList.remove('hidden')
+    label.style.transform = `translate(${(at.x + 1) / 2 * canvas.clientWidth}px, ${(1 - at.y) / 2 * canvas.clientHeight + 28}px)`
+    if (label.classList.contains('hidden')) label.classList.remove('hidden')
   }
   /** A typed amount replaces the drag's: along the handle's axis (or the drag's direction), or about its axis. */
   const applyTyped = () => {
