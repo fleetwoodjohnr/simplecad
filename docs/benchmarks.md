@@ -174,3 +174,48 @@ place to cut, if this ever needs to be faster; it was left alone in v0.3.0.
 | Bundle size | 1.3 GB unpacked, before matplotlib and PIL were excluded from the spec. OCCT is 264 MB of it, Qt most of the rest |
 | `simplecad --self-test` | Passes. Rebuild, boolean, data files, STEP/3MF out and a geometry worker process in about 6 s |
 | Window under Xvfb | Starts, draws the viewport, grid and view cube, and starts the geometry process |
+
+## v0.5.0 against v0.4.4 (November 2026)
+
+The 14 projects on the development machine (Fedora 44, scratch copies),
+v0.4.4 (`d15187d`, Python 3.14) against the 0.5.0 engine (`4462105`), one
+after the other on an otherwise idle machine. Seconds, wall clock, from a cold
+process: for v0.4.4 its import and open are added to each stage, since each
+Rust `scad` command opens the file itself. Peak resident memory is the largest
+of any stage.
+
+| Project | Open + rebuild | Undo and redo all | Save | Rebuild from recipe | Peak memory, MB |
+|---|---|---|---|---|---|
+| Addi Glasses Holder | 1.10 → 0.11 | 2.64 → 1.44 | 1.15 → 0.11 | 2.71 → 1.68 | 356 → 79 |
+| Addi_Keychain | 1.22 → 0.14 | 1.22 → 0.19 | 1.31 → 0.06 | 11.73 → 8.03 | 401 → 126 |
+| Atlas Box (Copy) | 3.36 → 1.62 | 16.75 → 39.08 | 11.11 → 6.95 | 5.90 → 10.04 | 970 → 363 |
+| Atlas Box | 3.54 → 2.03 | 30.02 → 59.36 | 11.58 → 7.60 | 17.64 → 16.20 | 1074 → 452 |
+| AtlasBox | 1.56 → 0.46 | 1.02 → 0.48 | 1.04 → 0.46 | 1.54 → 0.84 | 322 → 60 |
+| AtlasBoxLower V1 | 1.09 → 0.15 | 3.81 → 5.54 | 1.15 → 0.15 | 3.62 → 1.44 | 352 → 84 |
+| Coffee Funnel | 1.01 → 0.04 | 1.04 → 0.07 | 1.02 → 0.05 | 1.03 → 0.05 | 318 → 50 |
+| Dish Soap Holder | 1.23 → 0.13 | 24.24 → 6.20 | 1.41 → 0.32 | 24.59 → 5.48 | 386 → 86 |
+| Poppy Travel Water Holder | 1.00 → 0.04 | 1.25 → 0.34 | 1.01 → 0.04 | 1.19 → 0.19 | 325 → 54 |
+| Recycling Bin | 1.02 → 0.12 | 2.27 → 1.27 | 1.07 → 0.07 | 2.26 → 1.26 | 344 → 70 |
+| Spice Rack | 1.01 → 0.04 | 1.06 → 0.12 | 1.01 → 0.03 | 1.02 → 0.04 | 314 → 42 |
+| Spondge Holder | 1.86 → 0.55 | 1.52 → 0.64 | 1.75 → 0.11 | 4.71 → 2.62 | 423 → 139 |
+| UPS Atlas (Copy) | 1.40 → 1.00 | 18.44 → 17.98 | 1.65 → 0.90 | 13.29 → 16.34 | 586 → 284 |
+| UPS Atlas | 3.36 → 1.63 | 16.69 → 37.46 | 11.10 → 6.98 | 5.91 → 9.91 | 992 → 363 |
+
+Still slower on the large Atlas files:
+
+- **Undo and redo all** (every saved step undone, rebuilt, redone, rebuilt):
+  up to 2.3×. About half is history bookkeeping, roughly 90 ms a step: the
+  step signatures are worked out twice per move, and the project document,
+  history included, is copied. The rest is rerunning Align and Move steps.
+- **Rebuild from recipe:** up to 1.7× on three of the four, the same on Atlas Box.
+- **One Undo or Redo in the packaged app:** Atlas Box 0.35–0.45 s (the first
+  after opening 0.8 s), UPS Atlas about 0.4 s (first 2.2 s, since it brings
+  back bodies the opened model didn't use). v0.4.4 does the same step in
+  12–25 ms. Before `4462105` it took 1.6 s and 2.7 s: every rebuild parsed
+  the saved results again, and the window re-meshed every body.
+
+Move and Rotate drags on Atlas Box, packaged, Wayland (the default): p95
+frame interval 16.7 ms in three runs each, at 60 Hz (gate 20 ms). Forced onto
+X11 through XWayland, every frame arrives but in late pairs: p95 21.8–31.9 ms,
+because the GPU process blocks 5–10 ms in `eglSwapBuffers`. This machine has
+no native Xorg session to measure.
