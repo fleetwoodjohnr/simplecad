@@ -1215,8 +1215,11 @@ impl Model {
             .filter(|count| *count <= MAX_CONNECTORS)
             .ok_or("Choose up to 64 connectors, or 0 to space them out.")?;
         let style = inputs["style"].as_str().unwrap_or("connector").to_owned();
-        if !["connector", "snap_tab", "tab_slot"].contains(&style.as_str()) {
-            return Err("Choose a printed connector, snap tab or tab & slot joint.".into());
+        let sliding = ["dovetail", "t_rail", "tongue_groove"].contains(&style.as_str());
+        if !sliding && !["connector", "snap_tab", "tab_slot"].contains(&style.as_str()) {
+            return Err(
+                "Choose a printed connector, snap tab, tab & slot or sliding joint.".into(),
+            );
         }
         let connectors = style == "connector";
         let male = match inputs["male"].as_str() {
@@ -1278,6 +1281,44 @@ impl Model {
             ("connector_names", json!(names)),
         ] {
             inputs[key] = value;
+        }
+        let settings = inputs
+            .as_object_mut()
+            .ok_or("The clip settings could not be read.")?;
+        let slide = settings.remove("slide");
+        if sliding {
+            // As SimpleCAD 0.4's Joint tool saves rails: no count, anchors, spacing, shift, turn, size or retention.
+            let slide = slide
+                .filter(Value::is_object)
+                .ok_or("The rail settings could not be read.")?;
+            for key in [
+                "count",
+                "anchors",
+                "spacing",
+                "shift",
+                "rotation",
+                "size",
+                "retention",
+            ] {
+                settings.remove(key);
+            }
+            for key in [
+                "rails",
+                "insertion",
+                "female_mode",
+                "stop",
+                "rail_width",
+                "rail_height",
+                "rail_angle",
+                "rail_length",
+            ] {
+                settings.insert(key.into(), slide[key].clone());
+            }
+            if slide["detent"] == json!(false) {
+                settings.insert("detent".into(), json!(0));
+            }
+        } else {
+            settings.remove("slid_apart");
         }
         if inputs["seat"] == json!(true) {
             inputs["seat_x"] = json!(0.0);
@@ -2349,6 +2390,13 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
             "lead_in",
             "spacing",
             "edge_offset",
+            // A sliding joint's rails.
+            "rails",
+            "rail_width",
+            "rail_height",
+            "rail_angle",
+            "rail_length",
+            "stop",
         ],
         // Not its type: a pin hinge has a pin body the others do not.
         "hinge" => &[

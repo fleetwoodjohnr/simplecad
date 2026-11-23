@@ -165,6 +165,49 @@ pub mod ffi {
         pub male_on_a: bool,
     }
 
+    /// SimpleCAD 0.4's sliding joints (`slides.py`): rails on one part, channels on the other.
+    pub struct SlideSpec {
+        /// 0: dovetail, 1: T-rail, 2: tongue & groove.
+        pub style: u8,
+        pub width: f64,
+        pub height: f64,
+        pub angle: f64,
+        pub clearance: f64,
+        pub depth_clearance: f64,
+        pub lead_in: f64,
+        pub min_wall: f64,
+        pub lip: f64,
+        pub stop: bool,
+        /// Below zero: sized from the channel's clearance.
+        pub detent: f64,
+        pub rails: u32,
+        /// 0: the whole shared length.
+        pub rail_length: f64,
+        pub edge_offset: f64,
+        /// 0..3: +u, -u, +v, -v of face B's frame; 4: chosen from the seam.
+        pub insertion: u8,
+        /// 0: automatic, 1: cut into the part, 2: raised on its face.
+        pub female_mode: u8,
+        pub male_on_a: bool,
+        /// Part A was seated on B: a raised channel then moves it the rail's height back.
+        pub seated: bool,
+    }
+
+    pub struct SlideOutput {
+        pub first: UniquePtr<Shape>,
+        pub second: UniquePtr<Shape>,
+        pub rails: u32,
+        pub raised: bool,
+        /// The slide direction used, as `SlideSpec::insertion`.
+        pub insertion: u8,
+        /// How part A moves to come apart, and how far.
+        pub exit_a: [f64; 3],
+        pub travel: f64,
+        pub engagement: f64,
+        pub detent: f64,
+        pub warnings: Vec<String>,
+    }
+
     pub struct ClipOutput {
         pub first: UniquePtr<Shape>,
         pub second: UniquePtr<Shape>,
@@ -310,6 +353,24 @@ pub mod ffi {
             placement: &ClipPlacementSpec,
             manual_points: &[f64],
         ) -> Result<ClipOutput>;
+        /// SimpleCAD 0.4's version-1 clips: sockets cut in both parts at `points` (u, v pairs in
+        /// `frame`: centre, X, Y and normal of face B, then the clips' turn in degrees), a connector in each.
+        fn clip_legacy(
+            body_a: &Shape,
+            body_b: &Shape,
+            face_a: &Shape,
+            face_b: &Shape,
+            clip: &ClipSpec,
+            frame: &[f64],
+            points: &[f64],
+        ) -> Result<ClipOutput>;
+        fn clip_slides(
+            body_a: &Shape,
+            body_b: &Shape,
+            face_a: &Shape,
+            face_b: &Shape,
+            spec: &SlideSpec,
+        ) -> Result<SlideOutput>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// Sweep the closed radial/axial profile along a cylindrical helix.
         fn sweep_thread_tooth(

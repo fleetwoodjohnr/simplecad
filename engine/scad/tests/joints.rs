@@ -17,6 +17,21 @@ fn snap_tabs_and_keys_rebuild_from_their_recipes_as_simplecad_044_built_them() {
     );
 }
 
+/// Dovetail, T-rail and tongue & groove rails, cut and raised channels, saved as 0.4.4's Joint tool saves them.
+#[test]
+fn sliding_rails_rebuild_from_their_recipes_as_simplecad_044_built_them() {
+    rebuilds_as_saved(
+        "clip",
+        &["dovetail", "dovetail_short", "t_rail", "tongue_groove"],
+    );
+}
+
+/// Clips made before Join Parts (no `clip_version`): part A set down on B, then clipped at picked points.
+#[test]
+fn version_one_clips_rebuild_from_their_recipes_as_simplecad_044_built_them() {
+    rebuilds_as_saved("clip", &["legacy_manual", "legacy_row"]);
+}
+
 fn rebuilds_as_saved(folder: &str, kinds: &[&str]) {
     let folder = format!("{}/tests/data/{folder}", env!("CARGO_MANIFEST_DIR"));
     for kind in kinds {
@@ -66,15 +81,15 @@ fn rebuilds_as_saved(folder: &str, kinds: &[&str]) {
     }
 }
 
-/// A sliding style this version can't build yet fails by name, and its parts keep the last good shapes.
+/// A style no version knows fails by name, and its parts keep the last good shapes.
 #[test]
-fn an_unported_clip_style_says_so_and_keeps_the_saved_parts() {
+fn an_unknown_clip_style_says_so_and_keeps_the_saved_parts() {
     let folder = format!("{}/tests/data/clip", env!("CARGO_MANIFEST_DIR"));
     let original = std::fs::read(format!("{folder}/tab_slot.scad3")).unwrap();
     let project = scad::project::read(&original).unwrap();
     let mut model = scad::document::Model::open(&project);
     let features = model.payload["features"].as_array_mut().unwrap();
-    features.last_mut().unwrap()["inputs"]["style"] = "dovetail".into();
+    features.last_mut().unwrap()["inputs"]["style"] = "zipper".into();
     let stale: BTreeSet<String> = features
         .iter()
         .map(|feature| feature["id"].as_str().unwrap().to_string())
@@ -82,7 +97,7 @@ fn an_unported_clip_style_says_so_and_keeps_the_saved_parts() {
     let report = scad::rebuild::rebuild(&mut model, &original, &HashMap::new(), &stale).unwrap();
     let errors: Vec<_> = report.failures.values().collect();
     assert!(
-        errors.len() == 1 && errors[0].contains("cannot build it yet"),
+        errors.len() == 1 && errors[0] == "Unknown joint style: zipper",
         "{errors:?}"
     );
     let names: BTreeSet<_> = report

@@ -85,14 +85,27 @@ export interface SectionReplaceEdit {
 export interface GroupEdit { group: number[] }
 /** SimpleCAD 0.4's Clip Joint between a face on each of two parts (display face indices): printed connectors, or
  * snap tabs or keys on the `male` part ('a' is the first) with pockets in the other. */
+/** SimpleCAD 0.4's sliding joint styles: rails on one part running in channels on the other. */
+export const SLIDE_STYLES = ['dovetail', 't_rail', 'tongue_groove'] as const
+/** A sliding joint's rails, as SimpleCAD 0.4's Joint tool saves them. */
+export interface SlideSettings {
+  rails: number; insertion: '' | '+u' | '-u' | '+v' | '-v'; female_mode: 'auto' | 'cut' | 'raised'; stop: boolean
+  /** Unticked, the joint is saved with no detent. */
+  detent: boolean
+  rail_width: string; rail_height: string; rail_angle: string; rail_length: string
+}
 export interface ClipJointEdit {
   clipJoint: {
     faces: [number, number]
     inputs: {
-      style: 'snap_tab' | 'connector' | 'tab_slot'; male: 'a' | 'b'
+      style: 'snap_tab' | 'connector' | 'tab_slot' | typeof SLIDE_STYLES[number]; male: 'a' | 'b'
       size: 'small' | 'medium' | 'large'; retention: 'easy' | 'standard' | 'firm'; material: 'pla' | 'petg'
       clearance: string; clearance_preset: 'snug' | 'sliding' | 'loose' | 'press'; depth_clearance: string; min_wall: string
       lead_in: string; count: number; spacing: string; edge_offset: string; seat: boolean
+      /** A sliding style's rails. */
+      slide?: SlideSettings
+      /** Preview only: part A drawn slid out of its mate. */
+      slid_apart?: boolean
     }
   }
 }
@@ -457,11 +470,20 @@ const isClipJoint = (value: unknown): value is ClipJointEdit => {
   if (!clip || !Array.isArray(clip.faces) || clip.faces.length !== 2 || !clip.faces.every(isIndex) || clip.faces[0] === clip.faces[1]) return false
   const i = clip.inputs as Partial<ClipJointEdit['clipJoint']['inputs']> | undefined
   const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0 && v.length < 256
-  return !!i && ['snap_tab', 'connector', 'tab_slot'].includes(i.style!) && (i.male === 'a' || i.male === 'b') &&
+  if (!i) return false
+  const sliding = (SLIDE_STYLES as readonly string[]).includes(i.style!)
+  const r = i.slide as Partial<SlideSettings> | undefined
+  const slideOk = !sliding ? r === undefined : !!r && Number.isInteger(r.rails) && r.rails! >= 1 && r.rails! <= 4 &&
+    ['', '+u', '-u', '+v', '-v'].includes(r.insertion!) && ['auto', 'cut', 'raised'].includes(r.female_mode!) &&
+    typeof r.stop === 'boolean' && typeof r.detent === 'boolean' &&
+    [r.rail_width, r.rail_height, r.rail_angle, r.rail_length].every(text) && Object.keys(r).length === 9
+  const extra = (i.slide === undefined ? 0 : 1) + (i.slid_apart === undefined ? 0 : 1)
+  return ['snap_tab', 'connector', 'tab_slot', ...SLIDE_STYLES].includes(i.style!) && (i.male === 'a' || i.male === 'b') &&
     ['small', 'medium', 'large'].includes(i.size!) && ['easy', 'standard', 'firm'].includes(i.retention!) &&
     ['pla', 'petg'].includes(i.material!) && ['snug', 'sliding', 'loose', 'press'].includes(i.clearance_preset!) &&
     [i.clearance, i.depth_clearance, i.min_wall, i.lead_in, i.spacing, i.edge_offset].every(text) &&
-    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && Object.keys(i).length === 14
+    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && slideOk &&
+    (i.slid_apart === undefined || (sliding && typeof i.slid_apart === 'boolean')) && Object.keys(i).length === 14 + extra
 }
 const isHinge = (value: unknown): value is HingeEdit => {
   const hinge = (value as Partial<HingeEdit> | null)?.hinge

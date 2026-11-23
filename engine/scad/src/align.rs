@@ -24,7 +24,7 @@ fn identity() -> UniquePtr<Trsf> {
     occt::trsf_identity()
 }
 
-fn translation(by: V) -> UniquePtr<Trsf> {
+pub(crate) fn translation(by: V) -> UniquePtr<Trsf> {
     occt::trsf_translation(&by)
 }
 
@@ -510,6 +510,12 @@ pub(crate) fn seat_joint(
         0.0,
     );
     Ok(then(&seat, &translation(sub(destination, moving.center))))
+}
+
+/// `planar_frame` of a joint's target face: centre, X, Y and normal, for version-1 clip points.
+pub(crate) fn joint_frame(target: (&occt::Shape, u32)) -> Result<Vec<f64>, StepError> {
+    let frame = planar_frame(&Face::read(target.0, target.1)?)?;
+    Ok([frame.center, frame.x_axis, frame.y_axis, frame.normal].concat())
 }
 
 pub(crate) fn joint_anchors(

@@ -56,6 +56,8 @@ struct TextureRegion;
 struct ClipSpec;
 struct ClipPlacementSpec;
 struct ClipOutput;
+struct SlideSpec;
+struct SlideOutput;
 struct SketchProfile;
 struct SketchAxis;
 
@@ -97,6 +99,10 @@ std::unique_ptr<Shape> face_texture(const Shape &body, const Shape &face, rust::
                                     rust::Slice<const TextureRegion> text_regions);
 std::unique_ptr<Shape> section_cutter(const Shape &face, rust::Slice<const double> normal,
                                       double boundary, double depth);
+ClipOutput clip_legacy(const Shape &body_a, const Shape &body_b, const Shape &face_a, const Shape &face_b,
+                       const ClipSpec &clip, rust::Slice<const double> frame, rust::Slice<const double> points);
+SlideOutput clip_slides(const Shape &body_a, const Shape &body_b,
+                        const Shape &face_a, const Shape &face_b, const SlideSpec &spec);
 ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
                            const Shape &face_a, const Shape &face_b,
                            const ClipSpec &clip, const ClipPlacementSpec &placement,

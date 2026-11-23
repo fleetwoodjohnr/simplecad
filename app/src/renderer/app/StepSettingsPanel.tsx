@@ -8,7 +8,8 @@ const labels: Record<string, string> = {
   clearance: 'Clearance', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
   axial_clearance: 'Gap between knuckles', open_max: 'Opens to (°)', stop: 'Stop at the limit', flex: 'Strip thickness',
   flex_length: 'Bending length', size: 'Size', retention: 'Retention', material: 'Material', depth_clearance: 'Depth clearance',
-  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset', designation: 'Thread size', form: 'Profile'
+  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset', designation: 'Thread size', form: 'Profile',
+  rails: 'Rails', rail_width: 'Rail width', rail_height: 'Rail height', rail_angle: 'Dovetail angle (°)', rail_length: 'Rail length (0 = full)'
 }
 /** Choices that differ by step: a threaded pair's clearance is a thread fit, not a part fit. */
 const choicesFor: Record<string, Record<string, string[]>> = {
