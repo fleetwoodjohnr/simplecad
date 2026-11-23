@@ -2,6 +2,7 @@
 #include "texture_layout.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <sstream>
 
@@ -14,6 +15,7 @@
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <TopoDS.hxx>
 #include <gp_Pln.hxx>
@@ -25,6 +27,7 @@ namespace {
 
 using namespace texture;
 constexpr int max_connectors = 64;
+enum Style : std::uint8_t { printed_connector = 0, snap_tab = 1, tab_slot = 2 };
 
 struct Dimensions {
   double shank;
@@ -38,12 +41,20 @@ struct Dimensions {
 };
 
 Dimensions dimensions(const ClipSpec &s) {
+  const double lead = 2 * s.lead_in + 0.8;
+  if (s.style == tab_slot) {
+    const double mouth = s.key_width + s.clearance, across = s.key_thickness + s.clearance;
+    const double footprint_across = s.key_thickness + 2 * s.bump + s.clearance;
+    const double depth = s.key_length + s.depth_clearance;
+    return {0, mouth, across, mouth, s.key_length, depth,
+            std::max(mouth + 2 * s.min_wall, mouth + lead),
+            std::max(footprint_across + 2 * s.min_wall, across + lead)};
+  }
   const double shank = s.slot + 2 * s.arm_width;
   const double maximum = shank + 2 * s.barb + s.clearance;
   const double mouth = shank + s.clearance;
   const double across = s.thickness + s.clearance;
   const double reach = s.engagement + s.bridge / 2;
-  const double lead = 2 * s.lead_in + 0.8;
   return {shank, mouth, across, maximum, reach, reach + s.depth_clearance,
           std::max(maximum + 2 * s.min_wall, mouth + lead),
           std::max(across + 2 * s.min_wall, across + lead)};
@@ -84,6 +95,38 @@ TopoDS_Wire rectangle(double half_x, double half_y, double z) {
   return polygon.Wire();
 }
 
+/** A 45° frustum widening the pocket mouth by the lead-in on every side. */
+TopoDS_Shape lead_in(const ClipSpec &s, const Dimensions &d) {
+  BRepOffsetAPI_ThruSections loft(true, true);
+  loft.AddWire(rectangle(d.mouth_width / 2 + s.lead_in + 0.02, d.mouth_thickness / 2 + s.lead_in + 0.02, -0.02));
+  loft.AddWire(rectangle(d.mouth_width / 2, d.mouth_thickness / 2, s.lead_in));
+  loft.Build();
+  return loft.Shape();
+}
+
+/** Two half-round detents across the key's broad faces, near its tip; grown for the grooves they snap into. */
+std::vector<TopoDS_Shape> key_bumps(const ClipSpec &s, double radius_growth, double length_growth) {
+  if (s.bump <= 0) return {};
+  const double radius = std::max(s.bump * 2, 0.6) + radius_growth;
+  const double z = s.key_length * 0.62;
+  const double span = s.key_width * 0.8 + length_growth;
+  std::vector<TopoDS_Shape> bumps;
+  for (double side : {-1.0, 1.0}) {
+    // The axis sits inside the key so only the bump stands proud.
+    const double y = side * (s.key_thickness / 2 - (radius - radius_growth) + s.bump);
+    bumps.push_back(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-span / 2, y, z), gp::DX()), radius, span).Shape());
+  }
+  return bumps;
+}
+
+/** The tab & slot pocket: the key's slot with grooves for its bumps, and the lead-in. */
+TopoDS_Shape key_pocket(const ClipSpec &s, const Dimensions &d) {
+  auto pocket = box(d.mouth_width, d.mouth_thickness, -0.02, d.depth + 0.02);
+  for (const auto &groove : key_bumps(s, s.clearance / 2, s.clearance)) pocket = boolean<BRepAlgoAPI_Fuse>(pocket, groove);
+  if (s.lead_in > 0) pocket = boolean<BRepAlgoAPI_Fuse>(pocket, lead_in(s, d));
+  return pocket;
+}
+
 TopoDS_Shape socket(const ClipSpec &s, const Dimensions &d) {
   const double start = -0.02;
   const double total = d.reach - start;
@@ -92,14 +135,7 @@ TopoDS_Shape socket(const ClipSpec &s, const Dimensions &d) {
   auto pocket = boolean<BRepAlgoAPI_Fuse>(
       box(d.mouth_width, d.mouth_thickness, start, throat),
       box(d.maximum, d.mouth_thickness, start + throat, total - throat + s.depth_clearance));
-  if (s.lead_in > 0) {
-    BRepOffsetAPI_ThruSections loft(true, true);
-    loft.AddWire(rectangle(d.mouth_width / 2 + s.lead_in + 0.02,
-                           d.mouth_thickness / 2 + s.lead_in + 0.02, start));
-    loft.AddWire(rectangle(d.mouth_width / 2, d.mouth_thickness / 2, s.lead_in));
-    loft.Build();
-    pocket = boolean<BRepAlgoAPI_Fuse>(pocket, loft.Shape());
-  }
+  if (s.lead_in > 0) pocket = boolean<BRepAlgoAPI_Fuse>(pocket, lead_in(s, d));
   return pocket;
 }
 
@@ -149,6 +185,20 @@ std::unique_ptr<Shape> connector(const ClipSpec &s, const Dimensions &d) {
   auto clean = unify(Shape(result));
   if (!is_valid(*clean)) throw std::runtime_error("The requested clip dimensions do not make a valid connector.");
   return clean;
+}
+
+/** What stands proud of the male face (snap tab, tab & slot), rooted 0.3 mm into it. */
+TopoDS_Shape male_half(const ClipSpec &s, const Dimensions &d) {
+  constexpr double root = 0.3;
+  TopoDS_Shape part;
+  if (s.style == tab_slot) {
+    part = box(s.key_width, s.key_thickness, -root, s.key_length + root);
+    for (const auto &bump : key_bumps(s, 0, 0)) part = boolean<BRepAlgoAPI_Fuse>(part, bump);
+  } else {
+    part = box(d.shank, s.thickness, -root, s.bridge / 2 + root);
+    for (int side : {-1, 1}) part = boolean<BRepAlgoAPI_Fuse>(part, prong(s, 1, side));
+  }
+  return unify(Shape(part))->shape;
 }
 
 gp_Pnt world(const gp_Ax3 &frame, Point point) {
@@ -333,10 +383,13 @@ ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
   if (layout.empty(seam.get()) || layout.area(seam.get()) < 1e-6) {
     throw std::runtime_error("The two faces do not overlap.");
   }
+  if (clip.style > tab_slot) throw std::runtime_error("Unknown joint style.");
   const auto d = dimensions(clip);
   const auto picks = plan(layout, seam.get(), d, placement, frame_b, manual_points);
-  const auto clip_shape = connector(clip, d);
-  const auto pocket = socket(clip, d);
+  const bool connectors = clip.style == printed_connector;
+  const auto clip_shape = connectors ? connector(clip, d) : nullptr;
+  const auto part = connectors ? TopoDS_Shape() : male_half(clip, d);
+  const auto pocket = clip.style == tab_slot ? key_pocket(clip, d) : socket(clip, d);
   const auto check = box(d.wall_width, d.wall_thickness, 0.05, d.depth + clip.min_wall - 0.05);
   gp_Trsf mirror;
   mirror.SetMirror(gp_Ax2(gp::Origin(), gp::DZ()));
@@ -363,10 +416,15 @@ ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,
     };
     wall(female, check, !placement.male_on_a);
     female = boolean<BRepAlgoAPI_Cut>(female, moved(pocket, where));
+    if (!connectors) {
+      male = boolean<BRepAlgoAPI_Fuse>(male, moved(part, where));
+      continue;
+    }
     wall(male, male_check, placement.male_on_a);
     male = boolean<BRepAlgoAPI_Cut>(male, moved(male_pocket, where));
     result.connectors.push_back({{}, std::make_unique<Shape>(moved(clip_shape->shape, where)), {}});
   }
+  result.placed = static_cast<std::uint32_t>(picks.size());
   result.first = unify(Shape(placement.male_on_a ? male : female));
   result.second = unify(Shape(placement.male_on_a ? female : male));
   if (!is_valid(*result.first) || !is_valid(*result.second)) {

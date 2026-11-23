@@ -147,6 +147,13 @@ pub mod ffi {
         pub depth_clearance: f64,
         pub lead_in: f64,
         pub min_wall: f64,
+        /// 0: printed connector, 1: snap tab, 2: tab & slot (SimpleCAD 0.4's joint styles).
+        pub style: u8,
+        /// The tab & slot key and its detent bumps; unused by the other styles.
+        pub key_width: f64,
+        pub key_thickness: f64,
+        pub key_length: f64,
+        pub bump: f64,
     }
 
     pub struct ClipPlacementSpec {
@@ -162,6 +169,8 @@ pub mod ffi {
         pub first: UniquePtr<Shape>,
         pub second: UniquePtr<Shape>,
         pub connectors: Vec<ImportedBody>,
+        /// How many joints were placed (snap tabs and keys make no separate bodies).
+        pub placed: u32,
     }
 
     pub struct TextResult {

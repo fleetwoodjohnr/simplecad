@@ -1097,11 +1097,12 @@ impl Model {
         self.add_rebuilt_recipe(candidate, feature, "Threaded Connection", original, shown)
     }
 
-    /// SimpleCAD 0.4's Clip Joint, printed-connector style: face `a` of one part meets face `b` of another. The
-    /// joint cuts paired sockets and makes removable connectors, written as 0.4's tool writes it: `inputs` holds
-    /// size, retention, material, the clearances, `count` (0 for as many as `spacing` gives), spacing, edge offset
-    /// and `seat`. The connectors are named Clip, Clip2, ...; like 0.4, names are reserved for every connector
-    /// there could be, and the step's outputs are the ones it makes.
+    /// SimpleCAD 0.4's Clip Joint: face `a` of one part meets face `b` of another, written as 0.4's tool writes
+    /// it. `inputs` holds the `style` (printed connector, snap tab or tab & slot), size, retention, material, the
+    /// clearances, `count` (0 for as many as `spacing` gives), spacing, edge offset and `seat`, and for the
+    /// styles that grow from one part, `male` ("a" or "b": the part carrying the tabs). A connector joint cuts
+    /// paired sockets and makes removable connectors, named Clip, Clip2, ...; like 0.4, names are reserved for
+    /// every connector there could be, and the step's outputs are the ones it makes.
     pub fn add_clip_joint(
         &mut self,
         a: (&str, u32),
@@ -1121,6 +1122,16 @@ impl Model {
             .as_u64()
             .filter(|count| *count <= MAX_CONNECTORS)
             .ok_or("Choose up to 64 connectors, or 0 to space them out.")?;
+        let style = inputs["style"].as_str().unwrap_or("connector").to_owned();
+        if !["connector", "snap_tab", "tab_slot"].contains(&style.as_str()) {
+            return Err("Choose a printed connector, snap tab or tab & slot joint.".into());
+        }
+        let connectors = style == "connector";
+        let male = match inputs["male"].as_str() {
+            Some("b") if !connectors => "b",
+            None | Some("a" | "b") => "a",
+            Some(_) => return Err("The tabs go on the first part or the second.".into()),
+        };
         let mut bindings = Map::new();
         let mut objects = Vec::new();
         for (key, (body, index)) in [("a", a), ("b", b)] {
@@ -1156,14 +1167,20 @@ impl Model {
                 }
             })
             .filter(|name| !taken.contains(name))
-            .take(if count == 0 { MAX_CONNECTORS } else { count } as usize)
+            .take(if !connectors {
+                0
+            } else if count == 0 {
+                MAX_CONNECTORS
+            } else {
+                count
+            } as usize)
             .collect();
         for (key, value) in [
             ("clip_version", json!(2)),
-            ("style", json!("connector")),
+            ("style", json!(style)),
             ("placement", json!("auto")),
             ("anchors", json!([])),
-            ("male", json!("a")),
+            ("male", json!(male)),
             ("rotation", json!("0")),
             ("shift", json!("0")),
             ("connector_names", json!(names)),

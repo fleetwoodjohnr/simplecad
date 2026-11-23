@@ -30,6 +30,11 @@ fn a_printed_connector_joint_cuts_both_parts_and_outputs_separate_clips() {
         depth_clearance: 0.3,
         lead_in: 0.4,
         min_wall: 0.8,
+        style: 0,
+        key_width: 0.0,
+        key_thickness: 0.0,
+        key_length: 0.0,
+        bump: 0.0,
     };
     let placement = ClipPlacementSpec {
         count: 2,

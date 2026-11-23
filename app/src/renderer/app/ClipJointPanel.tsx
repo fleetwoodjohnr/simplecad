@@ -4,12 +4,14 @@ import { Btn, inputCls } from '../ui'
 
 type Inputs = ClipJointEdit['clipJoint']['inputs']
 
-/** SimpleCAD 0.4's Clip Joint tool defaults: a medium PETG connector at a snug fit, as many as 80 mm spacing gives. */
+/** SimpleCAD 0.4's Clip Joint tool defaults: medium PETG snap tabs on the first part at a snug fit, as many as 80 mm
+ * spacing gives. */
 export const defaultClipJoint: Inputs = {
-  size: 'medium', retention: 'standard', material: 'petg', clearance: '0.15', clearance_preset: 'snug', depth_clearance: '0.3',
+  style: 'snap_tab', male: 'a', size: 'medium', retention: 'standard', material: 'petg', clearance: '0.15', clearance_preset: 'snug', depth_clearance: '0.3',
   min_wall: '0.8', lead_in: '0.4', count: 0, spacing: '80', edge_offset: '1', seat: true
 }
 const options = {
+  style: [['snap_tab', 'Snap tab'], ['connector', 'Printed connector'], ['tab_slot', 'Tab & slot']],
   size: [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']],
   retention: [['easy', 'Easy to separate'], ['standard', 'Standard hold'], ['firm', 'Firm hold']],
   material: [['petg', 'PETG'], ['pla', 'PLA']],
@@ -31,7 +33,8 @@ interface Props {
   onCancel: () => void
 }
 
-/** Two parts held together by printed connectors in paired sockets, cut into the faces where they meet. */
+/** Two parts held together where they meet: printed connectors in paired sockets, or snap tabs or keys on one part
+ * in pockets cut into the other. */
 export function ClipJointPanel({ busy, picked, fits, onClear, onChange, onPreview, onApply, onCancel }: Props) {
   const [inputs, setInputs] = useState(defaultClipJoint)
   const set = (change: Partial<Inputs>) => { setInputs((current) => ({ ...current, ...change })); onChange() }
@@ -53,12 +56,18 @@ export function ClipJointPanel({ busy, picked, fits, onClear, onChange, onPrevie
       </div>
       {picked.length > 0 && <Btn type="button" size="sm" className="justify-self-start" disabled={busy} onClick={onClear}>Pick again</Btn>}
       {(Object.keys(options) as (keyof typeof options)[]).map((key) => <label key={key} className="grid gap-1">
-        {{ size: 'Size', retention: 'Retention', material: 'Material', clearance_preset: 'Fit' }[key]}
+        {{ style: 'Style', size: 'Size', retention: 'Retention', material: 'Material', clearance_preset: 'Fit' }[key]}
         <select className={inputCls} value={inputs[key]} disabled={busy} onChange={(event) => set({ [key]: event.target.value })}>
           {options[key].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>)}
-      <label className="grid gap-1">Connectors (0 = as many as the spacing gives)
+      {inputs.style !== 'connector' && <label className="grid gap-1">Tabs on
+        <select className={inputCls} value={inputs.male} disabled={busy} onChange={(event) => set({ male: event.target.value as Inputs['male'] })}>
+          <option value="a">The first part</option>
+          <option value="b">The second part</option>
+        </select>
+      </label>}
+      <label className="grid gap-1">Number of joints (0 = as many as the spacing gives)
         <input className={inputCls} type="number" min={0} max={64} value={inputs.count} disabled={busy}
           onChange={(event) => set({ count: Math.max(0, Math.min(64, Math.round(Number(event.target.value) || 0))) })} />
       </label>

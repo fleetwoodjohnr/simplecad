@@ -848,7 +848,7 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
-    /// A printed-connector clip joint between face `face_a` of `body_a` and face `face_b` of `body_b` (face indices
+    /// A clip joint (printed connectors, snap tabs or tab & slot keys) between face `face_a` of `body_a` and face `face_b` of `body_b` (face indices
     /// in each body); `inputs` is its settings as JSON.
     #[napi]
     pub fn add_clip_joint(

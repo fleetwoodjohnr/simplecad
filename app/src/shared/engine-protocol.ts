@@ -83,11 +83,13 @@ export interface SectionReplaceEdit {
 }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
-/** SimpleCAD 0.4's printed-connector Clip Joint between a face on each of two parts (display face indices). */
+/** SimpleCAD 0.4's Clip Joint between a face on each of two parts (display face indices): printed connectors, or
+ * snap tabs or keys on the `male` part ('a' is the first) with pockets in the other. */
 export interface ClipJointEdit {
   clipJoint: {
     faces: [number, number]
     inputs: {
+      style: 'snap_tab' | 'connector' | 'tab_slot'; male: 'a' | 'b'
       size: 'small' | 'medium' | 'large'; retention: 'easy' | 'standard' | 'firm'; material: 'pla' | 'petg'
       clearance: string; clearance_preset: 'snug' | 'sliding' | 'loose' | 'press'; depth_clearance: string; min_wall: string
       lead_in: string; count: number; spacing: string; edge_offset: string; seat: boolean
@@ -455,10 +457,11 @@ const isClipJoint = (value: unknown): value is ClipJointEdit => {
   if (!clip || !Array.isArray(clip.faces) || clip.faces.length !== 2 || !clip.faces.every(isIndex) || clip.faces[0] === clip.faces[1]) return false
   const i = clip.inputs as Partial<ClipJointEdit['clipJoint']['inputs']> | undefined
   const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0 && v.length < 256
-  return !!i && ['small', 'medium', 'large'].includes(i.size!) && ['easy', 'standard', 'firm'].includes(i.retention!) &&
+  return !!i && ['snap_tab', 'connector', 'tab_slot'].includes(i.style!) && (i.male === 'a' || i.male === 'b') &&
+    ['small', 'medium', 'large'].includes(i.size!) && ['easy', 'standard', 'firm'].includes(i.retention!) &&
     ['pla', 'petg'].includes(i.material!) && ['snug', 'sliding', 'loose', 'press'].includes(i.clearance_preset!) &&
     [i.clearance, i.depth_clearance, i.min_wall, i.lead_in, i.spacing, i.edge_offset].every(text) &&
-    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && Object.keys(i).length === 12
+    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && Object.keys(i).length === 14
 }
 const isHinge = (value: unknown): value is HingeEdit => {
   const hinge = (value as Partial<HingeEdit> | null)?.hinge

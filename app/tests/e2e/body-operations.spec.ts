@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { edgePoints, errors, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, scratchDir, test } from './helpers'
 
 test('patterns a body, edits the count from History in one step, and keeps it through restart and reopen', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-pattern-'))
@@ -511,7 +511,8 @@ test('joins two boxes with printed connectors, and edits the clearance from Hist
   await page.getByLabel('Planar face').selectOption({ label: 'Box · Right · 600 mm²' })
   await page.getByLabel('Planar face').selectOption({ label: 'Box2 · Left · 600 mm²' })
   await expect(clip.getByRole('status', { name: 'Joined faces' })).toHaveText('Box · Right · 600 mm² meets Box2 · Left · 600 mm²')
-  await clip.getByLabel(/^Connectors/).fill('1')
+  await clip.getByLabel('Style').selectOption({ label: 'Printed connector' })
+  await clip.getByLabel(/^Number of joints/).fill('1')
   await clip.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
   await expect(errors(page)).toHaveCount(0)
@@ -527,6 +528,74 @@ test('joins two boxes with printed connectors, and edits the clearance from Hist
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await page.getByRole('button', { name: 'Edit Clip Joint' }).click()
   await expect(page.getByRole('form', { name: 'Clip Joint' }).getByLabel('Clearance', { exact: true })).toHaveValue('0.15')
+})
+
+test('joins two boxes with snap tabs and with a keyed tab & slot, edits one from History, and keeps it through reopen', async () => {
+  const { app, page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  // A second 40 x 30 x 20 box against the first one's right face.
+  await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('box')
+  for (const [label, value] of [['Width', '40'], ['Depth', '30'], ['Height', '20']]) await shape.getByLabel(label).fill(value)
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('Body').selectOption({ label: 'Box2' })
+  await move.getByLabel('X (mm)').fill('40')
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move'])
+  await expect(status).toHaveText(/ 48000 mm³/)
+  const join = async (style: string, tabs?: string) => {
+    await toolbar.getByRole('button', { name: 'Joints' }).click()
+    await page.getByRole('menuitem', { name: 'Clip Joint' }).click()
+    const clip = page.getByRole('form', { name: 'Clip Joint' })
+    await page.getByLabel('Planar face').selectOption({ label: 'Box · Right · 600 mm²' })
+    await page.getByLabel('Planar face').selectOption({ label: 'Box2 · Left · 600 mm²' })
+    await clip.getByLabel('Style').selectOption({ label: style })
+    if (tabs) await clip.getByLabel('Tabs on').selectOption({ label: tabs })
+    await clip.getByRole('button', { name: 'Apply' }).click()
+    await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
+    await expect(errors(page)).toHaveCount(0)
+  }
+
+  // Snap tabs grow from Box into pockets in Box2; the pockets' clearance leaves less material than before.
+  await join('Snap tab')
+  await expect(page.getByRole('form', { name: 'Clip Joint' })).toHaveCount(0)
+  await expect(status).not.toHaveText(/ 48000 mm³/)
+  const snapped = (await status.textContent())!
+  await page.getByRole('button', { name: 'Edit Clip Joint' }).click()
+  const saved = page.getByRole('form', { name: 'Clip Joint' })
+  await expect(saved.getByLabel('Clearance', { exact: true })).toHaveValue('0.15')
+  await saved.getByLabel('Clearance', { exact: true }).fill('0.3')
+  await saved.getByRole('button', { name: 'Apply' }).click()
+  await expect(status).not.toHaveText(snapped)
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(snapped)
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/ 48000 mm³/)
+
+  // A keyed tab & slot, the keys on Box2 this time.
+  await join('Tab & slot', 'The second part')
+  await expect(status).not.toHaveText(/ 48000 mm³/)
+  const keyed = (await status.textContent())!.replace(/^.*· /, '')
+  const target = path.join(scratchDir('simplecad-clip-'), 'Keyed.scad3')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+  }, target)
+  await page.getByRole('button', { name: 'File', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^Save As/ }).click()
+  await expect(page.getByText('Keyed.scad3', { exact: true })).toBeVisible()
+  await app.close()
+  const reopened = await launch({ args: [target] })
+  await expect(reopened.page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
+  await expect(reopened.page.getByTestId('engine-status')).toContainText(keyed)
+  await reopened.page.getByRole('button', { name: 'Edit Clip Joint' }).click()
+  await expect(reopened.page.getByRole('form', { name: 'Clip Joint' }).getByLabel('Clearance', { exact: true })).toHaveValue('0.15')
 })
 
 test('threads a shaft into the bore of a tube as a matched pair, and edits the clearance from History', async () => {

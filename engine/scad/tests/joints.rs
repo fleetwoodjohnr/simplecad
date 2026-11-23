@@ -1,12 +1,25 @@
-//! Hinges built and saved by SimpleCAD 0.4.4 (a box and its lid, joined along the box's top back edge, as its
-//! tests/test_hinge.py builds them): rebuilt from the recipe alone, every body is what 0.4.4 saved.
+//! Joints built and saved by SimpleCAD 0.4.4, rebuilt from the recipe alone: every body is what 0.4.4 saved.
 
 use std::collections::{BTreeSet, HashMap};
 
+/// Hinges: a box and its lid, joined along the box's top back edge, as 0.4.4's tests/test_hinge.py builds them.
 #[test]
 fn hinges_rebuild_from_their_recipes_as_simplecad_044_built_them() {
-    let folder = format!("{}/tests/data/hinge", env!("CARGO_MANIFEST_DIR"));
-    for kind in ["knuckle", "pin", "snap", "stop7", "living"] {
+    rebuilds_as_saved("hinge", &["knuckle", "pin", "snap", "stop7", "living"]);
+}
+
+/// Snap tabs and tab & slot keys between two stacked boxes, saved as 0.4.4's Joint tool saves them.
+#[test]
+fn snap_tabs_and_keys_rebuild_from_their_recipes_as_simplecad_044_built_them() {
+    rebuilds_as_saved(
+        "clip",
+        &["snap_tab", "snap_tab_b", "tab_slot", "tab_slot_large"],
+    );
+}
+
+fn rebuilds_as_saved(folder: &str, kinds: &[&str]) {
+    let folder = format!("{}/tests/data/{folder}", env!("CARGO_MANIFEST_DIR"));
+    for kind in kinds {
         let original = std::fs::read(format!("{folder}/{kind}.scad3")).unwrap();
         let project = scad::project::read(&original).unwrap();
         let mut model = scad::document::Model::open(&project);
@@ -51,4 +64,32 @@ fn hinges_rebuild_from_their_recipes_as_simplecad_044_built_them() {
             );
         }
     }
+}
+
+/// A sliding style this version can't build yet fails by name, and its parts keep the last good shapes.
+#[test]
+fn an_unported_clip_style_says_so_and_keeps_the_saved_parts() {
+    let folder = format!("{}/tests/data/clip", env!("CARGO_MANIFEST_DIR"));
+    let original = std::fs::read(format!("{folder}/tab_slot.scad3")).unwrap();
+    let project = scad::project::read(&original).unwrap();
+    let mut model = scad::document::Model::open(&project);
+    let features = model.payload["features"].as_array_mut().unwrap();
+    features.last_mut().unwrap()["inputs"]["style"] = "dovetail".into();
+    let stale: BTreeSet<String> = features
+        .iter()
+        .map(|feature| feature["id"].as_str().unwrap().to_string())
+        .collect();
+    let report = scad::rebuild::rebuild(&mut model, &original, &HashMap::new(), &stale).unwrap();
+    let errors: Vec<_> = report.failures.values().collect();
+    assert!(
+        errors.len() == 1 && errors[0].contains("cannot build it yet"),
+        "{errors:?}"
+    );
+    let names: BTreeSet<_> = report
+        .bodies
+        .iter()
+        .filter(|body| body.shape.is_some())
+        .map(|body| body.name.as_str())
+        .collect();
+    assert_eq!(names, BTreeSet::from(["Bottom", "Top"]));
 }

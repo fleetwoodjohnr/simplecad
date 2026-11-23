@@ -12,13 +12,93 @@ fn kernel(error: occt::Exception) -> StepError {
     failed(error.what())
 }
 
-fn dimensions(ctx: &Context<'_>) -> Result<ClipSpec, StepError> {
-    let choice = |key, default| {
-        ctx.input(key)
-            .and_then(Value::as_str)
-            .unwrap_or(default)
-            .to_ascii_lowercase()
+/// SimpleCAD 0.4's version-2 joint styles this engine builds, with the names its message uses.
+const STYLES: [(&str, &str); 3] = [
+    ("connector", "printed connector"),
+    ("snap_tab", "snap tab"),
+    ("tab_slot", "tab & slot"),
+];
+
+fn choice(ctx: &Context<'_>, key: &str, default: &str) -> String {
+    ctx.input(key)
+        .and_then(Value::as_str)
+        .unwrap_or(default)
+        .to_ascii_lowercase()
+}
+
+/// The tab & slot key (0.4's `KEY_PRESETS`, scaled by retention and material), on the shared joint settings.
+fn key(ctx: &Context<'_>) -> Result<ClipSpec, StepError> {
+    let material = choice(ctx, "material", "petg");
+    if !matches!(material.as_str(), "pla" | "petg") {
+        return Err(failed("Clip material must be PLA or PETG."));
+    }
+    let length = |key, default| ctx.value(key, default, Dimension::Length);
+    let fit = choice(ctx, "clearance", "snug");
+    let clearance = if matches!(fit.as_str(), "press" | "snug" | "sliding" | "loose") {
+        crate::calibration::fit(&fit).expect("embedded clip clearance")
+    } else {
+        length("clearance", 0.15)?
     };
+    let (depth_clearance, lead_in, min_wall) = (
+        length("depth_clearance", 0.3)?,
+        length("lead_in", 0.4)?,
+        length("min_wall", 0.8)?,
+    );
+    if min_wall < 0.4 {
+        return Err(failed("The minimum wall must be at least 0.4 mm."));
+    }
+    if depth_clearance < 0.0 || lead_in < 0.0 {
+        return Err(failed("Depth clearance and lead-in cannot be negative."));
+    }
+    if clearance < -0.2 {
+        return Err(failed(
+            "That clearance is tighter than any printer can press together.",
+        ));
+    }
+    let preset = match choice(ctx, "size", "medium").as_str() {
+        "small" => [6.0, 2.4, 6.0, 0.3],
+        "medium" => [8.0, 3.0, 8.0, 0.4],
+        "large" => [12.0, 4.0, 11.0, 0.5],
+        _ => return Err(failed("Unknown key size or retention.")),
+    };
+    let hold = match choice(ctx, "retention", "standard").as_str() {
+        "easy" => 0.7,
+        "standard" => 1.0,
+        "firm" => 1.3,
+        _ => return Err(failed("Unknown key size or retention.")),
+    };
+    let softer = if material == "pla" { 0.7 } else { 1.0 };
+    let spec = ClipSpec {
+        arm_width: 0.0,
+        slot: 0.0,
+        thickness: 0.0,
+        engagement: 0.0,
+        bridge: 0.0,
+        barb: 0.0,
+        removal_angle: 0.0,
+        clearance,
+        depth_clearance,
+        lead_in,
+        min_wall,
+        style: 2,
+        key_width: length("key_width", preset[0])?,
+        key_thickness: length("key_thickness", preset[1])?,
+        key_length: length("key_length", preset[2])?,
+        bump: length("bump", preset[3] * hold * softer)?,
+    };
+    if spec.key_width.min(spec.key_thickness).min(spec.key_length) <= 0.0 || spec.bump < 0.0 {
+        return Err(failed("Key dimensions must be greater than zero."));
+    }
+    if spec.bump > spec.key_thickness * 0.3 {
+        return Err(failed(
+            "The detent bump is too large for the key. Use a thicker key or an easier retention.",
+        ));
+    }
+    Ok(spec)
+}
+
+fn dimensions(ctx: &Context<'_>, style: u8) -> Result<ClipSpec, StepError> {
+    let choice = |key, default| choice(ctx, key, default);
     let size = choice("size", "medium");
     let [arm, slot, thickness, mut engagement, bridge, mut barb] = match size.as_str() {
         "small" => [1.2, 0.8, 2.0, 6.0, 1.0, 0.4],
@@ -62,6 +142,11 @@ fn dimensions(ctx: &Context<'_>) -> Result<ClipSpec, StepError> {
         depth_clearance: length("depth_clearance", 0.3)?,
         lead_in: length("lead_in", 0.4)?,
         min_wall: length("min_wall", 0.8)?,
+        style,
+        key_width: 0.0,
+        key_thickness: 0.0,
+        key_length: 0.0,
+        bump: 0.0,
     };
     if [
         spec.arm_width,
@@ -104,9 +189,13 @@ fn dimensions(ctx: &Context<'_>) -> Result<ClipSpec, StepError> {
 }
 
 pub(crate) fn build(ctx: &Context<'_>) -> Result<BTreeMap<String, Shape>, StepError> {
-    if ctx.input("clip_version").and_then(Value::as_u64) != Some(2)
-        || ctx.input("style").and_then(Value::as_str) != Some("connector")
-    {
+    let style = ctx.input("style").and_then(Value::as_str).unwrap_or("");
+    let Some(code) = STYLES.iter().position(|(name, _)| *name == style) else {
+        return Err(failed(
+            "This clip style has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
+        ));
+    };
+    if ctx.input("clip_version").and_then(Value::as_u64) != Some(2) {
         return Err(failed(
             "This clip style has to be rebuilt, and this version cannot build it yet. Edit it in SimpleCAD 0.4.",
         ));
@@ -116,7 +205,11 @@ pub(crate) fn build(ctx: &Context<'_>) -> Result<BTreeMap<String, Shape>, StepEr
     if name_a.is_empty() || name_b.is_empty() || name_a == name_b {
         return Err(failed("Joining needs faces on two different parts."));
     }
-    let clip = dimensions(ctx)?;
+    let clip = if code == 2 {
+        key(ctx)?
+    } else {
+        dimensions(ctx, code as u8)?
+    };
     let mut body_a = ctx.shape("body_a")?;
     let body_b = ctx.shape("body_b")?;
     let (owner_a, index_a) = ctx.face("face_a")?;
@@ -178,8 +271,8 @@ pub(crate) fn build(ctx: &Context<'_>) -> Result<BTreeMap<String, Shape>, StepEr
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let count = result.connectors.len();
-    if names.len() < count {
+    let count = result.placed as usize;
+    if code == 0 && names.len() < count {
         return Err(failed(
             "The joint is missing names for its printed connectors.",
         ));
@@ -196,6 +289,6 @@ pub(crate) fn build(ctx: &Context<'_>) -> Result<BTreeMap<String, Shape>, StepEr
         outputs.insert(name.into(), Rc::new(connector.shape));
     }
     let suffix = if count == 1 { "" } else { "s" };
-    ctx.set_message(format!("Joined with {count} printed connector{suffix}."));
+    ctx.set_message(format!("Joined with {count} {}{suffix}.", STYLES[code].1));
     Ok(outputs)
 }
