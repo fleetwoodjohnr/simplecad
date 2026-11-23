@@ -83,6 +83,17 @@ export interface SectionReplaceEdit {
 }
 /** Organise bodies under one group (body indices), or dissolve a group by name. Neither changes geometry. */
 export interface GroupEdit { group: number[] }
+/** SimpleCAD 0.4's printed-connector Clip Joint between a face on each of two parts (display face indices). */
+export interface ClipJointEdit {
+  clipJoint: {
+    faces: [number, number]
+    inputs: {
+      size: 'small' | 'medium' | 'large'; retention: 'easy' | 'standard' | 'firm'; material: 'pla' | 'petg'
+      clearance: string; clearance_preset: 'snug' | 'sliding' | 'loose' | 'press'; depth_clearance: string; min_wall: string
+      lead_in: string; count: number; spacing: string; edge_offset: string; seat: boolean
+    }
+  }
+}
 export const HINGE_TYPES = ['pin', 'knuckle', 'snap', 'living'] as const
 /** SimpleCAD 0.4's settings for a hinge: its type, a named fit or a clearance, and the rest as expressions. */
 export const HINGE_SETTINGS = ['clearance', 'knuckles', 'knuckle_od', 'pin', 'length', 'axial_clearance', 'open_max', 'flex', 'flex_length'] as const
@@ -205,7 +216,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit
 
 export interface Checkpoint {
   source: Source
@@ -269,6 +280,7 @@ export type RendererCommand =
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
   | ({ op: 'applyHinge' | 'previewHinge'; revision: number } & HingeEdit)
+  | ({ op: 'applyClipJoint' | 'previewClipJoint'; revision: number } & ClipJointEdit)
   | ({ op: 'group'; revision: number } & GroupEdit)
   | ({ op: 'plate'; revision: number } & PlateEdit)
   | ({ op: 'threadGauges'; revision: number } & ThreadGaugeEdit)
@@ -419,6 +431,16 @@ const isMoveBodies = (value: unknown): value is MoveBodiesEdit => {
     moveBodies.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(moveBodies).size === moveBodies.length &&
     Array.isArray(offset) && offset.length === 3 && offset.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e6)
 }
+const isClipJoint = (value: unknown): value is ClipJointEdit => {
+  const clip = (value as Partial<ClipJointEdit> | null)?.clipJoint
+  if (!clip || !Array.isArray(clip.faces) || clip.faces.length !== 2 || !clip.faces.every(isIndex) || clip.faces[0] === clip.faces[1]) return false
+  const i = clip.inputs as Partial<ClipJointEdit['clipJoint']['inputs']> | undefined
+  const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0 && v.length < 256
+  return !!i && ['small', 'medium', 'large'].includes(i.size!) && ['easy', 'standard', 'firm'].includes(i.retention!) &&
+    ['pla', 'petg'].includes(i.material!) && ['snug', 'sliding', 'loose', 'press'].includes(i.clearance_preset!) &&
+    [i.clearance, i.depth_clearance, i.min_wall, i.lead_in, i.spacing, i.edge_offset].every(text) &&
+    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && Object.keys(i).length === 12
+}
 const isHinge = (value: unknown): value is HingeEdit => {
   const hinge = (value as Partial<HingeEdit> | null)?.hinge
   if (!hinge || !isIndex(hinge.edge) || !isIndex(hinge.swinging) || hinge.swinging >= MAX_BODIES || !hinge.inputs) return false
@@ -447,7 +469,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -604,6 +626,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyBodyOperation' || m.op === 'previewBodyOperation') && isBodyOperation(m)) ||
         ((m.op === 'applyEdgeFinish' || m.op === 'previewEdgeFinish') && isEdgeFinish(m)) ||
         ((m.op === 'applyHinge' || m.op === 'previewHinge') && isHinge(m)) ||
+        ((m.op === 'applyClipJoint' || m.op === 'previewClipJoint') && isClipJoint(m)) ||
         (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||

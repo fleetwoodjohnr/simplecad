@@ -1048,6 +1048,135 @@ impl Model {
         Ok(reference)
     }
 
+    /// SimpleCAD 0.4's Clip Joint, printed-connector style: face `a` of one part meets face `b` of another. The
+    /// joint cuts paired sockets and makes removable connectors, written as 0.4's tool writes it: `inputs` holds
+    /// size, retention, material, the clearances, `count` (0 for as many as `spacing` gives), spacing, edge offset
+    /// and `seat`. The connectors are named Clip, Clip2, ...; like 0.4, names are reserved for every connector
+    /// there could be, and the step's outputs are the ones it makes.
+    pub fn add_clip_joint(
+        &mut self,
+        a: (&str, u32),
+        b: (&str, u32),
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        const MAX_CONNECTORS: u64 = 64;
+        if a.0 == b.0 {
+            return Err("Joining needs faces on two different parts.".into());
+        }
+        if !inputs.is_object() {
+            return Err("The clip settings could not be read.".into());
+        }
+        let count = inputs["count"]
+            .as_u64()
+            .filter(|count| *count <= MAX_CONNECTORS)
+            .ok_or("Choose up to 64 connectors, or 0 to space them out.")?;
+        let mut bindings = Map::new();
+        let mut objects = Vec::new();
+        for (key, (body, index)) in [("a", a), ("b", b)] {
+            let (producer, object) = self.editable(body)?;
+            let shape = shown
+                .get(&object)
+                .ok_or("Pick faces of bodies with geometry.")?;
+            inputs[format!("body_{key}")] =
+                json!({ "__body__": body, "feature_id": producer, "object_id": object });
+            inputs[format!("face_{key}")] =
+                json!({ "__ref__": self.anchored_face_ref(body, &object, shape, index)? });
+            bindings.insert(
+                body.to_owned(),
+                json!({ "feature_id": producer, "object_id": object }),
+            );
+            objects.push(object);
+        }
+        let taken: HashSet<String> = ["bodies", "groups"]
+            .iter()
+            .flat_map(|key| {
+                self.list(key)
+                    .iter()
+                    .filter_map(|v| v.get("name")?.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let names: Vec<String> = (1..)
+            .map(|suffix| {
+                if suffix == 1 {
+                    "Clip".to_string()
+                } else {
+                    format!("Clip{suffix}")
+                }
+            })
+            .filter(|name| !taken.contains(name))
+            .take(if count == 0 { MAX_CONNECTORS } else { count } as usize)
+            .collect();
+        for (key, value) in [
+            ("clip_version", json!(2)),
+            ("style", json!("connector")),
+            ("placement", json!("auto")),
+            ("anchors", json!([])),
+            ("male", json!("a")),
+            ("rotation", json!("0")),
+            ("shift", json!("0")),
+            ("connector_names", json!(names)),
+        ] {
+            inputs[key] = value;
+        }
+        if inputs["seat"] == json!(true) {
+            inputs["seat_x"] = json!(0.0);
+            inputs["seat_y"] = json!(0.0);
+        } else if let Some(settings) = inputs.as_object_mut() {
+            settings.remove("seat");
+        }
+        let mut candidate = self.clone();
+        let name = candidate.unique_name("Clip Joint");
+        let id = new_feature_id();
+        let feature = |made: &[String]| {
+            let mut output_ids = Map::from_iter([
+                (a.0.to_owned(), json!(objects[0])),
+                (b.0.to_owned(), json!(objects[1])),
+            ]);
+            for connector in made {
+                output_ids.insert(
+                    connector.clone(),
+                    json!(crate::graph::output_id(&id, connector)),
+                );
+            }
+            let outputs: Vec<String> = [a.0, b.0]
+                .into_iter()
+                .map(String::from)
+                .chain(made.iter().cloned())
+                .collect();
+            json!({
+                "id": id, "type": "clip_joint", "name": name,
+                "outputs": outputs,
+                "output_ids": output_ids, "inputs": inputs, "bindings": bindings,
+                "dropped": [], "suppressed": false,
+            })
+        };
+        // Built once to learn which connectors it makes, then kept with only those as outputs.
+        let mut trial = candidate.clone();
+        trial.payload["features"]
+            .as_array_mut()
+            .ok_or("This project has no feature list.")?
+            .push(feature(&names));
+        let report =
+            crate::rebuild::rebuild(&mut trial, original, shown, &BTreeSet::from([id.clone()]))?;
+        if let Some(error) = report.failures.get(&id) {
+            return Err(error.clone());
+        }
+        let made: Vec<String> = names
+            .iter()
+            .filter(|name| {
+                report
+                    .bodies
+                    .iter()
+                    .any(|body| &body.name == *name && body.shape.is_some())
+            })
+            .cloned()
+            .collect();
+        self.add_rebuilt_recipe(candidate, feature(&made), "Clip Joint", original, shown)
+    }
+
     /// Section Replace: the replacement body's picked face set into the target body's picked face,
     /// written as SimpleCAD 0.4 writes it. The target is changed in place; the replacement is used up.
     #[allow(clippy::too_many_arguments)]
@@ -1986,6 +2115,18 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "split" => &["position"],
         "arrange" => &["mode", "axis", "gap"],
         "section_replace" => &["u", "v", "boundary", "setback"],
+        // Not the connector count, which decides the step's outputs.
+        "clip_joint" => &[
+            "size",
+            "retention",
+            "material",
+            "clearance",
+            "depth_clearance",
+            "min_wall",
+            "lead_in",
+            "spacing",
+            "edge_offset",
+        ],
         // Not its type: a pin hinge has a pin body the others do not.
         "hinge" => &[
             "clearance",

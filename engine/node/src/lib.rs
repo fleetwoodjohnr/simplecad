@@ -813,6 +813,33 @@ impl Project {
         })
     }
 
+    /// A printed-connector clip joint between face `face_a` of `body_a` and face `face_b` of `body_b` (face indices
+    /// in each body); `inputs` is its settings as JSON.
+    #[napi]
+    pub fn add_clip_joint(
+        &self,
+        body_a: String,
+        face_a: u32,
+        body_b: String,
+        face_b: u32,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The clip settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .add_clip_joint(
+                (&body_a, face_a),
+                (&body_b, face_b),
+                inputs,
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// A hinge along edge `edge` (a display edge index) of `fixed`, swinging `swinging`; `inputs` is its settings
     /// as JSON.
     #[napi]

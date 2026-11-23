@@ -5,15 +5,17 @@ const labels: Record<string, string> = {
   dx: 'Move X', dy: 'Move Y', dz: 'Move Z', rx: 'Turn about X (°)', ry: 'Turn about Y (°)', rz: 'Turn about Z (°)', angle: 'Turn (°)',
   distance: 'Distance', offset: 'Offset', rotation: 'Rotation (°)', flip: 'Flip', horizontal: 'Horizontal', vertical: 'Vertical',
   horizontal_gap: 'Horizontal gap', vertical_gap: 'Vertical gap', u: 'Offset U', v: 'Offset V',
-  clearance: 'Fit', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
+  clearance: 'Clearance', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
   axial_clearance: 'Gap between knuckles', open_max: 'Opens to (°)', stop: 'Stop at the limit', flex: 'Strip thickness',
-  flex_length: 'Bending length'
+  flex_length: 'Bending length', size: 'Size', retention: 'Retention', material: 'Material', depth_clearance: 'Depth clearance',
+  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset'
 }
 /** Settings that are a checkbox. */
 const toggles = ['flip', 'stop']
 /** Settings that are a choice rather than an expression. */
 const choices: Record<string, string[]> = { horizontal: ['left', 'center', 'right'], vertical: ['bottom', 'center', 'top'],
-  clearance: ['snug', 'sliding', 'loose', 'press'] }
+  clearance: ['snug', 'sliding', 'loose', 'press'], size: ['small', 'medium', 'large'], retention: ['easy', 'standard', 'firm'],
+  material: ['pla', 'petg'] }
 
 interface Props {
   /** The step's name, which names the form. */

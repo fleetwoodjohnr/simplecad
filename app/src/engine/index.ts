@@ -70,6 +70,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'previewBodyOperation':
       case 'previewEdgeFinish':
       case 'previewHinge':
+      case 'previewClipJoint':
       case 'previewArrange':
       case 'previewSectionReplace':
       case 'previewSketchSolid':
@@ -81,6 +82,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'applyBodyOperation':
       case 'applyEdgeFinish':
       case 'applyHinge':
+      case 'applyClipJoint':
       case 'applyConstruction':
       case 'applyArrange':
       case 'applySectionReplace':

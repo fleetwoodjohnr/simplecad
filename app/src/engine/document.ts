@@ -1,6 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -39,6 +39,7 @@ export interface Project {
   ungroup(name: string): Project
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addHinge(fixed: string, edge: number, swinging: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  addClipJoint(bodyA: string, faceA: number, bodyB: string, faceB: number, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   importModel(data: Uint8Array, name: string, format: string, limit: number, visible: Shape[]): { project: Project; bodies: Body[] }
   pushPull(body: string, shape: Shape, face: number, distance: number): { project: Project; shape: Shape }
   addFaceFeature(shape: Shape, request: { kind: FaceOperation['faceOperation']; body: string; face: number
@@ -210,12 +211,13 @@ export class EngineDocument {
     return this.model()
   }
 
-  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
+  preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ClipJointEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
       'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
       'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'hinge' in edit ? { hinge: edit.hinge } :
+      'clipJoint' in edit ? { clipJoint: edit.clipJoint } :
       'arrange' in edit ? { arrange: edit.arrange, inputs: edit.inputs } :
       'sectionTarget' in edit ? { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
@@ -286,7 +288,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -322,6 +324,8 @@ export class EngineDocument {
       step = { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs }
     } else if ('hinge' in edit) {
       step = { hinge: edit.hinge }
+    } else if ('clipJoint' in edit) {
+      step = { clipJoint: edit.clipJoint }
     } else if ('edgeFinish' in edit) {
       step = { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value }
     } else if ('group' in edit) {
@@ -613,6 +617,12 @@ export class EngineDocument {
         next = [...next, { name: created.name, shape: created.shape }]
       }
       return { bodies: next, project }
+    }
+    if ('clipJoint' in step) {
+      const [a, b] = step.clipJoint.faces.map((face) => this.pick(face))
+      if (a.body === b.body) throw new Error('Joining needs faces on two different parts.')
+      return this.rebuiltState(project.addClipJoint(bodies[a.body].name, a.face, bodies[b.body].name, b.face,
+        JSON.stringify(step.clipJoint.inputs), this.shapes(bodies)))
     }
     if ('hinge' in step) {
       const pick = this.pickEdge(step.hinge.edge)
