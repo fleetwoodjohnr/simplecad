@@ -1547,6 +1547,40 @@ fn import_offset(ctx: &Context<'_>, shape: &Shape) -> Result<Shape, StepError> {
 }
 
 /// Where saved results and import sources are read from during a rebuild.
+/// Saved results decoded by earlier rebuilds, by the sha256 of their B-rep, so the same bytes are only parsed once:
+/// every Undo and edit rebuilds from the saved results, and reading Atlas Box's took most of a second each time.
+struct Decoded {
+    shapes: HashMap<String, Shape>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl Decoded {
+    // ponytail: bounded by count, not bytes; size it by memory if a project's results are huge.
+    const LIMIT: usize = 256;
+
+    fn get(&self, sha: &str) -> Option<Shape> {
+        self.shapes.get(sha).cloned()
+    }
+
+    fn put(&mut self, sha: &str, shape: Shape) {
+        if self.shapes.insert(sha.to_string(), shape).is_none() {
+            self.order.push_back(sha.to_string());
+        }
+        while self.order.len() > Self::LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.shapes.remove(&oldest);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static DECODED: std::cell::RefCell<Decoded> = std::cell::RefCell::new(Decoded {
+        shapes: HashMap::new(),
+        order: Default::default(),
+    });
+}
+
 struct Store<'a> {
     original: Option<zip::ZipArchive<Cursor<&'a [u8]>>>,
     model_blobs: &'a BTreeMap<String, Arc<[u8]>>,
@@ -1595,7 +1629,14 @@ impl Store<'_> {
         if let Some(shape) = self.decoded.get(sha) {
             return Some(shape.clone());
         }
-        let shape = Rc::new(occt::read_brep(&self.blob(sha)?).ok()?);
+        let shape = match DECODED.with(|cache| cache.borrow().get(sha)) {
+            Some(shape) => shape,
+            None => {
+                let shape = Rc::new(occt::read_brep(&self.blob(sha)?).ok()?);
+                DECODED.with(|cache| cache.borrow_mut().put(sha, shape.clone()));
+                shape
+            }
+        };
         self.decoded.insert(sha.to_string(), shape.clone());
         Some(shape)
     }
@@ -2468,6 +2509,23 @@ pub fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_results_are_kept_up_to_the_limit_oldest_out_first() {
+        let shape = Rc::new(occt::make_box(1.0, 1.0, 1.0).unwrap());
+        let mut decoded = Decoded {
+            shapes: HashMap::new(),
+            order: Default::default(),
+        };
+        for i in 0..=Decoded::LIMIT {
+            decoded.put(&i.to_string(), shape.clone());
+        }
+        decoded.put("1", shape.clone());
+        assert_eq!(decoded.shapes.len(), Decoded::LIMIT);
+        assert!(decoded.get("0").is_none());
+        assert!(Rc::ptr_eq(&decoded.get("1").unwrap(), &shape));
+        assert!(decoded.get(&Decoded::LIMIT.to_string()).is_some());
+    }
 
     #[test]
     fn construction_planes_are_rebuilt_and_cached_without_display_bodies() {

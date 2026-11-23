@@ -119,6 +119,8 @@ function onRenderer(channel: PortLike, data: unknown) {
         addon.crash()
     }
     channel.postMessage({ id, ok: true, result: result! })
+    // The window shows the project first; the next request waits at most this long.
+    if (req.op === 'open' || req.op === 'restore') setImmediate(() => document.warm())
   } catch (err) {
     channel.postMessage({ id, ok: false, error: (err as Error).message })
   }

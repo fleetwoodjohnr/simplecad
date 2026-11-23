@@ -120,6 +120,13 @@ fn anchor(mesh: &ffi::MeshBuffers, face: usize) -> Option<Vec<f64>> {
 
 #[napi]
 impl Shape {
+    /// The same number for the same geometry: a step that leaves a body alone hands back the shape it had, in a
+    /// new wrapper, so a mesh made for it can be kept. Unique while any wrapper of that shape is alive.
+    #[napi(getter)]
+    pub fn key(&self) -> f64 {
+        Rc::as_ptr(&self.inner) as usize as f64
+    }
+
     #[napi(factory)]
     pub fn make_box(dx: f64, dy: f64, dz: f64) -> Result<Self> {
         wrap(ffi::make_box(dx, dy, dz))
@@ -1084,6 +1091,21 @@ impl Project {
             undo: count("undo"),
             redo: count("redo"),
         }
+    }
+
+    /// Reads the saved results a rebuild reuses, and keeps them decoded, so the first Undo or edit after opening a
+    /// large project doesn't wait for them; nothing about the project changes. SimpleCAD 0.4 did this while opening.
+    #[napi]
+    pub fn warm(&self, shown: Vec<ShownBody>) -> Result<()> {
+        let mut model = self.model.clone();
+        scad::rebuild::rebuild(
+            &mut model,
+            &self.original,
+            &self.shown_shapes(shown),
+            &BTreeSet::new(),
+        )
+        .map_err(Error::from_reason)?;
+        Ok(())
     }
 
     /// Move through actions saved in the project, keeping the inverse patches

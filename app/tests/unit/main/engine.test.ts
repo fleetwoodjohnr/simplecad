@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { combine, EngineDocument, type PartDisplay, type Project, type Shape } from '@/engine/document'
 
 /** A stand-in for an OCCT shape: `faces` one-triangle faces; a pull adds `distance` to the volume of that body. */
+let shapes = 0
 class FakeShape implements Shape {
+  readonly key = ++shapes
   pulls: [number, number][] = []
   constructor(readonly volume: number, readonly faces = 2) {}
   bounds() { return [0, 0, 0, 1, 1, 1] }
@@ -68,6 +70,7 @@ class FakeProject implements Project {
   }
   historyDepth() { return { undo: 0, redo: 0 } }
   moveHistory(): never { throw new Error('No saved history in this fixture.') }
+  warm() {}
   repairInput(): never { throw new Error('No missing inputs in this fixture.') }
   editStepSettings(): never { throw new Error('No face features in this fixture.') }
   save(undone: number) {

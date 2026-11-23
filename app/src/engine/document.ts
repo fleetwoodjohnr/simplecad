@@ -13,6 +13,8 @@ const SEVERITY = { ok: 0, note: 1, warning: 2 }
 export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
 
 export interface Shape {
+  /** The engine's shape behind this wrapper: a step hands back an unchanged body's shape in a new wrapper. */
+  readonly key: number
   display(): PartDisplay
   /** The optimal bounding box: min x, y, z then max x, y, z. */
   bounds(): number[]
@@ -57,6 +59,8 @@ export interface Project {
   steps(): Omit<StepInfo, 'undone'>[]
   historyDepth(): { undo: number; redo: number }
   moveHistory(offset: number, shown: { id?: string; name: string; shape: Shape }[]): State
+  /** Decodes the saved results a rebuild reuses; changes nothing. */
+  warm(shown: { id?: string; name: string; shape: Shape }[]): void
   repairInput(request: { stepId: string; missingId: string; replacementId?: string; replacementName: string; face?: number
     more?: { missingId: string; replacementId?: string; replacementName: string }[] },
     shown: { id?: string; name: string; shape: Shape }[]): State
@@ -129,7 +133,9 @@ export class EngineDocument {
   private savedBodyIds = new Set<string>()
   private previewResult?: { step: Step; state: State }
   // A shape never changes, so its mesh is made once: undo, redo, previews and showing a body re-mesh only what changed.
-  private displays = new WeakMap<Shape, PartDisplay>()
+  // Kept by the engine's shape, not the wrapper, since every step returns new wrappers; an entry holds its shape, so
+  // its key can't be reused while it is kept, and entries no state can show again are dropped as the history moves.
+  private displays = new Map<number, { shape: Shape; display: PartDisplay }>()
   private stepLists = new WeakMap<Project, Omit<StepInfo, 'undone'>[]>()
 
   constructor(
@@ -419,6 +425,15 @@ export class EngineDocument {
     return this.rebuiltState(project.moveHistory(offset, this.shapes(bodies)))
   }
 
+  /** After a project opens: decode what its first Undo or edit will reuse. Only a cache is filled, so a failure is ignored. */
+  warm() {
+    try {
+      this.current.project.warm(this.shapes(this.current.bodies))
+    } catch {
+      // The step that needs it reports the problem.
+    }
+  }
+
   private shapes(bodies: Body[]) {
     return bodies.flatMap(({ id, name, shape }) => shape ? [{ id, name, shape }] : [])
   }
@@ -443,9 +458,9 @@ export class EngineDocument {
   }
 
   private display(shape: Shape): PartDisplay {
-    let display = this.displays.get(shape)
-    if (!display) this.displays.set(shape, display = shape.display())
-    return display
+    let entry = this.displays.get(shape.key)
+    if (!entry) this.displays.set(shape.key, entry = { shape, display: shape.display() })
+    return entry.display
   }
 
   /** The bodies that are drawn and can be edited: shown, with geometry. */
@@ -766,6 +781,9 @@ export class EngineDocument {
   private advance() {
     this.revision++
     this.previewResult = undefined
+    const live = new Set<number>()
+    for (const state of [...this.states, this.inherited]) for (const body of state?.bodies ?? []) if (body.shape) live.add(body.shape.key)
+    for (const key of this.displays.keys()) if (!live.has(key)) this.displays.delete(key)
   }
 
   private checkRevision(revision: number) {
