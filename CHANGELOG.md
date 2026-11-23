@@ -3,7 +3,7 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
-## 0.5.0 (2026-11-21)
+## 0.5.0 (2026-11-23)
 
 A new desktop app: every tool is a button, and what a tool will do shows in
 the model while you set it up. Projects from 0.4 open and rebuild the same,
@@ -47,6 +47,16 @@ brings it over.
   Arrange in a row works.
 - Draft has no control yet: saved drafts rebuild, but can't be added or
   edited.
+
+### Slower than 0.4.4
+
+- On very large projects, Undo and Redo take a moment: about 0.4 s a step on
+  a project like a 450-step enclosure (the first after opening up to 2 s),
+  where 0.4.4 took a few hundredths of a second. Undoing or redoing many
+  steps in a row is up to 2.3 times as slow, and rebuilding such a project
+  from scratch up to 1.7 times. Opening and saving are faster than in 0.4.4
+  on every project measured, with far less memory. 0.5.1 makes Undo quick
+  again.
 
 ## 0.4.4 (2026-11-20)
 
