@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { edgePoints, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, test } from './helpers'
 
 test('draws and dimensions a sketch, then edits its extrusion through history and reopen', async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), 'simplecad-sketch-'))
@@ -207,7 +207,7 @@ test('creates and edits an offset plane through history and a worker restart', a
   await editor.getByLabel('Sketch plane', { exact: true }).selectOption({ label: 'Offset Plane' })
 })
 
-test('creates a midplane, a plane at an angle, an axis and a point from picks, and edits the angle from History', async () => {
+test('creates a midplane, a plane at an angle, an axis and a point from picks, and edits the angle from History', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
@@ -246,14 +246,14 @@ test('creates a midplane, a plane at an angle, an axis and a point from picks, a
   await faces.selectOption({ label: 'Top · 1200 mm²' })
   await form.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText([/^Box/, /^Midplane/, /^Plane at Angle/, /^Axis/, /^Point/])
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Edit Plane at Angle' }).click()
   const saved = page.getByRole('form', { name: 'Plane at Angle' })
   await expect(saved.getByLabel('Angle (°)')).toHaveValue('30')
   await saved.getByLabel('Angle (°)').fill('60')
   await saved.getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await expect(steps).toHaveText([/^Box/, /^Midplane/, /^Plane at Angle/, /^Axis/, /^Point/])
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await page.getByRole('button', { name: 'Edit Plane at Angle' }).click()

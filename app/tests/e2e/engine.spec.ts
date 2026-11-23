@@ -2,9 +2,9 @@ import type { ElectronApplication } from '@playwright/test'
 import path from 'node:path'
 import os from 'node:os'
 import { copyFile, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { expect, launch, quitCleanly, test } from './helpers'
+import { errors, expect, launch, quitCleanly, test } from './helpers'
 
-test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', async () => {
+test('pushes a face in the native worker, rejects an invalid push, and undoes and redoes', { tag: '@viewport' }, async () => {
   const { app, page } = await launch()
   const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/Engine ready · 24000 mm³/)
@@ -16,7 +16,7 @@ test('pushes a face in the native worker, rejects an invalid push, and undoes an
   const distance = page.getByLabel('Pull distance')
   await distance.fill('-25')
   await distance.press('Enter')
-  await expect(page.getByRole('alert')).toContainText('straight through this body')
+  await expect(errors(page)).toContainText('straight through this body')
   await expect(status).toHaveText(/24000 mm³/)
 
   await distance.fill('-3')
@@ -55,7 +55,7 @@ test('raises and engraves text through the geometry worker, then saves and reope
     await text.getByLabel('Text to place').fill('A')
     await text.getByRole('button', { name: 'Preview' }).click()
     await expect(text.getByRole('button', { name: 'Apply' })).toBeEnabled()
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(errors(page)).toHaveCount(0)
     await expect(status).toHaveText(/24000 mm³/)
     await text.getByRole('button', { name: 'Apply' }).click()
     await expect(text).toBeHidden()
@@ -71,7 +71,7 @@ test('raises and engraves text through the geometry worker, then saves and reope
     await text.getByLabel('Text mode').selectOption('engraved')
     await text.getByLabel('Depth').fill('25 mm')
     await text.getByRole('button', { name: 'Apply' }).click()
-    await expect(page.getByRole('alert')).toContainText('deeper than the material')
+    await expect(errors(page)).toContainText('deeper than the material')
     await text.getByLabel('Depth').fill('2 mm')
     await text.getByRole('button', { name: 'Apply' }).click()
     await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box', 'Text', 'Text2'])
@@ -131,7 +131,7 @@ test('previews, applies and edits a planar face texture through a worker restart
   await texture.getByLabel('Spacing', { exact: true }).fill('5 mm')
   await texture.getByRole('button', { name: 'Preview' }).click()
   await expect(texture.getByRole('button', { name: 'Apply' })).toBeEnabled()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await expect(status).toHaveText(/24000 mm³/)
   await texture.getByRole('button', { name: 'Apply' }).click()
   await expect(texture).toBeHidden()
@@ -385,7 +385,7 @@ test('moves and rotates by expressions and preserves both steps through restart 
     await move.getByLabel('X (mm)').fill('1 cm + 2 mm')
     await move.getByRole('button', { name: 'Preview' }).click()
     await expect(move.getByRole('button', { name: 'Apply' })).toBeEnabled()
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(errors(page)).toHaveCount(0)
     await expect(steps).toHaveText(['Box'])
     await move.getByRole('button', { name: 'Apply' }).click()
     await expect(steps).toHaveText(['Box', 'Move'])
@@ -1015,7 +1015,7 @@ test('saves a pull into the project and reopens it', async () => {
   await expect(status).toHaveText(/Engine ready · 24000 mm³/)
 })
 
-test('the viewport picks a face and the drag handle commits a pull', async () => {
+test('the viewport picks a face and the drag handle commits a pull', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/24000 mm³/)

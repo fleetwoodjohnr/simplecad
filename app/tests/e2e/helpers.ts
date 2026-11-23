@@ -1,11 +1,19 @@
 import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
 import { once } from 'node:events'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const open = new Set<ElectronApplication>()
+/** The profile and recovery folders launch made, removed after the test: each launch's Chromium profile is several
+ * MB, and a few hundred runs fill a tmpfs /tmp. */
+const scratch = new Set<string>()
+const scratchDir = (prefix: string) => {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix))
+  scratch.add(dir)
+  return dir
+}
 
 /** After every test, an app it left running is closed (killed if that hangs), as in the rest of the suite. */
 export const test = base.extend<{ cleanup: void }>({
@@ -13,14 +21,31 @@ export const test = base.extend<{ cleanup: void }>({
     async ({}, use) => {
       await use()
       for (const a of open) {
+        let child: ReturnType<ElectronApplication['process']> | undefined
+        try {
+          child = a.process()
+        } catch {
+          /* a test that quit the app itself */
+        }
+        const exited = !child || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit').then(() => {})
         await Promise.race([a.evaluate(({ app }) => app.exit(0)).catch(() => {}), new Promise((r) => setTimeout(r, 5000))])
         try {
-          if (a.process().exitCode === null) a.process().kill('SIGKILL')
+          if (child?.exitCode === null) child.kill('SIGKILL')
         } catch {
           /* already gone */
         }
+        // A closing Chromium still writes to its profile: remove the folders only once it is gone.
+        await Promise.race([exited, delay(5000)])
       }
       open.clear()
+      for (const dir of scratch) {
+        try {
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+        } catch {
+          /* a stray writer still holds it: tmp's own cleanup gets it */
+        }
+      }
+      scratch.clear()
     },
     { auto: true }
   ]
@@ -57,15 +82,14 @@ export async function quitCleanly(application: ElectronApplication) {
 }
 
 export async function launch(opts: { env?: Record<string, string>; args?: string[]; userData?: string } = {}): Promise<Launched> {
-  const userData = opts.userData ?? mkdtempSync(path.join(tmpdir(), 'scad-profile-'))
+  const userData = opts.userData ?? scratchDir('scad-profile-')
   // SCAD_PACKAGED=path/to/binary runs the specs against an electron-builder output instead of the dev build.
   const packaged = process.env.SCAD_PACKAGED
-  const software = process.env.SCAD_TEST_SOFTWARE_WEBGL === '1' ? ['--use-gl=angle', '--use-angle=swiftshader'] : []
-  const args = [...software, ...(opts.args ?? [])]
+  const args = opts.args ?? []
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged, args } : { args: ['.', ...args] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
-    env: { ...process.env, SIMPLECAD_RECOVERY_DIR: mkdtempSync(path.join(tmpdir(), 'scad-recovery-')), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
+    env: { ...process.env, SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))
@@ -73,6 +97,17 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   }
   open.add(app)
   const page = await app.firstWindow()
+  // SCAD_TEST_SIMULATE_NO_WEBGL=1 runs as on CI's Intel macOS VM, where no WebGL context can be created; there the
+  // workflow leaves out the @viewport tests. (Its reload costs the launcher's one-time project hand-off.)
+  if (process.env.SCAD_TEST_SIMULATE_NO_WEBGL === '1') {
+    await page.addInitScript(() => {
+      const getContext = HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, options?: unknown) {
+        return /^webgl/.test(type) ? null : Reflect.apply(getContext, this, [type, options])
+      } as typeof getContext
+    })
+    await page.reload()
+  }
   // A CSP violation or an uncaught error in the page fails the test, as in the rest of the suite.
   page.on('pageerror', (e) => {
     throw e
@@ -102,3 +137,6 @@ export async function edgePoints(page: Page): Promise<[number, number][]> {
   }, { intervals: [150] }).toBe(true)
   return JSON.parse(last)
 }
+
+/** Alerts but the 3D view's own startup error: what a step reports going wrong, also where no WebGL can start. */
+export const errors = (page: Page) => page.getByRole('alert').filter({ hasNotText: 'Unable to initialize the 3D view' })

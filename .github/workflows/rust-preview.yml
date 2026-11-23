@@ -138,15 +138,23 @@ jobs:
         if: runner.os != 'Linux'
         working-directory: app
         env:
-          # The Intel CI VM has no working hardware WebGL context.
-          SCAD_TEST_SOFTWARE_WEBGL: ${{ matrix.os == 'macos-15-intel' && '1' || '' }}
+          # The Intel CI VM can start no WebGL at all: there is no Metal device, and ANGLE's SwiftShader
+          # (Vulkan) backend fails to initialize (VK_ERROR_INITIALIZATION_FAILED, probed 2026-11-22 in both
+          # the packaged and the dev build). It runs everything that needs no 3D view, the visible startup
+          # error included; the @viewport tests run on the Apple Silicon, Windows and Linux jobs.
+          SCAD_TEST_NO_WEBGL: ${{ matrix.os == 'macos-15-intel' && '1' || '' }}
         run: |
           case "$RUNNER_OS" in
             macOS) executable="$(find "$PWD/release" -type f -path '*/SimpleCAD.app/Contents/MacOS/SimpleCAD' -print -quit)" ;;
             Windows) executable="$(pwd -W)/release/win-unpacked/SimpleCAD.exe" ;;
           esac
           test -f "$executable"
-          SCAD_PACKAGED="$executable" npx playwright test --fail-on-flaky-tests
+          skip=()
+          if [ "$SCAD_TEST_NO_WEBGL" = 1 ]; then
+            echo "::notice::No WebGL on this runner: the @viewport window tests run on the other desktop jobs."
+            skip=(--grep-invert @viewport)
+          fi
+          SCAD_PACKAGED="$executable" npx playwright test --fail-on-flaky-tests "${skip[@]}"
       - name: Save packaged desktop test failures
         if: failure() && runner.os != 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

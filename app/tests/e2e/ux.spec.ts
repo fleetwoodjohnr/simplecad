@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { edgePoints, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, test } from './helpers'
 
 type Point = [number, number]
 
@@ -61,7 +61,7 @@ test('the ribbon groups the tools, and the selection bar offers what fits the fa
   await expect(selection).toHaveCount(0)
 })
 
-test('a Move drag leaves a ghost where it started, Escape puts it back, and a typed drag is one exact step', async () => {
+test('a Move drag leaves a ghost where it started, Escape puts it back, and a typed drag is one exact step', { tag: '@viewport' }, async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-ux-'))
   try {
     const { app, page } = await launch()
@@ -119,7 +119,7 @@ test('a Move drag leaves a ghost where it started, Escape puts it back, and a ty
   }
 })
 
-test('dragging the face handle sweeps a preview with its distance, and Escape cancels it', async () => {
+test('dragging the face handle sweeps a preview with its distance, and Escape cancels it', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
   const canvas = page.locator('canvas')
@@ -153,7 +153,7 @@ test('dragging the face handle sweeps a preview with its distance, and Escape ca
   await expect(status).not.toHaveText(/24000 mm³/)
 })
 
-test('measures an edge it is clicked on, and the distance between two corners', async () => {
+test('measures an edge it is clicked on, and the distance between two corners', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
   const canvas = page.locator('canvas')
@@ -310,7 +310,7 @@ test('orients a part stood on end to its lowest flat lay and drops it on the pla
   // Already in its best lay: nothing to turn, and the history is left alone.
   await toolbar.getByRole('button', { name: 'Redo', exact: true }).click()
   await panel.getByRole('button', { name: 'Orient each', exact: true }).click()
-  await expect(page.getByRole('alert')).toHaveText('Every part is already in the best of its six flat lays.')
+  await expect(errors(page)).toHaveText('Every part is already in the best of its six flat lays.')
 })
 
 test('saves measured fits as SimpleCAD 0.4’s printer calibration, and reads them back', async () => {
@@ -327,7 +327,7 @@ test('saves measured fits as SimpleCAD 0.4’s printer calibration, and reads th
     await form.getByLabel('Normal thread clearance (mm, diametral)').fill('0.45')
     await form.getByRole('button', { name: 'Save measurements' }).click()
     await expect(page.getByRole('status', { name: 'Notice' })).toHaveText(/Saved/)
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(errors(page)).toHaveCount(0)
     const saved = JSON.parse(await readFile(path.join(userData, 'printer-profile.json'), 'utf8'))
     expect(saved).toMatchObject({ calibrated: true, measured_fits: { snug: 0.22 }, measured_thread_clearance: 0.45 })
 
@@ -355,7 +355,7 @@ test('adds the calibration test print as named pieces in one undoable step', asy
   await expect(bodies).toContainText('Calibration pins', { timeout: 60_000 })
   await expect(bodies).toContainText('Calibration plate')
   await expect(page.getByRole('status', { name: 'Notice' })).toHaveText(/Print both pieces/)
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(bodies).not.toContainText('Calibration')
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
@@ -373,7 +373,7 @@ test('adds the P30 thread gauges as named parts in one undoable step', async () 
   await search.press('Enter')
   await page.getByRole('form', { name: 'Fit & Clearance' }).getByRole('button', { name: 'Add P30 thread gauges' }).click()
   await expect(page.getByRole('status', { name: 'Notice' })).toHaveText(/turns freely/, { timeout: 150_000 })
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   for (const name of ['P30 calibration plug', 'P30 gauge 0.40 mm', 'P30 gauge 0.60 mm', 'P30 gauge 0.80 mm', 'P30 gauge 1.00 mm']) {
     await expect(bodies).toContainText(name)
   }
@@ -381,7 +381,7 @@ test('adds the P30 thread gauges as named parts in one undoable step', async () 
   await expect(bodies).not.toContainText('P30')
 })
 
-test('arrow keys nudge a selected face or chosen body as one exact step, and Escape drops a nudge', async () => {
+test('arrow keys nudge a selected face or chosen body as one exact step, and Escape drops a nudge', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')

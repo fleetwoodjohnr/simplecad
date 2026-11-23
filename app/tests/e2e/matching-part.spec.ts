@@ -1,4 +1,4 @@
-import { expect, launch, test } from './helpers'
+import { errors, expect, launch, test } from './helpers'
 
 test('creates a physical nut from an existing shaft thread without choosing the thread again', async () => {
   const { page } = await launch()
@@ -73,7 +73,7 @@ test('cuts the matching thread into the bore of an existing tube, as one undoabl
   await expect(match.getByText(/Cuts a matching M30 thread into the selected round face/)).toBeVisible()
   await match.getByRole('button', { name: 'Cut thread' }).click()
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Thread', 'Tube', 'Matching Thread'])
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await expect(status).not.toHaveText(before!)
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(before!)

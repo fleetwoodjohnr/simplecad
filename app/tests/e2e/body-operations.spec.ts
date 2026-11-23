@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { edgePoints, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, test } from './helpers'
 
 test('patterns a body, edits the count from History in one step, and keeps it through restart and reopen', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-pattern-'))
@@ -20,7 +20,7 @@ test('patterns a body, edits the count from History in one step, and keeps it th
     await form.getByLabel('Count along X').fill('3')
     await form.getByLabel('Spacing X').fill('5 cm')
     await form.getByRole('button', { name: 'Preview' }).click()
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(errors(page)).toHaveCount(0)
     await expect(steps).toHaveText(['Box'])
     await form.getByRole('button', { name: 'Apply' }).click()
     await expect(steps).toHaveText(['Box', 'Rectangular Pattern'])
@@ -147,7 +147,7 @@ test('shells a body through the selected face and edits its wall from History in
   await expect(status).toHaveText(/ 3784 mm³/)
 })
 
-test('fillets every edge of a body, then chamfers one clicked edge and edits it from History', async () => {
+test('fillets every edge of a body, then chamfers one clicked edge and edits it from History', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
   const status = page.getByTestId('engine-status')
@@ -210,7 +210,7 @@ test('splits a body into two named halves, edits the cut from History, and saves
     await expect(saved.getByLabel('Offset from the centre')).toHaveValue('5 mm')
     await saved.getByLabel('Offset from the centre').fill('-5 mm')
     await saved.getByRole('button', { name: 'Apply' }).click()
-    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(errors(page)).toHaveCount(0)
     await expect(bodies.getByRole('button', { name: /^Box [AB]$/ })).toHaveCount(2)
 
     await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
@@ -251,7 +251,7 @@ test('arranges the shown bodies in a row with a fixed gap, and edits the gap fro
   await arrange.getByRole('radio', { name: 'Fixed gap' }).click()
   await arrange.getByLabel('Gap').fill('5 mm')
   await arrange.getByRole('button', { name: 'Preview' }).click()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await arrange.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
 
@@ -261,7 +261,7 @@ test('arranges the shown bodies in a row with a fixed gap, and edits the gap fro
   await expect(saved.getByLabel('Gap')).toHaveValue('5 mm')
   await saved.getByLabel('Gap').fill('1 cm')
   await saved.getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await page.getByRole('button', { name: 'Edit Arrange' }).click()
@@ -303,7 +303,7 @@ test('sets a cylinder into the top of the box with Section Replace, and edits it
   await expect(saved.getByLabel('Boundary')).toHaveValue('0.5 mm')
   await saved.getByLabel('Boundary').fill('1 mm')
   await saved.getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await expect(status).not.toHaveText(new RegExp(` ${set} mm³`))
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(new RegExp(` ${set} mm³`))
@@ -436,7 +436,7 @@ test('edits a saved Pull and a saved placement from History', async () => {
   const align = page.getByRole('form', { name: 'Align', exact: true })
   await align.getByLabel('Offset', { exact: true }).fill('4 mm')
   await align.getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
   await page.getByRole('button', { name: 'Edit Align' }).click()
   await expect(page.getByRole('form', { name: 'Align', exact: true }).getByLabel('Offset', { exact: true })).toHaveValue('4 mm')
 })
