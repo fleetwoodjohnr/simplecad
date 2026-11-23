@@ -5,15 +5,48 @@ updater shows (`scripts/release_notes.py`).
 
 ## 0.5.0 (2026-11-21)
 
-- The desktop app runs modeling and previews in a separate Rust geometry
-  worker. Move and Rotate preview in the viewport and record one history
-  action when a drag finishes.
-- History identifies inputs by their saved IDs. Repair can reconnect a
-  missing input while the viewport keeps the last good geometry.
-- Draw and dimension sketches, edit them from History, and create solids
-  with Extrude, Revolve, Sweep, Loft, and Pattern Along Path.
-- Create matching printed bolts and nuts from modeled threads. Import
-  editable models from STEP, IGES, B-Rep, STL, OBJ, 3MF, and SimpleCAD projects.
+A new desktop app: every tool is a button, and what a tool will do shows in
+the model while you set it up. Projects from 0.4 open and rebuild the same,
+and projects saved in 0.5.0 still open in 0.4.4.
+
+- **Tools are buttons.** The ribbon groups the tools by task (Create, Modify,
+  Combine, Place, Construct, Inspect), and a bar beside the selected face
+  offers what fits it. Hover a button to see what it does, or what it needs
+  before it can be used.
+- **See it before you apply it.** Dragging Move or Rotate moves the part
+  itself and leaves a faint copy where it started, with the distance or angle
+  beside it; type a number to set it exactly. Push/Pull shows the new face as
+  you drag. Escape puts everything back, and each finished drag is one undo.
+  Arrow keys nudge the selection.
+- **More modeling tools.** Mirror, Pattern, Scale, Combine, Shell, Split,
+  Fillet and Chamfer on clicked edges, Section Replace, Arrange in a row,
+  construction planes, axes and points, groups, Vent, and Measure on edges
+  and corners. Every step can be edited from History, and Repair reconnects a
+  missing input while the model keeps its last good shape.
+- **Joints.** Hinges (pin, print-in-place, snap-on and living), Clip Joints
+  (snap tabs, printed connectors and keyed tab & slot), threaded connections,
+  and a matching thread on any round face.
+- **Printing.** A print check for overhangs, thin walls, tiny features and
+  open edges; drop, centre and orient parts on the build plate; Fit &
+  Clearance with a calibration test print and thread gauges; and Send to
+  slicer.
+- Sketches, Extrude, Revolve, Sweep, Loft, Pattern Along Path, matching bolts
+  and nuts, and imports from STEP, IGES, B-Rep, STL, OBJ, 3MF and SimpleCAD
+  projects all carry over. Modeling runs in a separate geometry engine, so
+  the window stays responsive while it works.
+
+### Not yet in 0.5.0
+
+These open from older projects with their saved shapes. A step that has to be
+rebuilt says so and keeps its last good result; edit it in 0.4.4 until 0.5.1
+brings it over.
+
+- Sliding Clip Joints (dovetail, T-rail, tongue & groove), and clips made
+  with the older clip tool that came before Join Parts.
+- Arrange face patterns (grid, linear, radial, staggered, packed, custom).
+  Arrange in a row works.
+- Draft has no control yet: saved drafts rebuild, but can't be added or
+  edited.
 
 ## 0.4.4 (2026-11-20)
 
