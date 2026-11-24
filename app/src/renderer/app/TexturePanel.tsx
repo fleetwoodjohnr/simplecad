@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { TextureSettings } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More, firstField } from '../ui'
 
 const patterns = [
   ['horizontal_lines', 'Horizontal lines'], ['vertical_lines', 'Vertical lines'],
@@ -23,17 +23,20 @@ interface Props {
   preset?: Record<string, string>
   onChange: () => void
   onPreview: (settings: TextureSettings) => void
+  /** Where it goes (the picked face): a new face previews again. */
+  at?: string
   onApply: (settings: TextureSettings) => void
   onCancel: () => void
 }
 
-export function TexturePanel({ busy, selected, preset, onChange, onPreview, onApply, onCancel }: Props) {
+export function TexturePanel({ busy, selected, preset, at, onChange, onPreview, onApply, onCancel }: Props) {
   const [settings, setSettings] = useState<TextureSettings>(() => ({ ...defaultTextureSettings, ...preset }))
   const enabled = !busy && selected
   const field = <K extends keyof TextureSettings>(key: K, value: TextureSettings[K]) => {
     setSettings((previous) => ({ ...previous, [key]: value }))
     onChange()
   }
+  useLivePreview(JSON.stringify([settings, at]), enabled, () => onPreview(settings))
   const changePattern = (pattern: string) => {
     const mode = ['dots', 'recessed_grooves', 'vent'].includes(pattern) ? 'recessed' : 'raised'
     setSettings((previous) => ({ ...previous, pattern, mode }))
@@ -47,6 +50,11 @@ export function TexturePanel({ busy, selected, preset, onChange, onPreview, onAp
         {patterns.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
       </select>
     </label>
+    <label className="grid gap-1">Size
+      <input className={inputCls} value={settings.size} maxLength={256} disabled={busy} {...firstField}
+        onChange={(event) => field('size', event.target.value)} />
+    </label>
+    <More>
     <label className="grid gap-1">Texture mode
       <select className={inputCls} value={settings.mode} disabled={busy}
         onChange={(event) => field('mode', event.target.value as TextureSettings['mode'])}>
@@ -57,7 +65,7 @@ export function TexturePanel({ busy, selected, preset, onChange, onPreview, onAp
     </label>
     <div className="grid grid-cols-2 gap-2">
       {([
-        ['size', 'Size'], ['spacing', 'Spacing'], ['depth', 'Depth'], ['rotation', 'Rotation'],
+        ['spacing', 'Spacing'], ['depth', 'Depth'], ['rotation', 'Rotation'],
         ['offset_u', 'U offset'], ['offset_v', 'V offset'], ['edge_clearance', 'Edge clearance'],
         ['hole_clearance', 'Hole clearance'], ['text_clearance', 'Text clearance'], ['other_clearance', 'Other clearance']
       ] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1">{label}
@@ -66,8 +74,8 @@ export function TexturePanel({ busy, selected, preset, onChange, onPreview, onAp
           onChange={(event) => field(key, event.target.value)} />
       </label>)}
     </div>
+    </More>
     <div className="flex gap-1">
-      <Btn type="button" size="sm" disabled={!enabled} onClick={() => onPreview(settings)}>Preview</Btn>
       <Btn type="submit" size="sm" variant="primary" disabled={!enabled}>Apply</Btn>
       <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
     </div>

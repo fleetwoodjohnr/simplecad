@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { HINGE_TYPES, type HingeEdit } from '@/shared/engine-protocol'
-import { Btn, Segmented, inputCls } from '../ui'
+import { Btn, Segmented, inputCls, useLivePreview, More } from '../ui'
 
 type Inputs = HingeEdit['hinge']['inputs']
 
@@ -40,6 +40,7 @@ export function HingePanel({ busy, edge, parts, swinging, onSwinging, onChange, 
   // Only what this type uses is sent, as the hinge tool saves it.
   const sent = (): Inputs => ({ type: inputs.type, stop: inputs.type !== 'living' && inputs.stop, flip: inputs.type !== 'living' && inputs.flip,
     ...Object.fromEntries(fields.map(([key]) => [key, inputs[key]])), ...(inputs.type === 'living' ? {} : { clearance: inputs.clearance }) })
+  useLivePreview(JSON.stringify([sent(), edge, swinging]), ready && !busy, () => onPreview(sent()))
   return (
     <form aria-label="Hinge" className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -57,6 +58,7 @@ export function HingePanel({ busy, edge, parts, swinging, onSwinging, onChange, 
       </label>
       <Segmented label="Hinge type" value={inputs.type} onChange={(type) => set({ type: type as Inputs['type'] })}
         options={HINGE_TYPES.map((type) => ({ value: type, label: types[type] }))} />
+      <More>
       {inputs.type !== 'living' && <label className="grid gap-1">Fit
         <select className={inputCls} value={inputs.clearance} disabled={busy} onChange={(event) => set({ clearance: event.target.value })}>
           {fits.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -69,9 +71,9 @@ export function HingePanel({ busy, edge, parts, swinging, onSwinging, onChange, 
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={inputs.stop} disabled={busy} onChange={(event) => set({ stop: event.target.checked })} />Stop at the limit</label>
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={inputs.flip} disabled={busy} onChange={(event) => set({ flip: event.target.checked })} />Flip</label>
       </div>}
+      </More>
       {inputs.type === 'living' && <p className="text-text-2">Living hinges suit PP, PETG or TPU. In PLA they crack after a few bends.</p>}
       <div className="flex gap-1">
-        <Btn type="button" size="sm" disabled={!ready || busy} onClick={() => onPreview(sent())}>Preview</Btn>
         <Btn type="submit" size="sm" variant="primary" disabled={!ready || busy}>Apply</Btn>
         <Btn type="button" size="sm" disabled={busy} onClick={onClose}>Cancel</Btn>
       </div>

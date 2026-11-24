@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { edgeGeometry, facePrism, surfaceGeometry } from '@/renderer/viewport/geometry'
+import { bodiesInRect, edgeGeometry, facePrism, surfaceGeometry } from '@/renderer/viewport/geometry'
 import type { MeshData } from '@/shared/engine-protocol'
 
 // Two faces of one triangle each, and two edges: one straight (2 points), one bent (3 points).
@@ -58,5 +58,25 @@ describe('push/pull prism', () => {
       [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]
     ]
     expect(facePrism(planarFace(points, ring), 0, [0, 0, 1]).boundaryEdges).toBe(8)
+  })
+})
+
+describe('box select', () => {
+  // Identity projection: x and y in -1..1 map straight onto a 100 × 100 view (y down).
+  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+  // Body 0: a small triangle near the top left; body 1: a large triangle across the middle.
+  const shape = {
+    ...mesh,
+    positions: new Float32Array([-0.9, 0.9, 0, -0.7, 0.9, 0, -0.9, 0.7, 0, -0.8, -0.8, 0, 0.8, -0.8, 0, 0, 0.8, 0]),
+    ranges: [{ body: 0, indices: [0, 3] as [number, number] }, { body: 1, indices: [3, 6] as [number, number] }]
+  }
+  it('left to right takes only what it surrounds', () => {
+    expect(bodiesInRect(shape, identity, 100, 100, { left: 0, top: 0, right: 20, bottom: 20 }, false)).toEqual([0])
+    expect(bodiesInRect(shape, identity, 100, 100, { left: 0, top: 0, right: 60, bottom: 60 }, false)).toEqual([0])
+  })
+  it('right to left takes what it touches, even inside a face with no corner in the box', () => {
+    expect(bodiesInRect(shape, identity, 100, 100, { left: 45, top: 50, right: 55, bottom: 60 }, true)).toEqual([1])
+    expect(bodiesInRect(shape, identity, 100, 100, { left: 0, top: 0, right: 60, bottom: 60 }, true)).toEqual([0, 1])
+    expect(bodiesInRect(shape, identity, 100, 100, { left: 80, top: 0, right: 99, bottom: 20 }, true)).toEqual([])
   })
 })

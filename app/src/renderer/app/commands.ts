@@ -37,6 +37,7 @@ export const commands = {
   clear: { label: 'Clear selection' },
   delete: { label: 'Delete', shortcut: 'Delete' },
   shape: { label: 'Shape' },
+  importModel: { label: 'Import', shortcut: 'Mod-I' },
   pushPull: { label: 'Push/Pull' },
   stack: { label: 'Stack & Place' },
   arrange: { label: 'Arrange' },

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { SLIDE_STYLES, type ClipJointEdit, type SlideSettings } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More } from '../ui'
 
 type Inputs = ClipJointEdit['clipJoint']['inputs']
 
@@ -64,6 +64,7 @@ export function ClipJointPanel({ busy, picked, fits, onClear, onChange, onPrevie
     (!sliding || shownRails.every(([key]) => String(slide[key]).trim()))
   const request = (preview: boolean): Inputs => !sliding ? inputs
     : { ...inputs, slide, ...(preview && apart ? { slid_apart: true } : {}) }
+  useLivePreview(JSON.stringify([request(true), picked]), ready && !busy, () => onPreview(request(true)))
   return (
     <form aria-label="Clip Joint" className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -75,14 +76,21 @@ export function ClipJointPanel({ busy, picked, fits, onClear, onChange, onPrevie
           : picked.length === 1 ? `${picked[0]}, then click the face it meets on the other part.` : picked.join(' meets ')}
       </div>
       {picked.length > 0 && <Btn type="button" size="sm" className="justify-self-start" disabled={busy} onClick={onClear}>Pick again</Btn>}
-      {(Object.keys(options) as (keyof typeof options)[]).filter((key) => !(sliding && pushOnly.has(key))).map((key) => <label key={key} className="grid gap-1">
-        {{ style: 'Style', size: 'Size', retention: 'Retention', material: 'Material', clearance_preset: 'Fit' }[key]}
+      {(['style'] as const).map((key) => <label key={key} className="grid gap-1">
+        Style
         <select className={inputCls} value={inputs[key]} disabled={busy} onChange={(event) => {
           const value = event.target.value
           // Rails need room to slide: a snug or press fit becomes a sliding one, as 0.4's tool does.
-          const slides = key === 'style' && (SLIDE_STYLES as readonly string[]).includes(value)
-          set({ [key]: value, ...(slides && ['snug', 'press'].includes(inputs.clearance_preset) ? { clearance_preset: 'sliding' as const } : {}) })
+          const slides = (SLIDE_STYLES as readonly string[]).includes(value)
+          set({ [key]: value as Inputs['style'], ...(slides && ['snug', 'press'].includes(inputs.clearance_preset) ? { clearance_preset: 'sliding' as const } : {}) })
         }}>
+          {options[key].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>)}
+      <More>
+      {(Object.keys(options) as (keyof typeof options)[]).filter((key) => key !== 'style' && !(sliding && pushOnly.has(key))).map((key) => <label key={key} className="grid gap-1">
+        {{ style: 'Style', size: 'Size', retention: 'Retention', material: 'Material', clearance_preset: 'Fit' }[key]}
+        <select className={inputCls} value={inputs[key]} disabled={busy} onChange={(event) => set({ [key]: event.target.value } as Partial<Inputs>)}>
           {options[key].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>)}
@@ -139,8 +147,8 @@ export function ClipJointPanel({ busy, picked, fits, onClear, onChange, onPrevie
         <input type="checkbox" checked={apart} disabled={busy} onChange={(event) => { setApart(event.target.checked); onChange() }} />
         Preview the first part slid out
       </label>}
+      </More>
       <div className="flex gap-1">
-        <Btn type="button" size="sm" disabled={!ready || busy} onClick={() => onPreview(request(true))}>Preview</Btn>
         <Btn type="submit" size="sm" variant="primary" disabled={!ready || busy}>Apply</Btn>
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>

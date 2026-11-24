@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { BodyInfo, Transform, Vec3 } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More, firstField } from '../ui'
 
 const axes = ['X', 'Y', 'Z'] as const
 type Entries = [string, string, string]
@@ -47,19 +47,22 @@ export function TransformPanel({ kind, bodies, body, busy, snap, preferredSnap, 
     run(body, transform)
   }
 
+  useLivePreview(JSON.stringify([body, values, pivot]), valid && !busy, () => submit(false))
+  // Which part: asked first when none is chosen, and kept under More… when one is.
+  const bodyField = <label className="grid gap-1">Body
+    <select className={inputCls} disabled={busy} value={body ?? ''}
+      onChange={(event) => onBody(event.target.value === '' ? undefined : Number(event.target.value))}>
+      <option value="">Select a body</option>
+      {bodies.map((part, index) => part.visible && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
+    </select>
+  </label>
   return (
     <form aria-label={name} className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs"
       onSubmit={(event) => { event.preventDefault(); submit(true) }}>
-      <label className="grid gap-1">Body
-        <select className={inputCls} disabled={busy} value={body ?? ''}
-          onChange={(event) => onBody(event.target.value === '' ? undefined : Number(event.target.value))}>
-          <option value="">Select a body</option>
-          {bodies.map((part, index) => part.visible && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
-        </select>
-      </label>
+      {body === undefined && bodyField}
       <fieldset className="grid grid-cols-3 gap-2" disabled={busy}>
         {axes.map((axis, index) => <label key={axis} className="grid min-w-0 gap-1">{axis} ({rotation ? '°' : 'mm'})
-          <input className={`${inputCls} w-full`} maxLength={255} placeholder="0" value={values[index]}
+          <input className={`${inputCls} w-full`} maxLength={255} placeholder="0" value={values[index]} {...(index === 0 ? firstField : {})}
             onChange={(event) => {
               const next = [...values] as Entries
               next[index] = event.target.value
@@ -68,6 +71,8 @@ export function TransformPanel({ kind, bodies, body, busy, snap, preferredSnap, 
             }} />
         </label>)}
       </fieldset>
+      <More>
+      {body !== undefined && bodyField}
       {rotation && <>
         <label className="grid gap-1">Turn about
           <select className={inputCls} disabled={busy} value={pivotMode} onChange={(event) => {
@@ -101,9 +106,9 @@ export function TransformPanel({ kind, bodies, body, busy, snap, preferredSnap, 
             <option key={step} value={step}>{step} {rotation ? '°' : 'mm'}</option>)}
         </select>
       </label>
+      </More>
       <div className="flex gap-2">
         <Btn size="sm" variant="primary" type="submit" disabled={busy || !valid}>Apply</Btn>
-        <Btn size="sm" type="button" disabled={busy || !valid} onClick={() => submit(false)}>Preview</Btn>
         <Btn size="sm" type="button" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>
     </form>

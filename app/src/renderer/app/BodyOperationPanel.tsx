@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { BodyInfo, BodyOperationEdit, Vec3 } from '@/shared/engine-protocol'
-import { Btn, Segmented, inputCls } from '../ui'
+import { Btn, Segmented, inputCls, useLivePreview, More, firstField } from '../ui'
 
 export type BodyOperation = BodyOperationEdit['bodyOperation']
 
@@ -39,6 +39,11 @@ interface Props {
   busy: boolean
   /** A saved step's settings: only these are edited, and its directions stay as made. */
   preset?: Record<string, string>
+  /** A Combine opened on chosen parts: its tools and operation to start with. */
+  tools?: number[]
+  operation?: string
+  /** Split's plane, held by the window so it can be dragged in the view. */
+  split?: { axis: Axis; position: string; onAxis: (axis: Axis) => void; onPosition: (position: string) => void }
   onBody: (body?: number) => void
   onChange: () => void
   onPreview: (edit: BodyOperationEdit) => void
@@ -47,13 +52,20 @@ interface Props {
   onCancel: () => void
 }
 
-export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
-  const [values, setValues] = useState<Record<string, string>>({ ...defaults[kind], ...preset })
-  const [axis, setAxis] = useState<Axis>(kind === 'mirror' ? 'x' : 'z')
+export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, tools: chosen, operation, split, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
+  const [own, setValues] = useState<Record<string, string>>({ ...defaults[kind], ...(operation ? { operation } : {}), ...preset })
+  const [ownAxis, setAxis] = useState<Axis>(kind === 'mirror' ? 'x' : 'z')
+  const held = kind === 'split' && !preset ? split : undefined
+  const values = held ? { ...own, position: held.position } : own
+  const axis = held?.axis ?? ownAxis
   const [center, setCenter] = useState<[string, string, string]>(['0', '0', '0'])
-  const [tools, setTools] = useState<number[]>([])
+  const [tools, setTools] = useState<number[]>(chosen ?? [])
   const name = bodyOperationLabels[kind]
-  const set = (key: string, value: string) => { setValues((current) => ({ ...current, [key]: value })); onChange() }
+  const set = (key: string, value: string) => {
+    if (held && key === 'position') held.onPosition(value)
+    else setValues((current) => ({ ...current, [key]: value }))
+    onChange()
+  }
   const point = center.map(Number) as Vec3
   const valid = Object.entries(values).every(([key, value]) => flags.has(key) || value.trim()) &&
     (!!preset || (body !== undefined && point.every(Number.isFinite) && (kind !== 'boolean' || tools.some((tool) => tool !== body))))
@@ -76,29 +88,29 @@ export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, o
     ;(commit ? onApply : onPreview)(edit())
   }
 
+  useLivePreview(valid ? JSON.stringify(edit()) : '', valid && !busy && !preset, () => submit(false))
+  // Which part: asked first when none is chosen, and kept under More… when one is.
+  const bodyField = <label className="grid gap-1">Body
+    <select className={inputCls} disabled={busy} value={body ?? ''}
+      onChange={(event) => { onBody(event.target.value === '' ? undefined : Number(event.target.value)); onChange() }}>
+      <option value="">Select a body</option>
+      {bodies.map((part, index) => part.visible && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
+    </select>
+  </label>
   return (
     <form aria-label={name} className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs"
       onSubmit={(event) => { event.preventDefault(); submit(true) }}>
-      {!preset && <label className="grid gap-1">Body
-        <select className={inputCls} disabled={busy} value={body ?? ''}
-          onChange={(event) => { onBody(event.target.value === '' ? undefined : Number(event.target.value)); onChange() }}>
-          <option value="">Select a body</option>
-          {bodies.map((part, index) => part.visible && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
-        </select>
-      </label>}
+      {!preset && body === undefined && bodyField}
       {!preset && (kind === 'mirror' || kind === 'circular_pattern' || kind === 'split') && <div className="grid gap-1">
         {{ mirror: 'Mirror across', split: 'Cut across', circular_pattern: 'Turn about' }[kind]}
         <Segmented label={kind === 'circular_pattern' ? 'Axis' : kind === 'split' ? 'Split plane' : 'Mirror plane'} value={axis}
-          onChange={(next) => { setAxis(next); onChange() }}
+          onChange={(next) => { if (held) held.onAxis(next); else setAxis(next); onChange() }}
           options={axes.map((value) => ({ value, label: kind === 'circular_pattern' ? value.toUpperCase() : { x: 'YZ', y: 'XZ', z: 'XY' }[value] }))} />
       </div>}
-      {!preset && (kind === 'mirror' || kind === 'circular_pattern') && <fieldset className="grid grid-cols-3 gap-2" disabled={busy}>
-        <legend className="pb-1">{kind === 'mirror' ? 'Through point (mm)' : 'Centre (mm)'}</legend>
-        {axes.map((key, i) => <label key={key} className="grid gap-1">{key.toUpperCase()}
-          <input className={inputCls} inputMode="decimal" value={center[i]}
-            onChange={(event) => { setCenter((c) => c.map((v, k) => k === i ? event.target.value : v) as [string, string, string]); onChange() }} />
-        </label>)}
-      </fieldset>}
+      {Object.keys(values).filter((key) => !flags.has(key)).map((key, index) => <label key={key} className="grid gap-1">{fieldLabels[key]}
+        <input className={inputCls} value={values[key]} maxLength={255} disabled={busy} {...(index === 0 ? firstField : {})}
+          onChange={(event) => set(key, event.target.value)} />
+      </label>)}
       {kind === 'boolean' && <div className="grid gap-1">Operation
         <Segmented label="Operation" value={values.operation} options={combinations} onChange={(next) => set('operation', next)} />
       </div>}
@@ -109,18 +121,24 @@ export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, o
             onChange={(event) => { setTools((current) => event.target.checked ? [...current, index] : current.filter((tool) => tool !== index)); onChange() }} />
           {part.name}</label> : null)}
       </fieldset>}
-      {kind === 'boolean' && <label className="flex items-center gap-2">
-        <input type="checkbox" checked={values.keep_tool === 'true'} disabled={busy}
-          onChange={(event) => set('keep_tool', String(event.target.checked))} />Keep the tool bodies</label>}
-      {Object.keys(values).filter((key) => !flags.has(key)).map((key) => <label key={key} className="grid gap-1">{fieldLabels[key]}
-        <input className={inputCls} value={values[key]} maxLength={255} disabled={busy} onChange={(event) => set(key, event.target.value)} />
-      </label>)}
+      <More>
+      {!preset && body !== undefined && bodyField}
+      {!preset && (kind === 'mirror' || kind === 'circular_pattern') && <fieldset className="grid grid-cols-3 gap-2" disabled={busy}>
+        <legend className="pb-1">{kind === 'mirror' ? 'Through point (mm)' : 'Centre (mm)'}</legend>
+        {axes.map((key, i) => <label key={key} className="grid gap-1">{key.toUpperCase()}
+          <input className={inputCls} inputMode="decimal" value={center[i]}
+            onChange={(event) => { setCenter((c) => c.map((v, k) => k === i ? event.target.value : v) as [string, string, string]); onChange() }} />
+        </label>)}
+      </fieldset>}
       {kind === 'mirror' && <label className="flex items-center gap-2">
         <input type="checkbox" checked={values.keep === 'true'} disabled={busy}
           onChange={(event) => set('keep', String(event.target.checked))} />Keep the original</label>}
+      {kind === 'boolean' && <label className="flex items-center gap-2">
+        <input type="checkbox" checked={values.keep_tool === 'true'} disabled={busy}
+          onChange={(event) => set('keep_tool', String(event.target.checked))} />Keep the tool bodies</label>}
+      </More>
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Apply</Btn>
-        {!preset && <Btn type="button" size="sm" disabled={!valid || busy} onClick={() => submit(false)}>Preview</Btn>}
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>
     </form>

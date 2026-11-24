@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { Page } from '@playwright/test'
-import { edgePoints, errors, expect, launch, scratchDir, test } from './helpers'
+import { edgePoints, errors, expect, launch, scratchDir, test, command, more } from './helpers'
 
 /** Two small cylinders beside the 40 × 30 × 20 box, chosen in the Bodies list, and Arrange opened on them (as a row, which
  * needs three). */
@@ -19,7 +19,7 @@ async function twoCylinders(page: Page) {
   await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click()
   // Cmd-click on macOS, where Ctrl-click is a right click.
   await bodies.getByRole('button', { name: 'Cylinder2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
-  await toolbar.getByRole('button', { name: 'Arrange', exact: true }).click()
+  await command(page, 'Arrange')
   return page.getByRole('form', { name: 'Arrange' })
 }
 
@@ -35,9 +35,10 @@ test('lays two cylinders out in a grid on the box top, takes a suggestion, edits
   await expect(arrange.getByRole('status', { name: 'Arrange target' })).toHaveText('On Box · Top · 1200 mm².')
 
   // A fixed 40 mm gap cannot fit on a 40 × 30 face: the preview says so, and offers what would.
+  await more(arrange)
   await arrange.getByRole('radio', { name: 'Fixed', exact: true }).click()
   await arrange.getByLabel('Spacing', { exact: true }).fill('40')
-  await arrange.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   const fit = arrange.getByRole('status', { name: 'Arrangement fit' })
   await expect(fit).toHaveText(/outside the boundary|collide/)
   const offer = arrange.getByRole('button', { name: /^Try: / }).first()
@@ -55,6 +56,7 @@ test('lays two cylinders out in a grid on the box top, takes a suggestion, edits
   const saved = page.getByRole('form', { name: 'Arrange' })
   await expect(saved.getByRole('combobox', { name: 'Pattern', exact: true })).toHaveValue('grid')
   await expect(saved.getByRole('status', { name: 'Arrange target' })).toHaveText('On a face of Box.')
+  await more(saved)
   await expect(saved.getByLabel('Edge margin')).toHaveValue('2')
   await saved.getByLabel('Edge margin').fill('1')
   await saved.getByRole('button', { name: 'Apply' }).click()
@@ -87,12 +89,13 @@ test('stands a body on a picked face, drags the pattern, keeps a margin from a p
   const arrange = await twoCylinders(page)
   await arrange.getByRole('combobox', { name: 'Pattern', exact: true }).selectOption('packed')
   await page.getByLabel('Planar face').selectOption({ label: 'Box · Top · 1200 mm²' })
+  await more(arrange)
   await arrange.getByRole('button', { name: 'Pick contact faces (0 chosen)' }).click()
   await page.getByLabel('Planar face').selectOption({ label: 'Cylinder · Top · 50.27 mm²' })
   // The pick stays open for the other bodies, one face each.
   await arrange.getByRole('button', { name: 'Click a face on an object…' }).click()
   await expect(arrange.getByRole('button', { name: 'Pick contact faces (1 chosen)' })).toBeVisible()
-  await arrange.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   await expect(arrange.getByRole('status', { name: 'Arrangement fit' })).toHaveText(/^2 objects · packed · /)
 
   // The preview drags as one; the drag becomes the pattern's offset, and the preview follows.
@@ -117,6 +120,7 @@ test('stands a body on a picked face, drags the pattern, keeps a margin from a p
   // History keeps the picks and the drag; a manual boundary keeps its margin from an edge picked on the target face.
   await page.getByRole('button', { name: 'Edit Arrange' }).click()
   let saved = page.getByRole('form', { name: 'Arrange' })
+  await more(saved)
   await expect(saved.getByRole('button', { name: 'Pick contact faces (1 chosen)' })).toBeVisible()
   await expect(saved.getByRole('status', { name: 'Pattern moved' })).toHaveText('Moved 2, 0, 0 mm along U, V and off the face.')
   await saved.getByRole('button', { name: 'Pick another face' }).click()
@@ -143,6 +147,7 @@ test('stands a body on a picked face, drags the pattern, keeps a margin from a p
   // On the build plate, the edge picked on the box goes.
   await page.getByRole('button', { name: 'Edit Arrange' }).click()
   saved = page.getByRole('form', { name: 'Arrange' })
+  await more(saved)
   await expect(saved.getByRole('button', { name: 'Pick edges to keep the margin from (1)' })).toBeVisible()
   await saved.getByRole('button', { name: 'Use the build plate' }).click()
   await saved.getByRole('button', { name: 'Apply' }).click()

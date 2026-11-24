@@ -1,13 +1,32 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import {
   AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, GridHelper, LineBasicMaterial, LineSegments,
-  MOUSE, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
+  MOUSE, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Quaternion, Raycaster, Scene,
+  Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
 import type { DisplayShape, Vec3, ViewFrame } from '@/shared/engine-protocol'
-import { edgeGeometry, faceAtTriangle, facePrism, indexedGeometry, surfaceGeometry } from './geometry'
+import { bodiesInRect, edgeGeometry, faceAtTriangle, facePrism, indexedGeometry, surfaceGeometry } from './geometry'
 import { viewportTransform, type TransformView } from './transform'
+
+/** A handle dragged on the model, shown at each of its points: along `axis` it reads millimetres along it;
+ * without one, millimetres dragged on screen at its depth (a round's radius). Drags snap to 0.25 mm, Shift for free,
+ * Ctrl for 0.05 mm, as 0.2.0's did. */
+export interface ModelHandle {
+  key: string
+  label: string
+  at: Vec3[]
+  axis?: Vec3
+  /** What the drag reads beside the cursor. */
+  reading: (value: number) => string
+  onDrag: (value: number, commit: boolean) => void
+  onCancel: () => void
+}
+
+/** The step a drag snaps to: 0.25 mm, free with Shift, 0.05 mm with Ctrl. */
+export const snapStep = (event: { shiftKey: boolean; ctrlKey: boolean }) => event.shiftKey ? 0 : event.ctrlKey ? 0.05 : 0.25
+export const snapped = (value: number, step: number) => Math.round((step ? Math.round(value / step) * step : value) * 100) / 100
 
 interface Props {
   shape?: DisplayShape
@@ -19,7 +38,14 @@ interface Props {
   canPull: boolean
   frame: number
   readViewFrame: RefObject<(() => ViewFrame) | undefined>
-  onSelect: (face?: number, point?: Vec3) => void
+  /** A click: the face under it (none on empty space), and whether Shift, Ctrl or Cmd was held to add. */
+  onSelect: (face?: number, point?: Vec3, adding?: boolean) => void
+  /** A box dragged from empty space: the bodies it took (right to left: any it touches), and whether to add them. */
+  onBoxSelect?: (bodies: number[], adding: boolean) => void
+  /** A double-click on a part. */
+  onOpenBody?: (body: number) => void
+  /** The chosen parts, tinted (a gizmo on them tints them itself). */
+  chosen?: number[]
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
@@ -27,6 +53,9 @@ interface Props {
   onContextMenu?: (face: number | undefined, x: number, y: number) => void
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
+  /** The overlay is an open tool's panel: placed beside the face once, as it opens, and kept there while the tool
+   * picks; with no face, it docks in the top right corner. */
+  toolOverlay?: boolean
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
   onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
@@ -34,6 +63,12 @@ interface Props {
   outline?: Vec3[][]
   /** Bodies of the displayed shape tinted red: those a face pattern could not fit. */
   marked?: number[]
+  /** Handles dragged on the model: an edge's round, a split plane's. */
+  handles?: ModelHandle[]
+  /** A plane drawn through the model (Split's): its centre, normal and half-size. */
+  plane?: { centre: Vec3; normal: Vec3; size: number }
+  /** A click within a few pixels of an edge, while nothing is open: that edge, and whether to add. */
+  onSelectEdge?: (edge: number, point: Vec3, adding: boolean) => void
 }
 
 export function Viewport(props: Props) {
@@ -48,6 +83,11 @@ export function Viewport(props: Props) {
   const sync = useRef<() => void>(() => {})
   const axis = useRef(new Vector2())
   const drag = useRef<{ pointer: number; start: Vector2; projection: Vector2; escape: (e: KeyboardEvent) => void } | null>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+  const handleReading = useRef<HTMLSpanElement>(null)
+  /** From model points to the view: where a point shows, and how many millimetres a pixel is at its depth. */
+  const view = useRef<{ screen(point: Vec3): Vector2; mmPerPx(point: Vec3): number }>(undefined)
+  const handleDrag = useRef<{ key: string; pointer: number; start: Vector2; perMm?: Vector2; mmPerPx: number; escape: (e: KeyboardEvent) => void } | null>(null)
 
   useEffect(() => {
     const el = host.current!
@@ -161,7 +201,21 @@ export function Viewport(props: Props) {
       color: 0xe5484d, transparent: true, opacity: 0.6, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
     }))
     let markedKey = ''
-    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked)
+    const parts = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe8a33a, transparent: true, opacity: 0.22, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    let partsKey = ''
+    const plane = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial({
+      color: 0x3b82f6, transparent: true, opacity: 0.2, side: DoubleSide, depthWrite: false
+    }))
+    plane.renderOrder = 2
+    plane.visible = false
+    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked, parts, plane)
+    // The selection box, drawn over the view while dragged from empty space.
+    const area = document.createElement('div')
+    area.className = 'pointer-events-none absolute z-10 hidden border border-accent bg-accent/10'
+    area.dataset.testid = 'selection-box'
+    el.append(area)
     let hovered: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
@@ -171,19 +225,48 @@ export function Viewport(props: Props) {
       point.project(camera)
       return new Vector2((point.x + 1) * el.clientWidth / 2, (1 - point.y) * el.clientHeight / 2)
     }
-    /** Beside the face, clear of the drag handle and inside the view; docked at the bottom without a point. */
+    view.current = {
+      screen: (point) => toScreen(new Vector3(...point)),
+      mmPerPx: (point) => 2 * camera.position.distanceTo(new Vector3(...point)) * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, el.clientHeight)
+    }
+    /** Each model handle's buttons at their points; hidden off screen. */
+    const placeHandles = () => {
+      for (const button of frameRef.current?.querySelectorAll<HTMLButtonElement>('button[data-model-handle]') ?? []) {
+        const point = current.current.handles?.find((h) => h.key === button.dataset.modelHandle)?.at[Number(button.dataset.index)]
+        if (!point) continue
+        const at = toScreen(new Vector3(...point))
+        button.hidden = at.x < 0 || at.x > el.clientWidth || at.y < 0 || at.y > el.clientHeight
+        button.style.left = `${at.x}px`
+        button.style.top = `${at.y}px`
+      }
+    }
+    /** Beside the face, clear of the drag handle and inside the view; docked at the bottom without a point (a tool's
+     * panel in the top right corner, and kept where it opened). */
+    let pinned: Vector2 | 'dock' | undefined
     const placeBar = (at?: Vector2) => {
       const panel = bar.current
       if (!panel) return
+      if (current.current.toolOverlay) {
+        pinned ??= at?.clone() ?? 'dock'
+        at = pinned === 'dock' ? undefined : pinned
+      } else pinned = undefined
+      const tool = current.current.toolOverlay
+      // A tall panel scrolls inside the view rather than running off its bottom.
+      const content = panel.firstElementChild as HTMLElement | null
+      const tallest = tool ? `${Math.max(120, el.clientHeight - 24)}px` : ''
+      if (content && content.style.maxHeight !== tallest) content.style.maxHeight = tallest
       const { offsetWidth: w, offsetHeight: h } = panel
       const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max - 8))
-      panel.style.left = `${at ? clamp(at.x + 24, el.clientWidth - w) : Math.max(8, (el.clientWidth - w) / 2)}px`
-      panel.style.top = `${at ? clamp(at.y + 24, el.clientHeight - h) : el.clientHeight - h - 12}px`
+      panel.style.left = `${at ? clamp(at.x + 24, el.clientWidth - w) : tool ? Math.max(8, el.clientWidth - w - 12) : Math.max(8, (el.clientWidth - w) / 2)}px`
+      panel.style.top = `${at ? clamp(at.y + 24, el.clientHeight - h) : tool ? 12 : el.clientHeight - h - 12}px`
     }
-    /** While picking edges, a window point on each of the first edges, for scripted picks. */
+    // The panel's own size changes (More… opened, a preview's note): keep it inside the view.
+    const sized = new ResizeObserver(() => draw())
+    let watched: Element | null = null
+    /** While edges can be picked or clicked, a window point on each of the first edges, for scripted picks. */
     const publishEdges = () => {
       const shape = current.current.shape
-      if (!current.current.onPickEdge || !shape || displayed !== shape) {
+      if ((!current.current.onPickEdge && !current.current.onSelectEdge) || !shape || displayed !== shape) {
         delete canvas.dataset.edgeAnchors
         return
       }
@@ -201,6 +284,32 @@ export function Viewport(props: Props) {
       }
       canvas.dataset.edgeAnchors = JSON.stringify(anchors)
     }
+    /** On small models, a point on each shown part's top face in window points, for scripted clicks (as edge
+     * anchors are): the middle of a face, clear of its edges. */
+    let tops: { shape: DisplayShape; points: [number, Vector3][] } | undefined
+    const publishBodies = () => {
+      const shape = displayed
+      if (!shape || shape.ranges.length > 64) {
+        delete canvas.dataset.bodyAnchors
+        return
+      }
+      if (tops?.shape !== shape) {
+        const best = new Map<number, (typeof shape.faces)[number]>()
+        for (const face of shape.faces) {
+          const held = best.get(face.body)
+          const score = (f: typeof face) => (f.planar ? f.normal[2] : -2) * 1e6 + f.area
+          if (!held || score(face) > score(held)) best.set(face.body, face)
+        }
+        tops = { shape, points: [...best].map(([index, face]) => [index, new Vector3(...face.anchor)]) }
+      }
+      const rect = canvas.getBoundingClientRect()
+      const anchors = Object.fromEntries(tops.points.map(([index, point]) => {
+        const at = point.clone().project(camera)
+        return [index, [Math.round(rect.left + (at.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - at.y) / 2 * rect.height)]]
+      }))
+      const text = JSON.stringify(anchors)
+      if (canvas.dataset.bodyAnchors !== text) canvas.dataset.bodyAnchors = text
+    }
     const draw = () => {
       if (animation) return
       animation = requestAnimationFrame(() => {
@@ -209,11 +318,19 @@ export function Viewport(props: Props) {
         renderer.render(scene, camera)
         transform.publish()
         publishEdges()
+        publishBodies()
         // Where the camera is and what it turns about, for scripted checks of the mouse.
         const rounded = (v: Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000)
         const view = JSON.stringify({ position: rounded(camera.position), target: rounded(controls.target) })
         if (canvas.dataset.camera !== view) canvas.dataset.camera = view
         canvas.setAttribute('aria-busy', String(!displayed))
+        placeHandles()
+        if (bar.current !== watched) {
+          if (watched) sized.unobserve(watched)
+          watched = bar.current
+          if (watched) sized.observe(watched)
+        }
+        if (!current.current.overlay) pinned = undefined
         const button = handle.current
         const { selected, shape, canPull } = current.current
         if (!button) return
@@ -295,23 +412,35 @@ export function Viewport(props: Props) {
         outline.geometry = new BufferGeometry()
         outline.geometry.setAttribute('position', new Float32BufferAttribute(points, 3))
       }
-      const tinted = next ? current.current.marked ?? [] : []
-      const tintKey = tinted.length ? `${tinted.join(',')}:${body.geometry.id}` : ''
-      if (tintKey !== markedKey) {
-        marked.geometry.dispose()
-        const parts = next!.ranges.filter((range) => tinted.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
-        const indices = new Uint32Array(parts.reduce((total, part) => total + part.length, 0))
-        parts.reduce((at, part) => { indices.set(part, at); return at + part.length }, 0)
-        marked.geometry = tintKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
-        markedKey = tintKey
+      /** Tint `bodies` of the displayed shape with `mesh`; returns the key it now shows. */
+      const tint = (mesh: Mesh, bodies: number[], key: string) => {
+        const nextKey = bodies.length ? `${bodies.join(',')}:${body.geometry.id}` : ''
+        if (nextKey === key) return key
+        mesh.geometry.dispose()
+        const runs = next!.ranges.filter((range) => bodies.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
+        const indices = new Uint32Array(runs.reduce((total, run) => total + run.length, 0))
+        runs.reduce((at, run) => { indices.set(run, at); return at + run.length }, 0)
+        mesh.geometry = nextKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
+        return nextKey
       }
+      markedKey = tint(marked, next ? current.current.marked ?? [] : [], markedKey)
+      partsKey = tint(parts, next && displayed === shape ? current.current.chosen ?? [] : [], partsKey)
       // A group drag (Arrange) moves bodies of the preview; any other moves the model's.
       const transforming = transform.set(tool?.bodies ? next : shown ? undefined : shape, body.geometry, tool, showEdges)
-      marked.visible = !!tintKey && !transforming
+      marked.visible = !!markedKey && !transforming
+      parts.visible = !!partsKey && !transforming
+      const cut = current.current.plane
+      plane.visible = !!cut
+      if (cut) {
+        plane.position.fromArray(cut.centre)
+        plane.quaternion.copy(new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), new Vector3(...cut.normal).normalize()))
+        plane.scale.setScalar(cut.size)
+      }
       const picking = !!current.current.onPickEdge
       body.visible = !transforming
       edges.visible = (showEdges || picking) && !transforming
-      const picked = picking && displayed === shape ? current.current.pickedEdges ?? [] : []
+      // Picked edges show while a tool picks them, and a clicked edge while it is the selection.
+      const picked = displayed === shape ? current.current.pickedEdges ?? [] : []
       const pickedKey = picked.length && shape ? `${picked.join(',')}:${shape.edgeStart.length}` : ''
       if (pickedKey !== chosenKey) {
         chosen.geometry.dispose()
@@ -352,7 +481,32 @@ export function Viewport(props: Props) {
     observer.observe(el)
     const ray = new Raycaster()
     const down = new Vector2()
-    const press = (e: PointerEvent) => down.set(e.clientX, e.clientY)
+    /** A selection box being dragged from empty space: where it started, and whether it adds. */
+    let box: { x: number; y: number; adding: boolean } | undefined
+    const endBox = () => {
+      box = undefined
+      area.classList.add('hidden')
+      controls.mouseButtons.LEFT = MOUSE.ROTATE
+    }
+    const press = (e: PointerEvent) => {
+      down.set(e.clientX, e.clientY)
+      const { onBoxSelect, onPickEdge, shape } = current.current
+      // On empty space a left drag draws a box (Alt+left still turns the view); on the model it turns the view.
+      if (e.button !== 0 || e.altKey || !onBoxSelect || onPickEdge || !shape || displayed !== shape ||
+        transform.hits(e) || faceAt(e.clientX, e.clientY)) return
+      box = { x: e.clientX, y: e.clientY, adding: e.shiftKey || e.ctrlKey || e.metaKey }
+      controls.mouseButtons.LEFT = -1 as MOUSE
+    }
+    const drawBox = (e: PointerEvent) => {
+      if (!box) return
+      const rect = canvas.getBoundingClientRect()
+      const [left, right] = [Math.min(box.x, e.clientX), Math.max(box.x, e.clientX)]
+      const [top, bottom] = [Math.min(box.y, e.clientY), Math.max(box.y, e.clientY)]
+      Object.assign(area.style, { left: `${left - rect.left}px`, top: `${top - rect.top}px`, width: `${right - left}px`, height: `${bottom - top}px` })
+      // Right to left takes what it touches: dashed, as 0.2.0 drew it.
+      area.style.borderStyle = e.clientX < box.x ? 'dashed' : 'solid'
+      area.classList.toggle('hidden', right - left < 4 && bottom - top < 4)
+    }
     /** The model face under a window point, or undefined. */
     const faceAt = (x: number, y: number) => {
       const { shape, placingBody } = current.current
@@ -381,6 +535,21 @@ export function Viewport(props: Props) {
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
+      if (box && e.button === 0) {
+        const started = box
+        endBox()
+        if (down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 && shape && displayed === shape) {
+          const rect = canvas.getBoundingClientRect()
+          camera.updateMatrixWorld()
+          const viewProjection = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+          const within = {
+            left: Math.min(started.x, e.clientX) - rect.left, right: Math.max(started.x, e.clientX) - rect.left,
+            top: Math.min(started.y, e.clientY) - rect.top, bottom: Math.max(started.y, e.clientY) - rect.top
+          }
+          current.current.onBoxSelect?.(bodiesInRect(shape, viewProjection.elements, rect.width, rect.height, within, e.clientX < started.x), started.adding)
+          return
+        }
+      }
       if (e.button === 2 && current.current.onContextMenu && !transform.claimed() &&
         down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
         current.current.onContextMenu(faceAt(e.clientX, e.clientY)?.face, e.clientX, e.clientY)
@@ -394,13 +563,29 @@ export function Viewport(props: Props) {
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
       const picked = faceAt(e.clientX, e.clientY)
-      current.current.onSelect(picked?.face, picked?.point.toArray())
+      // As 0.2.0: an edge has a pick zone wider than its line, and wins over the face it bounds, not one in front.
+      const edge = current.current.onSelectEdge && shape === displayed ? edgeAt(e.clientX, e.clientY) : undefined
+      const depth = camera.position.distanceTo(controls.target)
+      if (edge && (!picked || camera.position.distanceTo(new Vector3(...edge.point)) <= camera.position.distanceTo(picked.point) + depth * 0.01)) {
+        current.current.onSelectEdge!(edge.edge, edge.point, e.shiftKey || e.ctrlKey || e.metaKey)
+        return
+      }
+      current.current.onSelect(picked?.face, picked?.point.toArray(), e.shiftKey || e.ctrlKey || e.metaKey)
+    }
+    const open = (e: MouseEvent) => {
+      const shape = current.current.shape
+      // Two quick Shift-clicks are two toggles, not a double-click. The gizmo sits on the part's middle; a
+      // double-click there moves nothing, so it still opens the part.
+      const plain = e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey
+      const picked = plain ? faceAt(e.clientX, e.clientY) : undefined
+      if (picked && shape) current.current.onOpenBody?.(shape.faces[picked.face].body)
     }
     // Hover: at most one pick per frame, and none while a button is held (orbiting).
     let pointer: { x: number; y: number } | null = null
     let hoverFrame = 0
     const move = (e: PointerEvent) => {
-      pointer = e.buttons || current.current.transform ? null : { x: e.clientX, y: e.clientY }
+      drawBox(e)
+      pointer = e.buttons ? null : { x: e.clientX, y: e.clientY }
       if (!pointer) return showHover(undefined)
       hoverFrame ||= requestAnimationFrame(() => {
         hoverFrame = 0
@@ -415,24 +600,31 @@ export function Viewport(props: Props) {
       pointer = null
       showHover(undefined)
     }
-    canvas.addEventListener('pointerdown', press)
+    // Capturing, so a box can be started before the orbit controls see the press.
+    canvas.addEventListener('pointerdown', press, true)
     canvas.addEventListener('pointerup', pick)
+    canvas.addEventListener('pointercancel', endBox)
+    canvas.addEventListener('dblclick', open)
     canvas.addEventListener('pointermove', move)
     canvas.addEventListener('pointerleave', leave)
     sync.current()
     return () => {
       observer.disconnect()
+      sized.disconnect()
       cancelAnimationFrame(animation)
       transform.dispose()
       controls.dispose()
-      canvas.removeEventListener('pointerdown', press)
+      canvas.removeEventListener('pointerdown', press, true)
       canvas.removeEventListener('mousedown', noAutoscroll)
       canvas.removeEventListener('pointerup', pick)
+      canvas.removeEventListener('pointercancel', endBox)
+      canvas.removeEventListener('dblclick', open)
+      area.remove()
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked, parts, plane]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -440,11 +632,12 @@ export function Viewport(props: Props) {
       renderer.dispose()
       canvas.remove()
       sync.current = () => {}
+      view.current = undefined
       readViewFrame.current = undefined
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges, props.outline, props.marked])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, props.chosen, props.plane, props.handles, props.toolOverlay])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {
@@ -469,15 +662,73 @@ export function Viewport(props: Props) {
     const active = drag.current
     if (!active || active.pointer !== e.pointerId) return
     const delta = new Vector2(e.clientX, e.clientY).sub(active.start)
-    const distance = Math.round(delta.dot(active.projection) / active.projection.lengthSq() * 100) / 100
+    const distance = snapped(delta.dot(active.projection) / active.projection.lengthSq(), snapStep(e))
     if (commit) end()
     else follow(distance)
     props.onDrag(distance, commit)
   }
 
+  const endHandle = () => {
+    if (handleDrag.current) window.removeEventListener('keydown', handleDrag.current.escape, true)
+    handleDrag.current = null
+    if (handleReading.current) handleReading.current.hidden = true
+  }
+  const startHandle = (e: ReactPointerEvent<HTMLButtonElement>, key: string, index: number) => {
+    const handle = props.handles?.find((h) => h.key === key)
+    const at = handle?.at[index]
+    if (e.button !== 0 || !handle || !at || !view.current) return
+    const perMm = handle.axis ? view.current.screen(at.map((v, i) => v + handle.axis![i]) as Vec3).sub(view.current.screen(at)) : undefined
+    if (perMm && perMm.lengthSq() < 0.01) return
+    const button = e.currentTarget
+    const pointer = e.pointerId
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      endHandle()
+      current.current.handles?.find((h) => h.key === key)?.onCancel()
+      if (button.hasPointerCapture(pointer)) button.releasePointerCapture(pointer)
+    }
+    window.addEventListener('keydown', escape, true)
+    handleDrag.current = { key, pointer, start: new Vector2(e.clientX, e.clientY), perMm, mmPerPx: view.current.mmPerPx(at), escape }
+    button.setPointerCapture(pointer)
+  }
+  const moveHandle = (e: ReactPointerEvent<HTMLButtonElement>, commit: boolean) => {
+    const active = handleDrag.current
+    if (!active || active.pointer !== e.pointerId) return
+    const delta = new Vector2(e.clientX, e.clientY).sub(active.start)
+    const value = snapped(active.perMm ? delta.dot(active.perMm) / active.perMm.lengthSq() : delta.length() * active.mmPerPx, snapStep(e))
+    const handle = props.handles?.find((h) => h.key === active.key)
+    const label = handleReading.current
+    const box = frameRef.current?.getBoundingClientRect()
+    if (label && box && handle) {
+      label.hidden = commit
+      label.textContent = handle.reading(value)
+      label.style.left = `${e.clientX - box.left + 16}px`
+      label.style.top = `${e.clientY - box.top + 16}px`
+    }
+    if (commit) endHandle()
+    handle?.onDrag(value, commit)
+  }
+
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-workspace">
+    <div ref={frameRef} className="relative min-h-0 flex-1 overflow-hidden bg-workspace">
       <div ref={host} className="absolute inset-0" />
+      {props.handles?.flatMap((h) => h.at.map((_, index) => (
+        <button key={`${h.key}:${index}`} type="button" data-model-handle={h.key} data-index={index}
+          aria-label={index ? undefined : h.label} aria-hidden={index ? true : undefined} tabIndex={index ? -1 : undefined} title={h.label}
+          className="absolute z-10 grid size-6 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full border-2 border-white bg-accent shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"
+          onPointerDown={(e) => startHandle(e, h.key, index)}
+          onPointerMove={(e) => moveHandle(e, false)}
+          onPointerUp={(e) => moveHandle(e, true)}
+          onLostPointerCapture={() => {
+            if (handleDrag.current?.key !== h.key) return
+            endHandle()
+            h.onCancel()
+          }} />
+      )))}
+      <span ref={handleReading} hidden role="status" aria-label="Handle reading"
+        className="pointer-events-none absolute z-20 whitespace-nowrap rounded-md bg-[#1c1c22]/90 px-2 py-1 text-[11.5px] font-medium tabular-nums text-white shadow-lg" />
       <button
         hidden ref={handle} type="button" aria-label="Drag face along its normal" title="Drag face along its normal"
         className="absolute z-10 grid size-7 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full bg-accent text-accent-fg shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"

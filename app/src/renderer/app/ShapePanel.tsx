@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ShapeEdit } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, firstField } from '../ui'
 
 type Field = [name: string, label: string, initial: number]
 const height = (initial: number): Field => ['height', 'Height', initial]
@@ -61,6 +61,8 @@ export function ShapePanel({ busy, saved, onApply, onPreview, onChange, onCancel
     run({ shapeKind: kind, values })
   }
 
+  // An edit previews as it is typed; a new shape shows once created.
+  useLivePreview(JSON.stringify([kind, edits]), !!saved && !busy && hasChanges, () => submit(false))
   return <form aria-label={saved ? `Edit ${saved.name}` : 'Create shape'} className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs"
     onSubmit={(event) => { event.preventDefault(); submit(true) }}>
     {!saved && <label className="grid gap-1">Shape type
@@ -68,13 +70,13 @@ export function ShapePanel({ busy, saved, onApply, onPreview, onChange, onCancel
         {Object.entries(shapes).map(([key, shape]) => <option key={key} value={key}>{shape.label}</option>)}
       </select>
     </label>}
-    {fields.map(([key, label, initial]) => <label key={key} className="grid gap-1">{label}
+    {fields.map(([key, label, initial], index) => <label key={key} className="grid gap-1">{label}
       <input className={inputCls} maxLength={255} value={edits[key] ?? initialText(key, initial)} required disabled={busy}
+        {...(index === 0 && saved ? firstField : {})}
         onChange={(event) => { setEdits({ ...edits, [key]: event.target.value }); onChange() }} />
     </label>)}
     <div className="flex gap-2">
       <Btn type="submit" size="sm" variant="primary" disabled={busy || !hasChanges}>{saved ? 'Apply' : 'Create'}</Btn>
-      {saved && <Btn type="button" size="sm" disabled={busy || !hasChanges} onClick={() => submit(false)}>Preview</Btn>}
       <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
     </div>
   </form>

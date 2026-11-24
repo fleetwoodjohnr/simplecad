@@ -1,7 +1,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { expect, launch, test } from './helpers'
+import { expect, launch, test, command, more } from './helpers'
 
 test('migrates existing settings and persists changes without writing the rollback file', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-preferences-'))
@@ -20,7 +20,7 @@ test('migrates existing settings and persists changes without writing the rollba
     await expect(page.getByTestId('engine-status')).toContainText('24 cm³')
     await expect(page.locator('html')).toHaveClass(/dark/)
     const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
-    await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+    await command(page, 'Move')
     await expect(page.getByLabel('Drag snapping')).toHaveValue('2.5')
     await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
@@ -42,7 +42,8 @@ test('migrates existing settings and persists changes without writing the rollba
     const restarted = await launch(options)
     await expect(restarted.page.getByTestId('engine-status')).toContainText('24000 mm³')
     await expect(restarted.page.locator('html')).not.toHaveClass(/dark/)
-    await restarted.page.getByRole('button', { name: 'Move', exact: true }).click()
+    await command(restarted.page, 'Move')
+    await more(restarted.page.getByRole('form', { name: 'Move', exact: true }))
     await expect(restarted.page.getByLabel('Drag snapping')).toHaveValue('7.25')
     await restarted.app.close()
     expect(await readFile(legacy, 'utf8')).toBe(original)

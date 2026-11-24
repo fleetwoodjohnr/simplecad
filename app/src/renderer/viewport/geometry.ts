@@ -117,3 +117,59 @@ export function facePrism(mesh: MeshData, face: number, normal: Vec3) {
   }
   return { geometry, update, boundaryEdges: boundary.length }
 }
+
+/** Window rectangle, in pixels from the view's top left. */
+export interface Rect { left: number; top: number; right: number; bottom: number }
+
+/**
+ * The bodies a selection box takes, as 0.2.0 did: `touching` (dragged right to left) takes any body with a triangle
+ * in the box, otherwise only bodies wholly inside it. `viewProjection` is the camera's projection × view matrix
+ * (column-major, as three.js keeps it) and `width`/`height` the view's size in pixels.
+ */
+export function bodiesInRect(mesh: MeshData & { ranges: { body: number; indices: [number, number] }[] },
+  viewProjection: ArrayLike<number>, width: number, height: number, box: Rect, touching: boolean): number[] {
+  const m = viewProjection
+  const p = mesh.positions
+  const screen = (vertex: number) => {
+    const x = p[vertex * 3], y = p[vertex * 3 + 1], z = p[vertex * 3 + 2]
+    const w = m[3] * x + m[7] * y + m[11] * z + m[15]
+    if (w <= 1e-9) return undefined
+    return [((m[0] * x + m[4] * y + m[8] * z + m[12]) / w + 1) / 2 * width, (1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / w) / 2 * height]
+  }
+  const inside = (q: number[]) => q[0] >= box.left && q[0] <= box.right && q[1] >= box.top && q[1] <= box.bottom
+  // Liang–Barsky: does the segment a→b cross the box?
+  const crosses = (a: number[], b: number[]) => {
+    let t0 = 0, t1 = 1
+    const dx = b[0] - a[0], dy = b[1] - a[1]
+    for (const [pp, q] of [[-dx, a[0] - box.left], [dx, box.right - a[0]], [-dy, a[1] - box.top], [dy, box.bottom - a[1]]]) {
+      if (pp === 0) { if (q < 0) return false; continue }
+      const t = q / pp
+      if (pp < 0) t0 = Math.max(t0, t)
+      else t1 = Math.min(t1, t)
+      if (t0 > t1) return false
+    }
+    return true
+  }
+  const centre = [(box.left + box.right) / 2, (box.top + box.bottom) / 2]
+  const covers = (a: number[], b: number[], c: number[]) => {
+    const side = (u: number[], v: number[]) => (v[0] - u[0]) * (centre[1] - u[1]) - (v[1] - u[1]) * (centre[0] - u[0])
+    const [s1, s2, s3] = [side(a, b), side(b, c), side(c, a)]
+    return (s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)
+  }
+  const taken: number[] = []
+  for (const { body, indices: [start, end] } of mesh.ranges) {
+    if (start >= end) continue
+    let take = !touching
+    for (let i = start; i + 2 < end; i += 3) {
+      const [a, b, c] = [screen(mesh.indices[i]), screen(mesh.indices[i + 1]), screen(mesh.indices[i + 2])]
+      if (!touching) {
+        if (!a || !b || !c || !inside(a) || !inside(b) || !inside(c)) { take = false; break }
+        continue
+      }
+      if (!a || !b || !c) continue
+      if (inside(a) || crosses(a, b) || crosses(b, c) || crosses(c, a) || covers(a, b, c)) { take = true; break }
+    }
+    if (take) taken.push(body)
+  }
+  return taken
+}

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FaceOperation, ShapeEdit, StepInfo } from '@/shared/engine-protocol'
 
 type ThreadSettings = Extract<FaceOperation, { faceOperation: 'matching_thread' }>['settings']
-import { Btn, Segmented, inputCls } from '../ui'
+import { Btn, Segmented, inputCls, useLivePreview, More } from '../ui'
 
 interface Props {
   threads: StepInfo[]
@@ -36,6 +36,7 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
     const values = Object.fromEntries(Object.entries({ ...thread, ...sizes, ...position }).filter(([, value]) => value.trim()))
     return { shapeKind, values }
   }
+  useLivePreview(JSON.stringify(edit() ?? null), !!spec && !busy && mode === 'part', () => send(onPreview))
   function send(action: (edit: ShapeEdit) => void) {
     const request = edit()
     if (request) action(request)
@@ -70,6 +71,7 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
       <input className={inputCls} value={length} placeholder="Use standard length" disabled={busy}
         onChange={(event) => { setLength(event.target.value); onChange() }} />
     </label>
+    <More>
     {!nut && <>
       <label className="grid gap-1">Threaded length
         <input className={inputCls} value={threaded} placeholder="Entire shank" disabled={busy}
@@ -88,8 +90,8 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
           onChange={(event) => { setPosition({ ...position, [axis]: event.target.value }); onChange() }} />
       </label>)}
     </div>
+    </More>
     <div className="flex flex-wrap gap-1.5">
-      <Btn size="sm" type="button" disabled={!spec || busy} onClick={() => send(onPreview)}>Preview</Btn>
       <Btn size="sm" type="submit" variant="primary" disabled={!spec || busy}>Create</Btn>
       <Btn size="sm" type="button" onClick={onClose} disabled={busy}>Cancel</Btn>
     </div>

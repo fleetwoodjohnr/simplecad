@@ -1,4 +1,4 @@
-import { errors, expect, launch, test } from './helpers'
+import { errors, expect, launch, test, command, more } from './helpers'
 
 test('creates a physical nut from an existing shaft thread without choosing the thread again', async () => {
   const { page } = await launch()
@@ -13,7 +13,7 @@ test('creates a physical nut from an existing shaft thread without choosing the 
   await shape.getByRole('button', { name: 'Create' }).click()
   await expect(status).toContainText('21205.75 mm³')
   await page.getByLabel('Planar face').selectOption({ label: 'Curved · 2827.43 mm²' })
-  await toolbar.getByRole('button', { name: 'Thread', exact: true }).click()
+  await command(page, 'Thread')
   const thread = page.getByRole('form', { name: 'Thread' })
   await thread.getByLabel('Thread size').selectOption('M30')
   await thread.getByLabel('Threaded length').fill('10 mm')
@@ -21,12 +21,13 @@ test('creates a physical nut from an existing shaft thread without choosing the 
   await expect(thread).toBeHidden()
   const shaft = await status.textContent()
 
-  await toolbar.getByRole('button', { name: 'Matching Part', exact: true }).click()
+  await command(page, 'Matching Part')
   const match = page.getByRole('form', { name: 'Matching part' })
   await expect(match.getByText('M30 nut', { exact: true })).toBeVisible()
   await match.getByLabel('Height').fill('5 mm * 2')
+  await more(match)
   await match.getByLabel('X offset').fill('60 mm')
-  await match.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   await match.getByRole('button', { name: 'Create' }).click()
   await expect(match).toBeHidden()
   await expect(page.getByRole('button', { name: 'Hide Nut', exact: true })).toBeVisible()
@@ -57,7 +58,7 @@ test('cuts the matching thread into the bore of an existing tube, as one undoabl
   }
   await create('cylinder', { Radius: '15 mm' })
   await page.getByLabel('Planar face').selectOption({ label: 'Curved · 2827.43 mm²' })
-  await toolbar.getByRole('button', { name: 'Thread', exact: true }).click()
+  await command(page, 'Thread')
   const thread = page.getByRole('form', { name: 'Thread' })
   await thread.getByLabel('Thread size').selectOption('M30')
   await thread.getByLabel('Threaded length').fill('10 mm')
@@ -67,7 +68,7 @@ test('cuts the matching thread into the bore of an existing tube, as one undoabl
   await create('tube', { 'Outer radius': '25 mm', 'Inner radius': '15 mm' })
   await page.getByLabel('Planar face').selectOption({ label: 'Tube · Curved · 2827.43 mm²' })
   const before = await status.textContent()
-  await toolbar.getByRole('button', { name: 'Matching Part', exact: true }).click()
+  await command(page, 'Matching Part')
   const match = page.getByRole('form', { name: 'Matching part' })
   await match.getByRole('radio', { name: 'Thread a round face' }).click()
   await expect(match.getByText(/Cuts a matching M30 thread into the selected round face/)).toBeVisible()

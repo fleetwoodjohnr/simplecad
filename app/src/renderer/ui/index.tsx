@@ -1,4 +1,4 @@
-import { forwardRef, useRef, useState, type ButtonHTMLAttributes, type ComponentProps, type ReactNode } from 'react'
+import { forwardRef, useEffect, useRef, useState, type ButtonHTMLAttributes, type ComponentProps, type ReactNode } from 'react'
 import { DropdownMenu, Tooltip, Dialog, Popover, Switch as RSwitch, ContextMenu } from 'radix-ui'
 import { Check, ChevronRight, X } from 'lucide-react'
 import { formatShortcut } from '../app/commands'
@@ -382,4 +382,31 @@ export function ColorGrid({ onPick, onClear, clearLabel = 'Automatic', value }: 
       </label>
     </div>
   )
+}
+
+/** Live preview, as 0.2.0's tools did: `run` once the inputs (`key`) have been still for a moment and are valid. */
+export function useLivePreview(key: string, enabled: boolean, run: () => void, pause = 250) {
+  const latest = useRef(run)
+  latest.current = run
+  useEffect(() => {
+    if (!enabled) return
+    const timer = setTimeout(() => latest.current(), pause)
+    return () => clearTimeout(timer)
+  }, [key, enabled, pause])
+}
+
+/** A tool's less used settings, folded under More… as 0.2.0's short panels kept them. */
+export function More({ children, label = 'More…' }: { children: ReactNode; label?: string }) {
+  return (
+    <details className="group grid gap-2">
+      <summary className="cursor-pointer select-none text-text-2 hover:text-text">{label}</summary>
+      <div className="mt-2 grid gap-2">{children}</div>
+    </details>
+  )
+}
+
+/** The first field of a tool's panel: focused as it opens, its value selected so typing replaces it. */
+export const firstField = {
+  autoFocus: true,
+  onFocus: (event: { currentTarget: HTMLInputElement }) => event.currentTarget.select()
 }
