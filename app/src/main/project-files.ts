@@ -264,6 +264,7 @@ async function writeAtomic(target: string, data: Uint8Array, overwrite: boolean)
 }
 
 /** With SIMPLECAD_TIMING set, how long each stage took, for the test logs. */
-function timing(stage: string, since: number) {
+/** A `[timing]` line on stderr when SIMPLECAD_TIMING is set, as the packaged-window checks read them. */
+export function timing(stage: string, since: number) {
   if (process.env.SIMPLECAD_TIMING) console.error(`[timing] ${stage} after ${Math.round(performance.now() - since)} ms`)
 }
