@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Run the legacy app, the candidate and the legacy app again from a scratch installation.
 set -euo pipefail
-if [[ $# != 3 ]]; then
-  echo "usage: $0 <baseline.dmg> <candidate.dmg> <candidate-version>" >&2
+if [[ $# != 3 && $# != 4 ]]; then
+  echo "usage: $0 <baseline.dmg> <candidate.dmg> <candidate-version> [baseline-version, default 0.4.4]" >&2
   exit 2
 fi
+baseline_version=${4:-0.4.4}
 
 scratch=$(mktemp -d)
 mount="$scratch/mount"
@@ -56,11 +57,11 @@ PY
 }
 
 install "$1"
-check 0.4.4
+check "$baseline_version"
 install "$2"
 check "$3"
 check_association
 test -s "$app/Contents/Resources/app.asar"
 install "$1"
-check 0.4.4
+check "$baseline_version"
 echo "Install, upgrade and rollback passed on macOS."

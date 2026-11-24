@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { replaceAppImage, rollbackAppImage } from '../app/src/main/updates.ts'
 
-const [baseline, candidate, version] = process.argv.slice(2)
+// The baseline's version: a 0.4.4 AppImage by default, or a 0.5.x one.
+const [baseline, candidate, version, baselineVersion = '0.4.4'] = process.argv.slice(2)
 assert(baseline && candidate && version,
   'Usage: node scripts/appimage_upgrade_drill.mjs <verified-baseline.AppImage> <candidate.AppImage> <candidate-version>')
 
@@ -54,7 +55,7 @@ try {
     assert.equal(await sha256(model), original.model)
   }
 
-  await check('0.4.4')
+  await check(baselineVersion)
   await assert.rejects(replaceAppImage(candidate, target, '00'.repeat(32)), /signed checksum/)
   assert.equal(await sha256(target), original.app)
   console.log('Rejected the wrong checksum without replacing the installed AppImage.')
@@ -67,7 +68,7 @@ try {
 
   await rollbackAppImage(target)
   assert.equal(await sha256(target), original.app)
-  await check('0.4.4')
+  await check(baselineVersion)
   console.log('AppImage upgrade and byte-for-byte rollback passed.')
 } finally {
   await rm(scratch, { recursive: true, force: true })
