@@ -321,8 +321,13 @@ impl Model {
 
     /// `DependencyGraph.latest`: the step and object that last wrote each body name.
     fn latest(&self) -> BTreeMap<String, (String, String)> {
+        self.latest_before(usize::MAX)
+    }
+
+    /// Each body's producer and object ID as the steps before `position` leave them.
+    fn latest_before(&self, position: usize) -> BTreeMap<String, (String, String)> {
         let mut latest = BTreeMap::new();
-        for feature in self.list("features") {
+        for feature in self.list("features").iter().take(position) {
             let id = feature
                 .get("id")
                 .and_then(Value::as_str)
@@ -508,7 +513,13 @@ impl Model {
                     face_settings: edit_values(
                         f,
                         face_edit_fields(&f["type"]).or_else(|| body_edit_fields(&f["type"])),
-                    ),
+                    )
+                    .map(|mut settings| {
+                        if f["type"] == "arrange" {
+                            arrangement_picks(f, &mut settings);
+                        }
+                        settings
+                    }),
                     shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
                     matching_thread: (state == "ok").then(|| Self::matching_thread(f)).flatten(),
                     construction_plane,
@@ -557,6 +568,12 @@ impl Model {
             .or_else(|| body_edit_fields(&updated["type"]))
             .or_else(|| shape_edit_fields(&updated["type"]))
             .ok_or("This history step has no editable settings.")?;
+        // A face pattern is edited whole (`edit_arrangement`); only a row's settings change one by one.
+        let allowed: &[&str] = if updated["type"] == "arrange" {
+            &["mode", "axis", "gap"]
+        } else {
+            allowed
+        };
         if changes.is_empty() || changes.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err("Choose a setting to edit on this history step.".into());
         }
@@ -992,11 +1009,18 @@ impl Model {
             );
             output_ids.insert(body.clone(), json!(object));
         }
-        if bodies.len() < 2 {
-            return Err("Choose two or more bodies to arrange.".into());
+        let pattern = inputs["pattern"]
+            .as_str()
+            .is_some_and(|pattern| pattern != "row");
+        if pattern {
+            self.arrangement_refs(bodies, &mut inputs, &mut bindings, shown, None)?;
+        } else {
+            if bodies.len() < 2 {
+                return Err("Choose two or more bodies to arrange.".into());
+            }
+            inputs["orient"] = json!(false);
         }
         inputs["bodies"] = Value::Array(refs);
-        inputs["orient"] = json!(false);
         if inputs.get("normal_offset").is_none() {
             inputs["normal_offset"] = json!("0");
         }
@@ -1118,6 +1142,190 @@ impl Model {
             "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
+    /// A face pattern edited from History, as SimpleCAD 0.4's Arrange panel saves it: the settings replaced whole,
+    /// each pick replaced when it was made again (`target_face`, `contact_faces` or `boundary_edges` sent) and kept
+    /// as saved otherwise. The arranged bodies stay those the step already moves.
+    pub fn edit_arrangement(
+        &mut self,
+        step_id: &str,
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (position, mut updated) = self.recipe(step_id)?;
+        if updated["type"] != "arrange" || !inputs.is_object() {
+            return Err("The arrangement settings could not be read.".into());
+        }
+        if !inputs["pattern"]
+            .as_str()
+            .is_some_and(|pattern| pattern != "row")
+        {
+            return Err("Choose a pattern to lay the objects out in.".into());
+        }
+        let saved = updated["inputs"].clone();
+        let bodies: Vec<String> = saved["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(crate::rebuild::alias)
+            .collect();
+        let mut bindings = updated["bindings"].as_object().cloned().unwrap_or_default();
+        let fields = inputs.as_object_mut().expect("an object");
+        if !fields.contains_key("target_face") && fields.get("target") != Some(&json!("plate")) {
+            for key in ["target_face", "target"] {
+                if let Some(value) = saved.get(key) {
+                    fields.insert(key.into(), value.clone());
+                }
+            }
+        }
+        for key in ["contact_faces", "boundary_edges"] {
+            if !fields.contains_key(key)
+                && let Some(value) = saved.get(key)
+            {
+                fields.insert(key.into(), value.clone());
+            }
+        }
+        self.arrangement_refs(&bodies, &mut inputs, &mut bindings, shown, Some(position))?;
+        let fields = inputs.as_object_mut().expect("an object");
+        fields.insert("bodies".into(), saved["bodies"].clone());
+        if !fields.contains_key("normal_offset") {
+            fields.insert("normal_offset".into(), json!("0"));
+        }
+        updated["inputs"] = inputs;
+        updated["bindings"] = Value::Object(bindings);
+        self.rebuild_recipe(position, updated, "Edit step", original, shown)
+    }
+
+    /// A face pattern's picks as SimpleCAD 0.4's Arrange panel records them: the target face (or the build plate),
+    /// a face for each body to stand on, and edges of the target face to keep the margin from. Each arrives as
+    /// `{"body", "index"}`; the target's body is bound like the arranged ones.
+    fn arrangement_refs(
+        &self,
+        bodies: &[String],
+        inputs: &mut Value,
+        bindings: &mut Map<String, Value>,
+        shown: &HashMap<String, crate::rebuild::Shape>,
+        position: Option<usize>,
+    ) -> Result<(), String> {
+        if bodies.is_empty() {
+            return Err("Select at least one object to arrange.".into());
+        }
+        let pick = |value: &Value| -> Option<(String, u32)> {
+            let body = value["body"].as_str()?.to_owned();
+            let index = u32::try_from(value["index"].as_u64()?).ok()?;
+            Some((body, index))
+        };
+        let shape_of = |object: &str| {
+            shown
+                .get(object)
+                .ok_or("Pick faces of a body with geometry.")
+        };
+        let saved = |value: &Value| value.get("__ref__").is_some();
+        let target = match inputs.get("target_face").filter(|value| !value.is_null()) {
+            // As saved: its body is bound already.
+            Some(value) if saved(value) => {
+                let body = value["__ref__"]["body"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let object = bindings
+                    .get(&body)
+                    .and_then(|b| b["object_id"].as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                Some((body, object))
+            }
+            Some(value) => {
+                let (body, index) = pick(value)
+                    .ok_or("Click the face to arrange the objects on, or use the build plate.")?;
+                if bodies.contains(&body) {
+                    return Err("That face is on one of the objects being arranged. Pick another object's face.".into());
+                }
+                let (producer, object) = match position {
+                    None => self.editable(&body)?,
+                    Some(position) => {
+                        self.latest_before(position).remove(&body).ok_or_else(|| {
+                            format!(
+                                "{body} was made after this arrangement; arrange it separately."
+                            )
+                        })?
+                    }
+                };
+                let shape = shape_of(&object)?;
+                let face = occt::sub_face(shape, index).map_err(|error| error.what().to_owned())?;
+                let flat = occt::plane_frame(&face)
+                    .map_err(|error| error.what().to_owned())?
+                    .planar;
+                if !flat
+                    && !occt::cylinder_data(&face)
+                        .map_err(|error| error.what().to_owned())?
+                        .cylindrical
+                {
+                    return Err("Pick a flat face, or the round side of a cylinder.".into());
+                }
+                inputs["target_face"] =
+                    json!({ "__ref__": self.anchored_face_ref(&body, &object, shape, index)? });
+                bindings.insert(
+                    body.clone(),
+                    json!({ "feature_id": producer, "object_id": object }),
+                );
+                Some((body, object))
+            }
+            None if inputs["target"] == "plate" => None,
+            None => {
+                return Err(
+                    "Click the face to arrange the objects on, or use the build plate.".into(),
+                );
+            }
+        };
+        // Each pick a body and index, or a reference as saved.
+        type Picks = (Vec<Value>, Vec<(String, u32)>);
+        let picks = |key: &str| -> Result<Picks, String> {
+            let list = match inputs.get(key) {
+                None | Some(Value::Null) => return Ok(Default::default()),
+                Some(Value::Array(list)) => list,
+                Some(_) => return Err(format!("The {key} could not be read.")),
+            };
+            let (kept, new): (Vec<&Value>, Vec<&Value>) = list.iter().partition(|v| saved(v));
+            let new = new
+                .into_iter()
+                .map(|v| pick(v).ok_or_else(|| format!("The {key} could not be read.")))
+                .collect::<Result<_, _>>()?;
+            Ok((kept.into_iter().cloned().collect(), new))
+        };
+        let (mut contacts, picked) = picks("contact_faces")?;
+        for (body, index) in picked {
+            if !bodies.contains(&body) {
+                return Err("Click a flat face on one of the objects being arranged.".into());
+            }
+            let object = bindings[&body]["object_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            contacts.push(json!({ "__ref__": self.anchored_face_ref(&body, &object, shape_of(&object)?, index)? }));
+        }
+        let (mut edges, picked) = picks("boundary_edges")?;
+        for (body, index) in picked {
+            let Some((target_body, object)) = target.as_ref().filter(|(name, _)| *name == body)
+            else {
+                return Err("Only edges of the target face can bound it.".into());
+            };
+            edges.push(
+                json!({ "__ref__": self.edge_ref(target_body, object, shape_of(object)?, index)? }),
+            );
+        }
+        let fields = inputs.as_object_mut().expect("an object");
+        for (key, list) in [("contact_faces", contacts), ("boundary_edges", edges)] {
+            if list.is_empty() {
+                fields.remove(key);
+            } else {
+                fields.insert(key.into(), Value::Array(list));
+            }
+        }
+        fields.insert("frame_mode".into(), json!("reference"));
+        Ok(())
     }
 
     /// An edge reference as SimpleCAD 0.4's edge tools write it: the curve, and its faces' summaries.
@@ -2357,6 +2565,27 @@ fn touched(change: &Value) -> BTreeSet<String> {
     set.chain(removed).collect()
 }
 
+/// What a face pattern's panel shows of its picks when History edits it: the arranged bodies (as JSON), the target
+/// face's body (empty for the build plate) and how many contact faces and edges were picked.
+fn arrangement_picks(feature: &Value, settings: &mut HashMap<String, String>) {
+    let inputs = &feature["inputs"];
+    let names: Vec<String> = inputs["bodies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(crate::rebuild::alias)
+        .collect();
+    settings.insert("bodies".into(), json!(names).to_string());
+    let target = inputs["target_face"]["__ref__"]["body"]
+        .as_str()
+        .unwrap_or_default();
+    settings.insert("target_body".into(), target.into());
+    for key in ["contact_faces", "boundary_edges"] {
+        let count = inputs[key].as_array().map_or(0, Vec::len);
+        settings.insert(key.into(), count.to_string());
+    }
+}
+
 /// `DependencyGraph.dependents`: `ids` and every step downstream of them.
 fn edit_values(feature: &Value, fields: Option<&[&str]>) -> Option<HashMap<String, String>> {
     Some(
@@ -2411,7 +2640,40 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "boolean" => &["operation", "keep_tool"],
         "split" => &["position"],
         "draft" => &["angle"],
-        "arrange" => &["mode", "axis", "gap"],
+        // A row's own three; a face pattern's settings (edited whole, see `edit_arrangement`) are shown with them.
+        "arrange" => &[
+            "mode",
+            "axis",
+            "gap",
+            "pattern",
+            "spacing",
+            "boundary",
+            "margin",
+            "rotation",
+            "normal_offset",
+            "contain",
+            "avoid_holes",
+            "avoid_bodies",
+            "auto_rotate",
+            "orient",
+            "direction",
+            "align",
+            "rows",
+            "columns",
+            "gap_y",
+            "fill",
+            "distribute",
+            "radius",
+            "start_angle",
+            "face_center",
+            "inset_left",
+            "inset_right",
+            "inset_top",
+            "inset_bottom",
+            "move_x",
+            "move_y",
+            "move_normal",
+        ],
         "section_replace" => &["u", "v", "boundary", "setback"],
         "threaded_connection" => &["designation", "clearance", "form", "length"],
         // Not the connector count, which decides the step's outputs.

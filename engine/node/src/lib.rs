@@ -197,6 +197,8 @@ pub struct OpenedBody {
 pub struct OpenedProject {
     pub bodies: Vec<OpenedBody>,
     pub notes: Vec<String>,
+    /// What a previewed step showed beside its result, as JSON: an arrangement's fit.
+    pub step_note: Option<String>,
     /// What saving edits.
     pub project: Option<Project>,
 }
@@ -503,6 +505,7 @@ impl Project {
             .filter_map(|body| body["id"].as_str())
             .collect();
         let signatures = Some(Arc::new(report.signatures));
+        let step_note = report.notes.values().next().map(|note| note.to_string());
         let bodies = report
             .bodies
             .into_iter()
@@ -516,6 +519,7 @@ impl Project {
         OpenedProject {
             bodies,
             notes: Vec::new(),
+            step_note,
             project: Some(Project {
                 model,
                 original: self.original.clone(),
@@ -778,6 +782,23 @@ impl Project {
         let mut model = self.model.clone();
         let report = model
             .add_arrangement(&bodies, inputs, &self.original, &self.shown_shapes(shown))
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// A face pattern edited from History; `inputs` is the whole of its settings as JSON, with any picks made again.
+    #[napi]
+    pub fn edit_arrangement(
+        &self,
+        step_id: String,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The arrangement settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .edit_arrangement(&step_id, inputs, &self.original, &self.shown_shapes(shown))
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }
@@ -1420,6 +1441,7 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
     Ok(OpenedProject {
         bodies,
         notes,
+        step_note: None,
         project: saveable,
     })
 }
@@ -1439,6 +1461,7 @@ pub fn new_project() -> Result<OpenedProject> {
             shape: Some(Shape::new(shape)),
         }],
         notes: vec![],
+        step_note: None,
         project: Some(Project {
             model,
             original: Arc::new(Vec::new()),

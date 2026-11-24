@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
-import type { BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
@@ -11,7 +11,7 @@ import { HistoryList } from './HistoryList'
 import { ContextBar } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
-import { ArrangePanel } from './ArrangePanel'
+import { ArrangePanel, type ArrangeRole } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
 import { PrintCheckPanel } from './PrintCheckPanel'
@@ -24,6 +24,7 @@ import { NUDGE_STEP, worldAxes } from './nudge'
 import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
+import type { TransformView } from '../viewport/transform'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
@@ -158,8 +159,13 @@ export function App() {
   /** The Threaded connection tool: open or not, and its two picked round faces. */
   const [threadPair, setThreadPair] = useState(false)
   const [threadPicks, setThreadPicks] = useState<number[]>([])
-  /** Arrange's bodies, taken as it opens; or the saved step History is editing. */
-  const [arrange, setArrange] = useState<{ bodies: number[]; editing?: string }>()
+  /** Arrange's bodies, taken as it opens (or the saved step History is editing), and a face pattern's picks: the
+   * target face or the build plate, a face for bodies to stand on (by body), edges to keep the margin from, and how
+   * far the pattern was dragged. `repicked`: which saved picks an edit makes again. */
+  const [arrange, setArrange] = useState<{
+    bodies: number[]; editing?: string; role?: ArrangeRole; target?: number; targetName?: string; plate: boolean
+    contacts: Record<number, number>; edges: number[]; move: Vec3; repicked: { target?: true; contacts?: true; edges?: true }
+  }>()
   /** Section Replace: its picks (the replacement's face, then the target's), or the saved step History is editing. */
   const [section, setSection] = useState<{ editing?: string }>()
   /** A saved Move, Rotate, Pull or placement whose settings History is editing. */
@@ -528,7 +534,58 @@ export function App() {
     const shown = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []) ?? []
     const bodies = chosenBodies.length >= 2 ? chosenBodies : shown
     select()
-    setArrange({ bodies })
+    setArrange({ bodies, plate: false, contacts: {}, edges: [], move: [0, 0, 0], repicked: {} })
+  }
+  const arrangeRole = (role?: ArrangeRole) => {
+    // Picks are of the model as it is, not of a preview.
+    clearPreview()
+    setArrange((tool) => tool && { ...tool, role })
+  }
+  const pickArrangeFace = (face: number) => {
+    if (!arrange || !model) return
+    const info = model.shape.faces[face]
+    if (!info) return
+    if (arrange.role === 'target') {
+      if (arrange.bodies.includes(info.body)) {
+        setError("That face is on one of the objects being arranged. Pick another object's face.")
+        return
+      }
+      setError('')
+      setSelected(face)
+      setArrange({ ...arrange, role: undefined, target: face, targetName: faceLabel(info, model.bodies, unit), plate: false, edges: [],
+        repicked: { ...arrange.repicked, target: true, edges: true } })
+    } else if (arrange.role === 'contact') {
+      if (!arrange.bodies.includes(info.body) || !info.planar) {
+        setError('Click a flat face on one of the objects being arranged.')
+        return
+      }
+      setError('')
+      setSelected(face)
+      const kept = arrange.repicked.contacts ? arrange.contacts : {}
+      setArrange({ ...arrange, contacts: { ...kept, [info.body]: face }, repicked: { ...arrange.repicked, contacts: true } })
+    }
+  }
+  const pickArrangeEdge = (edge: number) => {
+    if (!arrange || arrange.target === undefined || edgeBody(edge) !== model?.shape.faces[arrange.target]?.body) {
+      setError('Only edges of the target face can bound it.')
+      return
+    }
+    setError('')
+    const kept = arrange.repicked.edges ? arrange.edges : []
+    setArrange({ ...arrange, edges: kept.includes(edge) ? kept.filter((e) => e !== edge) : [...kept, edge],
+      repicked: { ...arrange.repicked, edges: true } })
+  }
+  /** What Arrange asks for: a row of the bodies, or a face pattern with the picks made (an edit sends only those made again). */
+  const arrangeRequest = (inputs: ArrangeEdit['inputs']): ArrangeEdit => {
+    const tool = arrange!
+    if ('mode' in inputs) return { arrange: tool.bodies, inputs }
+    const editing = tool.editing
+    const request: ArrangeEdit = { arrange: editing ? [] : tool.bodies, inputs, ...(editing ? { editing } : {}) }
+    if (tool.plate) request.target = 'plate'
+    else if (tool.target !== undefined && (!editing || tool.repicked.target)) request.target = tool.target
+    if (!editing || tool.repicked.contacts) request.contacts = Object.values(tool.contacts)
+    if (!editing || tool.repicked.edges) request.edges = tool.edges
+    return request
   }
   const closeArrange = () => { setArrange(undefined); clearPreview() }
   const closeSection = () => { setSection(undefined); setSectionPicks([]); clearPreview() }
@@ -678,6 +735,19 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  // A face pattern's preview drags as one: the move, along the face's U, V and normal, goes into its offsets.
+  const arrangeNote = arrange && !arrange.role ? preview?.arrangement : undefined
+  const arrangeDrag: TransformView | undefined = arrangeNote && model ? {
+    kind: 'move', body: -1, enabled: ready, snap: 0,
+    bodies: arrangeNote.order.map((name) => model.bodies.findIndex((body) => body.name === name)).filter((index) => index >= 0),
+    formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+    onCommit: ({ values }) => {
+      const delta = values.map(Number)
+      const along = (axis: Vec3) => axis[0] * delta[0] + axis[1] * delta[1] + axis[2] * delta[2]
+      const [u, v, n] = arrangeNote.axes
+      setArrange((tool) => tool && { ...tool, move: [tool.move[0] + along(u), tool.move[1] + along(v), tool.move[2] + along(n)] })
+    }
+  } : undefined
   const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !hinge && !clip && !threadPair && !construction && !arrange && !section && !measureKind && !sketchTool && !sketchEditor && !matchingPart
   const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
@@ -1046,7 +1116,15 @@ export function App() {
         return
       }
       if (step.kind === 'arrange') {
-        setArrange({ bodies: [], editing: step.id })
+        const settings = step.faceSettings ?? {}
+        const names: string[] = settings.bodies ? JSON.parse(settings.bodies) : []
+        const pattern = (settings.pattern ?? 'row') !== 'row'
+        setArrange({
+          bodies: names.map((name) => model?.bodies.findIndex((body) => body.name === name) ?? -1).filter((index) => index >= 0),
+          editing: step.id, plate: pattern && !settings.target_body, targetName: settings.target_body ? `a face of ${settings.target_body}` : undefined,
+          contacts: {}, edges: [], repicked: {},
+          move: [Number(settings.move_x) || 0, Number(settings.move_y) || 0, Number(settings.move_normal) || 0]
+        })
         return
       }
       if (step.kind in constructionLabels) {
@@ -1127,13 +1205,16 @@ export function App() {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
               formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
-            } : undefined}
+            } : arrangeDrag}
+            outline={arrange ? preview?.arrangement?.boundary : undefined}
+            marked={arrange ? preview?.arrangement?.marked : undefined}
             canPull={canPullFace}
-            onPickEdge={edgeTool && !edgeTool.editing && ready ? pickEdge
+            onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge
+              : edgeTool && !edgeTool.editing && ready ? pickEdge
               : hinge && ready ? pickHingeEdge
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
-            pickedEdges={edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
+            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
             overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
               canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
               onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
@@ -1141,6 +1222,10 @@ export function App() {
               if (!ready || shapePanel || sketchTool) return
               if (matchingPart) {
                 if (face !== undefined) { clearPreview(); setSelected(face) }
+                return
+              }
+              if (arrange?.role) {
+                if (face !== undefined) pickArrangeFace(face)
                 return
               }
               if (section) {
@@ -1216,7 +1301,9 @@ export function App() {
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
                 onChange={(e) => {
                   const face = e.target.value === '' ? undefined : Number(e.target.value)
-                  if (section) {
+                  if (arrange?.role === 'target' || arrange?.role === 'contact') {
+                    if (face !== undefined) pickArrangeFace(face)
+                  } else if (section) {
                     if (face !== undefined && !section.editing) pickSectionFace(face)
                   } else if (clip) {
                     if (face !== undefined) pickClipFace(face)
@@ -1316,13 +1403,30 @@ export function App() {
               onApply={(inputs) => mutate(() => applySectionReplace(revision,
                 { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
               onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: section.editing!, changes }))} />}
-            {model && arrange && revision !== undefined && <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
-              names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')}
-              preset={model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings}
-              onChange={clearPreview} onCancel={closeArrange}
-              onPreview={(inputs) => void requestPreview(() => previewArrange(revision, { arrange: arrange.bodies, inputs }))}
-              onApply={(inputs) => mutate(() => applyArrange(revision, { arrange: arrange.bodies, inputs }))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />}
+            {model && arrange && revision !== undefined && (() => {
+              const preset = model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings
+              const saved = (key: string) => arrange.editing ? Number(preset?.[key]) || 0 : 0
+              return <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
+                names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')} preset={preset}
+                target={arrange.targetName} plate={arrange.plate} role={arrange.role} note={preview?.arrangement} move={arrange.move}
+                contacts={arrange.repicked.contacts ? Object.keys(arrange.contacts).length : saved('contact_faces')}
+                edges={arrange.repicked.edges ? arrange.edges.length : saved('boundary_edges')}
+                onRole={arrangeRole}
+                onPlate={(plate) => {
+                  clearPreview()
+                  setArrange({ ...arrange, plate, role: undefined, target: undefined, targetName: undefined, edges: [],
+                    repicked: { ...arrange.repicked, target: true, edges: true } })
+                }}
+                onReset={() => { clearPreview(); setArrange({ ...arrange, move: [0, 0, 0] }) }}
+                onChange={clearPreview} onCancel={closeArrange}
+                onPreview={(inputs) => void requestPreview(() => previewArrange(revision, arrangeRequest(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyArrange(revision, arrangeRequest(inputs))
+                  closeArrange()
+                  return next
+                })}
+                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />
+            })()}
             {model && construction && revision !== undefined && <ConstructionPanel key={`${construction.kind}:${construction.editing ?? 'new'}`}
               kind={construction.kind} busy={busy} axisFrom={construction.axisFrom}
               picked={{ faces: constructPicks.faces.length, edges: constructPicks.edges.length, points: constructPicks.points.length }}

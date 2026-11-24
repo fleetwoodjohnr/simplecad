@@ -1,6 +1,6 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import {
-  AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, GridHelper, LineBasicMaterial, LineSegments,
+  AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, GridHelper, LineBasicMaterial, LineSegments,
   Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
@@ -28,6 +28,10 @@ interface Props {
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
   onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
+  /** Closed rings drawn over the model: a face pattern's usable region. */
+  outline?: Vec3[][]
+  /** Bodies of the displayed shape tinted red: those a face pattern could not fit. */
+  marked?: number[]
 }
 
 export function Viewport(props: Props) {
@@ -142,7 +146,14 @@ export function Viewport(props: Props) {
       }
       return segmentEdge.owner[segment]
     }
-    scene.add(body, highlight, hover, edges, ghost, prism, chosen)
+    const outline = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x3b82f6, depthTest: false }))
+    outline.renderOrder = 3
+    let outlineRings: Vec3[][] | undefined
+    const marked = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe5484d, transparent: true, opacity: 0.6, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    let markedKey = ''
+    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked)
     let hovered: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
@@ -262,7 +273,29 @@ export function Viewport(props: Props) {
       if (!canvas.dataset.ghost || canvas.dataset.ghost === 'preview') {
         canvas.dataset.ghost = range ? 'preview' : ''
       }
-      const transforming = transform.set(shown ? undefined : shape, body.geometry, tool, showEdges)
+      if (current.current.outline !== outlineRings) {
+        outlineRings = current.current.outline
+        const points: number[] = []
+        for (const ring of outlineRings ?? []) {
+          for (let i = 0; i + 1 < ring.length; i++) points.push(...ring[i], ...ring[i + 1])
+        }
+        outline.geometry.dispose()
+        outline.geometry = new BufferGeometry()
+        outline.geometry.setAttribute('position', new Float32BufferAttribute(points, 3))
+      }
+      const tinted = next ? current.current.marked ?? [] : []
+      const tintKey = tinted.length ? `${tinted.join(',')}:${body.geometry.id}` : ''
+      if (tintKey !== markedKey) {
+        marked.geometry.dispose()
+        const parts = next!.ranges.filter((range) => tinted.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
+        const indices = new Uint32Array(parts.reduce((total, part) => total + part.length, 0))
+        parts.reduce((at, part) => { indices.set(part, at); return at + part.length }, 0)
+        marked.geometry = tintKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
+        markedKey = tintKey
+      }
+      // A group drag (Arrange) moves bodies of the preview; any other moves the model's.
+      const transforming = transform.set(tool?.bodies ? next : shown ? undefined : shape, body.geometry, tool, showEdges)
+      marked.visible = !!tintKey && !transforming
       const picking = !!current.current.onPickEdge
       body.visible = !transforming
       edges.visible = (showEdges || picking) && !transforming
@@ -381,7 +414,7 @@ export function Viewport(props: Props) {
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -393,7 +426,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges, props.outline, props.marked])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {

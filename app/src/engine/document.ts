@@ -1,6 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -35,6 +35,7 @@ export interface Project {
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   groups(): { name: string; members: string[] }[]
   addArrangement(bodies: string[], inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  editArrangement(stepId: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addSectionReplace(target: { body: string; index: number }, replacement: { body: string; index: number }, inputs: string,
     shown: { id?: string; name: string; shape: Shape }[]): State
   addConstruction(kind: string, faces: { body: string; index: number }[], edges: { body: string; index: number }[],
@@ -69,7 +70,8 @@ export interface Project {
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
 /** One point in the history. */
-interface State { bodies: Body[]; project: Project }
+/** `stepNote`: what a previewed step showed beside its result, as JSON (a face pattern's fit). */
+interface State { bodies: Body[]; project: Project; stepNote?: string | null }
 
 function initialState({ bodies, visible, project }: Opened): State {
   return { bodies: bodies.map((body, index) => ({ ...body, visible: visible[index] })), project }
@@ -228,12 +230,18 @@ export class EngineDocument {
       'hinge' in edit ? { hinge: edit.hinge } :
       'clipJoint' in edit ? { clipJoint: edit.clipJoint } :
       'threadedConnection' in edit ? { threadedConnection: edit.threadedConnection } :
-      'arrange' in edit ? { arrange: edit.arrange, inputs: edit.inputs } :
+      'arrange' in edit ? { ...edit, preview: true } as ArrangeEdit :
       'sectionTarget' in edit ? { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
       'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } :
       'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
-    return this.show(this.prepare(step).bodies)
+    const state = this.prepare(step)
+    const shape = this.show(state.bodies)
+    if (!state.stepNote) return shape
+    const note = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'>
+    const problems = new Set(note.problems.map((problem) => problem.name))
+    const marked = this.shown(state.bodies).flatMap(({ body }) => problems.has(state.bodies[body].name) ? [body] : [])
+    return { ...shape, arrangement: { ...note, marked } }
   }
 
   readSketch(revision: number, id: string) {
@@ -351,7 +359,7 @@ export class EngineDocument {
     } else if ('sectionTarget' in edit) {
       step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
-      step = { arrange: edit.arrange, inputs: edit.inputs }
+      step = { arrange: edit.arrange, inputs: edit.inputs, target: edit.target, contacts: edit.contacts, edges: edit.edges, editing: edit.editing }
     } else if ('construction' in edit) {
       step = { construction: edit.construction, faces: edit.faces, edges: edit.edges, inputs: edit.inputs }
     } else if ('ungroup' in edit) {
@@ -602,7 +610,20 @@ export class EngineDocument {
         if (!bodies[index]?.shape) throw new Error('Choose bodies with geometry to arrange.')
         return bodies[index].name
       })
-      return this.rebuiltState(project.addArrangement(names, JSON.stringify(step.inputs), this.shapes(bodies)))
+      if ('mode' in step.inputs) return this.rebuiltState(project.addArrangement(names, JSON.stringify(step.inputs), this.shapes(bodies)))
+      // A face pattern's picks, as each body's own face and edge numbers.
+      const face = (shown: number) => { const pick = this.pick(shown); return { body: bodies[pick.body].name, index: pick.face } }
+      const inputs: Record<string, unknown> = { ...step.inputs }
+      if (step.target === 'plate') inputs.target = 'plate'
+      else if (step.target !== undefined) inputs.target_face = face(step.target)
+      if (step.contacts) inputs.contact_faces = step.contacts.map(face)
+      if (step.edges) {
+        inputs.boundary_edges = step.edges.map((shown) => { const pick = this.pickEdge(shown); return { body: bodies[pick.body].name, index: pick.edge } })
+      }
+      if ((step as ArrangeEdit & { preview?: boolean }).preview) inputs.preview = true
+      const request = JSON.stringify(inputs)
+      return this.rebuiltState(step.editing ? project.editArrangement(step.editing, request, this.shapes(bodies))
+        : project.addArrangement(names, request, this.shapes(bodies)))
     }
     if ('construction' in step) {
       const named = (pick: { body: number }, index: number) => ({ body: bodies[pick.body].name, index })

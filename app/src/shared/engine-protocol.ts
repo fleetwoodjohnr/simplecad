@@ -32,6 +32,8 @@ export interface DisplayShape extends MeshData {
   volume: number
   faces: FaceInfo[]
   ranges: BodyRange[]
+  /** A face pattern's preview: how it fits. */
+  arrangement?: ArrangementNote
 }
 
 export interface BodyInfo {
@@ -73,7 +75,48 @@ export interface ConstructionEdit {
   inputs: Record<string, string | Vec3[]>
 }
 /** Line bodies (by index) up along a world axis, with equal gaps or a fixed one. */
-export interface ArrangeEdit { arrange: number[]; inputs: { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string } }
+export const ARRANGE_PATTERNS = ['grid', 'linear', 'radial', 'staggered', 'packed', 'custom'] as const
+export type ArrangePattern = typeof ARRANGE_PATTERNS[number]
+/** A row: the bodies lined up where they are. */
+export interface ArrangeRow { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string }
+/** A face pattern's settings, as SimpleCAD 0.4's Arrange panel writes them (each pattern only its own). */
+export interface ArrangePatternSettings {
+  pattern: ArrangePattern; spacing: 'auto' | 'fixed'; boundary: 'auto' | 'manual'
+  gap: string; margin: string; rotation: string; normal_offset: string
+  contain: boolean; avoid_holes: boolean; avoid_bodies: boolean; auto_rotate: boolean; orient: boolean
+  direction?: string; align?: string; rows?: number; columns?: number
+  gap_y?: string; fill?: 'rows' | 'columns'; distribute?: 'between' | 'evenly'
+  radius?: string; start_angle?: string; face_center?: boolean
+  inset_left?: string; inset_right?: string; inset_top?: string; inset_bottom?: string
+  move_x: number; move_y: number; move_normal: number
+}
+export interface ArrangeEdit {
+  /** The bodies, as shown; none when a History step is edited. */
+  arrange: number[]
+  inputs: ArrangeRow | ArrangePatternSettings
+  /** A face pattern's target: a face of the shown model, or the build plate. Left out when editing keeps it. */
+  target?: number | 'plate'
+  /** Faces of arranged bodies to stand them on, and edges of the target face to keep the margin from, as shown. */
+  contacts?: number[]
+  edges?: number[]
+  /** The History step a face pattern edit replaces. */
+  editing?: string
+}
+/** What a face pattern's preview shows beside it (0.4's `preview_parts` annotations). */
+export interface ArrangementNote {
+  fits: boolean
+  summary: string
+  problems: { name: string; reason: string }[]
+  suggestions: { label: string; patch: Record<string, string | number | boolean> }[]
+  gap: number; rows: number; columns: number; radius: number
+  order: string[]
+  /** U, V and the normal of the target, for dragging the pattern. */
+  axes: [Vec3, Vec3, Vec3]
+  /** The usable region, as closed rings just above the face. */
+  boundary: Vec3[][]
+  /** The shown bodies that do not fit, by index. */
+  marked: number[]
+}
 export const ANCHORS = ['top_left', 'top', 'top_right', 'left', 'center', 'right', 'bottom_left', 'bottom', 'bottom_right'] as const
 /** Section Replace: the replacement body's face (display index) set into the target's face, anchored and offset. */
 export interface SectionReplaceEdit {
@@ -427,13 +470,37 @@ function isSectionReplace(value: unknown): value is SectionReplaceEdit {
     expression(inputs.u) && expression(inputs.v) && expression(inputs.boundary) && expression(inputs.setback) && Object.keys(inputs).length === 6
 }
 
+const PATTERN_TEXT = ['gap', 'margin', 'rotation', 'normal_offset', 'direction', 'align', 'gap_y', 'radius', 'start_angle',
+  'inset_left', 'inset_right', 'inset_top', 'inset_bottom']
+const PATTERN_SWITCHES = ['contain', 'avoid_holes', 'avoid_bodies', 'auto_rotate', 'orient', 'face_center']
+const PATTERN_CHOICES: Record<string, readonly string[]> = {
+  pattern: ARRANGE_PATTERNS, spacing: ['auto', 'fixed'], boundary: ['auto', 'manual'], fill: ['rows', 'columns'],
+  distribute: ['between', 'evenly']
+}
+
+function isArrangePattern(inputs: Record<string, unknown>): boolean {
+  return typeof inputs.pattern === 'string' && Object.entries(inputs).every(([key, entry]) =>
+    PATTERN_TEXT.includes(key) ? typeof entry === 'string' && entry.length < 256 && (key === 'align' || entry.trim().length > 0)
+      : PATTERN_SWITCHES.includes(key) ? typeof entry === 'boolean'
+        : key in PATTERN_CHOICES ? PATTERN_CHOICES[key].includes(entry as string)
+          : key === 'rows' || key === 'columns' ? Number.isInteger(entry) && (entry as number) >= 0 && (entry as number) <= 999
+            : ['move_x', 'move_y', 'move_normal'].includes(key) && typeof entry === 'number' && Number.isFinite(entry) && Math.abs(entry) <= 1e6)
+}
+
 function isArrange(value: unknown): value is ArrangeEdit {
   if (!value || typeof value !== 'object') return false
-  const { arrange, inputs } = value as Partial<ArrangeEdit>
-  return Array.isArray(arrange) && arrange.length >= 2 && arrange.length <= MAX_BODIES &&
-    arrange.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(arrange).size === arrange.length &&
-    !!inputs && (inputs.mode === 'equal_gaps' || inputs.mode === 'fixed_gap') && ['x', 'y', 'z'].includes(inputs.axis) &&
-    typeof inputs.gap === 'string' && inputs.gap.trim().length > 0 && inputs.gap.length < 256 && Object.keys(inputs).length === 3
+  const { arrange, inputs, target, contacts, edges, editing } = value as Partial<ArrangeEdit>
+  if (!Array.isArray(arrange) || arrange.length > MAX_BODIES || !arrange.every((body) => isIndex(body) && body < MAX_BODIES) ||
+    new Set(arrange).size !== arrange.length || !inputs || typeof inputs !== 'object') return false
+  if ('mode' in inputs) {
+    return arrange.length >= 2 && target === undefined && contacts === undefined && edges === undefined && editing === undefined &&
+      (inputs.mode === 'equal_gaps' || inputs.mode === 'fixed_gap') && ['x', 'y', 'z'].includes(inputs.axis) &&
+      typeof inputs.gap === 'string' && inputs.gap.trim().length > 0 && inputs.gap.length < 256 && Object.keys(inputs).length === 3
+  }
+  const faces = (list: unknown) => list === undefined || (Array.isArray(list) && list.length <= MAX_BODIES * 4 && list.every((n) => isIndex(n) && n <= 0xffffffff))
+  return isArrangePattern(inputs as unknown as Record<string, unknown>) &&
+    (editing === undefined ? arrange.length >= 1 : typeof editing === 'string' && editing.length > 0 && editing.length < 256 && arrange.length === 0) &&
+    (target === undefined || target === 'plate' || (isIndex(target) && target <= 0xffffffff)) && faces(contacts) && faces(edges)
 }
 
 function isConstruction(value: unknown): value is ConstructionEdit {
