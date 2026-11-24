@@ -737,6 +737,8 @@ export function Viewport(props: Props) {
         <button key={`${h.key}:${index}`} type="button" data-model-handle={h.key} data-index={index}
           aria-label={index ? undefined : h.label} aria-hidden={index ? true : undefined} tabIndex={index ? -1 : undefined} title={h.label}
           className="absolute z-10 grid size-6 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full border-2 border-white bg-accent shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"
+          // A handle takes no focus: Enter after a drag still applies the tool.
+          onMouseDown={(e) => e.preventDefault()}
           onPointerDown={(e) => startHandle(e, h.key, index)}
           onPointerMove={(e) => moveHandle(e, false)}
           onPointerUp={(e) => moveHandle(e, true)}
