@@ -4,10 +4,10 @@ import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnecti
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
-import { HistoryList } from './HistoryList'
+import { HistoryList, keepLabel } from './HistoryList'
 import { ContextBar } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
@@ -55,6 +55,10 @@ function useTheme(chosen: Theme) {
 }
 
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
+/** The tools that change the chosen part: refused while the step it waits on has lost an input. */
+const changesBody: CommandId[] = ['move', 'rotate', 'scale', 'mirror', 'rectangularPattern', 'circularPattern', 'combine', 'split',
+  'sectionReplace', 'shell', 'draft', 'vent', 'fillet', 'chamfer', 'hinge', 'clipJoint', 'threadedConnection', 'pushPull', 'hole',
+  'thread', 'matchingPart', 'text', 'faceTexture', 'stack', 'arrange']
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
 const defaultStack: StackSettings = {
   operation: 'stack', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
@@ -782,7 +786,7 @@ export function App() {
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
-    const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
+    const body = movingBody ?? (chosenBodies.length === 1 ? chosenBodies[0] : visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
     setTransformSnap(preferences.snap ? kind === 'move' ? preferences.moveStep : preferences.rotationSnap : 0)
@@ -791,7 +795,7 @@ export function App() {
   }
   const openBodyTool = (kind: BodyOperation) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
-    const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
+    const body = movingBody ?? (chosenBodies.length === 1 ? chosenBodies[0] : visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
     setBodyTool({ kind })
@@ -804,8 +808,19 @@ export function App() {
   }
   const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !hinge && !clip && !threadPair && !construction && !arrange && !section && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
+  // A chosen part whose step lost an input keeps its last good shape and refuses changes (as 0.4.4 keeps it in
+  // place): what blocks it, said beside it, with the fix.
+  const blocked = (() => {
+    const index = (chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []).find((b) => model?.bodies[b]?.blockedBy)
+    const body = index === undefined ? undefined : model?.bodies[index]
+    const step = body && model?.steps.find((entry) => entry.id === body.blockedBy && !entry.undone)
+    return body && step ? { body, step } : undefined
+  })()
+  const keepStep = (step: StepInfo) => {
+    if (revision !== undefined) mutate(() => keepLastGood(revision, { keepStepId: step.id }))
+  }
   // Flat faces move along their normal; round ones along their radius (typed, as they have no single normal).
-  const canPullFace = idle && ready && !!selectedFace
+  const canPullFace = idle && ready && !!selectedFace && !blocked
   const startStack = () => {
     setStackSettings(defaultStack)
     setDistance('')
@@ -958,6 +973,11 @@ export function App() {
       })
     } },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
+  }
+  if (blocked) {
+    for (const id of changesBody) {
+      actions[id] = { ...actions[id], enabled: false, hint: `${blocked.body.name} can't change until ${blocked.step.name} is kept or repaired` }
+    }
   }
 
   // SimpleCAD 0.4's arrow-key nudge. Up and Down push or pull a selected face; with bodies chosen, the arrows step
@@ -1165,6 +1185,9 @@ export function App() {
     <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>), [model, unit])
   const editHistoryStep = useMemo(() => (step: StepInfo) => editStepNow.current(step), [])
   const repairHistoryStep = useMemo(() => (step: StepInfo) => repairStepNow.current(step), [])
+  const keepStepNow = useRef<(step: StepInfo) => void>(() => {})
+  keepStepNow.current = keepStep
+  const keepHistoryStep = useMemo(() => (step: StepInfo) => keepStepNow.current(step), [])
 
   return (
     <TooltipProvider>
@@ -1228,9 +1251,20 @@ export function App() {
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
             pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
-            overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
-              canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
-              onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
+            overlay={idle && model && (selectedFace || blocked) ? <div className="grid justify-items-start gap-1.5">
+              {blocked && <section aria-label="Part can't change" className="max-w-sm rounded-xl border border-border bg-elev/95 p-2 text-xs shadow-lg backdrop-blur">
+                <p><strong>{blocked.body.name}</strong> can't change until <strong>{blocked.step.name}</strong> is kept as it is or repaired.
+                  {blocked.step.message ? ` ${blocked.step.message}` : ''}</p>
+                <div className="mt-1.5 flex gap-1.5">
+                  <Btn size="sm" variant="primary" disabled={!ready} onClick={() => keepStep(blocked.step)}>{keepLabel(blocked.step)}</Btn>
+                  {blocked.step.missingInput && <Btn size="sm" disabled={!ready} onClick={() => repairHistoryStep(blocked.step)}>Repair input</Btn>}
+                </div>
+              </section>}
+              {error && <p data-testid="selection-error" className="max-w-sm rounded-md bg-elev/95 px-2 py-1 text-xs text-danger shadow">{error}</p>}
+              {selectedFace && <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
+                canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
+                onDistance={(next) => { setDistance(next); setError('') }} />}
+            </div> : undefined}
             onSelect={(face, point) => {
               if (!ready || shapePanel || sketchTool) return
               if (matchingPart) {
@@ -1610,7 +1644,7 @@ export function App() {
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
               editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
-              onEdit={editHistoryStep} onRepair={repairHistoryStep} />
+              onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} />
           </aside>
         </div>
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">

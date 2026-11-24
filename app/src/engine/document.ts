@@ -1,7 +1,7 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { movedDisplay, relativePlacement } from './placement'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -73,6 +73,9 @@ export interface Project {
     more?: { missingId: string; replacementId?: string; replacementName: string }[] },
     shown: { id?: string; name: string; shape: Shape }[]): State
   editStepSettings(stepId: string, changes: Record<string, string>, shown: { id?: string; name: string; shape: Shape }[]): State
+  keepLastGood(stepId: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  /** Each body's latest step, and the step to keep or repair before it can change. */
+  bodySteps(): { name: string; producer: string; blockedBy?: string | null }[]
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
@@ -148,6 +151,7 @@ export class EngineDocument {
   /** The latest displays of partner geometries, with their shapes (kept alive, so their numbers are not reused). */
   private partners = new Map<number, { shape: Shape; placement: number[]; display: PartDisplay }>()
   private stepLists = new WeakMap<Project, Omit<StepInfo, 'undone'>[]>()
+  private bodyStepLists = new WeakMap<Project, Map<string, { producer: string; blockedBy?: string }>>()
 
   constructor(
     private newBox: () => Opened,
@@ -160,7 +164,7 @@ export class EngineDocument {
     const { bodies } = this.current
     return {
       shape: this.show(bodies),
-      bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape })),
+      bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape, ...this.bodySteps().get(b.name) })),
       unsaved: this.unsaved,
       canUndo: this.canStep(-1),
       canRedo: this.canStep(1),
@@ -296,7 +300,7 @@ export class EngineDocument {
   /** What `save` writes, whatever the window last saw: for autosave. */
   snapshot(): Uint8Array {
     const newest = this.states.length - 1
-    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editStepId' in step || 'sketchDraft' in step || 'sketchSolid' in step))) {
+    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'keepStepId' in step || 'editStepId' in step || 'sketchDraft' in step || 'sketchSolid' in step))) {
       return this.moveInherited({ ...this.states[newest], bodies: this.current.bodies }, this.cursor - newest).project.save(0)
     }
     if (this.inherited) return this.current.project.save(0)
@@ -315,7 +319,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | KeepEdit | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -339,6 +343,8 @@ export class EngineDocument {
       const picked = replacementFace === undefined ? undefined : this.pick(replacementFace)
       if (picked && picked.body !== replacementBody) throw new Error('Select a face of the replacement body.')
       step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face, ...(more?.length ? { more } : {}) }
+    } else if ('keepStepId' in edit) {
+      step = { keepStepId: edit.keepStepId }
     } else if ('editStepId' in edit) {
       step = this.resolveStepSettings(edit)
     } else if ('sketchDraft' in edit) {
@@ -459,6 +465,17 @@ export class EngineDocument {
 
   private rebuiltState(state: State): State {
     return { ...state, bodies: state.bodies.map((body) => ({ ...body, shape: body.shape ?? null })) }
+  }
+
+  /** Each body's latest step, and what blocks it, as the shown model has them. */
+  private bodySteps() {
+    const project = this.current.project
+    let steps = this.bodyStepLists.get(project)
+    if (!steps) {
+      steps = new Map(project.bodySteps().map(({ name, producer, blockedBy }) => [name, blockedBy ? { producer, blockedBy } : { producer }]))
+      this.bodyStepLists.set(project, steps)
+    }
+    return steps
   }
 
   /** The newest state's steps: each step of this session adds one, so those past the cursor are its undone ones. */
@@ -611,6 +628,7 @@ export class EngineDocument {
       if (!id) throw new Error('This history step is no longer available.')
       return this.rebuiltState(project.editStepSettings(id, step.changes, this.shapes(bodies)))
     }
+    if ('keepStepId' in step) return this.rebuiltState(project.keepLastGood(step.keepStepId, this.shapes(bodies)))
     if ('repairStepId' in step) {
       const replacement = bodies[step.replacementBody]
       if (!replacement?.shape) throw new Error('Select a replacement body with geometry.')

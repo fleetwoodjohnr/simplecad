@@ -76,6 +76,8 @@ class FakeProject implements Project {
   moveHistory(): never { throw new Error('No saved history in this fixture.') }
   warm() {}
   repairInput(): never { throw new Error('No missing inputs in this fixture.') }
+  keepLastGood(): never { throw new Error('No missing inputs in this fixture.') }
+  bodySteps() { return [] }
   editStepSettings(): never { throw new Error('No face features in this fixture.') }
   save(undone: number) {
     const kept = this.made.length - undone

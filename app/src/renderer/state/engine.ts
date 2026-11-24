@@ -2,7 +2,7 @@
 // window message, and again after every engine restart; and requests
 // in flight when the engine dies are rejected rather than left waiting forever.
 
-import type { ArrangeEdit, BodyHealth, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, KeepEdit, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
 
@@ -180,6 +180,7 @@ export function previewStack(revision: number, edit: StackEdit): Promise<Display
 export const applyStack = (revision: number, edit: StackEdit) => send<ModelResult>({ op: 'applyStack', revision, ...edit }).then(accept)
 export const createShape = (revision: number, edit: ShapeEdit) => send<ModelResult>({ op: 'createShape', revision, ...edit }).then(accept)
 export const repairInput = (revision: number, edit: ReferenceRepair) => send<ModelResult>({ op: 'repairInput', revision, ...edit }).then(accept)
+export const keepLastGood = (revision: number, edit: KeepEdit) => send<ModelResult>({ op: 'keepLastGood', revision, ...edit }).then(accept)
 export const importModel = (revision: number, edit: ModelImport) => {
   const importId = crypto.randomUUID()
   return send<ModelResult>({ op: 'importModel', revision, importId, ...edit }).then((result) => {

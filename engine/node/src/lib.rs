@@ -207,6 +207,13 @@ pub struct OpenedBody {
 }
 
 #[napi(object, object_from_js = false)]
+pub struct BodyStep {
+    pub name: String,
+    pub producer: String,
+    pub blocked_by: Option<String>,
+}
+
+#[napi(object, object_from_js = false)]
 pub struct OpenedProject {
     pub bodies: Vec<OpenedBody>,
     pub notes: Vec<String>,
@@ -1252,6 +1259,31 @@ impl Project {
             )
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Keep a step that needs repair as it last built (`Model::keep_last_good`).
+    #[napi]
+    pub fn keep_last_good(&self, step_id: String, shown: Vec<ShownBody>) -> Result<OpenedProject> {
+        let old_shapes = self.shown_shapes(shown);
+        let mut model = self.model.clone();
+        let report = model
+            .keep_last_good(&step_id, &self.original, &old_shapes)
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Each body's latest step, and the step to keep or repair before it can change.
+    #[napi]
+    pub fn body_steps(&self) -> Vec<BodyStep> {
+        self.model
+            .body_steps()
+            .into_iter()
+            .map(|(name, producer, blocked_by)| BodyStep {
+                name,
+                producer,
+                blocked_by,
+            })
+            .collect()
     }
 
     #[napi]

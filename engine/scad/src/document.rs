@@ -290,22 +290,27 @@ impl Model {
             .latest()
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
-        if self.blocked_steps().contains(&producer) {
+        if let Some(step) = self.blocker_of(&producer) {
+            let name = self
+                .list("features")
+                .iter()
+                .find(|f| f["id"] == step.as_str())
+                .and_then(|f| f["name"].as_str().map(String::from))
+                .unwrap_or_default();
             return Err(format!(
-                "Repair the step marked in History that made \"{body}\" before changing it."
+                "\"{body}\" can't change until {name}, marked in History, is kept as it is or repaired."
             ));
         }
         Ok((producer, object))
     }
 
-    /// The steps that cannot rebuild as saved, and every step downstream of one: those marked failed
-    /// or waiting on a repair, and those bound to no step or to one that no longer exists (a deleted
-    /// input, as Spondge Holder's Combine5 and its Cylinder2). A file opened from its saved results shows them
-    /// as they were, but the first rebuild keeps their last valid model.
-    fn blocked_steps(&self) -> HashSet<String> {
-        let order = self.list("features");
+    /// The steps that cannot rebuild as saved: those marked failed or waiting on a repair, and those
+    /// bound to no step or to one that no longer exists (a deleted input, as Spondge Holder's Combine5
+    /// and its Cylinder2). A file opened from its saved results shows them as they were, but the first
+    /// rebuild keeps their last valid model, and every step downstream of one's.
+    fn lost_steps(&self, order: &[Value]) -> Vec<String> {
         let ids: HashSet<&str> = order.iter().filter_map(|f| f["id"].as_str()).collect();
-        let lost: HashSet<String> = order
+        order
             .iter()
             .filter(|step| {
                 let id = step["id"].as_str().unwrap_or_default();
@@ -315,8 +320,42 @@ impl Model {
                 ) || lost_binding(step, &ids)
             })
             .filter_map(|step| step["id"].as_str().map(String::from))
-            .collect();
-        crate::rebuild::dependents(&order, &lost)
+            .collect()
+    }
+
+    /// Each lost step, earliest first, with the steps downstream of it (itself included).
+    fn blockers(&self) -> Vec<(String, HashSet<String>)> {
+        let order = self.list("features");
+        self.lost_steps(&order)
+            .into_iter()
+            .map(|id| {
+                let downstream = crate::rebuild::dependents(&order, &HashSet::from([id.clone()]));
+                (id, downstream)
+            })
+            .collect()
+    }
+
+    /// The earliest lost step `step` is, or depends on: the one to keep or repair before it can change.
+    fn blocker_of(&self, step: &str) -> Option<String> {
+        self.blockers()
+            .into_iter()
+            .find(|(_, downstream)| downstream.contains(step))
+            .map(|(id, _)| id)
+    }
+
+    /// Each body's name, the step that last wrote it, and the step to keep or repair before it can change.
+    pub fn body_steps(&self) -> Vec<(String, String, Option<String>)> {
+        let blockers = self.blockers();
+        self.latest()
+            .into_iter()
+            .map(|(name, (producer, _))| {
+                let blocked = blockers
+                    .iter()
+                    .find(|(_, downstream)| downstream.contains(&producer))
+                    .map(|(id, _)| id.clone());
+                (name, producer, blocked)
+            })
+            .collect()
     }
 
     /// `DependencyGraph.latest`: the step and object that last wrote each body name.
@@ -642,6 +681,110 @@ impl Model {
             self.replace_input(&mut updated, &ids, lost, body_id, face, shown)?;
         }
         self.rebuild_recipe(position, updated, "Repair input", original, shown)
+    }
+
+    /// Keep a step that needs repair as it last built, as one undoable step under the same ID, so the steps after
+    /// it read it as before. A placement (an Align whose result is its input moved) becomes a Move to the same
+    /// place, which the part can be moved and aligned on from; any other step becomes its last good shape,
+    /// embedded, so earlier steps no longer reshape that part. Both are steps SimpleCAD 0.4.4 opens.
+    pub fn keep_last_good(
+        &mut self,
+        step_id: &str,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (position, step) = self.recipe(step_id)?;
+        if !self
+            .lost_steps(&self.list("features"))
+            .iter()
+            .any(|id| id == step_id)
+        {
+            return Err("This step builds as it is; there is nothing to keep.".into());
+        }
+        // What the step still writes: a Combine that kept its tool lists it, and a deleted one is `dropped`.
+        let dropped = step["dropped"].as_array().cloned().unwrap_or_default();
+        let written: Vec<&str> = step["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|name| !dropped.contains(name))
+            .filter_map(Value::as_str)
+            .collect();
+        let [name] = written[..] else {
+            return Err(
+                "Only a step that makes one part can be kept. Repair its input instead.".into(),
+            );
+        };
+        let object = step["output_ids"][name]
+            .as_str()
+            .ok_or("This step's part has no identity.")?;
+        let last = shown
+            .get(object)
+            .ok_or_else(|| format!("\"{name}\" has no shape to keep."))?;
+        let label = format!("{} (kept)", step["name"].as_str().unwrap_or("Step"));
+        let input = &step["inputs"]["body"];
+        // The input as bound: its producing step and object (in `bindings`, or the reference itself).
+        let alias = input["__body__"].as_str().unwrap_or_default();
+        let bound = |key: &str| {
+            step["bindings"][alias][key]
+                .as_str()
+                .or_else(|| input[key].as_str())
+        };
+        let placed = (step["type"] == "align")
+            .then(|| {
+                let from = crate::rebuild::saved_output(
+                    self,
+                    original,
+                    bound("feature_id")?,
+                    bound("object_id")?,
+                )?;
+                rigid_fit(&from, last)
+            })
+            .flatten();
+        let updated = match placed {
+            Some(([dx, dy, dz], turn)) => {
+                let mut inputs = json!({ "body": input.clone(), "dx": dx, "dy": dy, "dz": dz, "pivot": [0.0, 0.0, 0.0] });
+                if let Some((axis, angle)) = turn {
+                    inputs["axis"] = json!(axis);
+                    inputs["angle"] = json!(angle);
+                }
+                let mut bindings = Map::new();
+                if let Some(binding) = step["bindings"].get(alias) {
+                    bindings.insert(alias.to_string(), binding.clone());
+                }
+                json!({
+                    "id": step_id, "type": "move", "name": label, "inputs": inputs, "outputs": [name],
+                    "output_ids": { name: object }, "bindings": bindings, "suppressed": false, "dropped": []
+                })
+            }
+            None => {
+                let brep = occt::write_brep(last).map_err(|error| error.what().to_string())?;
+                let asset = self.add_asset(&brep)?;
+                json!({
+                    "id": step_id, "type": "embedded_import", "name": label,
+                    "inputs": { "asset": asset, "dx": 0.0, "dy": 0.0, "dz": 0.0 }, "outputs": [name],
+                    "output_ids": { name: object }, "bindings": {}, "suppressed": false, "dropped": []
+                })
+            }
+        };
+        let before = self.clone();
+        let report = self.rebuild_recipe(position, updated, "Keep as it is", original, shown)?;
+        // What the kept step builds must be what was shown, or keeping it would move the part.
+        let built = report
+            .bodies
+            .iter()
+            .find(|body| body.id == object)
+            .and_then(|body| body.shape.as_ref());
+        if !built.is_some_and(|built| {
+            rigid_fit(last, built)
+                .is_some_and(|(t, turn)| turn.is_none() && t.iter().all(|v| v.abs() < 1e-6))
+        }) {
+            *self = before;
+            return Err(format!(
+                "\"{name}\" could not be kept exactly as it is. Repair its input instead."
+            ));
+        }
+        Ok(report)
     }
 
     /// One lost input of `updated`, rebound to the body `body_id` (and its face `face`, for an Align).
@@ -2517,19 +2660,7 @@ impl Model {
             note,
         } in parts
         {
-            let asset = format!("{:x}", Sha256::digest(&brep));
-            let assets = self
-                .payload
-                .as_object_mut()
-                .ok_or("Invalid project.")?
-                .entry("assets")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or("This project's assets could not be read.")?;
-            if !assets.iter().any(|other| other == &asset) {
-                assets.push(json!(&asset));
-                assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
-            }
+            let asset = self.add_asset(&brep)?;
             let [dx, dy, dz] = offset;
             let mut inputs = json!({ "asset": asset, "dx": dx, "dy": dy, "dz": dz });
             if !note.is_empty() {
@@ -2542,10 +2673,6 @@ impl Model {
                 inputs,
                 placed,
             )?;
-            self.blobs
-                .entry(asset.clone())
-                .or_insert_with(|| brep.into());
-            self.new_assets.insert(asset);
             names.push(name);
         }
         if !names.is_empty() {
@@ -2553,6 +2680,28 @@ impl Model {
             self.push_undo("Import", before)?;
         }
         Ok(names)
+    }
+
+    /// A BREP added to the project's assets, saved with it, by its SHA-256.
+    fn add_asset(&mut self, brep: &[u8]) -> Result<String, String> {
+        let asset = format!("{:x}", Sha256::digest(brep));
+        let assets = self
+            .payload
+            .as_object_mut()
+            .ok_or("Invalid project.")?
+            .entry("assets")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or("This project's assets could not be read.")?;
+        if !assets.iter().any(|other| other == &asset) {
+            assets.push(json!(&asset));
+            assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
+        }
+        self.blobs
+            .entry(asset.clone())
+            .or_insert_with(|| brep.to_vec().into());
+        self.new_assets.insert(asset.clone());
+        Ok(asset)
     }
 
     fn record_primitive(
@@ -3081,6 +3230,88 @@ fn dependents_in(
             return found;
         }
     }
+}
+
+/// A translation, and a turn about the origin as a unit axis and degrees.
+type RigidMotion = ([f64; 3], Option<([f64; 3], f64)>);
+
+/// The rigid motion taking `from` onto `to`, when `to` is `from` moved: the translation, and the turn about the
+/// origin as a unit axis and degrees (none when it does not turn). Their vertices, which a moved copy lists in the
+/// same order, must all land within 1e-6 of the part's size.
+fn rigid_fit(from: &occt::Shape, to: &occt::Shape) -> Option<RigidMotion> {
+    type V = [f64; 3];
+    let points = |shape: &occt::Shape| -> Option<Vec<V>> {
+        Some(
+            occt::vertex_fingerprints(shape)
+                .ok()?
+                .iter()
+                .map(|v| v.center)
+                .collect(),
+        )
+    };
+    let (a, b) = (points(from)?, points(to)?);
+    if a.len() != b.len() || a.len() < 3 {
+        return None;
+    }
+    let sub = |p: V, q: V| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let dot = |p: V, q: V| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    let cross = |p: V, q: V| {
+        [
+            p[1] * q[2] - p[2] * q[1],
+            p[2] * q[0] - p[0] * q[2],
+            p[0] * q[1] - p[1] * q[0],
+        ]
+    };
+    let unit = |p: V| {
+        let n = dot(p, p).sqrt();
+        (n > 1e-9).then(|| [p[0] / n, p[1] / n, p[2] / n])
+    };
+    // Three well-spread vertices: the first, the farthest from it, and the farthest from the line through both.
+    let far = (1..a.len()).max_by(|&i, &j| {
+        dot(sub(a[i], a[0]), sub(a[i], a[0])).total_cmp(&dot(sub(a[j], a[0]), sub(a[j], a[0])))
+    })?;
+    let off = |i: usize| {
+        let c = cross(sub(a[far], a[0]), sub(a[i], a[0]));
+        dot(c, c)
+    };
+    let side = (1..a.len()).max_by(|&i, &j| off(i).total_cmp(&off(j)))?;
+    let frame = |p: &[V]| -> Option<[V; 3]> {
+        let x = unit(sub(p[far], p[0]))?;
+        let z = unit(cross(x, sub(p[side], p[0])))?;
+        Some([x, cross(z, x), z])
+    };
+    let (fa, fb) = (frame(&a)?, frame(&b)?);
+    // R = Fb · Faᵀ, with each frame's axes as its columns.
+    let r: [V; 3] =
+        std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| fb[k][i] * fa[k][j]).sum()));
+    let turn = |p: V| -> V { std::array::from_fn(|i| dot(r[i], p)) };
+    let t = sub(b[0], turn(a[0]));
+    let size = a
+        .iter()
+        .map(|p| dot(sub(*p, a[0]), sub(*p, a[0])).sqrt())
+        .fold(1.0, f64::max);
+    let fits = a.iter().zip(&b).all(|(p, q)| {
+        let d = sub(sub(*q, turn(*p)), t);
+        dot(d, d).sqrt() <= 1e-6 * size
+    });
+    if !fits {
+        return None;
+    }
+    let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0);
+    let angle = cos.acos();
+    if angle < 1e-12 {
+        return Some((t, None));
+    }
+    let axis = if angle < std::f64::consts::PI - 1e-6 {
+        unit([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]])?
+    } else {
+        // A half turn: the axis is the column of R + I with the largest diagonal.
+        let k = (0..3).max_by(|&i, &j| r[i][i].total_cmp(&r[j][j]))?;
+        unit(std::array::from_fn(|i| {
+            r[i][k] + if i == k { 1.0 } else { 0.0 }
+        }))?
+    };
+    Some((t, Some((axis, angle.to_degrees()))))
 }
 
 /// `Feature.__init__`'s id for a new step.

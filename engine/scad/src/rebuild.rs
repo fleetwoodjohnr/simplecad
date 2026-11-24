@@ -69,6 +69,36 @@ pub(crate) fn location(output: &Value) -> Option<Vec<f64>> {
     (matrix.len() == 12).then_some(matrix)
 }
 
+/// What `step` last made for `object`, as its saved result holds it (a "located" result placed).
+pub(crate) fn saved_output(
+    model: &Model,
+    original: &[u8],
+    step: &str,
+    object: &str,
+) -> Option<Shape> {
+    let signature = signatures(&model.payload)?.remove(step)?;
+    let entry = &model.payload["cache"]["entries"][&signature];
+    if entry["feature_id"] != step {
+        return None;
+    }
+    let output = &entry["outputs"][object];
+    let mut store = Store {
+        original: (!original.is_empty())
+            .then(|| zip::ZipArchive::new(Cursor::new(original)).ok())
+            .flatten(),
+        model_blobs: &model.blobs,
+        decoded: HashMap::new(),
+        import_sources: HashMap::new(),
+        shown: HashMap::new(),
+    };
+    let shape = store.decode(output["sha256"].as_str()?)?;
+    match output["kind"].as_str()? {
+        "brep" => Some(shape),
+        "located" => Some(Rc::new(occt::located(&shape, &location(output)?).ok()?)),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct BoundInputs {
     bodies: HashMap<String, Shape>,

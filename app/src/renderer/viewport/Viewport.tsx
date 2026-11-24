@@ -217,7 +217,7 @@ export function Viewport(props: Props) {
         if (!button) return
         const face = selected === undefined ? undefined : shape?.faces[selected]
         button.hidden = !face || !canPull
-        if (!face) return
+        if (!face) return placeBar()
         const start = new Vector3(...face.anchor)
         const normal = new Vector3(...face.normal)
         const position = toScreen(start.clone())

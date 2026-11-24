@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
@@ -489,4 +489,41 @@ test('the wheel button pans the view, and turns it with Shift, as in 0.4; the ri
     expect(after.position).not.toEqual(before.position)
   }
   await expect(errors(page)).toHaveCount(0)
+})
+
+// SimpleCAD 0.4.4 made it: A stacked on B, then B deleted; C cut by D, then D deleted. Both keep their last good shape.
+const lostInputs = path.join(__dirname, '../../../engine/scad/tests/data/keep/broken.scad3')
+
+test('a part whose step lost its input says why beside it, and Keep where it is lets it move again', async () => {
+  const copy = path.join(scratchDir('simplecad-keep-'), 'Lost inputs.scad3')
+  await copyFile(lostInputs, copy)
+  const { page } = await launch({ args: [copy] })
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const notice = page.getByRole('region', { name: "Part can't change" })
+  await expect(steps).toHaveText([/^Box/, /^Box3/, /^Align/, /^Combine/])
+
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(notice).toContainText("A can't change until Align is kept as it is or repaired.")
+  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+  await notice.getByRole('button', { name: 'Keep where it is' }).click()
+  await expect(steps.nth(2)).toContainText('Align (kept)')
+  await expect(notice).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
+
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(notice).toHaveCount(0)
+  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('X (mm)').fill('5')
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps.last()).toContainText('Move')
+  await expect(errors(page)).toHaveCount(0)
+
+  // The cut part offers to keep its shape, or to choose a new cutter.
+  await bodies.getByRole('button', { name: 'C', exact: true }).click()
+  await expect(notice.getByRole('button', { name: 'Keep this shape' })).toBeVisible()
+  await notice.getByRole('button', { name: 'Repair input' }).click()
+  await expect(page.getByRole('form', { name: 'Repair Combine' })).toBeVisible()
 })

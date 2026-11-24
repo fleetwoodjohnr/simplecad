@@ -41,6 +41,10 @@ export interface BodyInfo {
   visible: boolean
   /** The file has no readable geometry for it. */
   empty: boolean
+  /** The step that last wrote it. */
+  producer?: string
+  /** The step to keep as it is or repair before it can change: the earliest one it waits on that lost an input. */
+  blockedBy?: string
 }
 
 /** Where the session's model came from: a new box, or a `.scad3` file (the window keeps its bytes). */
@@ -58,6 +62,8 @@ export interface ReferenceRepair {
   more?: { missingInputId: string; replacementBody: number }[]
 }
 export interface SavedStepEdit { editStepId: string; changes: Record<string, string> }
+/** Keep a step that lost an input as it last built: a placement as a Move to where it was, anything else as its shape. */
+export interface KeepEdit { keepStepId: string }
 export type SavedStep = SavedStepEdit & { replay?: { index: number; name: string; kind: string } }
 export type Vec3 = [number, number, number]
 type Expressions = [string, string, string]
@@ -286,7 +292,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | KeepEdit | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit
 
 export interface Checkpoint {
   source: Source
@@ -371,6 +377,7 @@ export type RendererCommand =
   | { op: 'solveSketch'; revision: number; recipe: string }
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
+  | ({ op: 'keepLastGood'; revision: number } & KeepEdit)
   | ({ op: 'previewSavedStep' | 'editSavedStep'; revision: number } & SavedStepEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
@@ -418,6 +425,10 @@ function isReferenceRepair(value: unknown): value is ReferenceRepair {
     (edit.replacementFace === undefined || (isIndex(edit.replacementFace) && edit.replacementFace <= 0xffffffff)) &&
     (edit.more === undefined || (Array.isArray(edit.more) && edit.more.length < MAX_BODIES && edit.more.every((more) =>
       !!more && isName(more.missingInputId) && isIndex(more.replacementBody) && more.replacementBody < MAX_BODIES)))
+}
+
+function isKeep(value: unknown): value is KeepEdit {
+  return !!value && typeof value === 'object' && isName((value as Partial<KeepEdit>).keepStepId)
 }
 
 function isSavedStep(value: unknown): value is SavedStep {
@@ -592,7 +603,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isThreadedConnection(value) || isUngroup(value) || isDelete(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isKeep(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isThreadedConnection(value) || isUngroup(value) || isDelete(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -761,6 +772,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'applySketchDraft' && isSketchDraft(m)) ||
         ((m.op === 'previewSketchSolid' || m.op === 'applySketchSolid') && isSketchSolid(m)) ||
         (m.op === 'repairInput' && isReferenceRepair(m)) ||
+        (m.op === 'keepLastGood' && isKeep(m)) ||
         ((m.op === 'previewSavedStep' || m.op === 'editSavedStep') && isSavedStep(m) && m.replay === undefined) ||
         (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))
       ))) return m as RendererRequest

@@ -102,6 +102,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'deleteBodies':
       case 'importModel':
       case 'repairInput':
+      case 'keepLastGood':
       case 'editSavedStep':
       case 'applySketchDraft':
       case 'applySketchSolid':
