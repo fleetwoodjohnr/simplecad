@@ -328,7 +328,7 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference, 
             try:
                 result = _rust_json(rust, "pull", path, body, str(face), "1,1", pulled, "1")
             except ValueError as exc:
-                if "Repair the step" not in str(exc):
+                if "is kept as it is or repaired" not in str(exc):
                     raise
                 made = reference(path, flag="--pull-control", extra=[body, str(face), os.path.join(scratch, "refused.scad3")])
                 before = loaded["loaded"].get(body, {}).get("volume")
@@ -339,7 +339,7 @@ def _rust_saves(rust: str, path: str, loaded: dict, *, native: bool, reference, 
                     problems.append(f"Rust refuses to change {body}, but the reference changes it: {made}")
                 else:
                     problems.append(f"NOTE: Rust refuses to change {body} until the step marked in History is "
-                                    f"repaired; the reference {'fails the same edit' if fails else 'leaves it unchanged'} "
+                                    f"kept or repaired; the reference {'fails the same edit' if fails else 'leaves it unchanged'} "
                                     f"({before} mm³)")
                 continue
             _require_stages(result, {"volumes": list}, "Rust pull")
