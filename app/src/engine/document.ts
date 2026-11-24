@@ -1,5 +1,6 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
+import { movedDisplay, relativePlacement } from './placement'
 import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
@@ -16,6 +17,11 @@ export interface Shape {
   /** The engine's shape behind this wrapper: a step hands back an unchanged body's shape in a new wrapper. */
   readonly key: number
   display(): PartDisplay
+  /** The geometry shared with every moved copy of this shape, and its orientation: shapes with the same number differ
+   * only by `placement`. */
+  partner(): number
+  /** Where the shape is placed: its location's 3×4 matrix, row by row. */
+  placement(): number[]
   /** The optimal bounding box: min x, y, z then max x, y, z. */
   bounds(): number[]
   /** Whether a face is a hole (true) or a shaft (false); null for a face that is not cylindrical. */
@@ -138,6 +144,8 @@ export class EngineDocument {
   // Kept by the engine's shape, not the wrapper, since every step returns new wrappers; an entry holds its shape, so
   // its key can't be reused while it is kept, and entries no state can show again are dropped as the history moves.
   private displays = new Map<number, { shape: Shape; display: PartDisplay }>()
+  /** The latest displays of partner geometries, with their shapes (kept alive, so their numbers are not reused). */
+  private partners = new Map<number, { shape: Shape; placement: number[]; display: PartDisplay }>()
   private stepLists = new WeakMap<Project, Omit<StepInfo, 'undone'>[]>()
 
   constructor(
@@ -467,7 +475,24 @@ export class EngineDocument {
 
   private display(shape: Shape): PartDisplay {
     let entry = this.displays.get(shape.key)
-    if (!entry) this.displays.set(shape.key, entry = { shape, display: shape.display() })
+    if (!entry) {
+      // A body that only moved (a Move, or its Undo) shows its partner's display moved: measuring and reading back a
+      // large imported board's mesh took over a second.
+      const partner = shape.partner()
+      const placement = shape.placement()
+      const known = this.partners.get(partner)
+      const relative = known && relativePlacement(known.placement, placement)
+      const display = known && relative ? movedDisplay(known.display, relative) : shape.display()
+      this.displays.set(shape.key, entry = { shape, display })
+      // The latest first: a Redo moves the body that the Undo before it showed, which is no longer live by then.
+      this.partners.delete(partner)
+      this.partners.set(partner, { shape, placement, display })
+      // ponytail: the 32 latest, oldest out; by bytes if huge imports crowd it
+      for (const oldest of this.partners.keys()) {
+        if (this.partners.size <= 32) break
+        this.partners.delete(oldest)
+      }
+    }
     return entry.display
   }
 

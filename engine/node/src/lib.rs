@@ -156,6 +156,19 @@ impl Shape {
         Ok(ffi::faces(&self.inner).map_err(reason)?.len() as u32)
     }
 
+    /// The geometry this body shares with any moved copy of it, and its orientation: bodies with the same number
+    /// differ only by `placement`, so one's display is the other's moved.
+    #[napi]
+    pub fn partner(&self) -> f64 {
+        ffi::shape_partner(&self.inner) as f64
+    }
+
+    /// Where the body is placed: its location's 3×4 matrix, row by row.
+    #[napi]
+    pub fn placement(&self) -> Vec<f64> {
+        ffi::shape_location(&self.inner)
+    }
+
     #[napi]
     pub fn display(&self) -> Result<DisplayShape> {
         let mesh = ffi::mesh(&self.inner, DEFLECTION, ANGLE).map_err(reason)?;

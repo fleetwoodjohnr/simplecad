@@ -9,6 +9,8 @@ class FakeShape implements Shape {
   constructor(readonly volume: number, readonly faces = 2) {}
   bounds() { return [0, 0, 0, 1, 1, 1] }
   isHole() { return null }
+  partner() { return this.key }
+  placement() { return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0] }
   display(): PartDisplay {
     const n = this.faces
     return {
