@@ -814,7 +814,8 @@ export function App() {
   // A chosen part whose step lost an input keeps its last good shape and refuses changes (as 0.4.4 keeps it in
   // place): what blocks it, said beside it, with the fix.
   const blocked = (() => {
-    const index = (chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []).find((b) => model?.bodies[b]?.blockedBy)
+    // Tools act on the selected face's part or on the chosen ones: refused if any of them is blocked.
+    const index = [...(selectedFace ? [selectedFace.body] : []), ...chosenBodies].find((b) => model?.bodies[b]?.blockedBy)
     const body = index === undefined ? undefined : model?.bodies[index]
     const step = body && model?.steps.find((entry) => entry.id === body.blockedBy && !entry.undone)
     return body && step ? { body, step } : undefined
@@ -1299,7 +1300,9 @@ export function App() {
                 setMenu(undefined)
                 return
               }
+              // As 0.4.4's select_under: what was clicked replaces the selection.
               select(face)
+              setChosenBodies([])
               setMenu({ face, x, y })
             }}
             onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge

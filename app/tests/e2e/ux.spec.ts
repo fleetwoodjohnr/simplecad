@@ -521,6 +521,12 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
   await expect(steps.last()).toContainText('Move')
   await expect(errors(page)).toHaveCount(0)
 
+  // A face of the blocked part, picked while another part is chosen, still refuses the tools that would change it.
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await page.getByLabel('Planar face').selectOption({ label: (await page.getByLabel('Planar face').locator('option', { hasText: /^C · / }).first().textContent())! })
+  await expect(notice).toContainText("C can't change until Combine")
+  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+
   // The cut part offers to keep its shape, or to choose a new cutter.
   await bodies.getByRole('button', { name: 'C', exact: true }).click()
   await expect(notice.getByRole('button', { name: 'Keep this shape' })).toBeVisible()
