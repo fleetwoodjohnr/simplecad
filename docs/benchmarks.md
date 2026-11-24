@@ -228,14 +228,15 @@ Fedora 44.
 **One Undo or Redo in the packaged app** (Wayland; click to the first frame
 showing it; the first right after opening, then 20 Undo and 20 Redo; ms):
 
-| Project | 0.5.0: first, p50, p95 | 0.5.1: first, p50, p95 | Heaviest step: 0.4.4 → 0.5.1 |
+| Project | 0.5.0: first, p50, p95 | 0.5.1: first, p50, p95 | Heaviest step: 0.4.4 engine (with display) → 0.5.1 |
 |---|---|---|---|
-| Atlas Box | 1368, 415, 787 | 717, 117, 343 | 875 → 834 (Undo), 537 → 540 (Redo) |
-| UPS Atlas | ~2200, ~400, – | 600, 187, 686 | Align 1197 → 686, Move Undo ~510 → 1840 |
+| Atlas Box | 1368, 415, 787 | 717–997, 116–128, 343–376 | Undo 875 (1139) → 834–1107; Redo 537 (643) → 540–588 |
+| UPS Atlas | ~2200, ~400, – | 570–650, 182–195, 686–957 | Align 1197 (1199) → 635–885; Move Undo 247 (509) → 1690–2000 |
 
-v0.4.4 here is its engine alone (`bench/undo044.py`), plus meshing for
-display where a step brings back a body as saved (`undo044_display`): the
-0.4.4 window has to show the step too. What changed since 0.5.0:
+Ranges are over five runs on Atlas Box and three on UPS Atlas. v0.4.4 is its
+engine alone (`bench/undo044.py`), and in brackets with its display meshing
+too for each body the step brought back changed (`undo044_display`), since
+the 0.4.4 window has to show the step as well. What changed since 0.5.0:
 
 - Each step's signatures are worked out once, from the steps it changes; the
   history is kept beside the document rather than copied with it; the rebuild
