@@ -80,7 +80,7 @@ test('lays two cylinders out in a grid on the box top, takes a suggestion, edits
 })
 
 test('stands a body on a picked face, drags the pattern, keeps a margin from a picked edge, and moves it to the build plate', async () => {
-  const { page } = await launch()
+  const { app, page } = await launch()
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   const canvas = page.locator('canvas')
   const arrange = await twoCylinders(page)
@@ -131,6 +131,13 @@ test('stands a body on a picked face, drags the pattern, keeps a margin from a p
   await saved.getByRole('button', { name: 'Apply' }).click()
   await expect(errors(page)).toHaveCount(0)
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
+  const target = path.join(scratchDir('simplecad-arrange-'), 'Picks.scad3')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+  }, target)
+  await page.getByRole('button', { name: 'File', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^Save As/ }).click()
+  await expect(page.getByText('Picks.scad3', { exact: true })).toBeVisible()
 
   // On the build plate, the edge picked on the box goes.
   await page.getByRole('button', { name: 'Edit Arrange' }).click()

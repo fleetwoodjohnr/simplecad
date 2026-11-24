@@ -1,6 +1,6 @@
 import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -40,6 +40,9 @@ export const test = base.extend<{ cleanup: void }>({
       open.clear()
       for (const dir of scratch) {
         try {
+          // SCAD_KEEP_SAVES=folder keeps the projects a test saved, to open them in another version.
+          const keep = process.env.SCAD_KEEP_SAVES
+          if (keep) for (const name of readdirSync(dir).filter((file) => file.endsWith('.scad3'))) copyFileSync(path.join(dir, name), path.join(keep, name))
           rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
         } catch {
           /* a stray writer still holds it: tmp's own cleanup gets it */
