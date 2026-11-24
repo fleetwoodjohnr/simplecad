@@ -260,7 +260,8 @@ export function Modal({
           style={{ width }}
           // Dialogs that close by giving the grid focus (closeDialog, focusGrid) keep it there: Radix's own return of focus
           // to the opener runs on a timer, later, and would take it away again.
-          onCloseAutoFocus={(e) => document.activeElement?.hasAttribute('data-doc-focus') && e.preventDefault()}
+          // So do dialogs that opened something which took the focus itself (a tool's first field from command search).
+          onCloseAutoFocus={(e) => document.activeElement && document.activeElement !== document.body && e.preventDefault()}
           className="dialog-in fixed left-1/2 top-1/2 z-[81] max-h-[86vh] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-elev text-text shadow-[var(--shadow-pop)] outline-none"
         >
           <div className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">

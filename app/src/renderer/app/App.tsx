@@ -1007,7 +1007,8 @@ export function App() {
       run: () => removeBodies(chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []) },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
     importModel: { enabled: ready, run: () => importSolid() },
-    pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => distanceField.current?.focus() },
+    // After whatever opened it (command search) has closed and let the focus go.
+    pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => requestAnimationFrame(() => distanceField.current?.focus()) },
     arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two or more bodies first', run: () => openArrange() },
     stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },

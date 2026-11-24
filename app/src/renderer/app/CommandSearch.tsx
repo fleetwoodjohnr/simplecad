@@ -10,11 +10,10 @@ export const searchable: BarTool[] = [...Object.keys(commands) as CommandId[], '
 export function CommandSearch({ actions, close }: { actions: BarActions; close: () => void }) {
   const [query, setQuery] = useState('')
   const results = searchable.filter((id) => barLabel(id).toLowerCase().includes(query.trim().toLowerCase()))
-  // Once search has closed and given focus back: a tool that focuses a field of its own (Push/Pull, a panel's first
-  // field) keeps it.
+  // At once, so the tool is open before anything else happens; a field it focuses keeps the focus (see Modal).
   const run = (id: BarTool) => {
     close()
-    requestAnimationFrame(() => requestAnimationFrame(() => actions[id].run()))
+    actions[id].run()
   }
   return (
     <Modal title="Command search" open onOpenChange={(open) => { if (!open) close() }}>
