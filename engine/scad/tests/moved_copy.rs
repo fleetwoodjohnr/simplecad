@@ -3,7 +3,11 @@
 use std::rc::Rc;
 
 fn points(shape: &occt::Shape) -> Vec<[f64; 3]> {
-    occt::vertex_fingerprints(shape).unwrap().iter().map(|v| v.center).collect()
+    occt::vertex_fingerprints(shape)
+        .unwrap()
+        .iter()
+        .map(|v| v.center)
+        .collect()
 }
 
 #[test]
@@ -12,7 +16,8 @@ fn a_body_saved_whole_after_a_move_comes_back_as_the_shown_one_moved() {
     // As 0.4.4 saved it: the box turned 30° about Z and moved, copied, written and read back as geometry of its own.
     let turn = occt::trsf_rotation(&[0.0, 0.0, 0.0], &[0.0, 0.0, 1.0], 30f64.to_radians()).unwrap();
     let turned = occt::transform_shape(&shown, &turn, true).unwrap();
-    let moved = occt::transform_shape(&turned, &occt::trsf_translation(&[5.0, -7.0, 2.5]), true).unwrap();
+    let moved =
+        occt::transform_shape(&turned, &occt::trsf_translation(&[5.0, -7.0, 2.5]), true).unwrap();
     let restored = Rc::new(occt::read_brep(&occt::write_brep(&moved).unwrap()).unwrap());
     assert_ne!(occt::shape_partner(&shown), occt::shape_partner(&restored));
 
