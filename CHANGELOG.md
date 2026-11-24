@@ -3,6 +3,43 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.5.1 (2026-11-23)
+
+Undo and Redo are quick again on large projects, and what 0.5.0 could not
+build yet is here: Arrange in a pattern, sliding Clip Joints, clips made with
+the older clip tool, and a Draft tool. Projects saved in 0.5.1 still open in
+0.4.4.
+
+- **Arrange in a pattern.** Lay parts out in a grid, a line, a ring,
+  staggered rows, packed tight, or rows and columns of your own, on a flat
+  face, round a cylinder or inside a bore, or on the printer's build plate.
+  The preview outlines the space they can use, marks what doesn't fit and
+  why, and offers what would, such as "Try Packed" or a smaller spacing. Drag
+  it to move the whole pattern. Every setting 0.4.4 had is there, including a
+  face for each part to stand on and edges to keep a margin from, and
+  patterns made in 0.4.4 rebuild exactly where it put them.
+- **Sliding Clip Joints.** Dovetail, T-rail and tongue & groove rails, with a
+  stop at the end and a detent that clicks home, and a preview with the first
+  part slid out.
+- **Draft.** Taper picked faces of a part so it comes out of a mould or
+  prints cleanly, and edit the angle from History.
+- Clips made with the older clip tool, before Join Parts, rebuild.
+
+### Fixed
+
+- **Undo and Redo on large projects.** One step on a project like a
+  450-step enclosure takes about a tenth of a second, three to four times
+  faster than in 0.5.0, and the first after opening under a second. Undoing
+  or redoing an Align or a Move of a large imported part, which took up to
+  4.7 s, takes under a second.
+
+### Still slower than 0.4.4
+
+- Undoing a Move of a large imported part (thousands of faces) takes about
+  2 s, where 0.4.4 takes about half a second: the part comes back from the
+  project as saved, and the window measures every face again. Redoing it is
+  quick.
+
 ## 0.5.0 (2026-11-23)
 
 A new desktop app: every tool is a button, and what a tool will do shows in
