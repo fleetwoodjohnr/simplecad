@@ -98,6 +98,8 @@ pub struct Report {
     pub rebuilt: Vec<String>,
     /// The model's step signatures as the rebuild leaves it.
     pub signatures: BTreeMap<String, String>,
+    /// What steps said beyond their message, by step id: a previewed arrangement's fit.
+    pub notes: BTreeMap<String, Value>,
 }
 
 /// What a step reads when it runs (`BuildContext`).
@@ -109,6 +111,8 @@ pub struct Context<'a> {
     parameters: &'a HashMap<String, f64>,
     /// What the step says about its result (`feature.message`).
     message: std::cell::RefCell<String>,
+    /// What a preview shows beside the result (`feature.annotations`).
+    note: std::cell::RefCell<Option<Value>>,
 }
 
 impl Context<'_> {
@@ -125,6 +129,7 @@ impl Context<'_> {
             sketches: HashMap::new(),
             parameters,
             message: Default::default(),
+            note: Default::default(),
         }
     }
 
@@ -154,6 +159,15 @@ impl Context<'_> {
 
     pub(crate) fn set_message(&self, message: String) {
         *self.message.borrow_mut() = message;
+    }
+
+    pub(crate) fn set_note(&self, note: Value) {
+        *self.note.borrow_mut() = Some(note);
+    }
+
+    /// The bodies bound to the step, by name.
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = (&String, &Shape)> {
+        self.bodies.iter()
     }
 
     pub(crate) fn into_message(self) -> String {
@@ -263,6 +277,21 @@ impl Context<'_> {
         let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
         let index = resolve_edge(reference, &edges)?;
         Ok((shape, index))
+    }
+
+    /// `ctx.resolve` of a list of edge references: each one's body and index.
+    pub(crate) fn edges(&self, key: &str) -> Result<Vec<(Shape, u32)>, StepError> {
+        let Some(Value::Array(refs)) = self.input(key) else {
+            return Ok(Vec::new());
+        };
+        refs.iter()
+            .map(|r| {
+                let (reference, shape) = self.referenced_shape(Some(r))?;
+                let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
+                let index = resolve_edge(reference, &edges)?;
+                Ok((shape, index))
+            })
+            .collect()
     }
 
     fn referenced_shape<'a>(
@@ -598,6 +627,7 @@ pub fn create_named_primitive(
         sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
+        note: Default::default(),
     };
     let shape = execute(kind, &ctx, None)
         .ok_or("This shape cannot be created yet.")?
@@ -807,6 +837,7 @@ pub fn create_transform(
         sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
+        note: Default::default(),
     };
     let moved = move_geometry(&ctx, shape).map_err(|error| error.message)?;
     let brep = occt::write_brep(&moved).map_err(|error| error.what().to_owned())?;
@@ -1812,6 +1843,7 @@ struct Rebuilder<'a> {
     states: HashMap<String, (String, String)>,
     failures: BTreeMap<String, String>,
     rebuilt: Vec<String>,
+    notes: BTreeMap<String, Value>,
     new_entries: Map<String, Value>,
     new_blobs: BTreeMap<String, Arc<[u8]>>,
 }
@@ -2049,6 +2081,7 @@ impl Rebuilder<'_> {
                 sketches: inputs.sketches,
                 parameters: &self.parameters,
                 message: Default::default(),
+                note: Default::default(),
             };
             let made = if let Some(datum) = crate::construction::Kind::from_feature(kind) {
                 let name = feature["name"].as_str().unwrap_or_default();
@@ -2069,6 +2102,9 @@ impl Rebuilder<'_> {
                     .map(|(name, shape)| (name, Geometry::Brep(shape)))
                     .collect()
             };
+            if let Some(note) = ctx.note.take() {
+                self.notes.insert(fid.to_string(), note);
+            }
             self.states
                 .insert(fid.to_string(), ("ok".into(), ctx.message.take()));
             self.rebuilt.push(fid.to_string());
@@ -2172,6 +2208,7 @@ fn setup<'a>(
         states: HashMap::new(),
         failures: BTreeMap::new(),
         rebuilt: Vec::new(),
+        notes: BTreeMap::new(),
         new_entries: Map::new(),
         new_blobs: BTreeMap::new(),
     }
@@ -2235,7 +2272,7 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
     for feature in order.iter().filter(|f| f["type"] == kind) {
         let name = feature["name"].clone();
         let outcome = rebuilder.inputs(feature).and_then(|inputs| {
-            let ctx = Context { feature, features: Some(&rebuilder.features), bodies: inputs.bodies, sketches: inputs.sketches, parameters: &rebuilder.parameters, message: Default::default() };
+            let ctx = Context { feature, features: Some(&rebuilder.features), bodies: inputs.bodies, sketches: inputs.sketches, parameters: &rebuilder.parameters, message: Default::default(), note: Default::default() };
             match kind {
                 "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
                     json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
@@ -2641,6 +2678,7 @@ pub fn rebuild_with(
         failures: rebuilder.failures,
         rebuilt: rebuilder.rebuilt,
         signatures: actual,
+        notes: rebuilder.notes,
     })
 }
 
@@ -2806,6 +2844,7 @@ mod tests {
             sketches: HashMap::new(),
             parameters: &HashMap::new(),
             message: Default::default(),
+            note: Default::default(),
         };
         let expected = 30.0 * 20.0 * 3.0 - 3.0 * 25.0 * 3.0_f64.sqrt() / 2.0 * 3.0;
         for (step, body) in [("vent_plate", "Vent"), ("vent_cut", "Base")] {
@@ -2886,6 +2925,7 @@ mod tests {
                     sketches: HashMap::new(),
                     parameters: &HashMap::new(),
                     message: Default::default(),
+                    note: Default::default(),
                 };
                 let output = execute("arrange", &ctx, None)
                     .expect("saved row implemented")
@@ -2910,7 +2950,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_patterns_still_report_unported() {
+    fn an_arrangement_pattern_with_no_face_asks_for_one() {
         let feature = json!({"inputs": {"pattern": "grid"}});
         let ctx = Context {
             feature: &feature,
@@ -2919,11 +2959,16 @@ mod tests {
             sketches: HashMap::new(),
             parameters: &HashMap::new(),
             message: Default::default(),
+            note: Default::default(),
         };
         let error = execute("arrange", &ctx, None)
             .expect("Arrange dispatch")
             .err()
             .unwrap();
-        assert!(error.message.contains("cannot build it yet"));
+        assert!(
+            error
+                .message
+                .starts_with("Pick the face to arrange the objects on.")
+        );
     }
 }

@@ -576,6 +576,29 @@ pub(crate) fn seat_section(
     )
 }
 
+/// `reference_frame` of a face on its own (the build plate, say).
+pub(crate) fn face_reference_frame(face: UniquePtr<occt::Shape>) -> Result<Frame, StepError> {
+    let plane = occt::plane_frame(&face).map_err(kernel)?;
+    reference_frame(&Face { shape: face, plane })
+}
+
+/// `support_face`: the largest flat face, ties broken by how near it is to `plane` (a point and normal), then by
+/// index.
+pub(crate) fn support_face(faces: &[occt::FaceData], plane: Option<(V, V)>) -> Option<usize> {
+    let distance = |f: &occt::FaceData| plane.map_or(0.0, |(c, n)| dot(sub(f.center, c), n).abs());
+    faces
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| face.planar)
+        .min_by(|(i, a), (j, b)| {
+            b.area
+                .total_cmp(&a.area)
+                .then_with(|| distance(a).total_cmp(&distance(b)))
+                .then_with(|| i.cmp(j))
+        })
+        .map(|(index, _)| index)
+}
+
 pub(crate) fn arrangement_frame(
     body: &occt::Shape,
     index: u32,

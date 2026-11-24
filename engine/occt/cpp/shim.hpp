@@ -58,6 +58,8 @@ struct ClipPlacementSpec;
 struct ClipOutput;
 struct SlideSpec;
 struct SlideOutput;
+struct ArrangeSpec;
+struct ArrangeOutput;
 struct SketchProfile;
 struct SketchAxis;
 
@@ -101,6 +103,9 @@ std::unique_ptr<Shape> section_cutter(const Shape &face, rust::Slice<const doubl
                                       double boundary, double depth);
 ClipOutput clip_legacy(const Shape &body_a, const Shape &body_b, const Shape &face_a, const Shape &face_b,
                        const ClipSpec &clip, rust::Slice<const double> frame, rust::Slice<const double> points);
+std::unique_ptr<Shape> plate_face(double x, double y);
+ArrangeOutput arrange_face(const Shapes &items, rust::Slice<const int32_t> supports, const Shape &target,
+                           const Shapes &edges, const Shapes &others, const ArrangeSpec &spec);
 SlideOutput clip_slides(const Shape &body_a, const Shape &body_b,
                         const Shape &face_a, const Shape &face_b, const SlideSpec &spec);
 ClipOutput clip_connectors(const Shape &body_a, const Shape &body_b,

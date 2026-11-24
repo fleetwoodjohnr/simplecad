@@ -8,6 +8,12 @@
 
 #include <geos_c.h>
 
+#include <TopoDS_Face.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
+
 namespace simplecad { class Shape; }
 namespace simplecad::texture {
 
@@ -180,6 +186,40 @@ inline double distance(Point a, Point b) {
   return std::hypot(a[0] - b[0], a[1] - b[1]);
 }
 
+/** A flat or cylindrical face's own coordinates: millimetres along U and V, as `face_texture`'s mappings read them.
+ * Round a cylinder U runs round it from the face's first angle, V along its axis from its low end. */
+struct Mapping {
+  gp_Ax3 frame;
+  gp_Dir normal;
+  double radius = 0;
+  double sign = 1;
+  Bounds uv{};
+
+  bool wrapped() const { return radius > 0; }
+  double period() const { return wrapped() && uv[1] - uv[0] >= 2 * pi - 1e-4 ? 2 * pi * radius : 0; }
+  gp_Pnt axis_point(double t) const {
+    return frame.Location().Translated(gp_Vec(frame.Direction()) * (uv[2] + t));
+  }
+  gp_Dir radial(double s) const {
+    const double angle = uv[0] + s / radius;
+    return gp_Dir(gp_Vec(frame.XDirection()) * std::cos(angle) +
+                  gp_Vec(frame.YDirection()) * std::sin(angle));
+  }
+  gp_Pnt point(Point p, double depth) const {
+    if (wrapped()) {
+      const double angle = uv[0] + p[0] / radius;
+      const auto offset = gp_Vec(frame.XDirection()) * std::cos(angle) +
+                          gp_Vec(frame.YDirection()) * std::sin(angle);
+      return axis_point(p[1]).Translated(offset * (radius + sign * depth));
+    }
+    return frame.Location().Translated(gp_Vec(frame.XDirection()) * p[0] +
+        gp_Vec(frame.YDirection()) * p[1] + gp_Vec(normal) * depth);
+  }
+};
+
+Mapping mapping_of(const Shape &face);
+/** The face's outline in its mapping's coordinates, holes included. */
+Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mapping &mapping, double deflection = 0.035);
 Geometry planar_profile(const Layout &layout, const Shape &face);
 
 } // namespace simplecad::texture

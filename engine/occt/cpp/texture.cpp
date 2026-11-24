@@ -40,36 +40,9 @@ using namespace texture;
 constexpr int max_motifs = 4000;
 constexpr double overlap = 0.02;
 
-struct Mapping {
-  gp_Ax3 frame;
-  gp_Dir normal;
-  double radius = 0;
-  double sign = 1;
-  Bounds uv{};
+} // namespace
 
-  bool wrapped() const { return radius > 0; }
-  double period() const { return wrapped() && uv[1] - uv[0] >= 2 * pi - 1e-4 ? 2 * pi * radius : 0; }
-  gp_Pnt axis_point(double t) const {
-    return frame.Location().Translated(gp_Vec(frame.Direction()) * (uv[2] + t));
-  }
-  gp_Dir radial(double s) const {
-    const double angle = uv[0] + s / radius;
-    return gp_Dir(gp_Vec(frame.XDirection()) * std::cos(angle) +
-                  gp_Vec(frame.YDirection()) * std::sin(angle));
-  }
-  gp_Pnt point(Point p, double depth) const {
-    if (wrapped()) {
-      const double angle = uv[0] + p[0] / radius;
-      const auto offset = gp_Vec(frame.XDirection()) * std::cos(angle) +
-                          gp_Vec(frame.YDirection()) * std::sin(angle);
-      return axis_point(p[1]).Translated(offset * (radius + sign * depth));
-    }
-    return frame.Location().Translated(gp_Vec(frame.XDirection()) * p[0] +
-        gp_Vec(frame.YDirection()) * p[1] + gp_Vec(normal) * depth);
-  }
-};
-
-Mapping mapping_of(const Shape &face) {
+texture::Mapping texture::mapping_of(const Shape &face) {
   const auto plane = plane_frame(face);
   if (plane.planar) {
     const auto &n = plane.normal;
@@ -87,6 +60,8 @@ Mapping mapping_of(const Shape &face) {
   BRepTools::UVBounds(TopoDS::Face(face.shape), mapping.uv[0], mapping.uv[1], mapping.uv[2], mapping.uv[3]);
   return mapping;
 }
+
+namespace {
 
 Ring planar_edge(const TopoDS_Edge &edge, const TopoDS_Vertex &start, const Mapping &mapping,
                  double deflection) {
@@ -130,8 +105,10 @@ Ring cylindrical_edge(const TopoDS_Edge &edge, const TopoDS_Face &face, const Ma
   return points;
 }
 
-Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mapping &mapping,
-                      double deflection = 0.035) {
+} // namespace
+
+texture::Geometry texture::face_profile(const Layout &layout, const TopoDS_Face &face, const Mapping &mapping,
+                                        double deflection) {
   const double tolerance = mapping.wrapped() ? 1e-7 : 1e-8;
   std::vector<Ring> rings;
   for (TopExp_Explorer wire(face, TopAbs_WIRE); wire.More(); wire.Next()) {
@@ -176,6 +153,8 @@ Geometry face_profile(const Layout &layout, const TopoDS_Face &face, const Mappi
   }
   return profile;
 }
+
+namespace {
 
 std::vector<Geometry> strokes(const Layout &layout, const Bounds &bounds, const TextureSpec &spec,
                               const std::vector<int> &angles, double factor = 0.23, bool wave = false) {

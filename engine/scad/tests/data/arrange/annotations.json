@@ -1,0 +1,471 @@
+{
+ "bore": {
+  "columns": 4,
+  "fits": true,
+  "gap": 37.8931205375747,
+  "message": "Arranged 4 objects \u00b7 in a row \u00b7 37.89 mm gaps.",
+  "order": [
+   "E",
+   "F",
+   "G",
+   "H"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 1,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 in a row \u00b7 37.89 mm gaps",
+  "warnings": []
+ },
+ "contact": {
+  "columns": 2,
+  "fits": true,
+  "gap": 34.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 34.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 34.00 mm gaps",
+  "warnings": []
+ },
+ "curved": {
+  "columns": 3,
+  "fits": true,
+  "gap": 30.5,
+  "message": "Arranged 6 objects \u00b7 2 \u00d7 3 grid \u00b7 30.50 mm gaps.",
+  "order": [
+   "Peg",
+   "Ball",
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "6 objects \u00b7 2 \u00d7 3 grid \u00b7 30.50 mm gaps",
+  "warnings": [
+   "Ball has no flat face to stand on; its turn was kept."
+  ]
+ },
+ "custom": {
+  "columns": 2,
+  "fits": true,
+  "gap": 10.333333333333334,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 10.33 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 10.33 mm gaps",
+  "warnings": []
+ },
+ "grid": {
+  "columns": 2,
+  "fits": true,
+  "gap": 34.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 34.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 34.00 mm gaps",
+  "warnings": []
+ },
+ "grid_fixed": {
+  "columns": 2,
+  "fits": true,
+  "gap": 4.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 4.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 4.00 mm gaps",
+  "warnings": []
+ },
+ "holes": {
+  "columns": 2,
+  "fits": true,
+  "gap": 37.197606078498254,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 37.20 mm gaps.",
+  "order": [
+   "E",
+   "F",
+   "G",
+   "H"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 37.20 mm gaps",
+  "warnings": []
+ },
+ "linear": {
+  "columns": 4,
+  "fits": false,
+  "gap": 5.0,
+  "message": "Arranged 4 outside the boundary.",
+  "order": [
+   "A",
+   "C",
+   "B",
+   "D"
+  ],
+  "problems": [
+   {
+    "name": "A",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "C",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "B",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "D",
+    "reason": "is outside the boundary"
+   }
+  ],
+  "radius": 0.0,
+  "rows": 1,
+  "suggestions": [
+   {
+    "label": "Try Packed",
+    "patch": {
+     "pattern": "packed"
+    }
+   },
+   {
+    "label": "Try Staggered",
+    "patch": {
+     "pattern": "staggered"
+    }
+   },
+   {
+    "label": "Try Grid",
+    "patch": {
+     "pattern": "grid"
+    }
+   }
+  ],
+  "summary": "4 outside the boundary",
+  "warnings": [
+   "The arrangement no longer fits: 4 outside the boundary. Edit the arrangement to choose a layout that does."
+  ]
+ },
+ "manual": {
+  "columns": 2,
+  "fits": true,
+  "gap": 30.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 30.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 30.00 mm gaps",
+  "warnings": []
+ },
+ "no_fit": {
+  "columns": 2,
+  "fits": false,
+  "gap": 20.0,
+  "message": "Arranged 4 outside the boundary.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [
+   {
+    "name": "A",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "C",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "D",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "B",
+    "reason": "is outside the boundary"
+   }
+  ],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 outside the boundary",
+  "warnings": [
+   "The arrangement no longer fits: 4 outside the boundary. Edit the arrangement to choose a layout that does."
+  ]
+ },
+ "offset": {
+  "columns": 2,
+  "fits": false,
+  "gap": 34.0,
+  "message": "Arranged 2 outside the boundary.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [
+   {
+    "name": "C",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "D",
+    "reason": "is outside the boundary"
+   }
+  ],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [
+   {
+    "label": "Use 2.98 mm minimum spacing",
+    "patch": {
+     "gap": 2.98
+    }
+   },
+   {
+    "label": "Allow rotation",
+    "patch": {
+     "auto_rotate": true
+    }
+   },
+   {
+    "label": "Try Packed",
+    "patch": {
+     "pattern": "packed"
+    }
+   }
+  ],
+  "summary": "2 outside the boundary",
+  "warnings": [
+   "The arrangement no longer fits: 2 outside the boundary. Edit the arrangement to choose a layout that does."
+  ]
+ },
+ "packed": {
+  "columns": 0,
+  "fits": true,
+  "gap": 2.0,
+  "message": "Arranged 4 objects \u00b7 packed \u00b7 2.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 0,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 packed \u00b7 2.00 mm gaps",
+  "warnings": []
+ },
+ "plate": {
+  "columns": 2,
+  "fits": true,
+  "gap": 207.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 207.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 207.00 mm gaps",
+  "warnings": []
+ },
+ "radial": {
+  "columns": 0,
+  "fits": true,
+  "gap": 32.534363577139565,
+  "message": "Arranged 4 objects \u00b7 ring r 42.2 mm \u00b7 32.53 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 42.1886116991581,
+  "rows": 0,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 ring r 42.2 mm \u00b7 32.53 mm gaps",
+  "warnings": []
+ },
+ "radial_fixed": {
+  "columns": 0,
+  "fits": true,
+  "gap": 3.0,
+  "message": "Arranged 4 objects \u00b7 ring r 19.1 mm \u00b7 3.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 19.14797789569746,
+  "rows": 0,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 ring r 19.1 mm \u00b7 3.00 mm gaps",
+  "warnings": []
+ },
+ "rotated": {
+  "columns": 2,
+  "fits": true,
+  "gap": 12.115024312160521,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 12.12 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 12.12 mm gaps",
+  "warnings": []
+ },
+ "round": {
+  "columns": 4,
+  "fits": true,
+  "gap": 39.12388980384689,
+  "message": "Arranged 4 objects \u00b7 in a row \u00b7 39.12 mm gaps.",
+  "order": [
+   "E",
+   "F",
+   "G",
+   "H"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 1,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 in a row \u00b7 39.12 mm gaps",
+  "warnings": []
+ },
+ "round_grid": {
+  "columns": 2,
+  "fits": true,
+  "gap": 44.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 grid \u00b7 44.00 mm gaps.",
+  "order": [
+   "E",
+   "F",
+   "G",
+   "H"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 grid \u00b7 44.00 mm gaps",
+  "warnings": []
+ },
+ "staggered": {
+  "columns": 2,
+  "fits": true,
+  "gap": 16.0,
+  "message": "Arranged 4 objects \u00b7 2 \u00d7 2 staggered \u00b7 16.00 mm gaps.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [],
+  "radius": 0.0,
+  "rows": 2,
+  "suggestions": [],
+  "summary": "4 objects \u00b7 2 \u00d7 2 staggered \u00b7 16.00 mm gaps",
+  "warnings": []
+ },
+ "suggest": {
+  "columns": 4,
+  "fits": false,
+  "gap": 8.0,
+  "message": "Arranged 2 outside the boundary.",
+  "order": [
+   "A",
+   "C",
+   "D",
+   "B"
+  ],
+  "problems": [
+   {
+    "name": "A",
+    "reason": "is outside the boundary"
+   },
+   {
+    "name": "B",
+    "reason": "is outside the boundary"
+   }
+  ],
+  "radius": 0.0,
+  "rows": 1,
+  "suggestions": [
+   {
+    "label": "Try Packed",
+    "patch": {
+     "pattern": "packed"
+    }
+   }
+  ],
+  "summary": "2 outside the boundary",
+  "warnings": [
+   "The arrangement no longer fits: 2 outside the boundary. Edit the arrangement to choose a layout that does."
+  ]
+ }
+}

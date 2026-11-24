@@ -19,7 +19,7 @@ const DATA: [&str; 6] = [
     include_str!("../../../simplecad/data/threads/bsp.json"),
     include_str!("../../../simplecad/data/threads/npt.json"),
 ];
-const PRINTER: &str =
+pub(crate) const PRINTER: &str =
     include_str!("../../../simplecad/data/printers/elegoo_centauri_carbon_2.json");
 
 struct Size {
