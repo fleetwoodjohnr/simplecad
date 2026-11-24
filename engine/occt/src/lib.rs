@@ -504,6 +504,10 @@ pub mod ffi {
         /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
         /// the Python app places a cached "located" output).
         fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;
+        /// The geometry shared with every moved copy of the shape, and its orientation, as one number.
+        fn shape_partner(shape: &Shape) -> u64;
+        /// The shape's location, its 3×4 matrix row by row.
+        fn shape_location(shape: &Shape) -> Vec<f64>;
         fn volume(shape: &Shape) -> f64;
         fn surface_area(shape: &Shape) -> Result<f64>;
         fn volume_center(shape: &Shape) -> Result<Vec<f64>>;
@@ -539,6 +543,8 @@ pub mod ffi {
         fn faces(shape: &Shape) -> Result<Vec<FaceData>>;
         /// Face `face` (a `faces` index) as the naming fingerprints it.
         fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
+        /// Every face as `face_fingerprint` names it, in one pass.
+        fn face_fingerprints(shape: &Shape) -> Result<Vec<FaceFingerprint>>;
         fn edge_fingerprints(shape: &Shape) -> Result<Vec<EdgeFingerprint>>;
         /// Origin and direction of a straight edge in the naming index order.
         fn edge_axis(shape: &Shape, index: u32) -> Result<EdgeAxis>;

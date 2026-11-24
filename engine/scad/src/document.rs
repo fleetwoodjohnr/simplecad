@@ -2508,6 +2508,38 @@ impl Model {
         }
         payload["format"] = json!(crate::project::FORMAT_VERSION);
         payload["application"] = json!("SimpleCAD");
+        // A moved body is held as its base's blob and a placement (`rebuild`); the file gets the body itself, as
+        // SimpleCAD 0.4 saves every body.
+        let mut placed = BTreeMap::new();
+        if let Some(geometry) = payload["geometry"].as_object_mut() {
+            for entry in geometry.values_mut() {
+                let Some(placement) = crate::rebuild::location(entry) else {
+                    continue;
+                };
+                let base = entry["sha256"].as_str().unwrap_or_default().to_owned();
+                let blob = match self.blobs.get(&base) {
+                    Some(blob) => blob.to_vec(),
+                    None => {
+                        let mut bytes = Vec::new();
+                        source
+                            .by_name(&format!("geometry/{base}.brep"))
+                            .map_err(|e| damaged(&e))?
+                            .read_to_end(&mut bytes)
+                            .map_err(|e| damaged(&e))?;
+                        bytes
+                    }
+                };
+                let kernel = |e: occt::Exception| damaged(&e.what());
+                let shape = occt::read_brep(&blob).map_err(kernel)?;
+                let moved = occt::located(&shape, &placement).map_err(kernel)?;
+                let bytes = occt::write_brep(&moved).map_err(kernel)?;
+                let sha = format!("{:x}", Sha256::digest(&bytes));
+                entry["sha256"] = json!(sha);
+                entry.as_object_mut().expect("an entry").remove("location");
+                placed.insert(sha, bytes);
+            }
+        }
+        placed.retain(|sha, _| !self.blobs.contains_key(sha));
         out.start_file("model.json", options)
             .map_err(|e| damaged(&e))?;
         out.write_all(&serde_json::to_vec_pretty(&payload).map_err(|e| damaged(&e))?)
@@ -2519,7 +2551,7 @@ impl Model {
             let replaced = name
                 .strip_prefix("geometry/")
                 .and_then(|name| name.strip_suffix(".brep"))
-                .is_some_and(|sha| self.blobs.contains_key(sha))
+                .is_some_and(|sha| self.blobs.contains_key(sha) || placed.contains_key(sha))
                 || name
                     .strip_prefix("assets/")
                     .and_then(|name| name.strip_suffix(".brep"))
@@ -2532,7 +2564,8 @@ impl Model {
             out.start_file(name, options).map_err(|e| damaged(&e))?;
             out.write_all(&bytes).map_err(|e| damaged(&e))?;
         }
-        for (sha, blob) in &self.blobs {
+        let blobs = self.blobs.iter().map(|(sha, blob)| (sha, &blob[..]));
+        for (sha, blob) in blobs.chain(placed.iter().map(|(sha, bytes)| (sha, &bytes[..]))) {
             let name = format!("geometry/{sha}.brep");
             out.start_file(name, options).map_err(|e| damaged(&e))?;
             out.write_all(blob).map_err(|e| damaged(&e))?;

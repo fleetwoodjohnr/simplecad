@@ -28,7 +28,10 @@ pub type Shape = Rc<occt::UniquePtr<occt::Shape>>;
 #[derive(Clone)]
 struct Part {
     value: Geometry,
+    /// The blob holding exactly this shape.
     sha: Option<String>,
+    /// Or the blob of the shape it is a moved copy of, and where it is placed (a "located" result).
+    base: Option<(String, Vec<f64>)>,
 }
 
 #[derive(Clone)]
@@ -39,6 +42,13 @@ enum Geometry {
 }
 
 impl Part {
+    /// A blob this shape, or any moved copy of it, can be saved against: its own, or its base's.
+    fn blob(&self) -> Option<&str> {
+        self.sha
+            .as_deref()
+            .or(self.base.as_ref().map(|(sha, _)| sha.as_str()))
+    }
+
     fn shape(&self) -> Option<&Shape> {
         match &self.value {
             Geometry::Brep(shape) => Some(shape),
@@ -49,10 +59,23 @@ impl Part {
 
 type Outputs = BTreeMap<String, Part>;
 
+/// A "located" result's placement: its 3×4 matrix, row by row.
+pub(crate) fn location(output: &Value) -> Option<Vec<f64>> {
+    let matrix: Vec<f64> = output["location"]
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_f64)
+        .collect();
+    (matrix.len() == 12).then_some(matrix)
+}
+
 #[derive(Default)]
 struct BoundInputs {
     bodies: HashMap<String, Shape>,
     sketches: HashMap<String, Rc<Value>>,
+    /// Each input body's partner geometry (`occt::shape_partner`) and a blob it is saved against, so an output that
+    /// only moves one is saved as "located" on that blob, as SimpleCAD 0.4's `ResultStore.put` does.
+    blobs: Vec<(u64, String)>,
 }
 
 /// Why a step has no result: `CadError`, or `ReferenceLost` when `lost`.
@@ -413,15 +436,14 @@ fn similarity(
 /// `naming.resolve` for a face: the hinted face when it is certainly the one,
 /// else the one best match, never a doubtful one.
 fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
-    let count = occt::faces(shape).map_err(kernel)?.len() as u32;
     let fingerprint = &reference["fingerprint"];
-    let scores: Vec<f64> = (0..count)
-        .map(|i| {
-            occt::face_fingerprint(shape, i)
-                .map(|f| similarity(fingerprint, &f, "face", None))
-                .map_err(kernel)
-        })
-        .collect::<Result<_, _>>()?;
+    // One pass over the faces: a face at a time maps the whole body again, which on an imported board with
+    // thousands of faces cost seconds per Align.
+    let scores: Vec<f64> = occt::face_fingerprints(shape)
+        .map_err(kernel)?
+        .iter()
+        .map(|f| similarity(fingerprint, f, "face", None))
+        .collect();
     resolve_scores(reference, &scores, "face")
 }
 
@@ -1700,14 +1722,16 @@ impl Store<'_> {
                 && feature["id"] == fid.as_str()
                 && made == signature
             {
-                let sha = (kind == "brep")
-                    .then(|| output["sha256"].as_str().map(String::from))
+                let sha = output["sha256"].as_str().map(String::from);
+                let base = (kind == "located")
+                    .then(|| Some((sha.clone()?, location(output)?)))
                     .flatten();
                 decoded.insert(
                     oid.clone(),
                     Part {
                         value: Geometry::Brep(shape.clone()),
-                        sha,
+                        sha: sha.filter(|_| kind == "brep"),
+                        base,
                     },
                 );
                 continue;
@@ -1718,23 +1742,23 @@ impl Store<'_> {
                     Part {
                         value: Geometry::Brep(self.decode(sha)?),
                         sha: Some(sha.to_string()),
+                        base: None,
                     }
                 }
                 "located" => {
-                    let matrix: Vec<f64> = output["location"]
-                        .as_array()?
-                        .iter()
-                        .filter_map(Value::as_f64)
-                        .collect();
-                    let base = self.decode(output["sha256"].as_str()?)?;
+                    let matrix = location(output)?;
+                    let sha = output["sha256"].as_str()?;
+                    let base = self.decode(sha)?;
                     Part {
                         value: Geometry::Brep(Rc::new(occt::located(&base, &matrix).ok()?)),
                         sha: None,
+                        base: Some((sha.to_string(), matrix)),
                     }
                 }
                 "sketch" if feature["type"] == "sketch" && output["data"].is_object() => Part {
                     value: Geometry::Sketch(Rc::new(output["data"].clone())),
                     sha: None,
+                    base: None,
                 },
                 kind if crate::construction::Kind::from_feature(feature["type"].as_str()?)
                     .is_some_and(|feature_kind| kind == feature_kind.cache_kind())
@@ -1743,6 +1767,7 @@ impl Store<'_> {
                     Part {
                         value: Geometry::Datum(Rc::new(output.clone())),
                         sha: None,
+                        base: None,
                     }
                 }
                 _ => return None,
@@ -2012,10 +2037,18 @@ impl Rebuilder<'_> {
                 .find(|(_, oid)| oid.as_str() == Some(object))
                 .map(|(n, _)| n.clone());
             match source_name.and_then(|n| outputs.get(&n).cloned()) {
-                Some(Part {
-                    value: Geometry::Brep(shape),
-                    ..
-                }) => {
+                Some(
+                    part @ Part {
+                        value: Geometry::Brep(_),
+                        ..
+                    },
+                ) => {
+                    let shape = part.shape().expect("a body").clone();
+                    if let Some(blob) = part.blob() {
+                        inputs
+                            .blobs
+                            .push((occt::shape_partner(&shape), blob.to_string()));
+                    }
                     inputs.bodies.insert(name.clone(), shape);
                 }
                 Some(Part {
@@ -2044,9 +2077,10 @@ impl Rebuilder<'_> {
         fid: &str,
         feature: Value,
         signature: String,
-        inputs: BoundInputs,
+        mut inputs: BoundInputs,
         suppressed: bool,
     ) -> Result<Outputs, StepError> {
+        let input_blobs = std::mem::take(&mut inputs.blobs);
         let names: Vec<String> = feature["outputs"]
             .as_array()
             .into_iter()
@@ -2139,18 +2173,31 @@ impl Rebuilder<'_> {
         let mut parts = Outputs::new();
         let mut encoded = Map::new();
         for (name, value) in outputs {
+            let mut base = None;
             let (data, sha) = match &value {
                 Geometry::Brep(shape) => {
-                    let blob = occt::write_brep(shape).map_err(kernel)?;
-                    let sha = format!("{:x}", Sha256::digest(&blob));
-                    self.new_blobs.insert(sha.clone(), blob.into());
-                    (json!({ "kind": "brep", "sha256": sha }), Some(sha))
+                    let partner = occt::shape_partner(shape);
+                    if let Some((_, blob)) = input_blobs.iter().find(|(p, _)| *p == partner) {
+                        // A move shares its input's geometry under a new location: serialising it again cost over half
+                        // a second for a large imported board, on every move and every redo of one.
+                        let placement = occt::shape_location(shape);
+                        base = Some((blob.clone(), placement.clone()));
+                        (
+                            json!({ "kind": "located", "sha256": blob, "location": placement }),
+                            None,
+                        )
+                    } else {
+                        let blob = occt::write_brep(shape).map_err(kernel)?;
+                        let sha = format!("{:x}", Sha256::digest(&blob));
+                        self.new_blobs.insert(sha.clone(), blob.into());
+                        (json!({ "kind": "brep", "sha256": sha }), Some(sha))
+                    }
                 }
                 Geometry::Sketch(sketch) => (json!({ "kind": "sketch", "data": &**sketch }), None),
                 Geometry::Datum(datum) => ((**datum).clone(), None),
             };
             encoded.insert(output_ids[&name].as_str().unwrap_or("").to_string(), data);
-            parts.insert(name, Part { value, sha });
+            parts.insert(name, Part { value, sha, base });
         }
         let message = self
             .states
@@ -2616,26 +2663,31 @@ pub fn rebuild_with(
     let mut geometry = Map::new();
     for (oid, (_, shape, producer)) in &last {
         let Some(shape) = shape else { continue };
-        let part_sha = rebuilder.cache.get(producer).and_then(|o| {
-            o.values()
-                .find(|p| {
-                    p.shape()
-                        .is_some_and(|candidate| Rc::ptr_eq(candidate, shape))
-                })
-                .and_then(|p| p.sha.clone())
+        let part = rebuilder.cache.get(producer).and_then(|o| {
+            o.values().find(|p| {
+                p.shape()
+                    .is_some_and(|candidate| Rc::ptr_eq(candidate, shape))
+            })
         });
-        let sha = match part_sha {
-            Some(sha) => sha,
-            None => match model.payload["geometry"][oid]["sha256"].as_str() {
+        let before = &model.payload["geometry"][oid];
+        // A moved body is held as its base's blob and where it is placed; saving writes it whole (`Model::save`),
+        // when SimpleCAD 0.4 serialises every body too.
+        let (sha, placement) = match (
+            part.and_then(|p| p.sha.clone()),
+            part.and_then(|p| p.base.clone()),
+        ) {
+            (Some(sha), _) => (sha, None),
+            (None, Some((base, placement))) => (base, Some(placement)),
+            (None, None) => match before["sha256"].as_str() {
                 // The geometry it already had, unchanged.
                 Some(sha) if shown.get(oid).is_some_and(|s| Rc::ptr_eq(s, shape)) => {
-                    sha.to_string()
+                    (sha.to_string(), location(before))
                 }
                 _ => {
                     let blob = occt::write_brep(shape).map_err(|e| e.what().to_string())?;
                     let sha = format!("{:x}", Sha256::digest(&blob));
                     model.blobs.insert(sha.clone(), blob.into());
-                    sha
+                    (sha, None)
                 }
             },
         };
@@ -2644,7 +2696,11 @@ pub fn rebuild_with(
             .flatten();
         let ok = diagnostics.get(producer).is_none_or(|d| d["state"] == "ok");
         let current = accepted.is_some() && ok;
-        geometry.insert(oid.clone(), json!({ "sha256": sha, "feature_id": producer, "signature": accepted, "current": current }));
+        let mut entry = json!({ "sha256": sha, "feature_id": producer, "signature": accepted, "current": current });
+        if let Some(placement) = placement {
+            entry["location"] = json!(placement);
+        }
+        geometry.insert(oid.clone(), entry);
     }
     model.payload["geometry"] = Value::Object(geometry);
     model.payload["diagnostics"] = Value::Object(diagnostics);

@@ -144,6 +144,8 @@ MeshImport import_mesh(rust::Slice<const double> points, rust::Slice<const uint3
 rust::Vec<uint8_t> write_step(const Shapes &shapes);
 rust::Vec<uint8_t> write_named_step(const Shapes &shapes, rust::Slice<const rust::String> names);
 std::unique_ptr<Shape> located(const Shape &shape, rust::Slice<const double> matrix);
+uint64_t shape_partner(const Shape &shape);
+rust::Vec<double> shape_location(const Shape &shape);
 double volume(const Shape &shape);
 double surface_area(const Shape &shape);
 rust::Vec<double> volume_center(const Shape &shape);
@@ -154,6 +156,7 @@ bool is_valid(const Shape &shape);
 rust::Vec<double> bounds(const Shape &shape);
 rust::Vec<FaceData> faces(const Shape &shape);
 FaceFingerprint face_fingerprint(const Shape &shape, uint32_t face);
+rust::Vec<FaceFingerprint> face_fingerprints(const Shape &shape);
 rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape);
 EdgeAxis edge_axis(const Shape &shape, uint32_t index);
 rust::Vec<FaceFingerprint> vertex_fingerprints(const Shape &shape);
