@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "occt"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "scad"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "gltf",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "scad_engine"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "napi",
  "napi-build",
