@@ -1,7 +1,7 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import {
   AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, GridHelper, LineBasicMaterial, LineSegments,
-  Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
+  MOUSE, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
@@ -71,6 +71,12 @@ export function Viewport(props: Props) {
     const camera = new PerspectiveCamera(35, 1, 0.1, 10_000)
     camera.up.set(0, 0, 1)
     const controls = new OrbitControls(camera, canvas)
+    // As in SimpleCAD 0.4: middle-drag pans and Shift+middle-drag orbits, right-drag orbits; left-drag orbits too, as
+    // in 0.5.0 (Shift+left pans).
+    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }
+    // A middle press would otherwise start the browser's autoscroll.
+    const noAutoscroll = (event: MouseEvent) => { if (event.button === 1) event.preventDefault() }
+    canvas.addEventListener('mousedown', noAutoscroll)
     const viewFrame = () => {
       camera.updateMatrixWorld()
       return {
@@ -201,6 +207,10 @@ export function Viewport(props: Props) {
         renderer.render(scene, camera)
         transform.publish()
         publishEdges()
+        // Where the camera is and what it turns about, for scripted checks of the mouse.
+        const rounded = (v: Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000)
+        const view = JSON.stringify({ position: rounded(camera.position), target: rounded(controls.target) })
+        if (canvas.dataset.camera !== view) canvas.dataset.camera = view
         canvas.setAttribute('aria-busy', String(!displayed))
         const button = handle.current
         const { selected, shape, canPull } = current.current
@@ -409,6 +419,7 @@ export function Viewport(props: Props) {
       transform.dispose()
       controls.dispose()
       canvas.removeEventListener('pointerdown', press)
+      canvas.removeEventListener('mousedown', noAutoscroll)
       canvas.removeEventListener('pointerup', pick)
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerleave', leave)

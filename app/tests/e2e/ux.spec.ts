@@ -449,3 +449,44 @@ test('arrow keys nudge a selected face or chosen body as one exact step, and Esc
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(bodies).not.toContainText('Cylinder')
 })
+
+test('the wheel button pans the view, and turns it with Shift, as in 0.4; the right button turns it', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-camera', /position/)
+  const camera = async () => JSON.parse((await canvas.getAttribute('data-camera'))!) as { position: number[]; target: number[] }
+  // The view frames the model once it arrives: start from where it settles.
+  let last = ''
+  await expect.poll(async () => {
+    const now = (await canvas.getAttribute('data-camera'))!
+    const settled = now === last
+    last = now
+    return settled
+  }, { intervals: [200] }).toBe(true)
+  const offset = (view: { position: number[]; target: number[] }) => view.position.map((v, i) => v - view.target[i])
+  const box = (await canvas.boundingBox())!
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+  const drag = async (button: 'middle' | 'right', shift = false) => {
+    const before = await camera()
+    if (shift) await page.keyboard.down('Shift')
+    await page.mouse.move(x, y)
+    await page.mouse.down({ button })
+    await page.mouse.move(x + 80, y + 30, { steps: 6 })
+    await page.mouse.up({ button })
+    if (shift) await page.keyboard.up('Shift')
+    await expect.poll(async () => JSON.stringify(await camera())).not.toBe(JSON.stringify(before))
+    return [before, await camera()]
+  }
+  // A pan carries the camera and the point it turns about together.
+  let [before, after] = await drag('middle')
+  expect(after.target).not.toEqual(before.target)
+  offset(after).forEach((v, i) => expect(v).toBeCloseTo(offset(before)[i], 1))
+  // An orbit swings the camera round the point it turns about, which stays.
+  for (const [button, shift] of [['middle', true], ['right', false]] as const) {
+    ;[before, after] = await drag(button, shift)
+    expect(after.target).toEqual(before.target)
+    expect(after.position).not.toEqual(before.position)
+  }
+  await expect(errors(page)).toHaveCount(0)
+})
