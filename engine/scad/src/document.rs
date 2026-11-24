@@ -2434,18 +2434,23 @@ impl Model {
                 }
                 continue;
             }
-            // ponytail: a "located" result (a move) would need its placement
-            // applied to a copy; undo reaches only pulls and new boxes so far.
+            // A "located" result (a move) is its base's blob and a placement, as `rebuild` holds it.
             let output = &self.payload["cache"]["entries"][&signature]["outputs"][&object];
             let Some(sha) = output["sha256"]
                 .as_str()
-                .filter(|_| output["kind"] == "brep")
+                .filter(|_| output["kind"] == "brep" || output["kind"] == "located")
             else {
                 return Err(format!(
                     "\"{name}\" must be rebuilt to restore this history step."
                 ));
             };
-            geometry.insert(object, json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true }));
+            let mut entry = json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true });
+            if let Some(placement) =
+                crate::rebuild::location(output).filter(|_| output["kind"] == "located")
+            {
+                entry["location"] = json!(placement);
+            }
+            geometry.insert(object, entry);
         }
         let diagnostics: Map<String, Value> = self
             .list("features")
