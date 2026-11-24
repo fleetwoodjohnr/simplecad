@@ -527,3 +527,70 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
   await notice.getByRole('button', { name: 'Repair input' }).click()
   await expect(page.getByRole('form', { name: 'Repair Combine' })).toBeVisible()
 })
+
+// SimpleCAD 0.4.4's right click: it chooses what is under the pointer and offers what can be done to it.
+test('a right click picks the face under it and offers its tools, Edit and Delete; a right drag still turns the view', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('aria-busy', 'false')
+  const box = (await canvas.boundingBox())!
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+
+  await page.mouse.click(x, y, { button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Face of Box' })
+  await expect(menu).toBeVisible()
+  await expect(page.getByRole('toolbar', { name: 'Selection tools' })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: 'Move' })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: 'Edit Box' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+
+  await page.mouse.click(x, y, { button: 'right' })
+  await page.getByRole('menu', { name: 'Face of Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await page.getByRole('form', { name: 'Edit Box' }).getByRole('button', { name: 'Cancel' }).click()
+
+  await page.mouse.click(x, y, { button: 'right' })
+  await page.getByRole('menu', { name: 'Face of Box' }).getByRole('menuitem', { name: 'Delete Box' }).click()
+  await expect(page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })).toHaveCount(0)
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+
+  // A right drag turns the view and opens nothing.
+  const before = await canvas.getAttribute('data-camera')
+  await page.mouse.move(x, y)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(x + 80, y + 30, { steps: 6 })
+  await page.mouse.up({ button: 'right' })
+  await expect.poll(() => canvas.getAttribute('data-camera')).not.toBe(before)
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('a right click, or the menu key, on a body or a step offers what can be done to it', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const row = bodies.getByRole('button', { name: 'Box', exact: true })
+
+  await row.click({ button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Box' })
+  await expect(menu.getByRole('menuitem', { name: 'Move' })).toBeVisible()
+  await menu.getByRole('menuitem', { name: 'Hide Box' }).click()
+  await expect(bodies.getByRole('button', { name: 'Show Box' })).toBeVisible()
+
+  // From the keyboard: the menu key on the focused row, then the arrows and Enter.
+  await row.focus()
+  await page.keyboard.press('Shift+F10')
+  await expect(page.getByRole('menu', { name: 'Box' })).toBeVisible()
+  await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Show Box' }).focus()
+  await page.keyboard.press('Enter')
+  await expect(bodies.getByRole('button', { name: 'Hide Box' })).toBeVisible()
+
+  await page.getByRole('list', { name: 'Model history' }).locator('li').first().click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})

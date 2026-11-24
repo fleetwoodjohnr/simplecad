@@ -14,6 +14,8 @@ interface Props {
   onEdit: (step: StepInfo) => void
   onRepair: (step: StepInfo) => void
   onKeep: (step: StepInfo) => void
+  /** A right click, or the menu key, on a step: what can be done to it. */
+  onMenu: (step: StepInfo, at: { x: number; y: number }) => void
 }
 
 /** Whether History can open the step's settings to change. */
@@ -23,12 +25,12 @@ export const keepLabel = (step: StepInfo) => step.kind === 'align' ? 'Keep where
 
 /** The model's steps. A large project has hundreds, so each row draws again only when its step changes, and
  * the busy state disables every button through the fieldset rather than through each row. */
-export const HistoryList = forwardRef<HTMLOListElement, Props>(function HistoryList({ steps, busy, editing, repairing, onEdit, onRepair, onKeep }, ref) {
+export const HistoryList = forwardRef<HTMLOListElement, Props>(function HistoryList({ steps, busy, editing, repairing, onEdit, onRepair, onKeep, onMenu }, ref) {
   return (
     <fieldset disabled={busy} className="contents">
       <ol ref={ref} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
         {steps.map((step) => <Row key={step.id} step={step} editing={editing.includes(step.id)}
-          repairing={repairing === step.id} onEdit={onEdit} onRepair={onRepair} onKeep={onKeep} />)}
+          repairing={repairing === step.id} onEdit={onEdit} onRepair={onRepair} onKeep={onKeep} onMenu={onMenu} />)}
       </ol>
     </fieldset>
   )
@@ -41,13 +43,19 @@ interface RowProps {
   onEdit: (step: StepInfo) => void
   onRepair: (step: StepInfo) => void
   onKeep: (step: StepInfo) => void
+  onMenu: (step: StepInfo, at: { x: number; y: number }) => void
 }
 
 // Every result brings new step objects, so rows compare what they show.
-const Row = memo(function Row({ step, editing, repairing, onEdit, onRepair, onKeep }: RowProps) {
+const Row = memo(function Row({ step, editing, repairing, onEdit, onRepair, onKeep, onMenu }: RowProps) {
   return (
     // Rows scrolled out of view skip style, layout and paint: a large project has hundreds.
-    <li className={`px-2 py-1.5 [content-visibility:auto] [contain-intrinsic-size:auto_28px] ${step.undone ? 'text-text-3' : ''}`}>
+    <li className={`px-2 py-1.5 [content-visibility:auto] [contain-intrinsic-size:auto_28px] ${step.undone ? 'text-text-3' : ''}`}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        const box = event.currentTarget.getBoundingClientRect()
+        onMenu(step, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : { x: box.left + 12, y: box.bottom })
+      }}>
       <div className="flex justify-between gap-2">
         <span className="truncate">{step.name}</span>
         {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
@@ -65,5 +73,5 @@ const Row = memo(function Row({ step, editing, repairing, onEdit, onRepair, onKe
       </div>}
     </li>
   )
-}, (a, b) => a.editing === b.editing && a.repairing === b.repairing && a.onEdit === b.onEdit && a.onRepair === b.onRepair && a.onKeep === b.onKeep &&
+}, (a, b) => a.editing === b.editing && a.repairing === b.repairing && a.onEdit === b.onEdit && a.onRepair === b.onRepair && a.onKeep === b.onKeep && a.onMenu === b.onMenu &&
   JSON.stringify(a.step) === JSON.stringify(b.step))

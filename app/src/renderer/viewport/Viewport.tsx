@@ -23,6 +23,8 @@ interface Props {
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
+  /** A right click that did not drag (a drag turns the view): the face under it, or none, and where it was. */
+  onContextMenu?: (face: number | undefined, x: number, y: number) => void
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
@@ -379,6 +381,11 @@ export function Viewport(props: Props) {
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
+      if (e.button === 2 && current.current.onContextMenu && !transform.claimed() &&
+        down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
+        current.current.onContextMenu(faceAt(e.clientX, e.clientY)?.face, e.clientX, e.clientY)
+        return
+      }
       if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
         const hit = edgeAt(e.clientX, e.clientY)
         if (hit) current.current.onPickEdge(hit.edge, hit.point)

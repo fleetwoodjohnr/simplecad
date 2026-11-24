@@ -7,8 +7,9 @@ import type { OfferedProject } from '@/shared/ipc-types'
 import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
-import { HistoryList, keepLabel } from './HistoryList'
-import { ContextBar } from './ContextBar'
+import { HistoryList, canEdit, keepLabel } from './HistoryList'
+import { SelectionMenu, type MenuEntry } from './SelectionMenu'
+import { ContextBar, faceTools } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
 import { ArrangePanel, type ArrangeRole } from './ArrangePanel'
@@ -185,6 +186,8 @@ export function App() {
   const [faceTool, setFaceTool] = useState<FaceOperation['faceOperation']>()
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
+  /** The right-click menu: what was clicked, and where. */
+  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string })>()
   const [repairBody, setRepairBody] = useState<number>()
   /** Replacements for a Combine's other lost tools, by the lost object's ID. */
   const [moreRepair, setMoreRepair] = useState<Record<string, number>>({})
@@ -860,7 +863,13 @@ export function App() {
               disabled={!ready} onClick={() => pickMeasure({ kind: 'body', body: index })}>{body.name}</button>
           : <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={chosenBodies.includes(index)}
               title={body.empty ? 'No saved geometry' : undefined}
-              onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}>{body.name}</button>}
+              onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                if (!ready) return
+                if (!chosenBodies.includes(index)) chooseBody(index, false)
+                setMenu({ body: index, ...menuAt(event) })
+              }}>{body.name}</button>}
         <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
           disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
           {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
@@ -978,6 +987,42 @@ export function App() {
     for (const id of changesBody) {
       actions[id] = { ...actions[id], enabled: false, hint: `${blocked.body.name} can't change until ${blocked.step.name} is kept or repaired` }
     }
+  }
+
+  // SimpleCAD 0.4.4's right-click menu: the actions valid for what was clicked, then what can be done to its part.
+  const tool = (id: CommandId): MenuEntry[] => actions[id].enabled ? [{ label: commands[id].label, run: actions[id].run }] : []
+  const stepItems = (step: StepInfo): MenuEntry[] => [
+    ...(canEdit(step) ? [{ label: `Edit ${step.name}`, run: () => editHistoryStep(step) }] : []),
+    ...(!step.undone && (step.missingInput || step.state === 'failed') ? [{ label: keepLabel(step), run: () => keepStep(step) }] : []),
+    ...(!step.undone && step.missingInput ? [{ label: 'Repair input', run: () => repairHistoryStep(step) }] : [])
+  ]
+  const partItems = (index: number): MenuEntry[] => {
+    const body = model?.bodies[index]
+    if (!body) return []
+    const made = model.steps.find((step) => step.id === (body.blockedBy ?? body.producer) && !step.undone)
+    const group = model.groups.find(({ members }) => members.includes(index))
+    const items: MenuEntry[] = [
+      ...(made ? stepItems(made) : []),
+      ...(!body.empty ? [{ label: body.visible ? `Hide ${body.name}` : `Show ${body.name}`, run: () => toggleBody(index, !body.visible) }] : []),
+      ...(chosenBodies.length > 1 && chosenBodies.includes(index) && revision !== undefined
+        ? [{ label: 'Group', run: () => mutate(() => groupBodies(revision, chosenBodies)) }] : []),
+      ...(group && revision !== undefined ? [{ label: `Ungroup ${group.name}`, run: () => mutate(() => ungroup(revision, group.name)) }] : []),
+      ...(idle ? [{ label: `Delete ${body.name}`, run: () => removeBodies(chosenBodies.includes(index) ? chosenBodies : [index]) }] : [])
+    ]
+    return items.map((item, i) => i === 0 ? { ...item, group: true } : item)
+  }
+  const menuFace = menu && 'face' in menu ? model?.shape.faces[menu.face] : undefined
+  const menuItems: MenuEntry[] = !menu || !model ? []
+    : 'face' in menu ? menuFace ? [...faceTools(menuFace.planar).filter((id) => id !== 'clear').flatMap(tool), ...partItems(menuFace.body)] : []
+    : 'body' in menu ? [...(['move', 'rotate', 'scale', 'mirror', 'split', 'measure'] as CommandId[]).flatMap(tool), ...partItems(menu.body)]
+    : (() => { const step = model.steps.find((entry) => entry.id === menu.step); return step ? stepItems(step) : [] })()
+  const menuLabel = !menu || !model ? '' : 'face' in menu ? `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
+    : 'body' in menu ? model.bodies[menu.body]?.name ?? '' : model.steps.find((entry) => entry.id === menu.step)?.name ?? ''
+  /** Where a keyboard-opened menu goes: beside the row, as it has no pointer. */
+  const menuAt = (event: React.MouseEvent<HTMLElement>) => {
+    if (event.clientX || event.clientY) return { x: event.clientX, y: event.clientY }
+    const box = event.currentTarget.getBoundingClientRect()
+    return { x: box.left + 12, y: box.bottom }
   }
 
   // SimpleCAD 0.4's arrow-key nudge. Up and Down push or pull a selected face; with bodies chosen, the arrows step
@@ -1188,9 +1233,11 @@ export function App() {
   const keepStepNow = useRef<(step: StepInfo) => void>(() => {})
   keepStepNow.current = keepStep
   const keepHistoryStep = useMemo(() => (step: StepInfo) => keepStepNow.current(step), [])
+  const menuHistoryStep = useMemo(() => (step: StepInfo, at: { x: number; y: number }) => setMenu({ step: step.id, ...at }), [])
 
   return (
     <TooltipProvider>
+      {menu && menuItems.length > 0 && <SelectionMenu at={menu} label={menuLabel} items={menuItems} onClose={() => setMenu(undefined)} />}
       <main className="flex h-screen flex-col bg-bg text-text">
         <TitleBar dark={dark} onToggleTheme={toggle} project={fileName} dirty={dirty} />
         <div role="toolbar" aria-label="Modeling tools" className="@container flex shrink-0 items-stretch gap-1 overflow-x-auto border-b border-border bg-panel px-2 py-1">
@@ -1245,6 +1292,16 @@ export function App() {
             outline={arrange ? preview?.arrangement?.boundary : undefined}
             marked={arrange ? preview?.arrangement?.marked : undefined}
             canPull={canPullFace}
+            onContextMenu={(face, x, y) => {
+              if (!ready || !idle) return
+              if (face === undefined) {
+                select()
+                setMenu(undefined)
+                return
+              }
+              select(face)
+              setMenu({ face, x, y })
+            }}
             onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge
               : edgeTool && !edgeTool.editing && ready ? pickEdge
               : hinge && ready ? pickHingeEdge
@@ -1644,7 +1701,7 @@ export function App() {
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
             <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
               editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
-              onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} />
+              onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} onMenu={menuHistoryStep} />
           </aside>
         </div>
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">
