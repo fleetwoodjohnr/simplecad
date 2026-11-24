@@ -2,6 +2,7 @@ import { forwardRef, memo } from 'react'
 import { Pencil } from 'lucide-react'
 import type { StepInfo } from '@/shared/engine-protocol'
 import { Btn, IconBtn } from '../ui'
+import { isMenuKey } from './SelectionMenu'
 
 const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Failed', needs_attention: 'Needs attention' }
 
@@ -55,6 +56,12 @@ const Row = memo(function Row({ step, editing, repairing, onEdit, onRepair, onKe
         event.preventDefault()
         const box = event.currentTarget.getBoundingClientRect()
         onMenu(step, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : { x: box.left + 12, y: box.bottom })
+      }}
+      onKeyDown={(event) => {
+        if (!isMenuKey(event)) return
+        event.preventDefault()
+        const box = event.currentTarget.getBoundingClientRect()
+        onMenu(step, { x: box.left + 12, y: box.bottom })
       }}>
       <div className="flex justify-between gap-2">
         <span className="truncate">{step.name}</span>

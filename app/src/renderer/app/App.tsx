@@ -8,7 +8,7 @@ import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange,
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { HistoryList, canEdit, keepLabel } from './HistoryList'
-import { SelectionMenu, type MenuEntry } from './SelectionMenu'
+import { SelectionMenu, isMenuKey, type MenuEntry } from './SelectionMenu'
 import { ContextBar, faceTools } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
@@ -865,12 +865,8 @@ export function App() {
           : <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={chosenBodies.includes(index)}
               title={body.empty ? 'No saved geometry' : undefined}
               onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}
-              onContextMenu={(event) => {
-                event.preventDefault()
-                if (!ready) return
-                if (!chosenBodies.includes(index)) chooseBody(index, false)
-                setMenu({ body: index, ...menuAt(event) })
-              }}>{body.name}</button>}
+              onContextMenu={(event) => openBodyMenu(index, event)}
+              onKeyDown={(event) => { if (isMenuKey(event)) openBodyMenu(index, event) }}>{body.name}</button>}
         <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
           disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
           {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
@@ -1019,11 +1015,17 @@ export function App() {
     : (() => { const step = model.steps.find((entry) => entry.id === menu.step); return step ? stepItems(step) : [] })()
   const menuLabel = !menu || !model ? '' : 'face' in menu ? `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
     : 'body' in menu ? model.bodies[menu.body]?.name ?? '' : model.steps.find((entry) => entry.id === menu.step)?.name ?? ''
-  /** Where a keyboard-opened menu goes: beside the row, as it has no pointer. */
-  const menuAt = (event: React.MouseEvent<HTMLElement>) => {
-    if (event.clientX || event.clientY) return { x: event.clientX, y: event.clientY }
+  /** Where the menu goes: at the pointer, or beside the row when the keyboard opened it. */
+  const menuAt = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    if ('clientX' in event && (event.clientX || event.clientY)) return { x: event.clientX, y: event.clientY }
     const box = event.currentTarget.getBoundingClientRect()
     return { x: box.left + 12, y: box.bottom }
+  }
+  const openBodyMenu = (index: number, event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    event.preventDefault()
+    if (!ready) return
+    if (!chosenBodies.includes(index)) chooseBody(index, false)
+    setMenu({ body: index, ...menuAt(event) })
   }
 
   // SimpleCAD 0.4's arrow-key nudge. Up and Down push or pull a selected face; with bodies chosen, the arrows step

@@ -8,6 +8,10 @@ export interface MenuEntry {
   group?: boolean
 }
 
+/** Shift+F10 or the Menu key: the keyboard's right click. Chromium turns them into a context menu on Windows and Linux
+ * only, so the rows handle them themselves, which works on macOS too. */
+export const isMenuKey = (event: { key: string; shiftKey: boolean }) => event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)
+
 /** SimpleCAD 0.4.4's right-click menu: what can be done to what was clicked, at the pointer. */
 export function SelectionMenu({ at, label, items, onClose }: {
   at: { x: number; y: number }

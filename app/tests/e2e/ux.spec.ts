@@ -595,6 +595,11 @@ test('a right click, or the menu key, on a body or a step offers what can be don
   await page.keyboard.press('Enter')
   await expect(bodies.getByRole('button', { name: 'Hide Box' })).toBeVisible()
 
+  // The Menu key on a step's focused Edit button, then the arrow key to its first item.
+  await page.getByRole('button', { name: 'Edit Box' }).focus()
+  await page.keyboard.press('ContextMenu')
+  await expect(page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' })).toBeVisible()
+  await page.keyboard.press('Escape')
   await page.getByRole('list', { name: 'Model history' }).locator('li').first().click({ button: 'right' })
   await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
   await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
