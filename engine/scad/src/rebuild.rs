@@ -1670,6 +1670,18 @@ thread_local! {
     static FAILED: std::cell::RefCell<HashMap<String, (String, StepError)>> = Default::default();
 }
 
+/// A saved B-rep read once by its sha256, through the cache rebuilds decode into: a project's bodies and the rebuilds
+/// after it (an Undo of a step saved in the file) then hold one shape, so a moved copy is known as one and the window
+/// moves its display instead of meshing the geometry again.
+pub fn shared_brep(sha: &str, blob: &[u8]) -> Option<Shape> {
+    if let Some(shape) = DECODED.with(|cache| cache.borrow().get(sha)) {
+        return Some(shape);
+    }
+    let shape = Rc::new(occt::read_brep(blob).ok()?);
+    DECODED.with(|cache| cache.borrow_mut().put(sha, shape.clone()));
+    Some(shape)
+}
+
 /// Forgets the steps remembered as failing: a project opened again, or a new printer
 /// calibration, may now build them (SimpleCAD 0.4 starts each open afresh too).
 pub fn forget_failures() {
@@ -2771,6 +2783,21 @@ pub fn rebuild_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_brep_opened_and_rebuilt_is_one_shape() {
+        // An opened body and an Undo's rebuild read the same blob: they must hold one shape, so the window knows the
+        // board it shows (a moved copy of it) and moves that display instead of meshing the board again.
+        let blob = occt::write_brep(&occt::make_box(3.0, 4.0, 5.0).unwrap()).unwrap();
+        let sha = format!("{:x}", Sha256::digest(&blob));
+        let opened = shared_brep(&sha, &blob).unwrap();
+        let rebuilt = DECODED.with(|cache| cache.borrow().get(&sha)).unwrap();
+        assert!(Rc::ptr_eq(&opened, &rebuilt));
+        assert!(Rc::ptr_eq(
+            &opened,
+            &shared_brep(&sha, b"not read again").unwrap()
+        ));
+    }
 
     #[test]
     fn decoded_results_are_kept_up_to_the_limit_oldest_out_first() {

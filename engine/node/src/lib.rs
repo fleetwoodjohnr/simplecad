@@ -1482,19 +1482,23 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
         .into_iter()
         .map(|body| {
             let shape = body.brep.and_then(|brep| {
-                let shape = ffi::read_brep(&brep).and_then(|shape| match &body.location {
-                    Some(matrix) => ffi::located(&shape, matrix),
-                    None => Ok(shape),
+                // Read through the rebuilds' cache: an Undo of a step saved in the file then gets back this very
+                // geometry, which the window shows by moving this display instead of meshing it again.
+                let base = match &body.sha {
+                    Some(sha) => scad::rebuild::shared_brep(sha, &brep),
+                    None => ffi::read_brep(&brep).ok().map(Rc::new),
+                };
+                let shape = base.and_then(|base| match &body.location {
+                    Some(matrix) => ffi::located(&base, matrix).ok().map(Rc::new),
+                    None => Some(base),
                 });
-                shape
-                    .map_err(|_| {
-                        notes.push(format!(
-                            "\"{}\" could not be read from this file.",
-                            body.name
-                        ))
-                    })
-                    .ok()
-                    .map(Shape::new)
+                if shape.is_none() {
+                    notes.push(format!(
+                        "\"{}\" could not be read from this file.",
+                        body.name
+                    ));
+                }
+                shape.map(|inner| Shape { inner })
             });
             OpenedBody {
                 id: Some(body.id),
