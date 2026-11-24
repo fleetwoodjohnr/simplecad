@@ -32,6 +32,13 @@ the older clip tool, and a Draft tool. Projects saved in 0.5.1 still open in
   faster than in 0.5.0, and the first after opening under a second. Undoing
   or redoing an Align or a Move of a large imported part, which took up to
   4.7 s, takes under a second.
+- **Delete is back.** Delete a body from its row in the Bodies list, a whole
+  group from the group's row, or the chosen bodies with the Delete key. As in
+  0.4.4, the steps that made a body go with it, and a step that used other
+  bodies, such as a Combine's tools, takes them too. Undo brings them back.
+- **The wheel button moves the view again.** Drag with the wheel pressed to
+  pan, and hold Shift, or drag with the right button, to turn the view, as in
+  0.4.4. In 0.5.0 the wheel button zoomed and the right button panned.
 
 ### Still slower than 0.4.4
 
