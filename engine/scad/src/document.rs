@@ -323,24 +323,41 @@ impl Model {
             .collect()
     }
 
-    /// Each lost step, earliest first, with the steps downstream of it (itself included).
-    fn blockers(&self) -> Vec<(String, HashSet<String>)> {
-        let order = self.list("features");
-        self.lost_steps(&order)
-            .into_iter()
-            .map(|id| {
-                let downstream = crate::rebuild::dependents(&order, &HashSet::from([id.clone()]));
-                (id, downstream)
-            })
-            .collect()
+    /// The model's steps in order, borrowed.
+    fn order(&self) -> &[Value] {
+        self.payload["features"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// For each step that is lost or downstream of one, the earliest lost step it is or depends on: the one
+    /// to keep or repair before it can change. One pass in order, as `dependents` walks.
+    fn blockers(&self) -> HashMap<String, String> {
+        let order = self.order();
+        let lost: HashSet<String> = self.lost_steps(order).into_iter().collect();
+        if lost.is_empty() {
+            return HashMap::new();
+        }
+        let mut blocked: HashMap<String, (usize, String)> = HashMap::new();
+        for (position, feature) in order.iter().enumerate() {
+            let id = feature["id"].as_str().unwrap_or("");
+            let own = lost.contains(id).then(|| (position, id.to_string()));
+            let earliest = crate::signatures::upstream(feature, id)
+                .iter()
+                .filter_map(|u| blocked.get(u.as_str()).cloned())
+                .chain(own)
+                .min_by_key(|(at, _)| *at);
+            if let Some(found) = earliest {
+                blocked.insert(id.to_string(), found);
+            }
+        }
+        blocked.into_iter().map(|(id, (_, by))| (id, by)).collect()
     }
 
     /// The earliest lost step `step` is, or depends on: the one to keep or repair before it can change.
     fn blocker_of(&self, step: &str) -> Option<String> {
-        self.blockers()
-            .into_iter()
-            .find(|(_, downstream)| downstream.contains(step))
-            .map(|(id, _)| id)
+        self.blockers().remove(step)
     }
 
     /// Each body's name, the step that last wrote it, and the step to keep or repair before it can change.
@@ -349,10 +366,7 @@ impl Model {
         self.latest()
             .into_iter()
             .map(|(name, (producer, _))| {
-                let blocked = blockers
-                    .iter()
-                    .find(|(_, downstream)| downstream.contains(&producer))
-                    .map(|(id, _)| id.clone());
+                let blocked = blockers.get(&producer).cloned();
                 (name, producer, blocked)
             })
             .collect()
@@ -366,7 +380,7 @@ impl Model {
     /// Each body's producer and object ID as the steps before `position` leave them.
     fn latest_before(&self, position: usize) -> BTreeMap<String, (String, String)> {
         let mut latest = BTreeMap::new();
-        for feature in self.list("features").iter().take(position) {
+        for feature in self.order().iter().take(position) {
             let id = feature
                 .get("id")
                 .and_then(Value::as_str)
@@ -694,11 +708,7 @@ impl Model {
         shown: &HashMap<String, crate::rebuild::Shape>,
     ) -> Result<crate::rebuild::Report, String> {
         let (position, step) = self.recipe(step_id)?;
-        if !self
-            .lost_steps(&self.list("features"))
-            .iter()
-            .any(|id| id == step_id)
-        {
+        if !self.lost_steps(self.order()).iter().any(|id| id == step_id) {
             return Err("This step builds as it is; there is nothing to keep.".into());
         }
         // What the step still writes: a Combine that kept its tool lists it, and a deleted one is `dropped`.
