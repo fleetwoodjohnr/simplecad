@@ -28,19 +28,20 @@ fn face_fingerprints(brep: &[u8], location: Option<&[f64; 12]>) -> Result<Value,
     if let Some(matrix) = location {
         shape = occt::located(&shape, matrix).map_err(|e| e.what().to_string())?;
     }
-    let count = occt::faces(&shape).map_err(|e| e.what().to_string())?.len() as u32;
-    (0..count)
-        .map(|i| {
-            let f = occt::face_fingerprint(&shape, i).map_err(|e| e.what().to_string())?;
-            Ok(json!({
-                "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
-                "direction": if f.has_direction { json!(f.direction) } else { Value::Null },
-                "radius": if f.has_radius { json!(f.radius) } else { Value::Null },
-                "neighbours": [],
-            }))
-        })
-        .collect::<Result<Vec<_>, String>>()
-        .map(Value::Array)
+    let faces = occt::face_fingerprints(&shape).map_err(|e| e.what().to_string())?;
+    Ok(Value::Array(
+        faces
+            .iter()
+            .map(|f| {
+                json!({
+                    "kind": "face", "geometry": f.geometry, "measure": f.measure, "center": f.center,
+                    "direction": if f.has_direction { json!(f.direction) } else { Value::Null },
+                    "radius": if f.has_radius { json!(f.radius) } else { Value::Null },
+                    "neighbours": [],
+                })
+            })
+            .collect(),
+    ))
 }
 
 fn saved_signatures(project: &Project) -> Result<Map<String, Value>, String> {
