@@ -28,7 +28,9 @@ export interface TransformView {
 const AXES = 'XYZ'
 
 export function viewportTransform(canvas: HTMLCanvasElement, camera: PerspectiveCamera, scene: Scene,
-  surface: MeshStandardMaterial, wire: LineBasicMaterial, draw: () => void, orbit: (enabled: boolean) => void) {
+  surface: MeshStandardMaterial, wire: LineBasicMaterial, draw: () => void, orbit: (enabled: boolean) => void,
+  /** The view's place in the window, as measured when it last resized (not read while drawing). */
+  measure: () => DOMRect = () => canvas.getBoundingClientRect()) {
   // Arrows and rings at once: the rings sit outside the arrows, and an arrow under the pointer wins.
   const arrows = new TransformControls(camera, canvas)
   const rings = new TransformControls(camera, canvas)
@@ -116,7 +118,8 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     const reading = typed ? `${typed}${kind === 'move' ? '' : '°'} ⏎` : text
     if (label.textContent !== reading) label.textContent = reading
     const at = pivot.clone().add(delta).project(camera)
-    label.style.transform = `translate(${(at.x + 1) / 2 * canvas.clientWidth}px, ${(1 - at.y) / 2 * canvas.clientHeight + 28}px)`
+    const { width, height } = measure()
+    label.style.transform = `translate(${(at.x + 1) / 2 * width}px, ${(1 - at.y) / 2 * height + 28}px)`
     if (label.classList.contains('hidden')) label.classList.remove('hidden')
   }
   /** A typed amount replaces the drag's: along the handle's axis (or the drag's direction), or about its axis. */
@@ -389,15 +392,16 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     }
     // The arrows' points as `handles` and the rings' as `rings`; a view with only rings publishes them as `handles`.
     const anchors = (which: TransformControls) => JSON.stringify(Object.fromEntries(points(which).map((p, i) => ['xyz'[i], p])))
-    if (arrows.object) canvas.dataset.handles = anchors(arrows)
-    if (rings.object) canvas.dataset[arrows.object ? 'rings' : 'handles'] = anchors(rings)
+    const put = (key: 'handles' | 'rings', text: string) => { if (canvas.dataset[key] !== text) canvas.dataset[key] = text }
+    if (arrows.object) put('handles', anchors(arrows))
+    if (rings.object) put(arrows.object ? 'rings' : 'handles', anchors(rings))
     if (!arrows.object || !rings.object) delete canvas.dataset.rings
   }
   const points = (which: TransformControls) => {
     // TransformControls' own scale: the handles keep one size on screen.
     const scale = hub.position.distanceTo(camera.position) *
       Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7) * which.size / 4
-    const rect = canvas.getBoundingClientRect()
+    const rect = measure()
     return [0, 1, 2].map((axis) => {
       if (which === arrows) {
         at.set(0, 0, 0).setComponent(axis, 0.45)

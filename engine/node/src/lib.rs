@@ -1204,7 +1204,7 @@ impl Project {
             stale.extend(moved);
             signatures = next;
         }
-        let report = scad::rebuild::rebuild_with(
+        let mut report = scad::rebuild::rebuild_with(
             &mut model,
             &self.original,
             &old_shapes,
@@ -1212,6 +1212,15 @@ impl Project {
             Some(signatures),
         )
         .map_err(Error::from_reason)?;
+        // A body brought back as the shown one moved comes back as that one placed there: the window moves its
+        // display instead of meshing the body again.
+        for body in &mut report.bodies {
+            if let (Some(shown), Some(restored)) = (old_shapes.get(&body.id), &body.shape)
+                && let Some(moved) = scad::document::as_moved_copy(shown, restored)
+            {
+                body.shape = Some(moved);
+            }
+        }
         Ok(self.rebuilt_model(model, report))
     }
 

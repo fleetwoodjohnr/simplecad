@@ -1385,6 +1385,8 @@ export function App() {
   // History rows keep the same handlers across renders, so a row draws again only when its step changes.
   const editStepNow = useRef<(step: StepInfo) => void>(() => {})
   editStepNow.current = (step) => {
+    // History stays enabled while a step runs: what it opens waits for that step.
+    if (busyRef.current) return
     if (step.kind === 'sketch') {
       void openSketch(step.id)
       return
@@ -1433,10 +1435,19 @@ export function App() {
     }
   }
   const repairStepNow = useRef<(step: StepInfo) => void>(() => {})
-  repairStepNow.current = (step) => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }
-  // A large model has hundreds of faces: their list is made once per result, not on every render.
-  const faceOptions = useMemo(() => model?.shape.faces.map((face, index) =>
-    <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>), [model, unit])
+  repairStepNow.current = (step) => {
+    if (busyRef.current) return
+    select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({})
+  }
+  // A large model has thousands of faces: their list is made only while it is open (and once per result), since
+  // laying thousands of options out again took UPS Atlas's every step tens of milliseconds.
+  const [faceListOpen, setFaceListOpen] = useState(false)
+  const manyFaces = (model?.shape.faces.length ?? 0) > 400
+  const faceOptions = useMemo(() => !model ? null : !manyFaces || faceListOpen
+    ? model.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>)
+    : selected !== undefined && model.shape.faces[selected]
+      ? <option value={selected}>{faceLabel(model.shape.faces[selected], model.bodies, unit)}</option> : null,
+  [model, unit, manyFaces, faceListOpen, manyFaces && !faceListOpen ? selected : undefined])
   const editHistoryStep = useMemo(() => (step: StepInfo) => editStepNow.current(step), [])
   const repairHistoryStep = useMemo(() => (step: StepInfo) => repairStepNow.current(step), [])
   const keepStepNow = useRef<(step: StepInfo) => void>(() => {})
@@ -1890,6 +1901,7 @@ export function App() {
             <label className="grid gap-1 text-xs text-text-2">
               Planar face
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
+                onFocus={() => setFaceListOpen(true)} onPointerDown={() => setFaceListOpen(true)} onBlur={() => setFaceListOpen(false)}
                 onChange={(e) => {
                   const face = e.target.value === '' ? undefined : Number(e.target.value)
                   if (arrange?.role === 'target' || arrange?.role === 'contact') {
@@ -1917,7 +1929,7 @@ export function App() {
               </select>
             </label>
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
+            <HistoryList ref={historyList} steps={model?.steps ?? []} repairing={repairing}
               editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
               onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} onMenu={menuHistoryStep} />
           </aside>

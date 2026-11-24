@@ -197,3 +197,27 @@ describe('EngineDocument', () => {
     expect(model.unsaved).toBe(true)
   })
 })
+
+describe('parts sent to the window', async () => {
+  const { combine, partsReceived, partsToSend } = await import('../../../src/shared/display')
+  const part = (z: number) => ({
+    volume: 1, faces: [{ planar: true, center: [0, 0, z] as [number, number, number], anchor: [0, 0, z] as [number, number, number], normal: [0, 0, 1] as [number, number, number], area: 1 }],
+    positions: new Float32Array([0, 0, z, 1, 0, z, 0, 1, z]), normals: new Float32Array(9), indices: new Uint32Array([0, 1, 2]),
+    faceTriStart: new Uint32Array([0, 1]), edgePoints: new Float32Array(), edgeStart: new Uint32Array([0])
+  })
+  it('sends only the parts the window lacks, and the window puts the same model together', () => {
+    const [a, b, c] = [part(0), part(1), part(2)]
+    let engine = new Set<number>()
+    let window: ReturnType<typeof partsReceived>['held'] = new Map()
+    for (const model of [[{ body: 0, key: 1, display: a }, { body: 1, key: 2, display: b }], [{ body: 0, key: 1, display: a }, { body: 1, key: 3, display: c }]]) {
+      const out = partsToSend(model, engine)
+      engine = out.held
+      const back = partsReceived(out.sent, window)
+      window = back.held
+      expect(combine(back.parts)).toEqual(combine(model))
+      if (model[1].key === 3) expect(out.sent.map((p) => 'display' in p)).toEqual([false, true])
+    }
+    expect([...window.keys()]).toEqual([1, 3])
+    expect(() => partsReceived([{ body: 0, key: 9 }], window)).toThrow(/lost part/)
+  })
+})

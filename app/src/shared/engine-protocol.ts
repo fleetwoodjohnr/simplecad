@@ -325,8 +325,13 @@ export interface StepInfo {
   undone: boolean
 }
 
+/** A shown body's part of a model result on its way to the window: its display only if the window lacks it. */
+export interface ShownPart { body: number; key: number; display?: import('./display').PartDisplay }
+
 export interface ModelResult {
   shape: DisplayShape
+  /** On the way to the window in place of `shape`, which the window puts together again from these. */
+  parts?: ShownPart[]
   bodies: BodyInfo[]
   /** The shown point of the history is not the one last saved. */
   unsaved: boolean

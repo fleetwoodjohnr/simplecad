@@ -1,6 +1,7 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { movedDisplay, relativePlacement } from './placement'
+import { combine, type PartDisplay } from '../shared/display'
 import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
@@ -10,8 +11,7 @@ const MAX_OVERHANG = 50
 const LAYS = [[0, 0, 0], [90, 0, 0], [180, 0, 0], [270, 0, 0], [0, 90, 0], [0, 270, 0]]
 const SEVERITY = { ok: 0, note: 1, warning: 2 }
 
-/** One body's display, as the addon returns it. */
-export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
+export { combine, type PartDisplay } from '../shared/display'
 
 export interface Shape {
   /** The engine's shape behind this wrapper: a step hands back an unchanged body's shape in a new wrapper. */
@@ -87,45 +87,6 @@ function initialState({ bodies, visible, project }: Opened): State {
   return { bodies: bodies.map((body, index) => ({ ...body, visible: visible[index] })), project }
 }
 
-/** The shown bodies' meshes as one, faces numbered body by body, so the viewport and the edits see one model. */
-export function combine(parts: { body: number; display: PartDisplay }[]): DisplayShape {
-  const sum = (count: (d: PartDisplay) => number) => parts.reduce((n, p) => n + count(p.display), 0)
-  const faceCount = sum((d) => d.faceTriStart.length - 1)
-  const edgeCount = sum((d) => d.edgeStart.length - 1)
-  const out: DisplayShape = {
-    volume: 0, faces: [], ranges: [],
-    positions: new Float32Array(sum((d) => d.positions.length)),
-    normals: new Float32Array(sum((d) => d.normals.length)),
-    indices: new Uint32Array(sum((d) => d.indices.length)),
-    faceTriStart: new Uint32Array(faceCount + 1),
-    edgePoints: new Float32Array(sum((d) => d.edgePoints.length)),
-    edgeStart: new Uint32Array(edgeCount + 1)
-  }
-  let vertex = 0, index = 0, triangle = 0, face = 0, point = 0, edge = 0
-  for (const { body, display: d } of parts) {
-    out.ranges.push({ body, indices: [index, index + d.indices.length],
-      edges: [edge, edge + d.edgeStart.length - 1] })
-    out.volume += d.volume
-    out.positions.set(d.positions, vertex * 3)
-    out.normals.set(d.normals, vertex * 3)
-    for (const i of d.indices) out.indices[index++] = i + vertex
-    const faces = d.faceTriStart.length - 1
-    for (let f = 0; f < faces; f++) out.faceTriStart[face + f] = d.faceTriStart[f] + triangle
-    for (const info of d.faces) out.faces.push({ ...info, body })
-    out.edgePoints.set(d.edgePoints, point * 3)
-    const edges = d.edgeStart.length - 1
-    for (let e = 0; e < edges; e++) out.edgeStart[edge + e] = d.edgeStart[e] + point
-    vertex += d.positions.length / 3
-    triangle += d.faceTriStart[faces]
-    face += faces
-    point += d.edgePoints.length / 3
-    edge += edges
-  }
-  out.faceTriStart[face] = triangle
-  out.edgeStart[edge] = point
-  return out
-}
-
 export class EngineDocument {
   private source: Source = { kind: 'box' }
   /** The point where editing began and the points created in this session. */
@@ -162,8 +123,13 @@ export class EngineDocument {
 
   model(): ModelResult {
     const { bodies } = this.current
+    const started = performance.now()
+    const parts = this.parts(bodies)
+    this.lastParts = parts
+    const shape = combine(parts)
+    if (process.env.SIMPLECAD_TIMING) console.error(`[timing] engine shown in ${Math.round(performance.now() - started)} ms`)
     return {
-      shape: this.show(bodies),
+      shape,
       bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape, ...this.bodySteps().get(b.name) })),
       unsaved: this.unsaved,
       canUndo: this.canStep(-1),
@@ -406,7 +372,9 @@ export class EngineDocument {
     this.checkRevision(revision)
     if (this.canStep(direction)) {
       const next = this.cursor + direction
+      const started = performance.now()
       this.inherited = this.states[next] ? undefined : this.moveInherited(this.current, direction)
+      if (process.env.SIMPLECAD_TIMING) console.error(`[timing] engine history moved in ${Math.round(performance.now() - started)} ms`)
       this.cursor = next
       this.advance()
     }
@@ -545,8 +513,16 @@ export class EngineDocument {
   }
 
   private show(bodies: Body[]): DisplayShape {
-    return combine(this.shown(bodies).map(({ body, shape }) => ({ body, display: this.display(shape) })))
+    return combine(this.parts(bodies))
   }
+
+  /** Each shown body's display, with its shape's key: the window keeps the last model's, so only new ones go to it. */
+  private parts(bodies: Body[]) {
+    return this.shown(bodies).map(({ body, shape }) => ({ body, key: shape.key, display: this.display(shape) }))
+  }
+
+  /** The parts of the model last returned by `model()`. */
+  lastParts: { body: number; key: number; display: PartDisplay }[] = []
 
   /** A body operation as recorded: a Draft's display faces become that body's own face numbers. */
   private bodyOperation({ bodyOperation, body, inputs }: BodyOperationEdit): BodyOperationEdit {

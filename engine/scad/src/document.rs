@@ -3250,6 +3250,57 @@ type RigidMotion = ([f64; 3], Option<([f64; 3], f64)>);
 /// same order, must all land within 1e-6 of the part's size.
 fn rigid_fit(from: &occt::Shape, to: &occt::Shape) -> Option<RigidMotion> {
     type V = [f64; 3];
+    let (r, t) = rigid_motion(from, to)?;
+    let unit = |p: V| {
+        let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        (n > 1e-9).then(|| [p[0] / n, p[1] / n, p[2] / n])
+    };
+    let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0);
+    let angle = cos.acos();
+    if angle < 1e-12 {
+        return Some((t, None));
+    }
+    let axis = if angle < std::f64::consts::PI - 1e-6 {
+        unit([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]])?
+    } else {
+        // A half turn: the axis is the column of R + I with the largest diagonal.
+        let k = (0..3).max_by(|&i, &j| r[i][i].total_cmp(&r[j][j]))?;
+        unit(std::array::from_fn(|i| {
+            r[i][k] + if i == k { 1.0 } else { 0.0 }
+        }))?
+    };
+    Some((t, Some((axis, angle.to_degrees()))))
+}
+
+/// A body an Undo or Redo brings back as `restored`, when that is the body on screen (`shown`) moved: the shown
+/// body placed there instead (the same geometry, a new placement), so the window moves its display rather than
+/// meshing and measuring the body again. 0.4.4 saved every Move's result whole, so the step before a Move brings
+/// back separate geometry that is the shown body moved; on UPS Atlas's board that meshing took 1.5 s.
+pub fn as_moved_copy(
+    shown: &crate::rebuild::Shape,
+    restored: &crate::rebuild::Shape,
+) -> Option<crate::rebuild::Shape> {
+    if std::rc::Rc::ptr_eq(shown, restored) {
+        return None;
+    }
+    let (r, t) = rigid_motion(shown, restored)?;
+    let p = occt::shape_location(shown);
+    // [R | t] · P, both 3×4 row by row.
+    let at = |row: usize, column: usize| p[row * 4 + column];
+    let mut m = [0.0; 12];
+    for row in 0..3 {
+        for column in 0..4 {
+            m[row * 4 + column] = (0..3).map(|k| r[row][k] * at(k, column)).sum::<f64>()
+                + if column == 3 { t[row] } else { 0.0 };
+        }
+    }
+    occt::located(shown, &m).ok().map(std::rc::Rc::new)
+}
+
+/// The rotation and translation taking `from` onto `to` (`to` = R · `from` + t), when `to` is `from` moved: their
+/// vertices, which a moved copy lists in the same order, must all land within 1e-6 of the part's size.
+fn rigid_motion(from: &occt::Shape, to: &occt::Shape) -> Option<([[f64; 3]; 3], [f64; 3])> {
+    type V = [f64; 3];
     let points = |shape: &occt::Shape| -> Option<Vec<V>> {
         Some(
             occt::vertex_fingerprints(shape)
@@ -3304,24 +3355,7 @@ fn rigid_fit(from: &occt::Shape, to: &occt::Shape) -> Option<RigidMotion> {
         let d = sub(sub(*q, turn(*p)), t);
         dot(d, d).sqrt() <= 1e-6 * size
     });
-    if !fits {
-        return None;
-    }
-    let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0);
-    let angle = cos.acos();
-    if angle < 1e-12 {
-        return Some((t, None));
-    }
-    let axis = if angle < std::f64::consts::PI - 1e-6 {
-        unit([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]])?
-    } else {
-        // A half turn: the axis is the column of R + I with the largest diagonal.
-        let k = (0..3).max_by(|&i, &j| r[i][i].total_cmp(&r[j][j]))?;
-        unit(std::array::from_fn(|i| {
-            r[i][k] + if i == k { 1.0 } else { 0.0 }
-        }))?
-    };
-    Some((t, Some((axis, angle.to_degrees()))))
+    fits.then_some((r, t))
 }
 
 /// `Feature.__init__`'s id for a new step.

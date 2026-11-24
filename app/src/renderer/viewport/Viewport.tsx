@@ -221,13 +221,18 @@ export function Viewport(props: Props) {
     let frame = -1
     let animation = 0
 
+    // The view's size and place in the window, measured when it resizes: reading them while drawing laid out the
+    // whole window again on every frame, which cost UPS Atlas's steps 50 ms.
+    let width = el.clientWidth
+    let height = el.clientHeight
+    let bounds = canvas.getBoundingClientRect()
     const toScreen = (point: Vector3) => {
       point.project(camera)
-      return new Vector2((point.x + 1) * el.clientWidth / 2, (1 - point.y) * el.clientHeight / 2)
+      return new Vector2((point.x + 1) * width / 2, (1 - point.y) * height / 2)
     }
     view.current = {
       screen: (point) => toScreen(new Vector3(...point)),
-      mmPerPx: (point) => 2 * camera.position.distanceTo(new Vector3(...point)) * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, el.clientHeight)
+      mmPerPx: (point) => 2 * camera.position.distanceTo(new Vector3(...point)) * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, height)
     }
     /** Each model handle's buttons at their points; hidden off screen. */
     const placeHandles = () => {
@@ -235,7 +240,7 @@ export function Viewport(props: Props) {
         const point = current.current.handles?.find((h) => h.key === button.dataset.modelHandle)?.at[Number(button.dataset.index)]
         if (!point) continue
         const at = toScreen(new Vector3(...point))
-        button.hidden = at.x < 0 || at.x > el.clientWidth || at.y < 0 || at.y > el.clientHeight
+        button.hidden = at.x < 0 || at.x > width || at.y < 0 || at.y > height
         button.style.left = `${at.x}px`
         button.style.top = `${at.y}px`
       }
@@ -253,15 +258,24 @@ export function Viewport(props: Props) {
       const tool = current.current.toolOverlay
       // A tall panel scrolls inside the view rather than running off its bottom.
       const content = panel.firstElementChild as HTMLElement | null
-      const tallest = tool ? `${Math.max(120, el.clientHeight - 24)}px` : ''
+      const tallest = tool ? `${Math.max(120, height - 24)}px` : ''
       if (content && content.style.maxHeight !== tallest) content.style.maxHeight = tallest
-      const { offsetWidth: w, offsetHeight: h } = panel
+      // Its size as last observed (read once for a panel not yet observed).
+      if (panelSize?.panel !== panel) panelSize = { panel, w: panel.offsetWidth, h: panel.offsetHeight }
+      const { w, h } = panelSize
       const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max - 8))
-      panel.style.left = `${at ? clamp(at.x + 24, el.clientWidth - w) : tool ? Math.max(8, el.clientWidth - w - 12) : Math.max(8, (el.clientWidth - w) / 2)}px`
-      panel.style.top = `${at ? clamp(at.y + 24, el.clientHeight - h) : tool ? 12 : el.clientHeight - h - 12}px`
+      const left = `${at ? clamp(at.x + 24, width - w) : tool ? Math.max(8, width - w - 12) : Math.max(8, (width - w) / 2)}px`
+      const top = `${at ? clamp(at.y + 24, height - h) : tool ? 12 : height - h - 12}px`
+      if (panel.style.left !== left) panel.style.left = left
+      if (panel.style.top !== top) panel.style.top = top
     }
+    let panelSize: { panel: HTMLElement; w: number; h: number } | undefined
     // The panel's own size changes (More… opened, a preview's note): keep it inside the view.
-    const sized = new ResizeObserver(() => draw())
+    const sized = new ResizeObserver((entries) => {
+      const box = entries.at(-1)?.borderBoxSize?.[0]
+      if (box && bar.current) panelSize = { panel: bar.current, w: box.inlineSize, h: box.blockSize }
+      draw()
+    })
     let watched: Element | null = null
     /** While edges can be picked or clicked, a window point on each of the first edges, for scripted picks. */
     const publishEdges = () => {
@@ -270,7 +284,7 @@ export function Viewport(props: Props) {
         delete canvas.dataset.edgeAnchors
         return
       }
-      const rect = canvas.getBoundingClientRect()
+      const rect = bounds
       const anchors: (number[] | null)[] = []
       for (let edge = 0; edge + 1 < shape.edgeStart.length && edge < 64; edge++) {
         const [first, end] = [shape.edgeStart[edge], shape.edgeStart[edge + 1]]
@@ -282,7 +296,8 @@ export function Viewport(props: Props) {
         anchors.push([Math.round(rect.left + (point.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - point.y) / 2 * rect.height),
           ...world.toArray().map((v) => Math.round(v * 1000) / 1000)])
       }
-      canvas.dataset.edgeAnchors = JSON.stringify(anchors)
+      const text = JSON.stringify(anchors)
+      if (canvas.dataset.edgeAnchors !== text) canvas.dataset.edgeAnchors = text
     }
     /** On small models, a point on each shown part's top face in window points, for scripted clicks (as edge
      * anchors are): the middle of a face, clear of its edges. */
@@ -302,7 +317,7 @@ export function Viewport(props: Props) {
         }
         tops = { shape, points: [...best].map(([index, face]) => [index, new Vector3(...face.anchor)]) }
       }
-      const rect = canvas.getBoundingClientRect()
+      const rect = bounds
       const anchors = Object.fromEntries(tops.points.map(([index, point]) => {
         const at = point.clone().project(camera)
         return [index, [Math.round(rect.left + (at.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - at.y) / 2 * rect.height)]]
@@ -323,7 +338,8 @@ export function Viewport(props: Props) {
         const rounded = (v: Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000)
         const view = JSON.stringify({ position: rounded(camera.position), target: rounded(controls.target) })
         if (canvas.dataset.camera !== view) canvas.dataset.camera = view
-        canvas.setAttribute('aria-busy', String(!displayed))
+        const busy = String(!displayed)
+        if (canvas.getAttribute('aria-busy') !== busy) canvas.setAttribute('aria-busy', busy)
         placeHandles()
         if (bar.current !== watched) {
           if (watched) sized.unobserve(watched)
@@ -343,7 +359,7 @@ export function Viewport(props: Props) {
         const direction = toScreen(start.add(normal)).sub(position)
         axis.current.copy(direction)
         const length = direction.length()
-        const offscreen = position.x < 0 || position.x > el.clientWidth || position.y < 0 || position.y > el.clientHeight
+        const offscreen = position.x < 0 || position.x > width || position.y < 0 || position.y > height
         button.hidden ||= length < 0.1 || offscreen
         button.style.left = `${position.x}px`
         button.style.top = `${position.y}px`
@@ -352,7 +368,7 @@ export function Viewport(props: Props) {
     }
     controls.addEventListener('change', draw)
     const transform = viewportTransform(canvas, camera, scene, body.material, edges.material, draw,
-      (enabled) => { controls.enabled = enabled })
+      (enabled) => { controls.enabled = enabled }, () => bounds)
 
     /** Light up face `face` of the displayed shape under the pointer; undefined clears it. */
     const showHover = (face?: number) => {
@@ -471,8 +487,11 @@ export function Viewport(props: Props) {
     }
 
     const resize = () => {
-      renderer.setSize(el.clientWidth, el.clientHeight)
-      camera.aspect = el.clientWidth / Math.max(1, el.clientHeight)
+      width = el.clientWidth
+      height = el.clientHeight
+      renderer.setSize(width, height)
+      bounds = canvas.getBoundingClientRect()
+      camera.aspect = width / Math.max(1, height)
       camera.updateProjectionMatrix()
       draw()
     }

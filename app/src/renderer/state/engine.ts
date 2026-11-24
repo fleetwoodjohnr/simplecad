@@ -5,6 +5,7 @@
 import type { ArrangeEdit, BodyHealth, KeepEdit, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, PlateEdit, Vec3, SectionReplaceEdit, BodyOperationEdit, ConstructionEdit, EdgeFinishEdit, Checkpoint, DisplayShape, EngineResponse, ExportFormat, FaceEdit, MeasurePick, Measurement, ModelResult, PullEdit, ReferenceRepair, TransformEdit, RendererCommand, SavedStepEdit, ShapeEdit, StackEdit, ModelImport } from '@/shared/engine-protocol'
 
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '@/shared/sketch'
+import { combine, partsReceived, type PartDisplay } from '@/shared/display'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
@@ -24,6 +25,8 @@ window.addEventListener('message', (e) => {
   pending.clear()
   const connection = e.ports[0]
   port = connection
+  // A restarted engine has sent this window nothing yet.
+  held = new Map()
   connection.addEventListener('close', () => {
     if (port !== connection) return
     port = null
@@ -65,7 +68,16 @@ function send<T>(req: RendererCommand): Promise<T> {
   })
 }
 
-function accept(result: ModelResult): ModelResult {
+/** The parts of the last model, by the engine's shape key: the engine sends only those the window lacks. */
+let held = new Map<number, PartDisplay>()
+function accept(sent: ModelResult): ModelResult {
+  let result = sent
+  if (sent.parts) {
+    const received = partsReceived(sent.parts, held)
+    held = received.held
+    const { parts: _, ...rest } = sent
+    result = { ...rest, shape: combine(received.parts) }
+  }
   checkpoint = result.checkpoint
   const retained = new Set(checkpoint.edits.flatMap((step) => 'importId' in step ? [step.importId] : []))
   for (const id of imports.keys()) if (!retained.has(id)) imports.delete(id)

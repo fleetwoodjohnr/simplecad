@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { checkRendererRequest, type BodyHealth, type EngineResponse, type Measurement, type MeshFormat } from '../shared/engine-protocol'
+import { checkRendererRequest, type BodyHealth, type EngineResponse, type Measurement, type MeshFormat, type ModelResult } from '../shared/engine-protocol'
 import { defaultPrinter } from '../shared/printing'
 import { EngineDocument, type Project, type Shape } from './document'
+import { partsToSend } from '../shared/display'
 
 interface PortLike {
   on(ev: 'message', cb: (e: { data: unknown; ports: PortLike[] }) => void): void
@@ -57,9 +58,24 @@ function calibrate() {
 }
 calibrate()
 
+/** The parts the window holds: those of the last model result it was sent. A large project's unchanged bodies are
+ * not sent again on every step: copying UPS Atlas's whole mesh to the window cost each step 15–30 ms here, and as
+ * much again there. */
+let held = new Set<number>()
+function forWindow(result: unknown) {
+  if (!result || typeof result !== 'object' || !('checkpoint' in result) || !('shape' in result)) return result
+  const { shape, ...rest } = result as ModelResult
+  const parts = document.lastParts
+  if (shape.ranges.length !== parts.length || shape.ranges.some((range, i) => range.body !== parts[i].body)) return result
+  const out = partsToSend(parts, held)
+  held = out.held
+  return { ...rest, parts: out.sent }
+}
+
 function onRenderer(channel: PortLike, data: unknown) {
   const rawId = data && typeof data === 'object' && 'id' in data ? data.id : undefined
   const id = typeof rawId === 'number' && Number.isSafeInteger(rawId) && rawId >= 0 ? rawId : -1
+  const started = performance.now()
   try {
     const req = checkRendererRequest(data)
     let result
@@ -126,8 +142,11 @@ function onRenderer(channel: PortLike, data: unknown) {
         // A real segfault inside the OCCT shim, not an orderly exit.
         addon.crash()
     }
-    channel.postMessage({ id, ok: true, result: result! })
+    const handled = performance.now()
+    channel.postMessage({ id, ok: true, result: forWindow(result!) as NonNullable<typeof result> })
     if (!served) timing(`first request (${req.op}) answered`)
+    // Each request's cost, by stage, for profiling a large project (SIMPLECAD_TIMING=1).
+    else timing(`${req.op}: handled in ${Math.round(handled - started)} ms, posted in ${Math.round(performance.now() - handled)} ms`)
     served = true
     // The window shows the project first; the next request waits at most this long.
     if (req.op === 'open' || req.op === 'restore') setImmediate(() => document.warm())
@@ -155,6 +174,8 @@ parent.on('message', (e) => {
   const m = e.data as { type?: string }
   if (m?.type !== 'port') return
   port?.close()
+  // A new window holds no parts yet.
+  held = new Set()
   const channel = e.ports[0]
   port = channel
   channel.on('message', (ev) => onRenderer(channel, ev.data))
