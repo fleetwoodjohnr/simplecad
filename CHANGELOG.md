@@ -39,6 +39,26 @@ the older clip tool, and a Draft tool. Projects saved in 0.5.1 still open in
 - **The wheel button moves the view again.** Drag with the wheel pressed to
   pan, and hold Shift, or drag with the right button, to turn the view, as in
   0.4.4. In 0.5.0 the wheel button zoomed and the right button panned.
+- **Right click is back.** As in 0.4.4, a right click without dragging
+  selects the face under the pointer and opens a menu there: the tools for
+  that face, then Edit the step that made the part, Hide, Group or Ungroup,
+  and Delete. Right click a body in the Bodies list or a step in History for
+  the same kind of menu. The menu key or Shift+F10 opens it from the
+  keyboard.
+- **A part that won't change now says why.** When a step lost something it
+  was built from, such as a deleted part an Align lined up against, its part
+  keeps its last good shape and can't be changed. 0.4.4 behaved the same, but
+  0.5.0 gave no sign. Selecting the part now shows which step blocks it,
+  with:
+  - **Keep where it is**, for an Align: the step becomes a Move to the same
+    place, so the part moves and aligns freely again;
+  - **Keep this shape**, for other steps: the part keeps its last good shape,
+    and steps before it no longer change it;
+  - **Repair input**, to choose a replacement for what was lost.
+
+  Undo reverses each one, and 0.4.4 opens the result.
+- **Quitting no longer hangs after the geometry engine restarted.** If the
+  engine stops responding when you quit, it is closed after 5 seconds.
 
 ### Still slower than 0.4.4
 
