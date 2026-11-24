@@ -99,6 +99,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'threadGauges':
       case 'moveBodies':
       case 'ungroup':
+      case 'deleteBodies':
       case 'importModel':
       case 'repairInput':
       case 'editSavedStep':

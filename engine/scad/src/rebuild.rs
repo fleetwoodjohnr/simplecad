@@ -1548,7 +1548,7 @@ fn placed(
 }
 
 /// `Feature.consumed_bodies`: bodies a step destroys in making its outputs.
-fn consumed_bodies(feature: &Value) -> Vec<String> {
+pub(crate) fn consumed_bodies(feature: &Value) -> Vec<String> {
     let inputs = &feature["inputs"];
     let alias = |v: &Value| match v {
         Value::Object(map) => map

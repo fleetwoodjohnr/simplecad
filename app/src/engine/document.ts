@@ -1,7 +1,7 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { movedDisplay, relativePlacement } from './placement'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -48,6 +48,7 @@ export interface Project {
     inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   group(members: string[]): Project
   ungroup(name: string): Project
+  deleteBodies(bodies: string[], group: string | undefined, shown: { id?: string; name: string; shape: Shape }[]): State
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addHinge(fixed: string, edge: number, swinging: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addClipJoint(bodyA: string, faceA: number, bodyB: string, faceB: number, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
@@ -314,7 +315,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -372,6 +373,8 @@ export class EngineDocument {
       step = { construction: edit.construction, faces: edit.faces, edges: edit.edges, inputs: edit.inputs }
     } else if ('ungroup' in edit) {
       step = { ungroup: edit.ungroup }
+    } else if ('deleteBodies' in edit) {
+      step = { deleteBodies: edit.deleteBodies, deleteGroup: edit.deleteGroup }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -467,10 +470,25 @@ export class EngineDocument {
     let activeSteps = this.stepLists.get(active)
     if (!activeSteps) this.stepLists.set(active, activeSteps = active.steps())
     const shown = new Map(activeSteps.map((step) => [step.id, step]))
-    return steps.map((step) => {
+    // A step the newest state no longer has (a Delete, undone) is still the active model's: listed where it stands.
+    const newer = new Set(steps.map((step) => step.id))
+    const merged: StepInfo[] = []
+    let at = 0
+    const dropped = (until?: string) => {
+      for (; at < activeSteps.length && activeSteps[at].id !== until; at++) {
+        if (!newer.has(activeSteps[at].id)) merged.push({ ...activeSteps[at], undone: false })
+      }
+    }
+    for (const step of steps) {
       const current = shown.get(step.id)
-      return { ...(current ?? step), undone: current === undefined }
-    })
+      if (current) {
+        dropped(step.id)
+        at++
+      }
+      merged.push({ ...(current ?? step), undone: current === undefined })
+    }
+    dropped()
+    return merged
   }
 
   private display(shape: Shape): PartDisplay {
@@ -664,6 +682,13 @@ export class EngineDocument {
       return { bodies, project: project.group(names) }
     }
     if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
+    if ('deleteBodies' in step) {
+      const names = step.deleteBodies.map((index) => {
+        if (!bodies[index]) throw new Error('Select a body to delete.')
+        return bodies[index].name
+      })
+      return this.rebuiltState(project.deleteBodies(names, step.deleteGroup, this.shapes(bodies)))
+    }
     if ('plate' in step) return this.onPlate(project, bodies, step.plate)
     if ('moveBodies' in step) {
       let next = bodies

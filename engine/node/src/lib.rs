@@ -816,6 +816,27 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
+    /// Delete the named bodies with the steps that make them, as SimpleCAD 0.4 deletes; `group`: a group deleted
+    /// with them, its members being `bodies`.
+    #[napi]
+    pub fn delete_bodies(
+        &self,
+        bodies: Vec<String>,
+        group: Option<String>,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let mut model = self.model.clone();
+        let report = model
+            .delete_bodies(
+                &bodies,
+                group.as_deref(),
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// Section Replace: the replacement body's face set into the target's; `inputs` is its settings as JSON.
     #[napi]
     pub fn add_section_replace(

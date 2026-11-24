@@ -35,6 +35,7 @@ export const commands = {
   redo: { label: 'Redo', shortcut: 'Mod-Shift-Z' },
   fit: { label: 'Fit view', shortcut: 'F' },
   clear: { label: 'Clear selection' },
+  delete: { label: 'Delete', shortcut: 'Delete' },
   shape: { label: 'Shape' },
   pushPull: { label: 'Push/Pull' },
   stack: { label: 'Stack & Place' },

@@ -853,6 +853,145 @@ impl Model {
         self.push_undo("Ungroup", before)
     }
 
+    /// SimpleCAD 0.4's Delete (`delete_selection`, `delete_group`, `_retire_body`): every step that writes a deleted
+    /// body goes, unless it writes other bodies too, which it goes on writing (the deleted one joins its `dropped`).
+    /// A step that goes takes the bodies it used up with it (a Combine's tools, a Split's part), and its id is
+    /// retired. A step elsewhere that read a deleted body keeps its last good shape and offers Repair. `group`: a
+    /// group deleted with its members, which `bodies` lists.
+    pub fn delete_bodies(
+        &mut self,
+        bodies: &[String],
+        group: Option<&str>,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if bodies.is_empty() {
+            return Err("Select a body to delete.".into());
+        }
+        let before = self.document();
+        let mut candidate = self.clone();
+        let (mut gone, mut changed) = (BTreeSet::new(), BTreeSet::new());
+        for name in bodies {
+            candidate.retire_body(name, &mut gone, &mut changed);
+        }
+        if !self.payload["retired_ids"].is_array() {
+            candidate.payload["retired_ids"] = json!([]);
+        }
+        let retired = candidate.payload["retired_ids"]
+            .as_array_mut()
+            .expect("a list");
+        for id in &gone {
+            if !retired.iter().any(|known| known == id) {
+                retired.push(json!(id));
+            }
+        }
+        let forgotten: HashSet<&str> = bodies.iter().map(String::as_str).chain(group).collect();
+        let groups = candidate.groups_mut();
+        groups.retain(|entry| Some(entry["name"].as_str().unwrap_or_default()) != group);
+        for entry in groups.iter_mut() {
+            if let Some(members) = entry["members"].as_array_mut() {
+                members.retain(|member| !member.as_str().is_some_and(|m| forgotten.contains(m)));
+            }
+        }
+        changed.extend(gone.iter().cloned());
+        let stale = dependents(&candidate.payload, &changed);
+        let report = crate::rebuild::rebuild(&mut candidate, original, shown, &stale)?;
+        candidate.prune_groups();
+        candidate.push_undo("Delete", before)?;
+        *self = candidate;
+        Ok(report)
+    }
+
+    /// `_retire_body`: the steps writing `name` stop writing it, or go; `gone` collects the steps that go, `changed`
+    /// those that stop.
+    fn retire_body(
+        &mut self,
+        name: &str,
+        gone: &mut BTreeSet<String>,
+        changed: &mut BTreeSet<String>,
+    ) {
+        let writers: Vec<String> = self
+            .list("features")
+            .iter()
+            .filter(|feature| {
+                feature["outputs"]
+                    .as_array()
+                    .is_some_and(|outputs| outputs.iter().any(|o| o == name))
+            })
+            .filter_map(|feature| feature["id"].as_str().map(String::from))
+            .collect();
+        for id in writers {
+            let features = self.payload["features"]
+                .as_array_mut()
+                .expect("a feature list");
+            let Some(at) = features
+                .iter()
+                .position(|feature| feature["id"] == id.as_str())
+            else {
+                continue;
+            };
+            let feature = &mut features[at];
+            let dropped: Vec<String> = feature["dropped"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(String::from))
+                .collect();
+            let others = feature["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|output| output != name && !dropped.iter().any(|d| d == output));
+            if others {
+                let mut kept: BTreeSet<String> = dropped.into_iter().collect();
+                kept.insert(name.to_string());
+                feature["dropped"] = json!(kept);
+                changed.insert(id);
+                continue;
+            }
+            // Nothing left for it to write: it goes, and so do the bodies it used up, or deleting both halves of a
+            // split would hand back the undivided part.
+            let feature = features.remove(at);
+            gone.insert(id);
+            for source in crate::rebuild::consumed_bodies(&feature) {
+                if source != name {
+                    self.retire_body(&source, gone, changed);
+                }
+            }
+        }
+    }
+
+    /// `_prune_groups`: a group keeps only members that are bodies or groups, and an empty group goes.
+    fn prune_groups(&mut self) {
+        let bodies: HashSet<String> = self
+            .list("bodies")
+            .iter()
+            .filter_map(|b| b["name"].as_str().map(String::from))
+            .collect();
+        loop {
+            let names: HashSet<String> = self
+                .list("groups")
+                .iter()
+                .filter_map(|g| g["name"].as_str().map(String::from))
+                .collect();
+            let groups = self.groups_mut();
+            for group in groups.iter_mut() {
+                if let Some(members) = group["members"].as_array_mut() {
+                    members.retain(|m| {
+                        m.as_str()
+                            .is_some_and(|m| bodies.contains(m) || names.contains(m))
+                    });
+                }
+            }
+            let before = groups.len();
+            groups.retain(|group| group["members"].as_array().is_some_and(|m| !m.is_empty()));
+            if groups.len() == before {
+                break;
+            }
+        }
+    }
+
     fn groups_mut(&mut self) -> &mut Vec<Value> {
         if !self.payload["groups"].is_array() {
             self.payload["groups"] = json!([]);

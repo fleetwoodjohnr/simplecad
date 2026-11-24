@@ -743,3 +743,48 @@ test('threads a shaft into the bore of a tube as a matched pair, and edits the c
   await page.getByRole('button', { name: 'Edit Threaded Connection' }).click()
   await expect(page.getByRole('form', { name: 'Threaded Connection' }).getByRole('combobox', { name: /^Clearance/ })).toHaveValue('normal')
 })
+
+test('deletes a body with the step that made it, from the Bodies list and with the Delete key, and Undo brings it back', async () => {
+  const { app, page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  await expect(status).toHaveText(/24000 mm³/)
+  for (let count = 0; count < 2; count++) {
+    await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+    const shape = page.getByRole('form', { name: 'Create shape' })
+    await shape.getByLabel('Shape type').selectOption('box')
+    for (const [label, value] of [['Width', '10'], ['Depth', '10'], ['Height', '10']]) await shape.getByLabel(label).fill(value)
+    await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  }
+  await expect(steps).toHaveText(['Box', 'Box2', 'Box3'])
+  await expect(status).toHaveText(/ 26000 mm³/)
+
+  await bodies.getByRole('button', { name: 'Delete Box2' }).click()
+  await expect(steps).toHaveText(['Box', 'Box3'])
+  await expect(bodies.getByRole('button', { name: 'Box2', exact: true })).toHaveCount(0)
+  await expect(status).toHaveText(/ 25000 mm³/)
+  await expect(errors(page)).toHaveCount(0)
+
+  // The chosen body goes with the Delete key.
+  await bodies.getByRole('button', { name: 'Box3', exact: true }).click()
+  await page.keyboard.press('Delete')
+  await expect(steps).toHaveText(['Box'])
+  await expect(status).toHaveText(/ 24000 mm³/)
+  // Saved with both deletes in its history, for 0.4.4 to undo and redo (SCAD_KEEP_SAVES).
+  const target = path.join(scratchDir('simplecad-delete-'), 'Deleted.scad3')
+  await app.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ filePath, canceled: false })
+  }, target)
+  await page.getByRole('button', { name: 'File', exact: true }).click()
+  await page.getByRole('menuitem', { name: /^Save As/ }).click()
+  await expect(page.getByText('Deleted.scad3', { exact: true })).toBeVisible()
+
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Box3'])
+  await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Box2', 'Box3'])
+  await expect(status).toHaveText(/ 26000 mm³/)
+  await expect(errors(page)).toHaveCount(0)
+})

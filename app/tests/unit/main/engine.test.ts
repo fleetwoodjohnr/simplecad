@@ -46,6 +46,7 @@ class FakeProject implements Project {
   groups() { return [] }
   group(): never { throw new Error('Groups are covered in the packaged app.') }
   ungroup(): never { throw new Error('Groups are covered in the packaged app.') }
+  deleteBodies(): never { throw new Error('Deleting is covered in the packaged app.') }
   addConstruction(): never { throw new Error('Construction tools are covered in the packaged app.') }
   addArrangement(): never { throw new Error('Arrangements are covered in the packaged app.') }
   editArrangement(): never { throw new Error('Arrangements are covered in the packaged app.') }

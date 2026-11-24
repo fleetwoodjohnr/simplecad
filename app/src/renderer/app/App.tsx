@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Trash2, Undo2, Ungroup } from 'lucide-react'
 import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { HistoryList } from './HistoryList'
@@ -824,6 +824,11 @@ export function App() {
     model?.bodies.forEach((_, body) => { if (!shown.has(body)) tree.push({ body, members: [] }) })
     return tree
   }, [model])
+  /** Delete bodies with the steps that make them (or a group with its members); Undo brings them back. */
+  const removeBodies = (bodies: number[], group?: string) => {
+    if (revision === undefined || !bodies.length) return
+    mutate(() => deleteBodies(revision, bodies, group))
+  }
   /** A plain click chooses a body, or its whole group; Ctrl- or Shift-click adds or removes one. */
   const chooseBody = (body: number, adding: boolean) => {
     const group = model?.groups.find(({ members }) => members.includes(body))?.members
@@ -844,6 +849,9 @@ export function App() {
         <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
           disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
           {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+        </IconBtn>
+        <IconBtn label={`Delete ${body.name}`} tip={false} disabled={!ready || !idle} onClick={() => removeBodies([index])}>
+          <Trash2 className="size-3.5" />
         </IconBtn>
       </li>
     )
@@ -873,6 +881,9 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    // SimpleCAD 0.4's Delete: the chosen bodies, else the body of the selected face.
+    delete: { enabled: ready && idle && (chosenBodies.length > 0 || !!selectedFace), hint: 'Select a body',
+      run: () => removeBodies(chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []) },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
     pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => distanceField.current?.focus() },
     arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
@@ -1082,8 +1093,8 @@ export function App() {
         return
       }
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
-      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit'] as const) {
-        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit'].includes(id))) continue
+      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit', 'delete'] as const) {
+        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete'].includes(id))) continue
         if (!matchesShortcut(event, commands[id].shortcut)) continue
         event.preventDefault()
         actions[id].run()
@@ -1291,6 +1302,10 @@ export function App() {
                     <IconBtn label={`Ungroup ${entry.group}`} disabled={!ready} onClick={() => {
                       if (revision !== undefined) mutate(() => ungroup(revision, entry.group!))
                     }}><Ungroup className="size-3.5" /></IconBtn>
+                    <IconBtn label={`Delete ${entry.group}`} disabled={!ready || !idle}
+                      onClick={() => removeBodies(model?.groups.find((group) => group.name === entry.group)?.members ?? [], entry.group)}>
+                      <Trash2 className="size-3.5" />
+                    </IconBtn>
                   </div>
                   <ul aria-label={entry.group} className="ml-4 grid gap-1">{entry.members.map(bodyRow)}</ul>
                 </li>

@@ -117,6 +117,8 @@ export const groupBodies = (revision: number, bodies: number[]) =>
   send<ModelResult>({ op: 'group', revision, group: bodies }).then(accept)
 export const ungroup = (revision: number, name: string) =>
   send<ModelResult>({ op: 'ungroup', revision, ungroup: name }).then(accept)
+export const deleteBodies = (revision: number, bodies: number[], group?: string) =>
+  send<ModelResult>({ op: 'deleteBodies', revision, deleteBodies: bodies, ...(group ? { deleteGroup: group } : {}) }).then(accept)
 export const previewThreadedConnection = (revision: number, edit: ThreadedConnectionEdit) =>
   send<DisplayShape>({ op: 'previewThreadedConnection', revision, ...edit })
 export const applyThreadedConnection = (revision: number, edit: ThreadedConnectionEdit) =>
