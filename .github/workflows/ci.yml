@@ -116,10 +116,12 @@ jobs:
     # on Windows and macOS? Allowed to fail: until it has passed reliably, a
     # failure here is information, not a broken build. Windows runners have no
     # usable OpenGL, so Mesa's software renderer (llvmpipe) stands in.
+    # macOS was dropped in 0.5.1: its Qt OpenGL view never drew on the runner,
+    # and 0.5.x ships the Electron viewport, which rust-desktop tests on every OS.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     continue-on-error: true

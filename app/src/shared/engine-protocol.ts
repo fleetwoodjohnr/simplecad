@@ -32,6 +32,8 @@ export interface DisplayShape extends MeshData {
   volume: number
   faces: FaceInfo[]
   ranges: BodyRange[]
+  /** A face pattern's preview: how it fits. */
+  arrangement?: ArrangementNote
 }
 
 export interface BodyInfo {
@@ -39,6 +41,10 @@ export interface BodyInfo {
   visible: boolean
   /** The file has no readable geometry for it. */
   empty: boolean
+  /** The step that last wrote it. */
+  producer?: string
+  /** The step to keep as it is or repair before it can change: the earliest one it waits on that lost an input. */
+  blockedBy?: string
 }
 
 /** Where the session's model came from: a new box, or a `.scad3` file (the window keeps its bytes). */
@@ -56,6 +62,8 @@ export interface ReferenceRepair {
   more?: { missingInputId: string; replacementBody: number }[]
 }
 export interface SavedStepEdit { editStepId: string; changes: Record<string, string> }
+/** Keep a step that lost an input as it last built: a placement as a Move to where it was, anything else as its shape. */
+export interface KeepEdit { keepStepId: string }
 export type SavedStep = SavedStepEdit & { replay?: { index: number; name: string; kind: string } }
 export type Vec3 = [number, number, number]
 type Expressions = [string, string, string]
@@ -73,7 +81,48 @@ export interface ConstructionEdit {
   inputs: Record<string, string | Vec3[]>
 }
 /** Line bodies (by index) up along a world axis, with equal gaps or a fixed one. */
-export interface ArrangeEdit { arrange: number[]; inputs: { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string } }
+export const ARRANGE_PATTERNS = ['grid', 'linear', 'radial', 'staggered', 'packed', 'custom'] as const
+export type ArrangePattern = typeof ARRANGE_PATTERNS[number]
+/** A row: the bodies lined up where they are. */
+export interface ArrangeRow { mode: 'equal_gaps' | 'fixed_gap'; axis: 'x' | 'y' | 'z'; gap: string }
+/** A face pattern's settings, as SimpleCAD 0.4's Arrange panel writes them (each pattern only its own). */
+export interface ArrangePatternSettings {
+  pattern: ArrangePattern; spacing: 'auto' | 'fixed'; boundary: 'auto' | 'manual'
+  gap: string; margin: string; rotation: string; normal_offset: string
+  contain: boolean; avoid_holes: boolean; avoid_bodies: boolean; auto_rotate: boolean; orient: boolean
+  direction?: string; align?: string; rows?: number; columns?: number
+  gap_y?: string; fill?: 'rows' | 'columns'; distribute?: 'between' | 'evenly'
+  radius?: string; start_angle?: string; face_center?: boolean
+  inset_left?: string; inset_right?: string; inset_top?: string; inset_bottom?: string
+  move_x: number; move_y: number; move_normal: number
+}
+export interface ArrangeEdit {
+  /** The bodies, as shown; none when a History step is edited. */
+  arrange: number[]
+  inputs: ArrangeRow | ArrangePatternSettings
+  /** A face pattern's target: a face of the shown model, or the build plate. Left out when editing keeps it. */
+  target?: number | 'plate'
+  /** Faces of arranged bodies to stand them on, and edges of the target face to keep the margin from, as shown. */
+  contacts?: number[]
+  edges?: number[]
+  /** The History step a face pattern edit replaces. */
+  editing?: string
+}
+/** What a face pattern's preview shows beside it (0.4's `preview_parts` annotations). */
+export interface ArrangementNote {
+  fits: boolean
+  summary: string
+  problems: { name: string; reason: string }[]
+  suggestions: { label: string; patch: Record<string, string | number | boolean> }[]
+  gap: number; rows: number; columns: number; radius: number
+  order: string[]
+  /** U, V and the normal of the target, for dragging the pattern. */
+  axes: [Vec3, Vec3, Vec3]
+  /** The usable region, as closed rings just above the face. */
+  boundary: Vec3[][]
+  /** The shown bodies that do not fit, by index. */
+  marked: number[]
+}
 export const ANCHORS = ['top_left', 'top', 'top_right', 'left', 'center', 'right', 'bottom_left', 'bottom', 'bottom_right'] as const
 /** Section Replace: the replacement body's face (display index) set into the target's face, anchored and offset. */
 export interface SectionReplaceEdit {
@@ -85,14 +134,27 @@ export interface SectionReplaceEdit {
 export interface GroupEdit { group: number[] }
 /** SimpleCAD 0.4's Clip Joint between a face on each of two parts (display face indices): printed connectors, or
  * snap tabs or keys on the `male` part ('a' is the first) with pockets in the other. */
+/** SimpleCAD 0.4's sliding joint styles: rails on one part running in channels on the other. */
+export const SLIDE_STYLES = ['dovetail', 't_rail', 'tongue_groove'] as const
+/** A sliding joint's rails, as SimpleCAD 0.4's Joint tool saves them. */
+export interface SlideSettings {
+  rails: number; insertion: '' | '+u' | '-u' | '+v' | '-v'; female_mode: 'auto' | 'cut' | 'raised'; stop: boolean
+  /** Unticked, the joint is saved with no detent. */
+  detent: boolean
+  rail_width: string; rail_height: string; rail_angle: string; rail_length: string
+}
 export interface ClipJointEdit {
   clipJoint: {
     faces: [number, number]
     inputs: {
-      style: 'snap_tab' | 'connector' | 'tab_slot'; male: 'a' | 'b'
+      style: 'snap_tab' | 'connector' | 'tab_slot' | typeof SLIDE_STYLES[number]; male: 'a' | 'b'
       size: 'small' | 'medium' | 'large'; retention: 'easy' | 'standard' | 'firm'; material: 'pla' | 'petg'
       clearance: string; clearance_preset: 'snug' | 'sliding' | 'loose' | 'press'; depth_clearance: string; min_wall: string
       lead_in: string; count: number; spacing: string; edge_offset: string; seat: boolean
+      /** A sliding style's rails. */
+      slide?: SlideSettings
+      /** Preview only: part A drawn slid out of its mate. */
+      slid_apart?: boolean
     }
   }
 }
@@ -120,11 +182,14 @@ export interface ThreadGaugeEdit { threadGauges: 'P30' }
 /** Move several bodies (display indices) by one offset, mm: a keyboard nudge, one Move each, one undo step. */
 export interface MoveBodiesEdit { moveBodies: number[]; offset: Vec3 }
 export interface UngroupEdit { ungroup: string }
+/** Delete bodies (body indices) with the steps that make them, as SimpleCAD 0.4 deletes; `deleteGroup`: a group
+ * deleted with its members, which `deleteBodies` lists. */
+export interface DeleteEdit { deleteBodies: number[]; deleteGroup?: string }
 /** Round or bevel edges of one body; `edges` index the display's edges across every shown body. */
 export interface EdgeFinishEdit { edgeFinish: 'fillet' | 'chamfer'; edges: number[]; value: string }
-export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean', 'split'] as const
-/** Mirror, pattern, scale or combine one body in place: expressions as strings, directions as vectors,
- * and a Combine's `tools` as body indices. */
+export const BODY_OPERATIONS = ['mirror', 'rectangular_pattern', 'circular_pattern', 'scale', 'boolean', 'split', 'draft'] as const
+/** Mirror, pattern, scale, combine or draft one body in place: expressions as strings, directions as vectors,
+ * a Combine's `tools` as body indices, and a Draft's `faces` as display face indices of that body. */
 export interface BodyOperationEdit {
   bodyOperation: typeof BODY_OPERATIONS[number]
   body: number
@@ -227,7 +292,7 @@ export const isMeshFormat = (format: unknown): format is MeshFormat =>
 export const isExportFormat = (format: unknown): format is ExportFormat =>
   format === 'step' || isMeshFormat(format)
 export type StackStep = { moving: FacePick; target: FacePick; settings: StackSettings }
-export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit
+export type Step = (FacePick & (PullEdit | FaceEdit)) | StackStep | ShapeEdit | ImportRef | ReferenceRepair | KeepEdit | SavedStep | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit
 
 export interface Checkpoint {
   source: Source
@@ -304,6 +369,7 @@ export type RendererCommand =
   | ({ op: 'applyArrange' | 'previewArrange'; revision: number } & ArrangeEdit)
   | ({ op: 'applySectionReplace' | 'previewSectionReplace'; revision: number } & SectionReplaceEdit)
   | ({ op: 'ungroup'; revision: number } & UngroupEdit)
+  | ({ op: 'deleteBodies'; revision: number } & DeleteEdit)
   | ({ op: 'createShape' | 'previewShape'; revision: number } & ShapeEdit)
   | ({ op: 'applySketchDraft'; revision: number } & SketchDraftEdit)
   | ({ op: 'previewSketchSolid' | 'applySketchSolid'; revision: number } & SketchSolidEdit)
@@ -311,6 +377,7 @@ export type RendererCommand =
   | { op: 'solveSketch'; revision: number; recipe: string }
   | ({ op: 'importModel'; revision: number } & ImportRequest)
   | ({ op: 'repairInput'; revision: number } & ReferenceRepair)
+  | ({ op: 'keepLastGood'; revision: number } & KeepEdit)
   | ({ op: 'previewSavedStep' | 'editSavedStep'; revision: number } & SavedStepEdit)
   | { op: 'show'; body: number; visible: boolean; revision: number }
   | { op: 'save' | 'saved'; revision: number }
@@ -360,6 +427,10 @@ function isReferenceRepair(value: unknown): value is ReferenceRepair {
       !!more && isName(more.missingInputId) && isIndex(more.replacementBody) && more.replacementBody < MAX_BODIES)))
 }
 
+function isKeep(value: unknown): value is KeepEdit {
+  return !!value && typeof value === 'object' && isName((value as Partial<KeepEdit>).keepStepId)
+}
+
 function isSavedStep(value: unknown): value is SavedStep {
   if (!value || typeof value !== 'object') return false
   const { editStepId, changes, replay } = value as Partial<SavedStep>
@@ -391,6 +462,8 @@ function isBodyOperation(value: unknown): value is BodyOperationEdit {
   return entries.length <= 16 && entries.every(([key, value]) => /^[a-z_]{1,32}$/.test(key) && key !== 'body' && (key === 'tools'
     ? bodyOperation === 'boolean' && Array.isArray(value) && value.length > 0 && value.length < MAX_BODIES &&
       value.every((tool) => isIndex(tool) && tool < MAX_BODIES && tool !== body) :
+    key === 'faces' ? bodyOperation === 'draft' && Array.isArray(value) && value.length > 0 && value.length <= 4096 &&
+      value.every((face) => isIndex(face) && face <= 0xffffffff) :
     typeof value === 'boolean' || (typeof value === 'string' && value.trim().length > 0 && value.length < 256) ||
     (Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1e9))))
 }
@@ -412,13 +485,37 @@ function isSectionReplace(value: unknown): value is SectionReplaceEdit {
     expression(inputs.u) && expression(inputs.v) && expression(inputs.boundary) && expression(inputs.setback) && Object.keys(inputs).length === 6
 }
 
+const PATTERN_TEXT = ['gap', 'margin', 'rotation', 'normal_offset', 'direction', 'align', 'gap_y', 'radius', 'start_angle',
+  'inset_left', 'inset_right', 'inset_top', 'inset_bottom']
+const PATTERN_SWITCHES = ['contain', 'avoid_holes', 'avoid_bodies', 'auto_rotate', 'orient', 'face_center']
+const PATTERN_CHOICES: Record<string, readonly string[]> = {
+  pattern: ARRANGE_PATTERNS, spacing: ['auto', 'fixed'], boundary: ['auto', 'manual'], fill: ['rows', 'columns'],
+  distribute: ['between', 'evenly']
+}
+
+function isArrangePattern(inputs: Record<string, unknown>): boolean {
+  return typeof inputs.pattern === 'string' && Object.entries(inputs).every(([key, entry]) =>
+    PATTERN_TEXT.includes(key) ? typeof entry === 'string' && entry.length < 256 && (key === 'align' || entry.trim().length > 0)
+      : PATTERN_SWITCHES.includes(key) ? typeof entry === 'boolean'
+        : key in PATTERN_CHOICES ? PATTERN_CHOICES[key].includes(entry as string)
+          : key === 'rows' || key === 'columns' ? Number.isInteger(entry) && (entry as number) >= 0 && (entry as number) <= 999
+            : ['move_x', 'move_y', 'move_normal'].includes(key) && typeof entry === 'number' && Number.isFinite(entry) && Math.abs(entry) <= 1e6)
+}
+
 function isArrange(value: unknown): value is ArrangeEdit {
   if (!value || typeof value !== 'object') return false
-  const { arrange, inputs } = value as Partial<ArrangeEdit>
-  return Array.isArray(arrange) && arrange.length >= 2 && arrange.length <= MAX_BODIES &&
-    arrange.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(arrange).size === arrange.length &&
-    !!inputs && (inputs.mode === 'equal_gaps' || inputs.mode === 'fixed_gap') && ['x', 'y', 'z'].includes(inputs.axis) &&
-    typeof inputs.gap === 'string' && inputs.gap.trim().length > 0 && inputs.gap.length < 256 && Object.keys(inputs).length === 3
+  const { arrange, inputs, target, contacts, edges, editing } = value as Partial<ArrangeEdit>
+  if (!Array.isArray(arrange) || arrange.length > MAX_BODIES || !arrange.every((body) => isIndex(body) && body < MAX_BODIES) ||
+    new Set(arrange).size !== arrange.length || !inputs || typeof inputs !== 'object') return false
+  if ('mode' in inputs) {
+    return arrange.length >= 2 && target === undefined && contacts === undefined && edges === undefined && editing === undefined &&
+      (inputs.mode === 'equal_gaps' || inputs.mode === 'fixed_gap') && ['x', 'y', 'z'].includes(inputs.axis) &&
+      typeof inputs.gap === 'string' && inputs.gap.trim().length > 0 && inputs.gap.length < 256 && Object.keys(inputs).length === 3
+  }
+  const faces = (list: unknown) => list === undefined || (Array.isArray(list) && list.length <= MAX_BODIES * 4 && list.every((n) => isIndex(n) && n <= 0xffffffff))
+  return isArrangePattern(inputs as unknown as Record<string, unknown>) &&
+    (editing === undefined ? arrange.length >= 1 : typeof editing === 'string' && editing.length > 0 && editing.length < 256 && arrange.length === 0) &&
+    (target === undefined || target === 'plate' || (isIndex(target) && target <= 0xffffffff)) && faces(contacts) && faces(edges)
 }
 
 function isConstruction(value: unknown): value is ConstructionEdit {
@@ -457,11 +554,20 @@ const isClipJoint = (value: unknown): value is ClipJointEdit => {
   if (!clip || !Array.isArray(clip.faces) || clip.faces.length !== 2 || !clip.faces.every(isIndex) || clip.faces[0] === clip.faces[1]) return false
   const i = clip.inputs as Partial<ClipJointEdit['clipJoint']['inputs']> | undefined
   const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0 && v.length < 256
-  return !!i && ['snap_tab', 'connector', 'tab_slot'].includes(i.style!) && (i.male === 'a' || i.male === 'b') &&
+  if (!i) return false
+  const sliding = (SLIDE_STYLES as readonly string[]).includes(i.style!)
+  const r = i.slide as Partial<SlideSettings> | undefined
+  const slideOk = !sliding ? r === undefined : !!r && Number.isInteger(r.rails) && r.rails! >= 1 && r.rails! <= 4 &&
+    ['', '+u', '-u', '+v', '-v'].includes(r.insertion!) && ['auto', 'cut', 'raised'].includes(r.female_mode!) &&
+    typeof r.stop === 'boolean' && typeof r.detent === 'boolean' &&
+    [r.rail_width, r.rail_height, r.rail_angle, r.rail_length].every(text) && Object.keys(r).length === 9
+  const extra = (i.slide === undefined ? 0 : 1) + (i.slid_apart === undefined ? 0 : 1)
+  return ['snap_tab', 'connector', 'tab_slot', ...SLIDE_STYLES].includes(i.style!) && (i.male === 'a' || i.male === 'b') &&
     ['small', 'medium', 'large'].includes(i.size!) && ['easy', 'standard', 'firm'].includes(i.retention!) &&
     ['pla', 'petg'].includes(i.material!) && ['snug', 'sliding', 'loose', 'press'].includes(i.clearance_preset!) &&
     [i.clearance, i.depth_clearance, i.min_wall, i.lead_in, i.spacing, i.edge_offset].every(text) &&
-    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && Object.keys(i).length === 14
+    Number.isInteger(i.count) && i.count! >= 0 && i.count! <= 64 && typeof i.seat === 'boolean' && slideOk &&
+    (i.slid_apart === undefined || (sliding && typeof i.slid_apart === 'boolean')) && Object.keys(i).length === 14 + extra
 }
 const isHinge = (value: unknown): value is HingeEdit => {
   const hinge = (value as Partial<HingeEdit> | null)?.hinge
@@ -474,6 +580,12 @@ const isHinge = (value: unknown): value is HingeEdit => {
 const isThreadGauges = (value: unknown): value is ThreadGaugeEdit => (value as Partial<ThreadGaugeEdit> | null)?.threadGauges === 'P30'
 const isPlate = (value: unknown): value is PlateEdit => ['drop', 'center', 'orient'].includes((value as Partial<PlateEdit> | null)?.plate!)
 const isUngroup = (value: unknown): value is UngroupEdit => isName((value as Partial<UngroupEdit> | null)?.ungroup)
+const isDelete = (value: unknown): value is DeleteEdit => {
+  const { deleteBodies, deleteGroup } = (value ?? {}) as Partial<DeleteEdit>
+  return Array.isArray(deleteBodies) && deleteBodies.length >= 1 && deleteBodies.length <= MAX_BODIES &&
+    deleteBodies.every((body) => isIndex(body) && body < MAX_BODIES) && new Set(deleteBodies).size === deleteBodies.length &&
+    (deleteGroup === undefined || isName(deleteGroup))
+}
 
 const isRecipe = (value: unknown): value is string =>
   typeof value === 'string' && value.length > 0 && value.length <= MAX_PROJECT_BYTES
@@ -491,7 +603,7 @@ function isSketchSolid(value: unknown): value is SketchSolidEdit {
 }
 
 function isStep(value: unknown): value is Step {
-  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isThreadedConnection(value) || isUngroup(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
+  if (isShapeEdit(value) || isImportRef(value) || isReferenceRepair(value) || isKeep(value) || isSavedStep(value) || isTransformEdit(value) || isSketchDraft(value) || isSketchSolid(value) || isBodyOperation(value) || isEdgeFinish(value) || isGroup(value) || isPlate(value) || isThreadGauges(value) || isMoveBodies(value) || isHinge(value) || isClipJoint(value) || isThreadedConnection(value) || isUngroup(value) || isDelete(value) || isConstruction(value) || isArrange(value) || isSectionReplace(value)) return true
   if (isEdit(value) || isFaceEdit(value)) return isPick(value)
   if (!value || typeof value !== 'object') return false
   const step = value as Partial<StackStep>
@@ -650,7 +762,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         ((m.op === 'applyHinge' || m.op === 'previewHinge') && isHinge(m)) ||
         ((m.op === 'applyClipJoint' || m.op === 'previewClipJoint') && isClipJoint(m)) ||
         ((m.op === 'applyThreadedConnection' || m.op === 'previewThreadedConnection') && isThreadedConnection(m)) ||
-        (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) ||
+        (m.op === 'group' && isGroup(m)) || (m.op === 'plate' && isPlate(m)) || (m.op === 'threadGauges' && isThreadGauges(m)) || (m.op === 'moveBodies' && isMoveBodies(m)) || (m.op === 'health' && isIndex(m.revision)) || (m.op === 'ungroup' && isUngroup(m)) || (m.op === 'deleteBodies' && isDelete(m)) ||
         (m.op === 'applyConstruction' && isConstruction(m)) ||
         ((m.op === 'applyArrange' || m.op === 'previewArrange') && isArrange(m)) ||
         ((m.op === 'applySectionReplace' || m.op === 'previewSectionReplace') && isSectionReplace(m)) ||
@@ -660,6 +772,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         (m.op === 'applySketchDraft' && isSketchDraft(m)) ||
         ((m.op === 'previewSketchSolid' || m.op === 'applySketchSolid') && isSketchSolid(m)) ||
         (m.op === 'repairInput' && isReferenceRepair(m)) ||
+        (m.op === 'keepLastGood' && isKeep(m)) ||
         ((m.op === 'previewSavedStep' || m.op === 'editSavedStep') && isSavedStep(m) && m.replay === undefined) ||
         (m.op === 'importModel' && isName(m.importName) && isImportFormat(m.importFormat) && isImportSource(m))
       ))) return m as RendererRequest

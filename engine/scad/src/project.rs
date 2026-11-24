@@ -258,10 +258,14 @@ fn rebuild_legacy_display(project: &mut Project, original: &[u8]) -> Result<(), 
         .filter_map(|body| {
             let id = body["id"].as_str()?;
             let name = body["name"].as_str()?;
-            let brep = model.payload["geometry"][id]["sha256"]
+            let made = &model.payload["geometry"][id];
+            let brep = made["sha256"]
                 .as_str()
                 .and_then(|sha| model.blobs.get(sha))
                 .map(|blob| blob.to_vec());
+            // A moved body is its base's blob and where it is placed.
+            let location =
+                crate::rebuild::location(made).and_then(|m| <[f64; 12]>::try_from(m).ok());
             if brep.is_none() {
                 notes.push(format!(
                     "\"{name}\" has no readable saved or rebuilt geometry."
@@ -272,7 +276,7 @@ fn rebuild_legacy_display(project: &mut Project, original: &[u8]) -> Result<(), 
                 name: name.into(),
                 visible: body["visible"] != false,
                 brep,
-                location: None,
+                location,
             })
         })
         .collect();

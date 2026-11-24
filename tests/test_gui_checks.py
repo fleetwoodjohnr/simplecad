@@ -24,9 +24,13 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CHECKS = (
-    "check_axis_lock",
+    # check_axis_lock and check_rotate are left out (0.5.1): they drive the Qt
+    # window, which 0.5.x no longer ships. Under Xvfb OCCT finds no pixels of
+    # the X and Y rings to grab (check_rotate fails so at v0.4.4 too) and the
+    # 26-view sweep fails intermittently. The window that ships is covered by
+    # ux.spec.ts "a Move drag leaves a ghost...": an X-arrow drag that leaves
+    # Y and Z unchanged, and a Z-ring quarter turn about Z only.
     "check_gizmo",
-    "check_rotate",
     # check_nudge is left out: its held-arrow step depends on key autorepeat
     # timing and fails intermittently under Xvfb on main as well.
     "check_joint_slide",

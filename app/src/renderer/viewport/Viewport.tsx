@@ -1,7 +1,7 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import {
-  AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, GridHelper, LineBasicMaterial, LineSegments,
-  Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
+  AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, GridHelper, LineBasicMaterial, LineSegments,
+  MOUSE, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
@@ -23,11 +23,17 @@ interface Props {
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
+  /** A right click that did not drag (a drag turns the view): the face under it, or none, and where it was. */
+  onContextMenu?: (face: number | undefined, x: number, y: number) => void
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
   onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
+  /** Closed rings drawn over the model: a face pattern's usable region. */
+  outline?: Vec3[][]
+  /** Bodies of the displayed shape tinted red: those a face pattern could not fit. */
+  marked?: number[]
 }
 
 export function Viewport(props: Props) {
@@ -67,6 +73,12 @@ export function Viewport(props: Props) {
     const camera = new PerspectiveCamera(35, 1, 0.1, 10_000)
     camera.up.set(0, 0, 1)
     const controls = new OrbitControls(camera, canvas)
+    // As in SimpleCAD 0.4: middle-drag pans and Shift+middle-drag orbits, right-drag orbits; left-drag orbits too, as
+    // in 0.5.0 (Shift+left pans).
+    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }
+    // A middle press would otherwise start the browser's autoscroll.
+    const noAutoscroll = (event: MouseEvent) => { if (event.button === 1) event.preventDefault() }
+    canvas.addEventListener('mousedown', noAutoscroll)
     const viewFrame = () => {
       camera.updateMatrixWorld()
       return {
@@ -142,7 +154,14 @@ export function Viewport(props: Props) {
       }
       return segmentEdge.owner[segment]
     }
-    scene.add(body, highlight, hover, edges, ghost, prism, chosen)
+    const outline = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0x3b82f6, depthTest: false }))
+    outline.renderOrder = 3
+    let outlineRings: Vec3[][] | undefined
+    const marked = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe5484d, transparent: true, opacity: 0.6, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    let markedKey = ''
+    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked)
     let hovered: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
@@ -190,13 +209,17 @@ export function Viewport(props: Props) {
         renderer.render(scene, camera)
         transform.publish()
         publishEdges()
+        // Where the camera is and what it turns about, for scripted checks of the mouse.
+        const rounded = (v: Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000)
+        const view = JSON.stringify({ position: rounded(camera.position), target: rounded(controls.target) })
+        if (canvas.dataset.camera !== view) canvas.dataset.camera = view
         canvas.setAttribute('aria-busy', String(!displayed))
         const button = handle.current
         const { selected, shape, canPull } = current.current
         if (!button) return
         const face = selected === undefined ? undefined : shape?.faces[selected]
         button.hidden = !face || !canPull
-        if (!face) return
+        if (!face) return placeBar()
         const start = new Vector3(...face.anchor)
         const normal = new Vector3(...face.normal)
         const position = toScreen(start.clone())
@@ -262,7 +285,29 @@ export function Viewport(props: Props) {
       if (!canvas.dataset.ghost || canvas.dataset.ghost === 'preview') {
         canvas.dataset.ghost = range ? 'preview' : ''
       }
-      const transforming = transform.set(shown ? undefined : shape, body.geometry, tool, showEdges)
+      if (current.current.outline !== outlineRings) {
+        outlineRings = current.current.outline
+        const points: number[] = []
+        for (const ring of outlineRings ?? []) {
+          for (let i = 0; i + 1 < ring.length; i++) points.push(...ring[i], ...ring[i + 1])
+        }
+        outline.geometry.dispose()
+        outline.geometry = new BufferGeometry()
+        outline.geometry.setAttribute('position', new Float32BufferAttribute(points, 3))
+      }
+      const tinted = next ? current.current.marked ?? [] : []
+      const tintKey = tinted.length ? `${tinted.join(',')}:${body.geometry.id}` : ''
+      if (tintKey !== markedKey) {
+        marked.geometry.dispose()
+        const parts = next!.ranges.filter((range) => tinted.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
+        const indices = new Uint32Array(parts.reduce((total, part) => total + part.length, 0))
+        parts.reduce((at, part) => { indices.set(part, at); return at + part.length }, 0)
+        marked.geometry = tintKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
+        markedKey = tintKey
+      }
+      // A group drag (Arrange) moves bodies of the preview; any other moves the model's.
+      const transforming = transform.set(tool?.bodies ? next : shown ? undefined : shape, body.geometry, tool, showEdges)
+      marked.visible = !!tintKey && !transforming
       const picking = !!current.current.onPickEdge
       body.visible = !transforming
       edges.visible = (showEdges || picking) && !transforming
@@ -336,6 +381,11 @@ export function Viewport(props: Props) {
     }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
+      if (e.button === 2 && current.current.onContextMenu && !transform.claimed() &&
+        down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
+        current.current.onContextMenu(faceAt(e.clientX, e.clientY)?.face, e.clientX, e.clientY)
+        return
+      }
       if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
         const hit = edgeAt(e.clientX, e.clientY)
         if (hit) current.current.onPickEdge(hit.edge, hit.point)
@@ -376,12 +426,13 @@ export function Viewport(props: Props) {
       transform.dispose()
       controls.dispose()
       canvas.removeEventListener('pointerdown', press)
+      canvas.removeEventListener('mousedown', noAutoscroll)
       canvas.removeEventListener('pointerup', pick)
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -393,7 +444,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges, props.outline, props.marked])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {

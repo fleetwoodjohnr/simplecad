@@ -24,7 +24,7 @@ fn identity() -> UniquePtr<Trsf> {
     occt::trsf_identity()
 }
 
-fn translation(by: V) -> UniquePtr<Trsf> {
+pub(crate) fn translation(by: V) -> UniquePtr<Trsf> {
     occt::trsf_translation(&by)
 }
 
@@ -512,6 +512,12 @@ pub(crate) fn seat_joint(
     Ok(then(&seat, &translation(sub(destination, moving.center))))
 }
 
+/// `planar_frame` of a joint's target face: centre, X, Y and normal, for version-1 clip points.
+pub(crate) fn joint_frame(target: (&occt::Shape, u32)) -> Result<Vec<f64>, StepError> {
+    let frame = planar_frame(&Face::read(target.0, target.1)?)?;
+    Ok([frame.center, frame.x_axis, frame.y_axis, frame.normal].concat())
+}
+
 pub(crate) fn joint_anchors(
     target: (&occt::Shape, u32),
     anchors: &[[f64; 2]],
@@ -568,6 +574,29 @@ pub(crate) fn seat_section(
         0.0,
         true,
     )
+}
+
+/// `reference_frame` of a face on its own (the build plate, say).
+pub(crate) fn face_reference_frame(face: UniquePtr<occt::Shape>) -> Result<Frame, StepError> {
+    let plane = occt::plane_frame(&face).map_err(kernel)?;
+    reference_frame(&Face { shape: face, plane })
+}
+
+/// `support_face`: the largest flat face, ties broken by how near it is to `plane` (a point and normal), then by
+/// index.
+pub(crate) fn support_face(faces: &[occt::FaceData], plane: Option<(V, V)>) -> Option<usize> {
+    let distance = |f: &occt::FaceData| plane.map_or(0.0, |(c, n)| dot(sub(f.center, c), n).abs());
+    faces
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| face.planar)
+        .min_by(|(i, a), (j, b)| {
+            b.area
+                .total_cmp(&a.area)
+                .then_with(|| distance(a).total_cmp(&distance(b)))
+                .then_with(|| i.cmp(j))
+        })
+        .map(|(index, _)| index)
 }
 
 pub(crate) fn arrangement_frame(

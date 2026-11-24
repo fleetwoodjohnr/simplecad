@@ -64,19 +64,109 @@ const COLLECTIONS: &[(&str, &str)] = &[
     ("parameters", "name"),
 ];
 
+/// `model.json`'s `history`, kept out of the payload: a recorded step never changes, so a
+/// copy of the model shares the steps instead of copying megabytes of patches.
+#[derive(Clone, Default)]
+struct History {
+    /// The history as read, less the undo and redo lists that are lists (a damaged one stays here).
+    rest: Value,
+    undo: Option<Vec<Arc<Value>>>,
+    redo: Option<Vec<Arc<Value>>>,
+}
+
+impl History {
+    fn read(value: Option<Value>) -> Self {
+        let mut history = Self {
+            rest: value.unwrap_or(Value::Null),
+            ..Self::default()
+        };
+        if let Some(map) = history.rest.as_object_mut() {
+            for (name, stack) in [("undo", &mut history.undo), ("redo", &mut history.redo)] {
+                if map.get(name).is_some_and(Value::is_array)
+                    && let Some(Value::Array(items)) = map.shift_remove(name)
+                {
+                    *stack = Some(items.into_iter().map(Arc::new).collect());
+                }
+            }
+        }
+        history
+    }
+
+    /// The `history` to save, or none when the project never had one.
+    fn value(&self) -> Option<Value> {
+        if self.rest.is_null() && self.undo.is_none() && self.redo.is_none() {
+            return None;
+        }
+        let mut value = self.rest.clone();
+        if value.is_null() {
+            value = json!({});
+        }
+        if let Some(map) = value.as_object_mut() {
+            for (name, stack) in [("undo", &self.undo), ("redo", &self.redo)] {
+                if let Some(stack) = stack {
+                    map.insert(
+                        name.into(),
+                        Value::Array(stack.iter().map(|e| (**e).clone()).collect()),
+                    );
+                }
+            }
+        }
+        Some(value)
+    }
+
+    fn stack(&self, name: &str) -> Option<&Vec<Arc<Value>>> {
+        if name == "undo" {
+            self.undo.as_ref()
+        } else {
+            self.redo.as_ref()
+        }
+    }
+
+    /// A list to add to: made if the history has none, refused if what it has is damaged.
+    fn stack_mut(&mut self, name: &str) -> Result<&mut Vec<Arc<Value>>, String> {
+        let unreadable = || "This project's history could not be read.".to_string();
+        if self.rest.is_null() {
+            self.rest = json!({});
+        }
+        let rest = self.rest.as_object().ok_or_else(unreadable)?;
+        let stack = if name == "undo" {
+            &mut self.undo
+        } else {
+            &mut self.redo
+        };
+        if stack.is_none() && rest.contains_key(name) {
+            return Err(unreadable());
+        }
+        Ok(stack.get_or_insert_with(Vec::new))
+    }
+
+    /// Whether `name` could take a step: a list, or nothing yet.
+    fn writable(&self, name: &str) -> bool {
+        self.stack(name).is_some() || self.rest.get(name).is_none()
+    }
+}
+
 /// A saved project being edited: its `model.json` and the geometry blobs it gained.
 #[derive(Clone)]
 pub struct Model {
+    /// `model.json`, less its `history`.
     pub payload: Value,
     /// New `geometry/<sha>.brep` entries, by sha.
     pub blobs: BTreeMap<String, Arc<[u8]>>,
     new_assets: BTreeSet<String>,
+    history: History,
 }
 
 impl Model {
-    pub fn new(payload: Value) -> Self {
+    pub fn new(mut payload: Value) -> Self {
+        let history = History::read(
+            payload
+                .as_object_mut()
+                .and_then(|p| p.shift_remove("history")),
+        );
         Self {
             payload,
+            history,
             blobs: BTreeMap::new(),
             new_assets: BTreeSet::new(),
         }
@@ -200,22 +290,27 @@ impl Model {
             .latest()
             .remove(body)
             .ok_or_else(|| format!("No step writes the body \"{body}\"."))?;
-        if self.blocked_steps().contains(&producer) {
+        if let Some(step) = self.blocker_of(&producer) {
+            let name = self
+                .list("features")
+                .iter()
+                .find(|f| f["id"] == step.as_str())
+                .and_then(|f| f["name"].as_str().map(String::from))
+                .unwrap_or_default();
             return Err(format!(
-                "Repair the step marked in History that made \"{body}\" before changing it."
+                "\"{body}\" can't change until {name}, marked in History, is kept as it is or repaired."
             ));
         }
         Ok((producer, object))
     }
 
-    /// The steps that cannot rebuild as saved, and every step downstream of one: those marked failed
-    /// or waiting on a repair, and those bound to no step or to one that no longer exists (a deleted
-    /// input, as Spondge Holder's Combine5 and its Cylinder2). A file opened from its saved results shows them
-    /// as they were, but the first rebuild keeps their last valid model.
-    fn blocked_steps(&self) -> HashSet<String> {
-        let order = self.list("features");
+    /// The steps that cannot rebuild as saved: those marked failed or waiting on a repair, and those
+    /// bound to no step or to one that no longer exists (a deleted input, as Spondge Holder's Combine5
+    /// and its Cylinder2). A file opened from its saved results shows them as they were, but the first
+    /// rebuild keeps their last valid model, and every step downstream of one's.
+    fn lost_steps(&self, order: &[Value]) -> Vec<String> {
         let ids: HashSet<&str> = order.iter().filter_map(|f| f["id"].as_str()).collect();
-        let lost: HashSet<String> = order
+        order
             .iter()
             .filter(|step| {
                 let id = step["id"].as_str().unwrap_or_default();
@@ -225,14 +320,67 @@ impl Model {
                 ) || lost_binding(step, &ids)
             })
             .filter_map(|step| step["id"].as_str().map(String::from))
-            .collect();
-        crate::rebuild::dependents(&order, &lost)
+            .collect()
+    }
+
+    /// The model's steps in order, borrowed.
+    fn order(&self) -> &[Value] {
+        self.payload["features"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// For each step that is lost or downstream of one, the earliest lost step it is or depends on: the one
+    /// to keep or repair before it can change. One pass in order, as `dependents` walks.
+    fn blockers(&self) -> HashMap<String, String> {
+        let order = self.order();
+        let lost: HashSet<String> = self.lost_steps(order).into_iter().collect();
+        if lost.is_empty() {
+            return HashMap::new();
+        }
+        let mut blocked: HashMap<String, (usize, String)> = HashMap::new();
+        for (position, feature) in order.iter().enumerate() {
+            let id = feature["id"].as_str().unwrap_or("");
+            let own = lost.contains(id).then(|| (position, id.to_string()));
+            let earliest = crate::signatures::upstream(feature, id)
+                .iter()
+                .filter_map(|u| blocked.get(u.as_str()).cloned())
+                .chain(own)
+                .min_by_key(|(at, _)| *at);
+            if let Some(found) = earliest {
+                blocked.insert(id.to_string(), found);
+            }
+        }
+        blocked.into_iter().map(|(id, (_, by))| (id, by)).collect()
+    }
+
+    /// The earliest lost step `step` is, or depends on: the one to keep or repair before it can change.
+    fn blocker_of(&self, step: &str) -> Option<String> {
+        self.blockers().remove(step)
+    }
+
+    /// Each body's name, the step that last wrote it, and the step to keep or repair before it can change.
+    pub fn body_steps(&self) -> Vec<(String, String, Option<String>)> {
+        let blockers = self.blockers();
+        self.latest()
+            .into_iter()
+            .map(|(name, (producer, _))| {
+                let blocked = blockers.get(&producer).cloned();
+                (name, producer, blocked)
+            })
+            .collect()
     }
 
     /// `DependencyGraph.latest`: the step and object that last wrote each body name.
     fn latest(&self) -> BTreeMap<String, (String, String)> {
+        self.latest_before(usize::MAX)
+    }
+
+    /// Each body's producer and object ID as the steps before `position` leave them.
+    fn latest_before(&self, position: usize) -> BTreeMap<String, (String, String)> {
         let mut latest = BTreeMap::new();
-        for feature in self.list("features") {
+        for feature in self.order().iter().take(position) {
             let id = feature
                 .get("id")
                 .and_then(Value::as_str)
@@ -362,7 +510,9 @@ impl Model {
 
     /// Every step and its most recent diagnostic, in recipe order.
     pub fn steps(&self) -> Vec<StepSummary> {
-        let features = self.list("features");
+        let features = self.payload["features"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
         let ids: HashSet<_> = features.iter().filter_map(|f| f["id"].as_str()).collect();
         let current = std::cell::OnceCell::new();
         features
@@ -416,7 +566,13 @@ impl Model {
                     face_settings: edit_values(
                         f,
                         face_edit_fields(&f["type"]).or_else(|| body_edit_fields(&f["type"])),
-                    ),
+                    )
+                    .map(|mut settings| {
+                        if f["type"] == "arrange" {
+                            arrangement_picks(f, &mut settings);
+                        }
+                        settings
+                    }),
                     shape_settings: edit_values(f, shape_edit_fields(&f["type"])),
                     matching_thread: (state == "ok").then(|| Self::matching_thread(f)).flatten(),
                     construction_plane,
@@ -465,6 +621,12 @@ impl Model {
             .or_else(|| body_edit_fields(&updated["type"]))
             .or_else(|| shape_edit_fields(&updated["type"]))
             .ok_or("This history step has no editable settings.")?;
+        // A face pattern is edited whole (`edit_arrangement`); only a row's settings change one by one.
+        let allowed: &[&str] = if updated["type"] == "arrange" {
+            &["mode", "axis", "gap"]
+        } else {
+            allowed
+        };
         if changes.is_empty() || changes.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err("Choose a setting to edit on this history step.".into());
         }
@@ -533,6 +695,106 @@ impl Model {
             self.replace_input(&mut updated, &ids, lost, body_id, face, shown)?;
         }
         self.rebuild_recipe(position, updated, "Repair input", original, shown)
+    }
+
+    /// Keep a step that needs repair as it last built, as one undoable step under the same ID, so the steps after
+    /// it read it as before. A placement (an Align whose result is its input moved) becomes a Move to the same
+    /// place, which the part can be moved and aligned on from; any other step becomes its last good shape,
+    /// embedded, so earlier steps no longer reshape that part. Both are steps SimpleCAD 0.4.4 opens.
+    pub fn keep_last_good(
+        &mut self,
+        step_id: &str,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (position, step) = self.recipe(step_id)?;
+        if !self.lost_steps(self.order()).iter().any(|id| id == step_id) {
+            return Err("This step builds as it is; there is nothing to keep.".into());
+        }
+        // What the step still writes: a Combine that kept its tool lists it, and a deleted one is `dropped`.
+        let dropped = step["dropped"].as_array().cloned().unwrap_or_default();
+        let written: Vec<&str> = step["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|name| !dropped.contains(name))
+            .filter_map(Value::as_str)
+            .collect();
+        let [name] = written[..] else {
+            return Err(
+                "Only a step that makes one part can be kept. Repair its input instead.".into(),
+            );
+        };
+        let object = step["output_ids"][name]
+            .as_str()
+            .ok_or("This step's part has no identity.")?;
+        let last = shown
+            .get(object)
+            .ok_or_else(|| format!("\"{name}\" has no shape to keep."))?;
+        let label = format!("{} (kept)", step["name"].as_str().unwrap_or("Step"));
+        let input = &step["inputs"]["body"];
+        // The input as bound: its producing step and object (in `bindings`, or the reference itself).
+        let alias = input["__body__"].as_str().unwrap_or_default();
+        let bound = |key: &str| {
+            step["bindings"][alias][key]
+                .as_str()
+                .or_else(|| input[key].as_str())
+        };
+        let placed = (step["type"] == "align")
+            .then(|| {
+                let from = crate::rebuild::saved_output(
+                    self,
+                    original,
+                    bound("feature_id")?,
+                    bound("object_id")?,
+                )?;
+                rigid_fit(&from, last)
+            })
+            .flatten();
+        let updated = match placed {
+            Some(([dx, dy, dz], turn)) => {
+                let mut inputs = json!({ "body": input.clone(), "dx": dx, "dy": dy, "dz": dz, "pivot": [0.0, 0.0, 0.0] });
+                if let Some((axis, angle)) = turn {
+                    inputs["axis"] = json!(axis);
+                    inputs["angle"] = json!(angle);
+                }
+                let mut bindings = Map::new();
+                if let Some(binding) = step["bindings"].get(alias) {
+                    bindings.insert(alias.to_string(), binding.clone());
+                }
+                json!({
+                    "id": step_id, "type": "move", "name": label, "inputs": inputs, "outputs": [name],
+                    "output_ids": { name: object }, "bindings": bindings, "suppressed": false, "dropped": []
+                })
+            }
+            None => {
+                let brep = occt::write_brep(last).map_err(|error| error.what().to_string())?;
+                let asset = self.add_asset(&brep)?;
+                json!({
+                    "id": step_id, "type": "embedded_import", "name": label,
+                    "inputs": { "asset": asset, "dx": 0.0, "dy": 0.0, "dz": 0.0 }, "outputs": [name],
+                    "output_ids": { name: object }, "bindings": {}, "suppressed": false, "dropped": []
+                })
+            }
+        };
+        let before = self.clone();
+        let report = self.rebuild_recipe(position, updated, "Keep as it is", original, shown)?;
+        // What the kept step builds must be what was shown, or keeping it would move the part.
+        let built = report
+            .bodies
+            .iter()
+            .find(|body| body.id == object)
+            .and_then(|body| body.shape.as_ref());
+        if !built.is_some_and(|built| {
+            rigid_fit(last, built)
+                .is_some_and(|(t, turn)| turn.is_none() && t.iter().all(|v| v.abs() < 1e-6))
+        }) {
+            *self = before;
+            return Err(format!(
+                "\"{name}\" could not be kept exactly as it is. Repair its input instead."
+            ));
+        }
+        Ok(report)
     }
 
     /// One lost input of `updated`, rebound to the body `body_id` (and its face `face`, for an Align).
@@ -744,6 +1006,145 @@ impl Model {
         self.push_undo("Ungroup", before)
     }
 
+    /// SimpleCAD 0.4's Delete (`delete_selection`, `delete_group`, `_retire_body`): every step that writes a deleted
+    /// body goes, unless it writes other bodies too, which it goes on writing (the deleted one joins its `dropped`).
+    /// A step that goes takes the bodies it used up with it (a Combine's tools, a Split's part), and its id is
+    /// retired. A step elsewhere that read a deleted body keeps its last good shape and offers Repair. `group`: a
+    /// group deleted with its members, which `bodies` lists.
+    pub fn delete_bodies(
+        &mut self,
+        bodies: &[String],
+        group: Option<&str>,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        if bodies.is_empty() {
+            return Err("Select a body to delete.".into());
+        }
+        let before = self.document();
+        let mut candidate = self.clone();
+        let (mut gone, mut changed) = (BTreeSet::new(), BTreeSet::new());
+        for name in bodies {
+            candidate.retire_body(name, &mut gone, &mut changed);
+        }
+        if !self.payload["retired_ids"].is_array() {
+            candidate.payload["retired_ids"] = json!([]);
+        }
+        let retired = candidate.payload["retired_ids"]
+            .as_array_mut()
+            .expect("a list");
+        for id in &gone {
+            if !retired.iter().any(|known| known == id) {
+                retired.push(json!(id));
+            }
+        }
+        let forgotten: HashSet<&str> = bodies.iter().map(String::as_str).chain(group).collect();
+        let groups = candidate.groups_mut();
+        groups.retain(|entry| Some(entry["name"].as_str().unwrap_or_default()) != group);
+        for entry in groups.iter_mut() {
+            if let Some(members) = entry["members"].as_array_mut() {
+                members.retain(|member| !member.as_str().is_some_and(|m| forgotten.contains(m)));
+            }
+        }
+        changed.extend(gone.iter().cloned());
+        let stale = dependents(&candidate.payload, &changed);
+        let report = crate::rebuild::rebuild(&mut candidate, original, shown, &stale)?;
+        candidate.prune_groups();
+        candidate.push_undo("Delete", before)?;
+        *self = candidate;
+        Ok(report)
+    }
+
+    /// `_retire_body`: the steps writing `name` stop writing it, or go; `gone` collects the steps that go, `changed`
+    /// those that stop.
+    fn retire_body(
+        &mut self,
+        name: &str,
+        gone: &mut BTreeSet<String>,
+        changed: &mut BTreeSet<String>,
+    ) {
+        let writers: Vec<String> = self
+            .list("features")
+            .iter()
+            .filter(|feature| {
+                feature["outputs"]
+                    .as_array()
+                    .is_some_and(|outputs| outputs.iter().any(|o| o == name))
+            })
+            .filter_map(|feature| feature["id"].as_str().map(String::from))
+            .collect();
+        for id in writers {
+            let features = self.payload["features"]
+                .as_array_mut()
+                .expect("a feature list");
+            let Some(at) = features
+                .iter()
+                .position(|feature| feature["id"] == id.as_str())
+            else {
+                continue;
+            };
+            let feature = &mut features[at];
+            let dropped: Vec<String> = feature["dropped"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(String::from))
+                .collect();
+            let others = feature["outputs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .any(|output| output != name && !dropped.iter().any(|d| d == output));
+            if others {
+                let mut kept: BTreeSet<String> = dropped.into_iter().collect();
+                kept.insert(name.to_string());
+                feature["dropped"] = json!(kept);
+                changed.insert(id);
+                continue;
+            }
+            // Nothing left for it to write: it goes, and so do the bodies it used up, or deleting both halves of a
+            // split would hand back the undivided part.
+            let feature = features.remove(at);
+            gone.insert(id);
+            for source in crate::rebuild::consumed_bodies(&feature) {
+                if source != name {
+                    self.retire_body(&source, gone, changed);
+                }
+            }
+        }
+    }
+
+    /// `_prune_groups`: a group keeps only members that are bodies or groups, and an empty group goes.
+    fn prune_groups(&mut self) {
+        let bodies: HashSet<String> = self
+            .list("bodies")
+            .iter()
+            .filter_map(|b| b["name"].as_str().map(String::from))
+            .collect();
+        loop {
+            let names: HashSet<String> = self
+                .list("groups")
+                .iter()
+                .filter_map(|g| g["name"].as_str().map(String::from))
+                .collect();
+            let groups = self.groups_mut();
+            for group in groups.iter_mut() {
+                if let Some(members) = group["members"].as_array_mut() {
+                    members.retain(|m| {
+                        m.as_str()
+                            .is_some_and(|m| bodies.contains(m) || names.contains(m))
+                    });
+                }
+            }
+            let before = groups.len();
+            groups.retain(|group| group["members"].as_array().is_some_and(|m| !m.is_empty()));
+            if groups.len() == before {
+                break;
+            }
+        }
+    }
+
     fn groups_mut(&mut self) -> &mut Vec<Value> {
         if !self.payload["groups"].is_array() {
             self.payload["groups"] = json!([]);
@@ -900,11 +1301,18 @@ impl Model {
             );
             output_ids.insert(body.clone(), json!(object));
         }
-        if bodies.len() < 2 {
-            return Err("Choose two or more bodies to arrange.".into());
+        let pattern = inputs["pattern"]
+            .as_str()
+            .is_some_and(|pattern| pattern != "row");
+        if pattern {
+            self.arrangement_refs(bodies, &mut inputs, &mut bindings, shown, None)?;
+        } else {
+            if bodies.len() < 2 {
+                return Err("Choose two or more bodies to arrange.".into());
+            }
+            inputs["orient"] = json!(false);
         }
         inputs["bodies"] = Value::Array(refs);
-        inputs["orient"] = json!(false);
         if inputs.get("normal_offset").is_none() {
             inputs["normal_offset"] = json!("0");
         }
@@ -935,6 +1343,7 @@ impl Model {
             "scale" => "Scale",
             "boolean" => "Combine",
             "split" => "Split",
+            "draft" => "Draft",
             _ => return Err("Choose an operation.".into()),
         };
         if !inputs.is_object() {
@@ -942,6 +1351,39 @@ impl Model {
         }
         let (producer, object) = self.editable(body)?;
         inputs["body"] = json!({"__body__": body, "feature_id": producer, "object_id": object});
+        if kind == "draft" {
+            // `DraftFeature`'s inputs: the faces to taper as references, the pull and a point on the neutral plane.
+            let shape = shown
+                .get(&object)
+                .ok_or("Pick faces of a body with geometry.")?;
+            let picked = inputs["faces"]
+                .as_array()
+                .filter(|faces| !faces.is_empty())
+                .ok_or("Pick the faces to taper.")?
+                .clone();
+            let mut faces = Vec::new();
+            for face in picked {
+                let index = face
+                    .as_u64()
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or("Pick the faces to taper.")?;
+                faces.push(
+                    json!({ "__ref__": self.anchored_face_ref(body, &object, shape, index)? }),
+                );
+            }
+            inputs["faces"] = Value::Array(faces);
+            for key in ["neutral_plane", "pull_direction"] {
+                let point = inputs[key]
+                    .as_array()
+                    .map(|values| values.iter().filter_map(Value::as_f64).count());
+                if point != Some(3) {
+                    return Err(format!(
+                        "The draft's {} needs three coordinates.",
+                        key.replace('_', " ")
+                    ));
+                }
+            }
+        }
         let mut bindings = Map::from_iter([(
             body.to_owned(),
             json!({ "feature_id": producer, "object_id": object }),
@@ -992,6 +1434,190 @@ impl Model {
             "dropped": [], "suppressed": false,
         });
         self.add_rebuilt_recipe(candidate, feature, label, original, shown)
+    }
+
+    /// A face pattern edited from History, as SimpleCAD 0.4's Arrange panel saves it: the settings replaced whole,
+    /// each pick replaced when it was made again (`target_face`, `contact_faces` or `boundary_edges` sent) and kept
+    /// as saved otherwise. The arranged bodies stay those the step already moves.
+    pub fn edit_arrangement(
+        &mut self,
+        step_id: &str,
+        mut inputs: Value,
+        original: &[u8],
+        shown: &HashMap<String, crate::rebuild::Shape>,
+    ) -> Result<crate::rebuild::Report, String> {
+        let (position, mut updated) = self.recipe(step_id)?;
+        if updated["type"] != "arrange" || !inputs.is_object() {
+            return Err("The arrangement settings could not be read.".into());
+        }
+        if !inputs["pattern"]
+            .as_str()
+            .is_some_and(|pattern| pattern != "row")
+        {
+            return Err("Choose a pattern to lay the objects out in.".into());
+        }
+        let saved = updated["inputs"].clone();
+        let bodies: Vec<String> = saved["bodies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(crate::rebuild::alias)
+            .collect();
+        let mut bindings = updated["bindings"].as_object().cloned().unwrap_or_default();
+        let fields = inputs.as_object_mut().expect("an object");
+        if !fields.contains_key("target_face") && fields.get("target") != Some(&json!("plate")) {
+            for key in ["target_face", "target"] {
+                if let Some(value) = saved.get(key) {
+                    fields.insert(key.into(), value.clone());
+                }
+            }
+        }
+        for key in ["contact_faces", "boundary_edges"] {
+            if !fields.contains_key(key)
+                && let Some(value) = saved.get(key)
+            {
+                fields.insert(key.into(), value.clone());
+            }
+        }
+        self.arrangement_refs(&bodies, &mut inputs, &mut bindings, shown, Some(position))?;
+        let fields = inputs.as_object_mut().expect("an object");
+        fields.insert("bodies".into(), saved["bodies"].clone());
+        if !fields.contains_key("normal_offset") {
+            fields.insert("normal_offset".into(), json!("0"));
+        }
+        updated["inputs"] = inputs;
+        updated["bindings"] = Value::Object(bindings);
+        self.rebuild_recipe(position, updated, "Edit step", original, shown)
+    }
+
+    /// A face pattern's picks as SimpleCAD 0.4's Arrange panel records them: the target face (or the build plate),
+    /// a face for each body to stand on, and edges of the target face to keep the margin from. Each arrives as
+    /// `{"body", "index"}`; the target's body is bound like the arranged ones.
+    fn arrangement_refs(
+        &self,
+        bodies: &[String],
+        inputs: &mut Value,
+        bindings: &mut Map<String, Value>,
+        shown: &HashMap<String, crate::rebuild::Shape>,
+        position: Option<usize>,
+    ) -> Result<(), String> {
+        if bodies.is_empty() {
+            return Err("Select at least one object to arrange.".into());
+        }
+        let pick = |value: &Value| -> Option<(String, u32)> {
+            let body = value["body"].as_str()?.to_owned();
+            let index = u32::try_from(value["index"].as_u64()?).ok()?;
+            Some((body, index))
+        };
+        let shape_of = |object: &str| {
+            shown
+                .get(object)
+                .ok_or("Pick faces of a body with geometry.")
+        };
+        let saved = |value: &Value| value.get("__ref__").is_some();
+        let target = match inputs.get("target_face").filter(|value| !value.is_null()) {
+            // As saved: its body is bound already.
+            Some(value) if saved(value) => {
+                let body = value["__ref__"]["body"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let object = bindings
+                    .get(&body)
+                    .and_then(|b| b["object_id"].as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                Some((body, object))
+            }
+            Some(value) => {
+                let (body, index) = pick(value)
+                    .ok_or("Click the face to arrange the objects on, or use the build plate.")?;
+                if bodies.contains(&body) {
+                    return Err("That face is on one of the objects being arranged. Pick another object's face.".into());
+                }
+                let (producer, object) = match position {
+                    None => self.editable(&body)?,
+                    Some(position) => {
+                        self.latest_before(position).remove(&body).ok_or_else(|| {
+                            format!(
+                                "{body} was made after this arrangement; arrange it separately."
+                            )
+                        })?
+                    }
+                };
+                let shape = shape_of(&object)?;
+                let face = occt::sub_face(shape, index).map_err(|error| error.what().to_owned())?;
+                let flat = occt::plane_frame(&face)
+                    .map_err(|error| error.what().to_owned())?
+                    .planar;
+                if !flat
+                    && !occt::cylinder_data(&face)
+                        .map_err(|error| error.what().to_owned())?
+                        .cylindrical
+                {
+                    return Err("Pick a flat face, or the round side of a cylinder.".into());
+                }
+                inputs["target_face"] =
+                    json!({ "__ref__": self.anchored_face_ref(&body, &object, shape, index)? });
+                bindings.insert(
+                    body.clone(),
+                    json!({ "feature_id": producer, "object_id": object }),
+                );
+                Some((body, object))
+            }
+            None if inputs["target"] == "plate" => None,
+            None => {
+                return Err(
+                    "Click the face to arrange the objects on, or use the build plate.".into(),
+                );
+            }
+        };
+        // Each pick a body and index, or a reference as saved.
+        type Picks = (Vec<Value>, Vec<(String, u32)>);
+        let picks = |key: &str| -> Result<Picks, String> {
+            let list = match inputs.get(key) {
+                None | Some(Value::Null) => return Ok(Default::default()),
+                Some(Value::Array(list)) => list,
+                Some(_) => return Err(format!("The {key} could not be read.")),
+            };
+            let (kept, new): (Vec<&Value>, Vec<&Value>) = list.iter().partition(|v| saved(v));
+            let new = new
+                .into_iter()
+                .map(|v| pick(v).ok_or_else(|| format!("The {key} could not be read.")))
+                .collect::<Result<_, _>>()?;
+            Ok((kept.into_iter().cloned().collect(), new))
+        };
+        let (mut contacts, picked) = picks("contact_faces")?;
+        for (body, index) in picked {
+            if !bodies.contains(&body) {
+                return Err("Click a flat face on one of the objects being arranged.".into());
+            }
+            let object = bindings[&body]["object_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            contacts.push(json!({ "__ref__": self.anchored_face_ref(&body, &object, shape_of(&object)?, index)? }));
+        }
+        let (mut edges, picked) = picks("boundary_edges")?;
+        for (body, index) in picked {
+            let Some((target_body, object)) = target.as_ref().filter(|(name, _)| *name == body)
+            else {
+                return Err("Only edges of the target face can bound it.".into());
+            };
+            edges.push(
+                json!({ "__ref__": self.edge_ref(target_body, object, shape_of(object)?, index)? }),
+            );
+        }
+        let fields = inputs.as_object_mut().expect("an object");
+        for (key, list) in [("contact_faces", contacts), ("boundary_edges", edges)] {
+            if list.is_empty() {
+                fields.remove(key);
+            } else {
+                fields.insert(key.into(), Value::Array(list));
+            }
+        }
+        fields.insert("frame_mode".into(), json!("reference"));
+        Ok(())
     }
 
     /// An edge reference as SimpleCAD 0.4's edge tools write it: the curve, and its faces' summaries.
@@ -1123,8 +1749,11 @@ impl Model {
             .filter(|count| *count <= MAX_CONNECTORS)
             .ok_or("Choose up to 64 connectors, or 0 to space them out.")?;
         let style = inputs["style"].as_str().unwrap_or("connector").to_owned();
-        if !["connector", "snap_tab", "tab_slot"].contains(&style.as_str()) {
-            return Err("Choose a printed connector, snap tab or tab & slot joint.".into());
+        let sliding = ["dovetail", "t_rail", "tongue_groove"].contains(&style.as_str());
+        if !sliding && !["connector", "snap_tab", "tab_slot"].contains(&style.as_str()) {
+            return Err(
+                "Choose a printed connector, snap tab, tab & slot or sliding joint.".into(),
+            );
         }
         let connectors = style == "connector";
         let male = match inputs["male"].as_str() {
@@ -1186,6 +1815,44 @@ impl Model {
             ("connector_names", json!(names)),
         ] {
             inputs[key] = value;
+        }
+        let settings = inputs
+            .as_object_mut()
+            .ok_or("The clip settings could not be read.")?;
+        let slide = settings.remove("slide");
+        if sliding {
+            // As SimpleCAD 0.4's Joint tool saves rails: no count, anchors, spacing, shift, turn, size or retention.
+            let slide = slide
+                .filter(Value::is_object)
+                .ok_or("The rail settings could not be read.")?;
+            for key in [
+                "count",
+                "anchors",
+                "spacing",
+                "shift",
+                "rotation",
+                "size",
+                "retention",
+            ] {
+                settings.remove(key);
+            }
+            for key in [
+                "rails",
+                "insertion",
+                "female_mode",
+                "stop",
+                "rail_width",
+                "rail_height",
+                "rail_angle",
+                "rail_length",
+            ] {
+                settings.insert(key.into(), slide[key].clone());
+            }
+            if slide["detent"] == json!(false) {
+                settings.insert("detent".into(), json!(0));
+            }
+        } else {
+            settings.remove("slid_apart");
         }
         if inputs["seat"] == json!(true) {
             inputs["seat_x"] = json!(0.0);
@@ -1531,9 +2198,22 @@ impl Model {
     }
 
     fn has_history(&self, stack: &str) -> bool {
-        self.payload["history"][stack]
-            .as_array()
-            .is_some_and(|entries| !entries.is_empty())
+        self.history_len(stack) > 0
+    }
+
+    /// How many steps there are to undo (`"undo"`) or redo (`"redo"`).
+    pub fn history_len(&self, stack: &str) -> usize {
+        self.history.stack(stack).map_or(0, Vec::len)
+    }
+
+    /// The `history` as `model.json` has it.
+    pub fn history(&self) -> Value {
+        self.history.value().unwrap_or(Value::Null)
+    }
+
+    /// Replaces the history, as `model.json` would have it.
+    pub fn set_history(&mut self, history: Value) {
+        self.history = History::read(Some(history));
     }
 
     pub fn undo(&mut self) -> Result<(), String> {
@@ -1546,6 +2226,7 @@ impl Model {
 
     fn move_cached_history(&mut self, redo: bool) -> Result<(), String> {
         let previous = self.payload.clone();
+        let previous_history = self.history.clone();
         let producers = self.latest();
         let before =
             signatures(&self.payload).ok_or("This project's steps could not be fingerprinted.")?;
@@ -1554,42 +2235,62 @@ impl Model {
             .and_then(|_| self.show_cached_results(&producers, &before));
         if result.is_err() {
             self.payload = previous;
+            self.history = previous_history;
         }
         result
     }
 
     /// Move a saved patch between the history stacks. The caller rebuilds at
     /// the desired history point, reusing cached outputs for its signatures.
+    /// On an error the model may be left part-way: callers discard or restore it.
     pub fn move_history(&mut self, redo: bool) -> Result<BTreeSet<String>, String> {
+        let current =
+            signatures(&self.payload).ok_or("This project's history could not be read.")?;
+        Ok(self.move_history_from(redo, current)?.0)
+    }
+
+    /// `move_history`, given the model's signatures as it is now. Also returns
+    /// them as it is after, worked out again only for the steps the move touches.
+    pub fn move_history_from(
+        &mut self,
+        redo: bool,
+        current: BTreeMap<String, String>,
+    ) -> Result<(BTreeSet<String>, BTreeMap<String, String>), String> {
         let unreadable = || "This project's history could not be read.".to_string();
         let (source, destination) = if redo {
             ("redo", "undo")
         } else {
             ("undo", "redo")
         };
-        let history = &self.payload["history"];
-        let action = history[source]
-            .as_array()
+        let action = self
+            .history
+            .stack(source)
             .and_then(|stack| stack.last())
             .cloned()
             .ok_or_else(|| format!("There is nothing to {source}."))?;
         if !action["patch"].is_object()
             || !action["label"].is_string()
-            || !(history[destination].is_array() || history.get(destination).is_none())
+            || !self.history.writable(destination)
         {
             return Err(unreadable());
         }
-        let current = signatures(&self.payload).ok_or_else(unreadable)?;
         let patch = &action["patch"];
         let inverse = self.inverse_patch(patch);
-        let old = self.payload.clone();
+        let before = graph(&self.payload);
         let stale = self.apply_patch(patch);
-        let mut stale_all = dependents(&old, &stale);
-        stale_all.extend(dependents(&self.payload, &stale));
-        let Some(next) = signatures(&self.payload) else {
-            self.payload = old;
-            return Err(unreadable());
-        };
+        let after = graph(&self.payload);
+        let mut stale_all = dependents_in(&before, &stale);
+        stale_all.extend(dependents_in(&after, &stale));
+        // A step's signature follows from its own state, those upstream and the
+        // parameters, so only steps downstream of a changed one can differ.
+        let next = if patch["collections"]["parameters"].is_object() {
+            signatures(&self.payload)
+        } else {
+            let changed = dependents_in(&after, &stale_all);
+            crate::signatures::signatures_after(&self.payload, &current, &changed)
+        }
+        .ok_or_else(unreadable)?;
+        debug_assert_eq!(Some(&next), signatures(&self.payload).as_ref());
         stale_all.extend(
             current
                 .keys()
@@ -1601,24 +2302,22 @@ impl Model {
         cache_keys.sort();
         cache_keys.dedup();
         let entry = json!({ "label": action["label"], "patch": inverse, "cache_keys": cache_keys });
-        self.payload["history"][source]
-            .as_array_mut()
-            .unwrap()
-            .pop();
-        self.payload["history"]
-            .as_object_mut()
-            .unwrap()
-            .entry(destination)
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .unwrap()
-            .push(entry);
-        Ok(stale_all)
+        self.history.stack_mut(destination)?.push(Arc::new(entry));
+        self.history.stack_mut(source)?.pop();
+        Ok((stale_all, next))
     }
 
     /// `History._inverse_patch`: what puts back the entities `patch` names, as they are now.
     fn inverse_patch(&self, patch: &Value) -> Value {
-        let document = self.document();
+        // `self.document()`, read in place: only the entities the patch names are copied.
+        let null = Value::Null;
+        let document = |key: &str| {
+            if DOCUMENT_KEYS.contains(&key) {
+                &self.payload[key]
+            } else {
+                &null
+            }
+        };
         let mut inverse = json!({ "values": {}, "collections": {} });
         for key in patch["values"]
             .as_object()
@@ -1628,7 +2327,7 @@ impl Model {
         {
             let value = match key.as_str() {
                 "title" | "counters" | "retired_ids" | "metadata" | "assets" => {
-                    document[key].clone()
+                    document(key).clone()
                 }
                 _ => Value::Null,
             };
@@ -1636,7 +2335,7 @@ impl Model {
         }
         for (key, change) in patch["sets"].as_object().into_iter().flatten() {
             let present: HashSet<&str> = match key.as_str() {
-                "retired_ids" => document["retired_ids"]
+                "retired_ids" => document("retired_ids")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -1652,7 +2351,7 @@ impl Model {
         }
         for (key, change) in patch["keyed"].as_object().into_iter().flatten() {
             let empty = Map::new();
-            let mapping = document[key].as_object().unwrap_or(&empty);
+            let mapping = document(key).as_object().unwrap_or(&empty);
             let touched = touched(change);
             inverse["keyed"][key] = json!({
                 "set": touched.iter().filter_map(|k| Some((k.clone(), mapping.get(k)?.clone()))).collect::<Map<_, _>>(),
@@ -1664,25 +2363,46 @@ impl Model {
                 .iter()
                 .find(|(c, _)| c == key)
                 .map_or("id", |(_, i)| *i);
-            let items: Vec<(String, Value)> = document[key]
+            let items: Vec<(&str, &Value)> = document(key)
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|item| {
-                    let mut item = item.clone();
+                .map(|item| (item[identity].as_str().unwrap_or(""), item))
+                .collect();
+            let touched = touched(change);
+            let set: Map<String, Value> = items
+                .iter()
+                .filter(|(i, _)| touched.contains(*i))
+                .map(|(i, item)| {
+                    let mut item = (*item).clone();
                     // `Group.to_dict`, without the member ids the document adds.
                     if key == "groups" {
                         item.as_object_mut().map(|g| g.remove("member_ids"));
                     }
-                    (item[identity].as_str().unwrap_or("").to_string(), item)
+                    (i.to_string(), item)
                 })
                 .collect();
-            let touched = touched(change);
-            inverse["collections"][key] = json!({
-                "set": items.iter().filter(|(i, _)| touched.contains(i)).map(|(i, v)| (i.clone(), v.clone())).collect::<Map<_, _>>(),
-                "remove": touched.iter().filter(|t| !items.iter().any(|(i, _)| i == *t)).collect::<Vec<_>>(),
-                "order": if change["order"].is_null() { Value::Null } else { json!(items.iter().map(|(i, _)| i).collect::<Vec<_>>()) },
-            });
+            let present: HashSet<&str> = items.iter().map(|(i, _)| *i).collect();
+            let mut entry = Map::new();
+            entry.insert("set".into(), Value::Object(set));
+            entry.insert(
+                "remove".into(),
+                json!(
+                    touched
+                        .iter()
+                        .filter(|t| !present.contains(t.as_str()))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            entry.insert(
+                "order".into(),
+                if change["order"].is_null() {
+                    Value::Null
+                } else {
+                    json!(items.iter().map(|(i, _)| i).collect::<Vec<_>>())
+                },
+            );
+            inverse["collections"][key] = Value::Object(entry);
         }
         inverse
     }
@@ -1700,12 +2420,15 @@ impl Model {
             let Some(change) = collections.get(*key).filter(|c| c.is_object()) else {
                 continue;
             };
-            let list = self.list(key);
-            let existing: Vec<String> = list
-                .iter()
-                .map(|v| v[*identity].as_str().unwrap_or("").to_string())
+            // Taken, not copied; the list goes back below.
+            let list = match self.payload.get_mut(*key).map(Value::take) {
+                Some(Value::Array(list)) => list,
+                _ => Vec::new(),
+            };
+            let mut current: Vec<(String, Value)> = list
+                .into_iter()
+                .map(|v| (v[*identity].as_str().unwrap_or("").to_string(), v))
                 .collect();
-            let mut current: Vec<(String, Value)> = existing.iter().cloned().zip(list).collect();
             for ident in change["remove"]
                 .as_array()
                 .into_iter()
@@ -1769,16 +2492,35 @@ impl Model {
                     .collect(),
                 _ => current.iter().map(|(i, _)| i.clone()).collect(),
             };
-            let mut ordered: Vec<Value> = order
-                .iter()
-                .filter_map(|i| current.iter().find(|(c, _)| c == i).map(|(_, v)| v.clone()))
-                .collect();
-            ordered.extend(
-                current
-                    .iter()
-                    .filter(|(i, _)| !order.contains(i))
-                    .map(|(_, v)| v.clone()),
-            );
+            // The first entity of each ordered id, then the ones the order leaves out, moved
+            // rather than copied (a repeated id, in a damaged file, is copied as before).
+            let (ids, mut values): (Vec<String>, Vec<Option<Value>>) =
+                current.into_iter().map(|(i, v)| (i, Some(v))).unzip();
+            let mut first: HashMap<&str, usize> = HashMap::new();
+            for (at, id) in ids.iter().enumerate() {
+                first.entry(id.as_str()).or_insert(at);
+            }
+            let in_order: HashSet<&str> = order.iter().map(String::as_str).collect();
+            let mut ordered: Vec<Value> = Vec::with_capacity(values.len());
+            let mut placed: HashMap<usize, usize> = HashMap::new();
+            for id in &order {
+                if let Some(&at) = first.get(id.as_str()) {
+                    match values[at].take() {
+                        Some(value) => {
+                            placed.insert(at, ordered.len());
+                            ordered.push(value);
+                        }
+                        None => ordered.push(ordered[placed[&at]].clone()),
+                    }
+                }
+            }
+            for (at, id) in ids.iter().enumerate() {
+                if !in_order.contains(id.as_str())
+                    && let Some(value) = values[at].take()
+                {
+                    ordered.push(value);
+                }
+            }
             self.payload[*key] = Value::Array(ordered);
         }
         let payload = self.payload.as_object_mut().unwrap();
@@ -1845,18 +2587,23 @@ impl Model {
                 }
                 continue;
             }
-            // ponytail: a "located" result (a move) would need its placement
-            // applied to a copy; undo reaches only pulls and new boxes so far.
+            // A "located" result (a move) is its base's blob and a placement, as `rebuild` holds it.
             let output = &self.payload["cache"]["entries"][&signature]["outputs"][&object];
             let Some(sha) = output["sha256"]
                 .as_str()
-                .filter(|_| output["kind"] == "brep")
+                .filter(|_| output["kind"] == "brep" || output["kind"] == "located")
             else {
                 return Err(format!(
                     "\"{name}\" must be rebuilt to restore this history step."
                 ));
             };
-            geometry.insert(object, json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true }));
+            let mut entry = json!({ "sha256": sha, "feature_id": producer, "signature": signature, "current": true });
+            if let Some(placement) =
+                crate::rebuild::location(output).filter(|_| output["kind"] == "located")
+            {
+                entry["location"] = json!(placement);
+            }
+            geometry.insert(object, entry);
         }
         let diagnostics: Map<String, Value> = self
             .list("features")
@@ -1914,9 +2661,7 @@ impl Model {
         offset: [f64; 3],
     ) -> Result<Vec<String>, String> {
         let before = self.document();
-        let undo_len = self.payload["history"]["undo"]
-            .as_array()
-            .map_or(0, Vec::len);
+        let undo_len = self.history_len("undo");
         let mut names = Vec::with_capacity(parts.len());
         for ImportedPart {
             name: label,
@@ -1925,19 +2670,7 @@ impl Model {
             note,
         } in parts
         {
-            let asset = format!("{:x}", Sha256::digest(&brep));
-            let assets = self
-                .payload
-                .as_object_mut()
-                .ok_or("Invalid project.")?
-                .entry("assets")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or("This project's assets could not be read.")?;
-            if !assets.iter().any(|other| other == &asset) {
-                assets.push(json!(&asset));
-                assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
-            }
+            let asset = self.add_asset(&brep)?;
             let [dx, dy, dz] = offset;
             let mut inputs = json!({ "asset": asset, "dx": dx, "dy": dy, "dz": dz });
             if !note.is_empty() {
@@ -1950,20 +2683,35 @@ impl Model {
                 inputs,
                 placed,
             )?;
-            self.blobs
-                .entry(asset.clone())
-                .or_insert_with(|| brep.into());
-            self.new_assets.insert(asset);
             names.push(name);
         }
         if !names.is_empty() {
-            self.payload["history"]["undo"]
-                .as_array_mut()
-                .unwrap()
-                .truncate(undo_len);
+            self.history.stack_mut("undo")?.truncate(undo_len);
             self.push_undo("Import", before)?;
         }
         Ok(names)
+    }
+
+    /// A BREP added to the project's assets, saved with it, by its SHA-256.
+    fn add_asset(&mut self, brep: &[u8]) -> Result<String, String> {
+        let asset = format!("{:x}", Sha256::digest(brep));
+        let assets = self
+            .payload
+            .as_object_mut()
+            .ok_or("Invalid project.")?
+            .entry("assets")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or("This project's assets could not be read.")?;
+        if !assets.iter().any(|other| other == &asset) {
+            assets.push(json!(&asset));
+            assets.sort_unstable_by(|a, b| a.as_str().cmp(&b.as_str()));
+        }
+        self.blobs
+            .entry(asset.clone())
+            .or_insert_with(|| brep.to_vec().into());
+        self.new_assets.insert(asset.clone());
+        Ok(asset)
     }
 
     fn record_primitive(
@@ -2027,23 +2775,14 @@ impl Model {
 
     fn push_undo(&mut self, label: &str, before: Value) -> Result<(), String> {
         let patch = make_patch(&self.document(), &before);
-        let history = self
-            .payload
-            .as_object_mut()
-            .unwrap()
-            .entry("history")
-            .or_insert_with(|| json!({}));
-        let history = history
-            .as_object_mut()
-            .ok_or("This project's history could not be read.")?;
-        history.entry("version").or_insert(json!(1));
-        history
-            .entry("undo")
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or("This project's history could not be read.")?
-            .push(json!({ "label": label, "patch": patch, "cache_keys": [] }));
-        history.insert("redo".into(), json!([]));
+        self.history.stack_mut("undo")?.push(Arc::new(
+            json!({ "label": label, "patch": patch, "cache_keys": [] }),
+        ));
+        if let Some(rest) = self.history.rest.as_object_mut() {
+            rest.entry("version").or_insert(json!(1));
+            rest.shift_remove("redo");
+        }
+        self.history.redo = Some(Vec::new());
         Ok(())
     }
 
@@ -2067,8 +2806,43 @@ impl Model {
         let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         let mut payload = self.payload.clone();
+        if let Some(history) = self.history.value() {
+            payload["history"] = history;
+        }
         payload["format"] = json!(crate::project::FORMAT_VERSION);
         payload["application"] = json!("SimpleCAD");
+        // A moved body is held as its base's blob and a placement (`rebuild`); the file gets the body itself, as
+        // SimpleCAD 0.4 saves every body.
+        let mut placed = BTreeMap::new();
+        if let Some(geometry) = payload["geometry"].as_object_mut() {
+            for entry in geometry.values_mut() {
+                let Some(placement) = crate::rebuild::location(entry) else {
+                    continue;
+                };
+                let base = entry["sha256"].as_str().unwrap_or_default().to_owned();
+                let blob = match self.blobs.get(&base) {
+                    Some(blob) => blob.to_vec(),
+                    None => {
+                        let mut bytes = Vec::new();
+                        source
+                            .by_name(&format!("geometry/{base}.brep"))
+                            .map_err(|e| damaged(&e))?
+                            .read_to_end(&mut bytes)
+                            .map_err(|e| damaged(&e))?;
+                        bytes
+                    }
+                };
+                let kernel = |e: occt::Exception| damaged(&e.what());
+                let shape = occt::read_brep(&blob).map_err(kernel)?;
+                let moved = occt::located(&shape, &placement).map_err(kernel)?;
+                let bytes = occt::write_brep(&moved).map_err(kernel)?;
+                let sha = format!("{:x}", Sha256::digest(&bytes));
+                entry["sha256"] = json!(sha);
+                entry.as_object_mut().expect("an entry").remove("location");
+                placed.insert(sha, bytes);
+            }
+        }
+        placed.retain(|sha, _| !self.blobs.contains_key(sha));
         out.start_file("model.json", options)
             .map_err(|e| damaged(&e))?;
         out.write_all(&serde_json::to_vec_pretty(&payload).map_err(|e| damaged(&e))?)
@@ -2080,7 +2854,7 @@ impl Model {
             let replaced = name
                 .strip_prefix("geometry/")
                 .and_then(|name| name.strip_suffix(".brep"))
-                .is_some_and(|sha| self.blobs.contains_key(sha))
+                .is_some_and(|sha| self.blobs.contains_key(sha) || placed.contains_key(sha))
                 || name
                     .strip_prefix("assets/")
                     .and_then(|name| name.strip_suffix(".brep"))
@@ -2093,7 +2867,8 @@ impl Model {
             out.start_file(name, options).map_err(|e| damaged(&e))?;
             out.write_all(&bytes).map_err(|e| damaged(&e))?;
         }
-        for (sha, blob) in &self.blobs {
+        let blobs = self.blobs.iter().map(|(sha, blob)| (sha, &blob[..]));
+        for (sha, blob) in blobs.chain(placed.iter().map(|(sha, bytes)| (sha, &bytes[..]))) {
             let name = format!("geometry/{sha}.brep");
             out.start_file(name, options).map_err(|e| damaged(&e))?;
             out.write_all(blob).map_err(|e| damaged(&e))?;
@@ -2124,6 +2899,27 @@ fn touched(change: &Value) -> BTreeSet<String> {
         .flatten()
         .filter_map(|v| v.as_str().map(String::from));
     set.chain(removed).collect()
+}
+
+/// What a face pattern's panel shows of its picks when History edits it: the arranged bodies (as JSON), the target
+/// face's body (empty for the build plate) and how many contact faces and edges were picked.
+fn arrangement_picks(feature: &Value, settings: &mut HashMap<String, String>) {
+    let inputs = &feature["inputs"];
+    let names: Vec<String> = inputs["bodies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(crate::rebuild::alias)
+        .collect();
+    settings.insert("bodies".into(), json!(names).to_string());
+    let target = inputs["target_face"]["__ref__"]["body"]
+        .as_str()
+        .unwrap_or_default();
+    settings.insert("target_body".into(), target.into());
+    for key in ["contact_faces", "boundary_edges"] {
+        let count = inputs[key].as_array().map_or(0, Vec::len);
+        settings.insert(key.into(), count.to_string());
+    }
 }
 
 /// `DependencyGraph.dependents`: `ids` and every step downstream of them.
@@ -2179,7 +2975,41 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
         "scale" => &["factor"],
         "boolean" => &["operation", "keep_tool"],
         "split" => &["position"],
-        "arrange" => &["mode", "axis", "gap"],
+        "draft" => &["angle"],
+        // A row's own three; a face pattern's settings (edited whole, see `edit_arrangement`) are shown with them.
+        "arrange" => &[
+            "mode",
+            "axis",
+            "gap",
+            "pattern",
+            "spacing",
+            "boundary",
+            "margin",
+            "rotation",
+            "normal_offset",
+            "contain",
+            "avoid_holes",
+            "avoid_bodies",
+            "auto_rotate",
+            "orient",
+            "direction",
+            "align",
+            "rows",
+            "columns",
+            "gap_y",
+            "fill",
+            "distribute",
+            "radius",
+            "start_angle",
+            "face_center",
+            "inset_left",
+            "inset_right",
+            "inset_top",
+            "inset_bottom",
+            "move_x",
+            "move_y",
+            "move_normal",
+        ],
         "section_replace" => &["u", "v", "boundary", "setback"],
         "threaded_connection" => &["designation", "clearance", "form", "length"],
         // Not the connector count, which decides the step's outputs.
@@ -2193,6 +3023,13 @@ fn body_edit_fields(kind: &Value) -> Option<&'static [&'static str]> {
             "lead_in",
             "spacing",
             "edge_offset",
+            // A sliding joint's rails.
+            "rails",
+            "rail_width",
+            "rail_height",
+            "rail_angle",
+            "rail_length",
+            "stop",
         ],
         // Not its type: a pin hinge has a pin body the others do not.
         "hinge" => &[
@@ -2371,8 +3208,12 @@ fn missing_references(step: &Value, available: &HashSet<&str>) -> Vec<MissingInp
 }
 
 fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
-    let mut found = ids.clone();
-    let features: Vec<(String, BTreeSet<String>)> = model["features"]
+    dependents_in(&graph(model), ids)
+}
+
+/// Each step's id and the steps it reads from.
+fn graph(model: &Value) -> Vec<(String, BTreeSet<String>)> {
+    model["features"]
         .as_array()
         .into_iter()
         .flatten()
@@ -2380,10 +3221,17 @@ fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
             let id = f["id"].as_str()?;
             Some((id.to_string(), crate::signatures::upstream(f, id)))
         })
-        .collect();
+        .collect()
+}
+
+fn dependents_in(
+    features: &[(String, BTreeSet<String>)],
+    ids: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut found = ids.clone();
     loop {
         let before = found.len();
-        for (id, upstream) in &features {
+        for (id, upstream) in features {
             if upstream.iter().any(|u| found.contains(u)) {
                 found.insert(id.clone());
             }
@@ -2392,6 +3240,88 @@ fn dependents(model: &Value, ids: &BTreeSet<String>) -> BTreeSet<String> {
             return found;
         }
     }
+}
+
+/// A translation, and a turn about the origin as a unit axis and degrees.
+type RigidMotion = ([f64; 3], Option<([f64; 3], f64)>);
+
+/// The rigid motion taking `from` onto `to`, when `to` is `from` moved: the translation, and the turn about the
+/// origin as a unit axis and degrees (none when it does not turn). Their vertices, which a moved copy lists in the
+/// same order, must all land within 1e-6 of the part's size.
+fn rigid_fit(from: &occt::Shape, to: &occt::Shape) -> Option<RigidMotion> {
+    type V = [f64; 3];
+    let points = |shape: &occt::Shape| -> Option<Vec<V>> {
+        Some(
+            occt::vertex_fingerprints(shape)
+                .ok()?
+                .iter()
+                .map(|v| v.center)
+                .collect(),
+        )
+    };
+    let (a, b) = (points(from)?, points(to)?);
+    if a.len() != b.len() || a.len() < 3 {
+        return None;
+    }
+    let sub = |p: V, q: V| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    let dot = |p: V, q: V| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    let cross = |p: V, q: V| {
+        [
+            p[1] * q[2] - p[2] * q[1],
+            p[2] * q[0] - p[0] * q[2],
+            p[0] * q[1] - p[1] * q[0],
+        ]
+    };
+    let unit = |p: V| {
+        let n = dot(p, p).sqrt();
+        (n > 1e-9).then(|| [p[0] / n, p[1] / n, p[2] / n])
+    };
+    // Three well-spread vertices: the first, the farthest from it, and the farthest from the line through both.
+    let far = (1..a.len()).max_by(|&i, &j| {
+        dot(sub(a[i], a[0]), sub(a[i], a[0])).total_cmp(&dot(sub(a[j], a[0]), sub(a[j], a[0])))
+    })?;
+    let off = |i: usize| {
+        let c = cross(sub(a[far], a[0]), sub(a[i], a[0]));
+        dot(c, c)
+    };
+    let side = (1..a.len()).max_by(|&i, &j| off(i).total_cmp(&off(j)))?;
+    let frame = |p: &[V]| -> Option<[V; 3]> {
+        let x = unit(sub(p[far], p[0]))?;
+        let z = unit(cross(x, sub(p[side], p[0])))?;
+        Some([x, cross(z, x), z])
+    };
+    let (fa, fb) = (frame(&a)?, frame(&b)?);
+    // R = Fb · Faᵀ, with each frame's axes as its columns.
+    let r: [V; 3] =
+        std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| fb[k][i] * fa[k][j]).sum()));
+    let turn = |p: V| -> V { std::array::from_fn(|i| dot(r[i], p)) };
+    let t = sub(b[0], turn(a[0]));
+    let size = a
+        .iter()
+        .map(|p| dot(sub(*p, a[0]), sub(*p, a[0])).sqrt())
+        .fold(1.0, f64::max);
+    let fits = a.iter().zip(&b).all(|(p, q)| {
+        let d = sub(sub(*q, turn(*p)), t);
+        dot(d, d).sqrt() <= 1e-6 * size
+    });
+    if !fits {
+        return None;
+    }
+    let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0);
+    let angle = cos.acos();
+    if angle < 1e-12 {
+        return Some((t, None));
+    }
+    let axis = if angle < std::f64::consts::PI - 1e-6 {
+        unit([r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]])?
+    } else {
+        // A half turn: the axis is the column of R + I with the largest diagonal.
+        let k = (0..3).max_by(|&i, &j| r[i][i].total_cmp(&r[j][j]))?;
+        unit(std::array::from_fn(|i| {
+            r[i][k] + if i == k { 1.0 } else { 0.0 }
+        }))?
+    };
+    Some((t, Some((axis, angle.to_degrees()))))
 }
 
 /// `Feature.__init__`'s id for a new step.

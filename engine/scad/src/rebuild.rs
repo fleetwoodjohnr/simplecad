@@ -28,7 +28,10 @@ pub type Shape = Rc<occt::UniquePtr<occt::Shape>>;
 #[derive(Clone)]
 struct Part {
     value: Geometry,
+    /// The blob holding exactly this shape.
     sha: Option<String>,
+    /// Or the blob of the shape it is a moved copy of, and where it is placed (a "located" result).
+    base: Option<(String, Vec<f64>)>,
 }
 
 #[derive(Clone)]
@@ -39,6 +42,13 @@ enum Geometry {
 }
 
 impl Part {
+    /// A blob this shape, or any moved copy of it, can be saved against: its own, or its base's.
+    fn blob(&self) -> Option<&str> {
+        self.sha
+            .as_deref()
+            .or(self.base.as_ref().map(|(sha, _)| sha.as_str()))
+    }
+
     fn shape(&self) -> Option<&Shape> {
         match &self.value {
             Geometry::Brep(shape) => Some(shape),
@@ -49,10 +59,53 @@ impl Part {
 
 type Outputs = BTreeMap<String, Part>;
 
+/// A "located" result's placement: its 3×4 matrix, row by row.
+pub(crate) fn location(output: &Value) -> Option<Vec<f64>> {
+    let matrix: Vec<f64> = output["location"]
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_f64)
+        .collect();
+    (matrix.len() == 12).then_some(matrix)
+}
+
+/// What `step` last made for `object`, as its saved result holds it (a "located" result placed).
+pub(crate) fn saved_output(
+    model: &Model,
+    original: &[u8],
+    step: &str,
+    object: &str,
+) -> Option<Shape> {
+    let signature = signatures(&model.payload)?.remove(step)?;
+    let entry = &model.payload["cache"]["entries"][&signature];
+    if entry["feature_id"] != step {
+        return None;
+    }
+    let output = &entry["outputs"][object];
+    let mut store = Store {
+        original: (!original.is_empty())
+            .then(|| zip::ZipArchive::new(Cursor::new(original)).ok())
+            .flatten(),
+        model_blobs: &model.blobs,
+        decoded: HashMap::new(),
+        import_sources: HashMap::new(),
+        shown: HashMap::new(),
+    };
+    let shape = store.decode(output["sha256"].as_str()?)?;
+    match output["kind"].as_str()? {
+        "brep" => Some(shape),
+        "located" => Some(Rc::new(occt::located(&shape, &location(output)?).ok()?)),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 struct BoundInputs {
     bodies: HashMap<String, Shape>,
     sketches: HashMap<String, Rc<Value>>,
+    /// Each input body's partner geometry (`occt::shape_partner`) and a blob it is saved against, so an output that
+    /// only moves one is saved as "located" on that blob, as SimpleCAD 0.4's `ResultStore.put` does.
+    blobs: Vec<(u64, String)>,
 }
 
 /// Why a step has no result: `CadError`, or `ReferenceLost` when `lost`.
@@ -96,6 +149,10 @@ pub struct Report {
     /// Each failed step's message, by step id.
     pub failures: BTreeMap<String, String>,
     pub rebuilt: Vec<String>,
+    /// The model's step signatures as the rebuild leaves it.
+    pub signatures: BTreeMap<String, String>,
+    /// What steps said beyond their message, by step id: a previewed arrangement's fit.
+    pub notes: BTreeMap<String, Value>,
 }
 
 /// What a step reads when it runs (`BuildContext`).
@@ -107,6 +164,8 @@ pub struct Context<'a> {
     parameters: &'a HashMap<String, f64>,
     /// What the step says about its result (`feature.message`).
     message: std::cell::RefCell<String>,
+    /// What a preview shows beside the result (`feature.annotations`).
+    note: std::cell::RefCell<Option<Value>>,
 }
 
 impl Context<'_> {
@@ -123,6 +182,7 @@ impl Context<'_> {
             sketches: HashMap::new(),
             parameters,
             message: Default::default(),
+            note: Default::default(),
         }
     }
 
@@ -152,6 +212,15 @@ impl Context<'_> {
 
     pub(crate) fn set_message(&self, message: String) {
         *self.message.borrow_mut() = message;
+    }
+
+    pub(crate) fn set_note(&self, note: Value) {
+        *self.note.borrow_mut() = Some(note);
+    }
+
+    /// The bodies bound to the step, by name.
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = (&String, &Shape)> {
+        self.bodies.iter()
     }
 
     pub(crate) fn into_message(self) -> String {
@@ -261,6 +330,21 @@ impl Context<'_> {
         let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
         let index = resolve_edge(reference, &edges)?;
         Ok((shape, index))
+    }
+
+    /// `ctx.resolve` of a list of edge references: each one's body and index.
+    pub(crate) fn edges(&self, key: &str) -> Result<Vec<(Shape, u32)>, StepError> {
+        let Some(Value::Array(refs)) = self.input(key) else {
+            return Ok(Vec::new());
+        };
+        refs.iter()
+            .map(|r| {
+                let (reference, shape) = self.referenced_shape(Some(r))?;
+                let edges = occt::edge_fingerprints(&shape).map_err(kernel)?;
+                let index = resolve_edge(reference, &edges)?;
+                Ok((shape, index))
+            })
+            .collect()
     }
 
     fn referenced_shape<'a>(
@@ -382,15 +466,14 @@ fn similarity(
 /// `naming.resolve` for a face: the hinted face when it is certainly the one,
 /// else the one best match, never a doubtful one.
 fn resolve_face(reference: &Value, shape: &Shape) -> Result<u32, StepError> {
-    let count = occt::faces(shape).map_err(kernel)?.len() as u32;
     let fingerprint = &reference["fingerprint"];
-    let scores: Vec<f64> = (0..count)
-        .map(|i| {
-            occt::face_fingerprint(shape, i)
-                .map(|f| similarity(fingerprint, &f, "face", None))
-                .map_err(kernel)
-        })
-        .collect::<Result<_, _>>()?;
+    // One pass over the faces: a face at a time maps the whole body again, which on an imported board with
+    // thousands of faces cost seconds per Align.
+    let scores: Vec<f64> = occt::face_fingerprints(shape)
+        .map_err(kernel)?
+        .iter()
+        .map(|f| similarity(fingerprint, f, "face", None))
+        .collect();
     resolve_scores(reference, &scores, "face")
 }
 
@@ -596,6 +679,7 @@ pub fn create_named_primitive(
         sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
+        note: Default::default(),
     };
     let shape = execute(kind, &ctx, None)
         .ok_or("This shape cannot be created yet.")?
@@ -805,6 +889,7 @@ pub fn create_transform(
         sketches: HashMap::new(),
         parameters: &parameters,
         message: Default::default(),
+        note: Default::default(),
     };
     let moved = move_geometry(&ctx, shape).map_err(|error| error.message)?;
     let brep = occt::write_brep(&moved).map_err(|error| error.what().to_owned())?;
@@ -1493,7 +1578,7 @@ fn placed(
 }
 
 /// `Feature.consumed_bodies`: bodies a step destroys in making its outputs.
-fn consumed_bodies(feature: &Value) -> Vec<String> {
+pub(crate) fn consumed_bodies(feature: &Value) -> Vec<String> {
     let inputs = &feature["inputs"];
     let alias = |v: &Value| match v {
         Value::Object(map) => map
@@ -1579,6 +1664,16 @@ thread_local! {
         shapes: HashMap::new(),
         order: Default::default(),
     });
+    /// Each step a rebuild could not run, with its signature then and why. Until its
+    /// signature changes it fails the same way, so it isn't run again (SimpleCAD 0.4
+    /// keeps a failed step's state too): its inputs needn't be read back for it.
+    static FAILED: std::cell::RefCell<HashMap<String, (String, StepError)>> = Default::default();
+}
+
+/// Forgets the steps remembered as failing: a project opened again, or a new printer
+/// calibration, may now build them (SimpleCAD 0.4 starts each open afresh too).
+pub fn forget_failures() {
+    FAILED.with(|failed| failed.borrow_mut().clear());
 }
 
 struct Store<'a> {
@@ -1586,6 +1681,9 @@ struct Store<'a> {
     model_blobs: &'a BTreeMap<String, Arc<[u8]>>,
     decoded: HashMap<String, Shape>,
     import_sources: HashMap<String, Vec<Shape>>,
+    /// The bodies on screen, by object id, with the step and signature that made them:
+    /// a saved output they match needs no reading back.
+    shown: HashMap<String, (String, String, Shape)>,
 }
 
 impl Store<'_> {
@@ -1642,35 +1740,55 @@ impl Store<'_> {
     }
 
     /// `ResultStore.get`: a step's saved outputs by name, if all of them decode.
-    fn get(&mut self, entry: &Value, feature: &Value) -> Option<Outputs> {
+    fn get(&mut self, entry: &Value, feature: &Value, signature: &str) -> Option<Outputs> {
         if entry["version"] != CACHE_VERSION || entry["feature_id"] != feature["id"] {
             return None;
         }
         let mut decoded = HashMap::new();
         for (oid, output) in entry["outputs"].as_object()? {
-            let part = match output["kind"].as_str()? {
+            let kind = output["kind"].as_str()?;
+            if let Some((fid, made, shape)) = self.shown.get(oid)
+                && (kind == "brep" || kind == "located")
+                && feature["id"] == fid.as_str()
+                && made == signature
+            {
+                let sha = output["sha256"].as_str().map(String::from);
+                let base = (kind == "located")
+                    .then(|| Some((sha.clone()?, location(output)?)))
+                    .flatten();
+                decoded.insert(
+                    oid.clone(),
+                    Part {
+                        value: Geometry::Brep(shape.clone()),
+                        sha: sha.filter(|_| kind == "brep"),
+                        base,
+                    },
+                );
+                continue;
+            }
+            let part = match kind {
                 "brep" => {
                     let sha = output["sha256"].as_str()?;
                     Part {
                         value: Geometry::Brep(self.decode(sha)?),
                         sha: Some(sha.to_string()),
+                        base: None,
                     }
                 }
                 "located" => {
-                    let matrix: Vec<f64> = output["location"]
-                        .as_array()?
-                        .iter()
-                        .filter_map(Value::as_f64)
-                        .collect();
-                    let base = self.decode(output["sha256"].as_str()?)?;
+                    let matrix = location(output)?;
+                    let sha = output["sha256"].as_str()?;
+                    let base = self.decode(sha)?;
                     Part {
                         value: Geometry::Brep(Rc::new(occt::located(&base, &matrix).ok()?)),
                         sha: None,
+                        base: Some((sha.to_string(), matrix)),
                     }
                 }
                 "sketch" if feature["type"] == "sketch" && output["data"].is_object() => Part {
                     value: Geometry::Sketch(Rc::new(output["data"].clone())),
                     sha: None,
+                    base: None,
                 },
                 kind if crate::construction::Kind::from_feature(feature["type"].as_str()?)
                     .is_some_and(|feature_kind| kind == feature_kind.cache_kind())
@@ -1679,6 +1797,7 @@ impl Store<'_> {
                     Part {
                         value: Geometry::Datum(Rc::new(output.clone())),
                         sha: None,
+                        base: None,
                     }
                 }
                 _ => return None,
@@ -1772,12 +1891,14 @@ struct Rebuilder<'a> {
     store: Store<'a>,
     parameters: HashMap<String, f64>,
     invalid: HashSet<String>,
+    known_failures: HashMap<String, (String, StepError)>,
     cache: HashMap<String, Outputs>,
     failed: HashSet<String>,
     evaluating: HashSet<String>,
     states: HashMap<String, (String, String)>,
     failures: BTreeMap<String, String>,
     rebuilt: Vec<String>,
+    notes: BTreeMap<String, Value>,
     new_entries: Map<String, Value>,
     new_blobs: BTreeMap<String, Arc<[u8]>>,
 }
@@ -1794,11 +1915,11 @@ impl Rebuilder<'_> {
                 .map(|(name, _)| name.clone())
         };
         if let Some(name) = output(feature) {
-            for entry in self.entries.values().rev() {
+            for (signature, entry) in self.entries.iter().rev() {
                 if entry["feature_id"] == fid
                     && let Some(part) = self
                         .store
-                        .get(entry, feature)
+                        .get(entry, feature, signature)
                         .and_then(|mut outputs| outputs.remove(&name))
                 {
                     return part.shape().cloned();
@@ -1817,8 +1938,9 @@ impl Rebuilder<'_> {
                 if self.failed.contains(source) {
                     return None;
                 }
-                let entry = self.entries.get(self.signatures.get(source)?)?;
-                self.store.get(entry, feature)
+                let signature = self.signatures.get(source)?;
+                let entry = self.entries.get(signature)?;
+                self.store.get(entry, feature, signature)
             });
             if let Some(part) = saved.and_then(|mut outputs| outputs.remove(&output(feature)?)) {
                 return part.shape().cloned();
@@ -1873,7 +1995,17 @@ impl Rebuilder<'_> {
         if !self.evaluating.insert(fid.to_string()) {
             return Err(lost("A feature refers back to itself."));
         }
-        let result = self.run(fid);
+        let known = self
+            .known_failures
+            .get(fid)
+            .filter(|(signature, _)| {
+                !self.invalid.contains(fid) && self.signatures.get(fid) == Some(signature)
+            })
+            .map(|(_, error)| error.clone());
+        let result = match known {
+            Some(error) => Err(error),
+            None => self.run(fid),
+        };
         self.evaluating.remove(fid);
         if let Err(error) = &result {
             let state = if error.lost {
@@ -1895,7 +2027,7 @@ impl Rebuilder<'_> {
         let signature = self.signatures[fid].clone();
         if !self.invalid.contains(fid)
             && let Some(entry) = self.entries.get(&signature).cloned()
-            && let Some(outputs) = self.store.get(&entry, &feature)
+            && let Some(outputs) = self.store.get(&entry, &feature, &signature)
         {
             let message = entry["message"].as_str().unwrap_or("").to_string();
             let state = if suppressed { "suppressed" } else { "ok" };
@@ -1935,10 +2067,18 @@ impl Rebuilder<'_> {
                 .find(|(_, oid)| oid.as_str() == Some(object))
                 .map(|(n, _)| n.clone());
             match source_name.and_then(|n| outputs.get(&n).cloned()) {
-                Some(Part {
-                    value: Geometry::Brep(shape),
-                    ..
-                }) => {
+                Some(
+                    part @ Part {
+                        value: Geometry::Brep(_),
+                        ..
+                    },
+                ) => {
+                    let shape = part.shape().expect("a body").clone();
+                    if let Some(blob) = part.blob() {
+                        inputs
+                            .blobs
+                            .push((occt::shape_partner(&shape), blob.to_string()));
+                    }
                     inputs.bodies.insert(name.clone(), shape);
                 }
                 Some(Part {
@@ -1967,9 +2107,10 @@ impl Rebuilder<'_> {
         fid: &str,
         feature: Value,
         signature: String,
-        inputs: BoundInputs,
+        mut inputs: BoundInputs,
         suppressed: bool,
     ) -> Result<Outputs, StepError> {
+        let input_blobs = std::mem::take(&mut inputs.blobs);
         let names: Vec<String> = feature["outputs"]
             .as_array()
             .into_iter()
@@ -2004,6 +2145,7 @@ impl Rebuilder<'_> {
                 sketches: inputs.sketches,
                 parameters: &self.parameters,
                 message: Default::default(),
+                note: Default::default(),
             };
             let made = if let Some(datum) = crate::construction::Kind::from_feature(kind) {
                 let name = feature["name"].as_str().unwrap_or_default();
@@ -2024,6 +2166,9 @@ impl Rebuilder<'_> {
                     .map(|(name, shape)| (name, Geometry::Brep(shape)))
                     .collect()
             };
+            if let Some(note) = ctx.note.take() {
+                self.notes.insert(fid.to_string(), note);
+            }
             self.states
                 .insert(fid.to_string(), ("ok".into(), ctx.message.take()));
             self.rebuilt.push(fid.to_string());
@@ -2058,18 +2203,31 @@ impl Rebuilder<'_> {
         let mut parts = Outputs::new();
         let mut encoded = Map::new();
         for (name, value) in outputs {
+            let mut base = None;
             let (data, sha) = match &value {
                 Geometry::Brep(shape) => {
-                    let blob = occt::write_brep(shape).map_err(kernel)?;
-                    let sha = format!("{:x}", Sha256::digest(&blob));
-                    self.new_blobs.insert(sha.clone(), blob.into());
-                    (json!({ "kind": "brep", "sha256": sha }), Some(sha))
+                    let partner = occt::shape_partner(shape);
+                    if let Some((_, blob)) = input_blobs.iter().find(|(p, _)| *p == partner) {
+                        // A move shares its input's geometry under a new location: serialising it again cost over half
+                        // a second for a large imported board, on every move and every redo of one.
+                        let placement = occt::shape_location(shape);
+                        base = Some((blob.clone(), placement.clone()));
+                        (
+                            json!({ "kind": "located", "sha256": blob, "location": placement }),
+                            None,
+                        )
+                    } else {
+                        let blob = occt::write_brep(shape).map_err(kernel)?;
+                        let sha = format!("{:x}", Sha256::digest(&blob));
+                        self.new_blobs.insert(sha.clone(), blob.into());
+                        (json!({ "kind": "brep", "sha256": sha }), Some(sha))
+                    }
                 }
                 Geometry::Sketch(sketch) => (json!({ "kind": "sketch", "data": &**sketch }), None),
                 Geometry::Datum(datum) => ((**datum).clone(), None),
             };
             encoded.insert(output_ids[&name].as_str().unwrap_or("").to_string(), data);
-            parts.insert(name, Part { value, sha });
+            parts.insert(name, Part { value, sha, base });
         }
         let message = self
             .states
@@ -2116,15 +2274,18 @@ fn setup<'a>(
             model_blobs: blobs,
             decoded: HashMap::new(),
             import_sources: HashMap::new(),
+            shown: HashMap::new(),
         },
         parameters,
         invalid: stale.iter().cloned().collect(),
+        known_failures: HashMap::new(),
         cache: HashMap::new(),
         failed: HashSet::new(),
         evaluating: HashSet::new(),
         states: HashMap::new(),
         failures: BTreeMap::new(),
         rebuilt: Vec::new(),
+        notes: BTreeMap::new(),
         new_entries: Map::new(),
         new_blobs: BTreeMap::new(),
     }
@@ -2188,7 +2349,7 @@ pub fn check_steps(model: &Model, original: &[u8], kind: &str) -> Result<Vec<Val
     for feature in order.iter().filter(|f| f["type"] == kind) {
         let name = feature["name"].clone();
         let outcome = rebuilder.inputs(feature).and_then(|inputs| {
-            let ctx = Context { feature, features: Some(&rebuilder.features), bodies: inputs.bodies, sketches: inputs.sketches, parameters: &rebuilder.parameters, message: Default::default() };
+            let ctx = Context { feature, features: Some(&rebuilder.features), bodies: inputs.bodies, sketches: inputs.sketches, parameters: &rebuilder.parameters, message: Default::default(), note: Default::default() };
             match kind {
                 "align" => crate::align::solve(&ctx).map(|(_, _, p)| {
                     json!({ "transform": occt::trsf_values(&p.transform), "description": p.description })
@@ -2228,12 +2389,31 @@ pub fn rebuild(
     shown: &HashMap<String, Shape>,
     stale: &BTreeSet<String>,
 ) -> Result<Report, String> {
+    rebuild_with(model, original, shown, stale, None)
+}
+
+/// `rebuild`, given the model's step signatures when the caller has them already.
+pub fn rebuild_with(
+    model: &mut Model,
+    original: &[u8],
+    shown: &HashMap<String, Shape>,
+    stale: &BTreeSet<String>,
+    known: Option<BTreeMap<String, String>>,
+) -> Result<Report, String> {
     let unreadable = || "This project's steps could not be read.".to_string();
-    let order: Vec<Value> = model.payload["features"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let signatures_now = signatures(&model.payload).ok_or_else(unreadable)?;
+    let signatures_now = match known {
+        Some(known) => known,
+        None => signatures(&model.payload).ok_or_else(unreadable)?,
+    };
+    // Taken rather than copied: both go back into the payload, as the rebuild leaves them, before anything can fail.
+    let order: Vec<Value> = match model.payload.get_mut("features").map(Value::take) {
+        Some(Value::Array(features)) => features,
+        _ => Vec::new(),
+    };
+    let saved_entries = match model.payload["cache"].get_mut("entries").map(Value::take) {
+        Some(Value::Object(entries)) => entries,
+        _ => Map::new(),
+    };
     let (parameters, _) = resolve(
         model.payload["parameters"]
             .as_array()
@@ -2241,6 +2421,21 @@ pub fn rebuild(
             .unwrap_or(&[]),
     );
     let blobs = model.blobs.clone();
+    let on_screen = shown
+        .iter()
+        .filter_map(|(oid, shape)| {
+            let made = &model.payload["geometry"][oid];
+            (made["current"] == true).then_some(())?;
+            Some((
+                oid.clone(),
+                (
+                    made["feature_id"].as_str()?.to_string(),
+                    made["signature"].as_str()?.to_string(),
+                    shape.clone(),
+                ),
+            ))
+        })
+        .collect();
     let mut rebuilder = setup(
         &order,
         &model.payload,
@@ -2250,6 +2445,9 @@ pub fn rebuild(
         original,
         stale,
     );
+    rebuilder.store.shown = on_screen;
+    rebuilder.known_failures = FAILED.with(|failed| failed.borrow().clone());
+    rebuilder.entries = saved_entries;
 
     // The graph's heads: each object's newest writer, in the order first written.
     let mut heads: Vec<(String, String, String)> = Vec::new();
@@ -2349,6 +2547,25 @@ pub fn rebuild(
         {
             continue;
         }
+        // A body its producer made last time, under the same signature, is the shape shown now:
+        // nothing to read back from the saved results, and nothing for the window to mesh again.
+        let made = &model.payload["geometry"][oid];
+        if let Some(shape) = shown.get(oid).filter(|_| {
+            !rebuilder.invalid.contains(fid)
+                && made["feature_id"] == fid.as_str()
+                && made["current"] == true
+                && rebuilder.signatures.get(fid).is_some_and(|signature| {
+                    made["signature"] == signature.as_str()
+                        && rebuilder.entries.contains_key(signature)
+                })
+        }) {
+            last.retain(|(o, _)| o != oid);
+            last.push((
+                oid.clone(),
+                (name.clone(), Some(shape.clone()), fid.clone()),
+            ));
+            continue;
+        }
         match rebuilder.get(fid) {
             Ok(outputs) => {
                 if let Some(shape) = outputs.get(name).and_then(Part::shape) {
@@ -2423,20 +2640,24 @@ pub fn rebuild(
     }
 
     // The model as the rebuild leaves it: ids given to new outputs, results, bodies, states.
-    let features: Vec<Value> = order
-        .iter()
-        .map(|f| rebuilder.features[f["id"].as_str().unwrap_or("")].clone())
-        .collect();
-    model.payload["features"] = json!(features);
-    let entries = model.payload["cache"]
-        .as_object_mut()
-        .map(|c| c.entry("entries").or_insert_with(|| json!({})).clone());
-    let mut entries = entries
-        .and_then(|e| e.as_object().cloned())
-        .unwrap_or_default();
-    entries.extend(rebuilder.new_entries.clone());
-    model.payload["cache"] = json!({ "version": CACHE_VERSION, "entries": entries });
-    model.blobs.extend(rebuilder.new_blobs.clone());
+    let mut features: Vec<Value> = Vec::with_capacity(order.len());
+    for f in &order {
+        let id = f["id"].as_str().unwrap_or("");
+        // A repeated id (a damaged file) is listed again, as it was.
+        let feature = rebuilder
+            .features
+            .remove(id)
+            .or_else(|| features.iter().find(|done| done["id"] == f["id"]).cloned());
+        features.extend(feature);
+    }
+    model.payload["features"] = Value::Array(features);
+    let mut entries = std::mem::take(&mut rebuilder.entries);
+    entries.extend(std::mem::take(&mut rebuilder.new_entries));
+    let mut cache = Map::new();
+    cache.insert("version".into(), json!(CACHE_VERSION));
+    cache.insert("entries".into(), Value::Object(entries));
+    model.payload["cache"] = Value::Object(cache);
+    model.blobs.extend(std::mem::take(&mut rebuilder.new_blobs));
     let old_bodies: HashMap<String, Value> = model.payload["bodies"]
         .as_array()
         .into_iter()
@@ -2452,8 +2673,16 @@ pub fn rebuild(
             json!({ "id": oid, "name": name, "visible": body["visible"], "color": body["color"], "producer": producer, "metadata": body["metadata"] })
         })
         .collect();
-    model.payload["bodies"] = json!(bodies);
-    let actual = signatures(&model.payload).ok_or_else(unreadable)?;
+    model.payload["bodies"] = Value::Array(bodies);
+    // Only a step that ran can have new output ids, so only it and those downstream change signature.
+    let ran = dependents(&order, &rebuilder.rebuilt.iter().cloned().collect());
+    let actual = crate::signatures::signatures_after(
+        &model.payload,
+        &signatures_now,
+        &ran.into_iter().collect(),
+    )
+    .ok_or_else(unreadable)?;
+    debug_assert_eq!(Some(&actual), signatures(&model.payload).as_ref());
     let mut diagnostics = model.payload["diagnostics"]
         .as_object()
         .cloned()
@@ -2464,26 +2693,31 @@ pub fn rebuild(
     let mut geometry = Map::new();
     for (oid, (_, shape, producer)) in &last {
         let Some(shape) = shape else { continue };
-        let part_sha = rebuilder.cache.get(producer).and_then(|o| {
-            o.values()
-                .find(|p| {
-                    p.shape()
-                        .is_some_and(|candidate| Rc::ptr_eq(candidate, shape))
-                })
-                .and_then(|p| p.sha.clone())
+        let part = rebuilder.cache.get(producer).and_then(|o| {
+            o.values().find(|p| {
+                p.shape()
+                    .is_some_and(|candidate| Rc::ptr_eq(candidate, shape))
+            })
         });
-        let sha = match part_sha {
-            Some(sha) => sha,
-            None => match model.payload["geometry"][oid]["sha256"].as_str() {
+        let before = &model.payload["geometry"][oid];
+        // A moved body is held as its base's blob and where it is placed; saving writes it whole (`Model::save`),
+        // when SimpleCAD 0.4 serialises every body too.
+        let (sha, placement) = match (
+            part.and_then(|p| p.sha.clone()),
+            part.and_then(|p| p.base.clone()),
+        ) {
+            (Some(sha), _) => (sha, None),
+            (None, Some((base, placement))) => (base, Some(placement)),
+            (None, None) => match before["sha256"].as_str() {
                 // The geometry it already had, unchanged.
                 Some(sha) if shown.get(oid).is_some_and(|s| Rc::ptr_eq(s, shape)) => {
-                    sha.to_string()
+                    (sha.to_string(), location(before))
                 }
                 _ => {
                     let blob = occt::write_brep(shape).map_err(|e| e.what().to_string())?;
                     let sha = format!("{:x}", Sha256::digest(&blob));
                     model.blobs.insert(sha.clone(), blob.into());
-                    sha
+                    (sha, None)
                 }
             },
         };
@@ -2492,10 +2726,36 @@ pub fn rebuild(
             .flatten();
         let ok = diagnostics.get(producer).is_none_or(|d| d["state"] == "ok");
         let current = accepted.is_some() && ok;
-        geometry.insert(oid.clone(), json!({ "sha256": sha, "feature_id": producer, "signature": accepted, "current": current }));
+        let mut entry = json!({ "sha256": sha, "feature_id": producer, "signature": accepted, "current": current });
+        if let Some(placement) = placement {
+            entry["location"] = json!(placement);
+        }
+        geometry.insert(oid.clone(), entry);
     }
     model.payload["geometry"] = Value::Object(geometry);
     model.payload["diagnostics"] = Value::Object(diagnostics);
+    FAILED.with(|failed| {
+        let mut failed = failed.borrow_mut();
+        // ponytail: bounded by clearing, not by age; a few thousand failed steps is far past any project.
+        if failed.len() > 4096 {
+            failed.clear();
+        }
+        for fid in &rebuilder.rebuilt {
+            failed.remove(fid);
+        }
+        for (fid, message) in &rebuilder.failures {
+            let (Some((state, _)), Some(signature)) =
+                (rebuilder.states.get(fid), signatures_now.get(fid))
+            else {
+                continue;
+            };
+            let error = StepError {
+                message: message.clone(),
+                lost: state == "needs_attention",
+            };
+            failed.insert(fid.clone(), (signature.clone(), error));
+        }
+    });
     Ok(Report {
         bodies: last
             .into_iter()
@@ -2503,6 +2763,8 @@ pub fn rebuild(
             .collect(),
         failures: rebuilder.failures,
         rebuilt: rebuilder.rebuilt,
+        signatures: actual,
+        notes: rebuilder.notes,
     })
 }
 
@@ -2668,6 +2930,7 @@ mod tests {
             sketches: HashMap::new(),
             parameters: &HashMap::new(),
             message: Default::default(),
+            note: Default::default(),
         };
         let expected = 30.0 * 20.0 * 3.0 - 3.0 * 25.0 * 3.0_f64.sqrt() / 2.0 * 3.0;
         for (step, body) in [("vent_plate", "Vent"), ("vent_cut", "Base")] {
@@ -2748,6 +3011,7 @@ mod tests {
                     sketches: HashMap::new(),
                     parameters: &HashMap::new(),
                     message: Default::default(),
+                    note: Default::default(),
                 };
                 let output = execute("arrange", &ctx, None)
                     .expect("saved row implemented")
@@ -2772,7 +3036,7 @@ mod tests {
     }
 
     #[test]
-    fn arrange_patterns_still_report_unported() {
+    fn an_arrangement_pattern_with_no_face_asks_for_one() {
         let feature = json!({"inputs": {"pattern": "grid"}});
         let ctx = Context {
             feature: &feature,
@@ -2781,11 +3045,16 @@ mod tests {
             sketches: HashMap::new(),
             parameters: &HashMap::new(),
             message: Default::default(),
+            note: Default::default(),
         };
         let error = execute("arrange", &ctx, None)
             .expect("Arrange dispatch")
             .err()
             .unwrap();
-        assert!(error.message.contains("cannot build it yet"));
+        assert!(
+            error
+                .message
+                .starts_with("Pick the face to arrange the objects on.")
+        );
     }
 }

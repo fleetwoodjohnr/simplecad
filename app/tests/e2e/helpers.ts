@@ -1,6 +1,6 @@
 import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -40,6 +40,9 @@ export const test = base.extend<{ cleanup: void }>({
       open.clear()
       for (const dir of scratch) {
         try {
+          // SCAD_KEEP_SAVES=folder keeps the projects a test saved, to open them in another version.
+          const keep = process.env.SCAD_KEEP_SAVES
+          if (keep) for (const name of readdirSync(dir).filter((file) => file.endsWith('.scad3'))) copyFileSync(path.join(dir, name), path.join(keep, name))
           rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
         } catch {
           /* a stray writer still holds it: tmp's own cleanup gets it */
@@ -89,11 +92,17 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged, args } : { args: ['.', ...args] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
-    env: { ...process.env, SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
+    env: { ...process.env, SIMPLECAD_TIMING: '1', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))
     app.process().stderr?.on('data', (d) => process.stdout.write(`main! ${d}`))
+  } else {
+    // Start-up and save stages, so a slow runner shows where its time went.
+    const launched = Date.now()
+    app.process().stderr?.on('data', (d) => {
+      for (const line of String(d).split('\n')) if (line.startsWith('[timing]')) console.log(`${line} (test +${Date.now() - launched} ms)`)
+    })
   }
   open.add(app)
   const page = await app.firstWindow()

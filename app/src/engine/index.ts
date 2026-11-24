@@ -25,14 +25,20 @@ interface Addon {
 }
 
 const parent = (process as unknown as { parentPort: PortLike }).parentPort
+/** With SIMPLECAD_TIMING set, when each start-up stage finished, from the process start, for the test logs. */
+const timing = (stage: string) => { if (process.env.SIMPLECAD_TIMING) console.error(`[timing] engine ${stage} at ${Math.round(performance.now())} ms`) }
+timing('started')
 const addon = require(process.env.SIMPLECAD_ENGINE_ADDON!) as Addon
+timing('addon loaded')
 const buffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength)
 const opened = ({ bodies, notes, project }: AddonProject) => ({
   bodies: bodies.map(({ id, name, shape }) => ({ id, name, shape: shape ?? null })),
   visible: bodies.map((b) => b.visible), notes, project
 })
 const document = new EngineDocument(() => opened(addon.newProject()), (data) => opened(addon.openProject(buffer(data))))
+timing('new box made')
 let port: PortLike | null = null
+let served = false
 
 /** Named fits rebuild with the printer's saved calibration, as in SimpleCAD 0.4; read again after each save. */
 function calibrate() {
@@ -93,8 +99,10 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'threadGauges':
       case 'moveBodies':
       case 'ungroup':
+      case 'deleteBodies':
       case 'importModel':
       case 'repairInput':
+      case 'keepLastGood':
       case 'editSavedStep':
       case 'applySketchDraft':
       case 'applySketchSolid':
@@ -119,6 +127,8 @@ function onRenderer(channel: PortLike, data: unknown) {
         addon.crash()
     }
     channel.postMessage({ id, ok: true, result: result! })
+    if (!served) timing(`first request (${req.op}) answered`)
+    served = true
     // The window shows the project first; the next request waits at most this long.
     if (req.op === 'open' || req.op === 'restore') setImmediate(() => document.warm())
   } catch (err) {

@@ -3,6 +3,70 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.5.1 (2026-11-23)
+
+Undo and Redo are quick again on large projects, and what 0.5.0 could not
+build yet is here: Arrange in a pattern, sliding Clip Joints, clips made with
+the older clip tool, and a Draft tool. Projects saved in 0.5.1 still open in
+0.4.4.
+
+- **Arrange in a pattern.** Lay parts out in a grid, a line, a ring,
+  staggered rows, packed tight, or rows and columns of your own, on a flat
+  face, round a cylinder or inside a bore, or on the printer's build plate.
+  The preview outlines the space they can use, marks what doesn't fit and
+  why, and offers what would, such as "Try Packed" or a smaller spacing. Drag
+  it to move the whole pattern. Every setting 0.4.4 had is there, including a
+  face for each part to stand on and edges to keep a margin from, and
+  patterns made in 0.4.4 rebuild exactly where it put them.
+- **Sliding Clip Joints.** Dovetail, T-rail and tongue & groove rails, with a
+  stop at the end and a detent that clicks home, and a preview with the first
+  part slid out.
+- **Draft.** Taper picked faces of a part so it comes out of a mould or
+  prints cleanly, and edit the angle from History.
+- Clips made with the older clip tool, before Join Parts, rebuild.
+
+### Fixed
+
+- **Undo and Redo on large projects.** One step on a project like a
+  450-step enclosure takes about a tenth of a second, three to four times
+  faster than in 0.5.0, and the first after opening under a second. Undoing
+  or redoing an Align or a Move of a large imported part, which took up to
+  4.7 s, takes under a second.
+- **Delete is back.** Delete a body from its row in the Bodies list, a whole
+  group from the group's row, or the chosen bodies with the Delete key. As in
+  0.4.4, the steps that made a body go with it, and a step that used other
+  bodies, such as a Combine's tools, takes them too. Undo brings them back.
+- **The wheel button moves the view again.** Drag with the wheel pressed to
+  pan, and hold Shift, or drag with the right button, to turn the view, as in
+  0.4.4. In 0.5.0 the wheel button zoomed and the right button panned.
+- **Right click is back.** As in 0.4.4, a right click without dragging
+  selects the face under the pointer and opens a menu there: the tools for
+  that face, then Edit the step that made the part, Hide, Group or Ungroup,
+  and Delete. Right click a body in the Bodies list or a step in History for
+  the same kind of menu. The menu key or Shift+F10 opens it from the
+  keyboard.
+- **A part that won't change now says why.** When a step lost something it
+  was built from, such as a deleted part an Align lined up against, its part
+  keeps its last good shape and can't be changed. 0.4.4 behaved the same, but
+  0.5.0 gave no sign. Selecting the part now shows which step blocks it,
+  with:
+  - **Keep where it is**, for an Align: the step becomes a Move to the same
+    place, so the part moves and aligns freely again;
+  - **Keep this shape**, for other steps: the part keeps its last good shape,
+    and steps before it no longer change it;
+  - **Repair input**, to choose a replacement for what was lost.
+
+  Undo reverses each one, and 0.4.4 opens the result.
+- **Quitting no longer hangs after the geometry engine restarted.** If the
+  engine stops responding when you quit, it is closed after 5 seconds.
+
+### Still slower than 0.4.4
+
+- Undoing a Move of a large imported part (thousands of faces) takes about
+  2 s, where 0.4.4 takes about half a second: the part comes back from the
+  project as saved, and the window measures every face again. Redoing it is
+  quick.
+
 ## 0.5.0 (2026-11-23)
 
 A new desktop app: every tool is a button, and what a tool will do shows in

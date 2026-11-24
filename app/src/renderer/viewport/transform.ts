@@ -9,6 +9,8 @@ import { edgeGeometry, indexedGeometry } from './geometry'
 export interface TransformView {
   kind: Transform['kind']
   body: number
+  /** Several bodies moved together (Arrange's pattern), in place of `body`. */
+  bodies?: number[]
   enabled: boolean
   /** A step of zero leaves snapping off. */
   snap: number
@@ -248,22 +250,28 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   }
   const set = (shape: DisplayShape | undefined, model: BufferGeometry, next: TransformView | undefined,
     showEdges: boolean) => {
-    if (drawn !== shape || config?.body !== next?.body || config?.kind !== next?.kind || config?.pivot !== next?.pivot) {
+    if (drawn !== shape || config?.body !== next?.body || String(config?.bodies) !== String(next?.bodies) ||
+      config?.kind !== next?.kind || config?.pivot !== next?.pivot) {
       cancel()
-      const range = shape?.ranges.find(({ body }) => body === next?.body)
+      const chosen = next?.bodies ?? (next ? [next.body] : [])
+      const ranges = shape?.ranges.filter(({ body }) => chosen.includes(body)) ?? []
       const hadGeometry = gizmo.object !== undefined
       gizmo.detach()
-      if (shape && next && range && range.indices[0] < range.indices[1]) {
-        const [first, last] = range.indices
-        const selected = indexedGeometry(model, shape.indices.subarray(first, last))
+      if (shape && next && ranges.some((range) => range.indices[0] < range.indices[1])) {
+        const pick = (keep: boolean) => {
+          const parts = shape.ranges.filter((range) => ranges.includes(range) === keep)
+          const out = new Uint32Array(parts.reduce((total, range) => total + range.indices[1] - range.indices[0], 0))
+          parts.reduce((at, range) => { out.set(shape.indices.subarray(...range.indices), at); return at + range.indices[1] - range.indices[0] }, 0)
+          return { indices: out, edges: parts.map((range) => range.edges) }
+        }
+        const moved = pick(true)
+        const still = pick(false)
+        const selected = indexedGeometry(model, moved.indices)
         replace(mesh, selected)
         ghost.geometry = selected
-        replace(edges, edgeGeometry(shape, [range.edges]))
-        const stationary = new Uint32Array(shape.indices.length - last + first)
-        stationary.set(shape.indices.subarray(0, first))
-        stationary.set(shape.indices.subarray(last), first)
-        replace(rest, indexedGeometry(model, stationary))
-        replace(restEdges, edgeGeometry(shape, [[0, range.edges[0]], [range.edges[1], shape.edgeStart.length - 1]]))
+        replace(edges, edgeGeometry(shape, moved.edges))
+        replace(rest, indexedGeometry(model, still.indices))
+        replace(restEdges, edgeGeometry(shape, still.edges))
         if (next.pivot) pivot.fromArray(next.pivot)
         else selected.boundingBox!.getCenter(pivot)
         restorePose()

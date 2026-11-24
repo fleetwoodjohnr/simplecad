@@ -47,6 +47,8 @@ fn main() {
         .file("cpp/text.cpp")
         .file("cpp/texture.cpp")
         .file("cpp/clip.cpp")
+        .file("cpp/arrange.cpp")
+        .file("cpp/arrange_layout.cpp")
         .file("cpp/sketch.cpp")
         .include(format!("{geos}/include"))
         .include("cpp")
@@ -88,6 +90,9 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/text.cpp");
     println!("cargo:rerun-if-changed=cpp/texture.cpp");
     println!("cargo:rerun-if-changed=cpp/clip.cpp");
+    println!("cargo:rerun-if-changed=cpp/arrange.cpp");
+    println!("cargo:rerun-if-changed=cpp/arrange_layout.cpp");
+    println!("cargo:rerun-if-changed=cpp/arrange_layout.hpp");
     println!("cargo:rerun-if-changed=cpp/sketch.cpp");
     println!("cargo:rerun-if-changed=cpp/texture_layout.hpp");
     println!("cargo:rerun-if-changed=cpp/shim.hpp");

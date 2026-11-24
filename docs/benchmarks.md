@@ -219,3 +219,55 @@ frame interval 16.7 ms in three runs each, at 60 Hz (gate 20 ms). Forced onto
 X11 through XWayland, every frame arrives but in late pairs: p95 21.8–31.9 ms,
 because the GPU process blocks 5–10 ms in `eglSwapBuffers`. This machine has
 no native Xorg session to measure.
+
+## v0.5.1 against v0.4.4 (November 2026)
+
+Scratch copies of the two large projects, v0.4.4 (`d15187d`) against 0.5.1,
+Fedora 44.
+
+**One Undo or Redo in the packaged app** (Wayland; click to the first frame
+showing it; the first right after opening, then 20 Undo and 20 Redo; ms):
+
+| Project | 0.5.0: first, p50, p95 | 0.5.1: first, p50, p95 | Heaviest step: 0.4.4 engine (with display) → 0.5.1 |
+|---|---|---|---|
+| Atlas Box | 1368, 415, 787 | 717–997, 116–128, 343–376 | Undo 875 (1139) → 834–1107; Redo 537 (643) → 540–588 |
+| UPS Atlas | ~2200, ~400, – | 570–650, 182–195, 686–957 | Align 1197 (1199) → 635–885; Move Undo 247 (509) → 1690–2000 |
+
+Ranges are over five runs on Atlas Box and three on UPS Atlas. v0.4.4 is its
+engine alone (`bench/undo044.py`), and in brackets with its display meshing
+too for each body the step brought back changed (`undo044_display`), since
+the 0.4.4 window has to show the step as well. What changed since 0.5.0:
+
+- Each step's signatures are worked out once, from the steps it changes; the
+  history is kept beside the document rather than copied with it; the rebuild
+  takes its inputs rather than copying them; a step that failed is not tried
+  again until something it reads changes.
+- Finding a picked face read every face of the body once for each face it
+  compared. On UPS Atlas's imported board (2944 faces) each Align step took
+  3.5 s, against 1.2 s in 0.4.4; it now takes 0.5 s.
+- A move is saved on its input's geometry with a new location, as 0.4.4
+  saves one, instead of writing the body again (0.55 s on that board); the
+  body is written whole when the project is saved. The window shows a moved
+  body as its earlier display, moved, instead of measuring every face and its
+  volume again (1.3 s).
+
+Still slower than 0.4.4:
+
+- **Undoing a Move of a large imported body:** the body comes back as the
+  file saved it, so the window meshes and measures it afresh: 1.7–1.8 s,
+  against about 0.5 s in 0.4.4, whose viewport does not measure faces.
+- **UPS Atlas, any step:** the window takes 130–200 ms to show a step of a
+  project with that many bodies and faces; 0.4.4's engine does the lighter
+  steps in 10–30 ms.
+
+**Whole-history and recipe rebuilds** (`bench/run.py`, seconds; v0.4.4 with
+its import and open added to each stage, as above; 0.5.0 from the table
+above, except UPS Atlas's recipe rebuild, measured again beside 0.5.1):
+
+| Project | Undo and redo all: 0.4.4, 0.5.0, 0.5.1 | Rebuild from recipe: 0.4.4, 0.5.0, 0.5.1 |
+|---|---|---|
+| Atlas Box | 31.8, 59.4, 33.8 | 17.6, 16.2, 16.2 |
+| UPS Atlas | 18.5, 37.5, 22.5 | 5.8, 10.7, 10.3 |
+
+0.5.0's recipe rebuild of UPS Atlas measured 10.5–10.8 s in the same session
+as 0.5.1's 10.2–10.3 s; the 9.9 s in the 0.5.0 table was a quieter run.

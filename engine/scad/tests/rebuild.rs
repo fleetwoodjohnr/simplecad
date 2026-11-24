@@ -634,7 +634,7 @@ fn a_step_bound_to_a_deleted_input_needs_attention_and_its_body_refuses_changes(
     assert!(step.message.unwrap().contains("Repair input"));
     assert_eq!(
         model.editable("Box").unwrap_err(),
-        "Repair the step marked in History that made \"Box\" before changing it."
+        "\"Box\" can't change until Combine, marked in History, is kept as it is or repaired."
     );
 }
 

@@ -4,7 +4,7 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use occt::ffi;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -156,6 +156,19 @@ impl Shape {
         Ok(ffi::faces(&self.inner).map_err(reason)?.len() as u32)
     }
 
+    /// The geometry this body shares with any moved copy of it, and its orientation: bodies with the same number
+    /// differ only by `placement`, so one's display is the other's moved.
+    #[napi]
+    pub fn partner(&self) -> f64 {
+        ffi::shape_partner(&self.inner) as f64
+    }
+
+    /// Where the body is placed: its location's 3×4 matrix, row by row.
+    #[napi]
+    pub fn placement(&self) -> Vec<f64> {
+        ffi::shape_location(&self.inner)
+    }
+
     #[napi]
     pub fn display(&self) -> Result<DisplayShape> {
         let mesh = ffi::mesh(&self.inner, DEFLECTION, ANGLE).map_err(reason)?;
@@ -194,9 +207,18 @@ pub struct OpenedBody {
 }
 
 #[napi(object, object_from_js = false)]
+pub struct BodyStep {
+    pub name: String,
+    pub producer: String,
+    pub blocked_by: Option<String>,
+}
+
+#[napi(object, object_from_js = false)]
 pub struct OpenedProject {
     pub bodies: Vec<OpenedBody>,
     pub notes: Vec<String>,
+    /// What a previewed step showed beside its result, as JSON: an arrangement's fit.
+    pub step_note: Option<String>,
     /// What saving edits.
     pub project: Option<Project>,
 }
@@ -220,6 +242,8 @@ pub struct HistoryDepth {
 pub struct Project {
     model: scad::document::Model,
     original: Arc<Vec<u8>>,
+    /// The model's step signatures, when a rebuild just worked them out: the next history move starts from them.
+    signatures: Option<Arc<BTreeMap<String, String>>>,
 }
 
 /// A face or edge of a named body, by its index in the body's own order.
@@ -463,6 +487,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             bodies,
         })
@@ -499,6 +524,8 @@ impl Project {
             .filter(|body| body["visible"].as_bool() == Some(false))
             .filter_map(|body| body["id"].as_str())
             .collect();
+        let signatures = Some(Arc::new(report.signatures));
+        let step_note = report.notes.values().next().map(|note| note.to_string());
         let bodies = report
             .bodies
             .into_iter()
@@ -512,9 +539,11 @@ impl Project {
         OpenedProject {
             bodies,
             notes: Vec::new(),
+            step_note,
             project: Some(Project {
                 model,
                 original: self.original.clone(),
+                signatures,
             }),
         }
     }
@@ -592,6 +621,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             bodies,
         })
@@ -616,6 +646,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             name,
             shape: Shape::new(inner),
@@ -659,6 +690,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(placed),
         })
@@ -699,6 +731,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(moved),
         })
@@ -773,6 +806,44 @@ impl Project {
         Ok(self.rebuilt_model(model, report))
     }
 
+    /// A face pattern edited from History; `inputs` is the whole of its settings as JSON, with any picks made again.
+    #[napi]
+    pub fn edit_arrangement(
+        &self,
+        step_id: String,
+        inputs: String,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let inputs = serde_json::from_str(&inputs)
+            .map_err(|_| Error::from_reason("The arrangement settings could not be read."))?;
+        let mut model = self.model.clone();
+        let report = model
+            .edit_arrangement(&step_id, inputs, &self.original, &self.shown_shapes(shown))
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Delete the named bodies with the steps that make them, as SimpleCAD 0.4 deletes; `group`: a group deleted
+    /// with them, its members being `bodies`.
+    #[napi]
+    pub fn delete_bodies(
+        &self,
+        bodies: Vec<String>,
+        group: Option<String>,
+        shown: Vec<ShownBody>,
+    ) -> Result<OpenedProject> {
+        let mut model = self.model.clone();
+        let report = model
+            .delete_bodies(
+                &bodies,
+                group.as_deref(),
+                &self.original,
+                &self.shown_shapes(shown),
+            )
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
     /// Section Replace: the replacement body's face set into the target's; `inputs` is its settings as JSON.
     #[napi]
     pub fn add_section_replace(
@@ -815,6 +886,7 @@ impl Project {
         Ok(Project {
             model,
             original: self.original.clone(),
+            signatures: None,
         })
     }
 
@@ -825,6 +897,7 @@ impl Project {
         Ok(Project {
             model,
             original: self.original.clone(),
+            signatures: None,
         })
     }
 
@@ -1008,6 +1081,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(inner),
         })
@@ -1041,6 +1115,7 @@ impl Project {
             project: Project {
                 model,
                 original: self.original.clone(),
+                signatures: None,
             },
             shape: Shape::new(pulled),
         })
@@ -1082,11 +1157,7 @@ impl Project {
 
     #[napi]
     pub fn history_depth(&self) -> HistoryDepth {
-        let count = |stack| {
-            self.model.payload["history"][stack]
-                .as_array()
-                .map_or(0, |actions| actions.len() as u32)
-        };
+        let count = |stack| self.model.history_len(stack) as u32;
         HistoryDepth {
             undo: count("undo"),
             redo: count("redo"),
@@ -1121,11 +1192,26 @@ impl Project {
         let old_shapes = self.shown_shapes(shown);
         let mut model = self.model.clone();
         let mut stale = BTreeSet::new();
+        let mut signatures = match &self.signatures {
+            Some(known) => (**known).clone(),
+            None => scad::signatures::signatures(&model.payload)
+                .ok_or_else(|| Error::from_reason("This project's history could not be read."))?,
+        };
         for _ in 0..count {
-            stale.extend(model.move_history(redo).map_err(Error::from_reason)?);
+            let (moved, next) = model
+                .move_history_from(redo, signatures)
+                .map_err(Error::from_reason)?;
+            stale.extend(moved);
+            signatures = next;
         }
-        let report = scad::rebuild::rebuild(&mut model, &self.original, &old_shapes, &stale)
-            .map_err(Error::from_reason)?;
+        let report = scad::rebuild::rebuild_with(
+            &mut model,
+            &self.original,
+            &old_shapes,
+            &stale,
+            Some(signatures),
+        )
+        .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
     }
 
@@ -1173,6 +1259,31 @@ impl Project {
             )
             .map_err(Error::from_reason)?;
         Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Keep a step that needs repair as it last built (`Model::keep_last_good`).
+    #[napi]
+    pub fn keep_last_good(&self, step_id: String, shown: Vec<ShownBody>) -> Result<OpenedProject> {
+        let old_shapes = self.shown_shapes(shown);
+        let mut model = self.model.clone();
+        let report = model
+            .keep_last_good(&step_id, &self.original, &old_shapes)
+            .map_err(Error::from_reason)?;
+        Ok(self.rebuilt_model(model, report))
+    }
+
+    /// Each body's latest step, and the step to keep or repair before it can change.
+    #[napi]
+    pub fn body_steps(&self) -> Vec<BodyStep> {
+        self.model
+            .body_steps()
+            .into_iter()
+            .map(|(name, producer, blocked_by)| BodyStep {
+                name,
+                producer,
+                blocked_by,
+            })
+            .collect()
     }
 
     #[napi]
@@ -1288,6 +1399,7 @@ pub struct Measurement {
 /// shipped values.
 #[napi]
 pub fn set_calibration(profile: Option<String>) -> Result<()> {
+    scad::rebuild::forget_failures();
     scad::calibration::set(profile.as_deref()).map_err(Error::from_reason)
 }
 
@@ -1357,10 +1469,12 @@ pub fn measure_shapes(picks: Vec<MeasureSelection>) -> Result<Vec<Measurement>> 
 /// Every body of a `.scad3`, shown or hidden, as the Python app loads it.
 #[napi]
 pub fn open_project(data: Buffer) -> Result<OpenedProject> {
+    scad::rebuild::forget_failures();
     let project = scad::project::read(&data).map_err(Error::from_reason)?;
     let saveable = Some(Project {
         model: scad::document::Model::open(&project),
         original: Arc::new(data.to_vec()),
+        signatures: None,
     });
     let mut notes = project.notes;
     let bodies = project
@@ -1393,6 +1507,7 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
     Ok(OpenedProject {
         bodies,
         notes,
+        step_note: None,
         project: saveable,
     })
 }
@@ -1400,6 +1515,7 @@ pub fn open_project(data: Buffer) -> Result<OpenedProject> {
 /// A new project holding one box, as the Python app's Shape panel makes it.
 #[napi]
 pub fn new_project() -> Result<OpenedProject> {
+    scad::rebuild::forget_failures();
     let shape = ffi::make_box(40.0, 30.0, 20.0).map_err(reason)?;
     let brep = ffi::write_brep(&shape).map_err(reason)?;
     let model = scad::document::Model::new_box(brep).map_err(Error::from_reason)?;
@@ -1411,9 +1527,11 @@ pub fn new_project() -> Result<OpenedProject> {
             shape: Some(Shape::new(shape)),
         }],
         notes: vec![],
+        step_note: None,
         project: Some(Project {
             model,
             original: Arc::new(Vec::new()),
+            signatures: None,
         }),
     })
 }

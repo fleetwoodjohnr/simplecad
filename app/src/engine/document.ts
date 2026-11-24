@@ -1,6 +1,7 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type SectionReplaceEdit, type UngroupEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { movedDisplay, relativePlacement } from './placement'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -16,6 +17,11 @@ export interface Shape {
   /** The engine's shape behind this wrapper: a step hands back an unchanged body's shape in a new wrapper. */
   readonly key: number
   display(): PartDisplay
+  /** The geometry shared with every moved copy of this shape, and its orientation: shapes with the same number differ
+   * only by `placement`. */
+  partner(): number
+  /** Where the shape is placed: its location's 3×4 matrix, row by row. */
+  placement(): number[]
   /** The optimal bounding box: min x, y, z then max x, y, z. */
   bounds(): number[]
   /** Whether a face is a hole (true) or a shaft (false); null for a face that is not cylindrical. */
@@ -35,12 +41,14 @@ export interface Project {
   addBodyOperation(kind: string, body: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   groups(): { name: string; members: string[] }[]
   addArrangement(bodies: string[], inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  editArrangement(stepId: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addSectionReplace(target: { body: string; index: number }, replacement: { body: string; index: number }, inputs: string,
     shown: { id?: string; name: string; shape: Shape }[]): State
   addConstruction(kind: string, faces: { body: string; index: number }[], edges: { body: string; index: number }[],
     inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   group(members: string[]): Project
   ungroup(name: string): Project
+  deleteBodies(bodies: string[], group: string | undefined, shown: { id?: string; name: string; shape: Shape }[]): State
   addEdgeFinish(kind: string, body: string, edges: number[], value: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addHinge(fixed: string, edge: number, swinging: string, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
   addClipJoint(bodyA: string, faceA: number, bodyB: string, faceB: number, inputs: string, shown: { id?: string; name: string; shape: Shape }[]): State
@@ -65,11 +73,15 @@ export interface Project {
     more?: { missingId: string; replacementId?: string; replacementName: string }[] },
     shown: { id?: string; name: string; shape: Shape }[]): State
   editStepSettings(stepId: string, changes: Record<string, string>, shown: { id?: string; name: string; shape: Shape }[]): State
+  keepLastGood(stepId: string, shown: { id?: string; name: string; shape: Shape }[]): State
+  /** Each body's latest step, and the step to keep or repair before it can change. */
+  bodySteps(): { name: string; producer: string; blockedBy?: string | null }[]
 }
 /** A project as opened: its bodies, which are shown, what could not be read, and what saving edits. */
 export interface Opened { bodies: Body[]; visible: boolean[]; notes: string[]; project: Project }
 /** One point in the history. */
-interface State { bodies: Body[]; project: Project }
+/** `stepNote`: what a previewed step showed beside its result, as JSON (a face pattern's fit). */
+interface State { bodies: Body[]; project: Project; stepNote?: string | null }
 
 function initialState({ bodies, visible, project }: Opened): State {
   return { bodies: bodies.map((body, index) => ({ ...body, visible: visible[index] })), project }
@@ -136,7 +148,10 @@ export class EngineDocument {
   // Kept by the engine's shape, not the wrapper, since every step returns new wrappers; an entry holds its shape, so
   // its key can't be reused while it is kept, and entries no state can show again are dropped as the history moves.
   private displays = new Map<number, { shape: Shape; display: PartDisplay }>()
+  /** The latest displays of partner geometries, with their shapes (kept alive, so their numbers are not reused). */
+  private partners = new Map<number, { shape: Shape; placement: number[]; display: PartDisplay }>()
   private stepLists = new WeakMap<Project, Omit<StepInfo, 'undone'>[]>()
+  private bodyStepLists = new WeakMap<Project, Map<string, { producer: string; blockedBy?: string }>>()
 
   constructor(
     private newBox: () => Opened,
@@ -149,7 +164,7 @@ export class EngineDocument {
     const { bodies } = this.current
     return {
       shape: this.show(bodies),
-      bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape })),
+      bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape, ...this.bodySteps().get(b.name) })),
       unsaved: this.unsaved,
       canUndo: this.canStep(-1),
       canRedo: this.canStep(1),
@@ -223,17 +238,23 @@ export class EngineDocument {
   preview(edit: PullEdit | StackEdit | FaceEdit | SavedStepEdit | TransformEdit | SketchSolidEdit | ShapeEdit | BodyOperationEdit | EdgeFinishEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): DisplayShape {
     this.checkRevision(revision)
     const step = 'transform' in edit ? { body: edit.body, transform: edit.transform } :
-      'bodyOperation' in edit ? { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs } :
+      'bodyOperation' in edit ? this.bodyOperation(edit) :
       'edgeFinish' in edit ? { edgeFinish: edit.edgeFinish, edges: edit.edges, value: edit.value } :
       'hinge' in edit ? { hinge: edit.hinge } :
       'clipJoint' in edit ? { clipJoint: edit.clipJoint } :
       'threadedConnection' in edit ? { threadedConnection: edit.threadedConnection } :
-      'arrange' in edit ? { arrange: edit.arrange, inputs: edit.inputs } :
+      'arrange' in edit ? { ...edit, preview: true } as ArrangeEdit :
       'sectionTarget' in edit ? { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs } :
       'editStepId' in edit ? this.resolveStepSettings(edit) :
       'sketchSolid' in edit ? { sketchSolid: edit.sketchSolid } :
       'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
-    return this.show(this.prepare(step).bodies)
+    const state = this.prepare(step)
+    const shape = this.show(state.bodies)
+    if (!state.stepNote) return shape
+    const note = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'>
+    const problems = new Set(note.problems.map((problem) => problem.name))
+    const marked = this.shown(state.bodies).flatMap(({ body }) => problems.has(state.bodies[body].name) ? [body] : [])
+    return { ...shape, arrangement: { ...note, marked } }
   }
 
   readSketch(revision: number, id: string) {
@@ -279,7 +300,7 @@ export class EngineDocument {
   /** What `save` writes, whatever the window last saw: for autosave. */
   snapshot(): Uint8Array {
     const newest = this.states.length - 1
-    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'editStepId' in step || 'sketchDraft' in step || 'sketchSolid' in step))) {
+    if (newest > 0 && (this.cursor < 0 || this.edits.slice(this.cursor).some((step) => 'repairStepId' in step || 'keepStepId' in step || 'editStepId' in step || 'sketchDraft' in step || 'sketchSolid' in step))) {
       return this.moveInherited({ ...this.states[newest], bodies: this.current.bodies }, this.cursor - newest).project.save(0)
     }
     if (this.inherited) return this.current.project.save(0)
@@ -298,7 +319,7 @@ export class EngineDocument {
     return this.model()
   }
 
-  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
+  apply(edit: PullEdit | StackEdit | FaceEdit | ShapeEdit | ImportRequest | ReferenceRepair | KeepEdit | SavedStepEdit | TransformEdit | SketchDraftEdit | SketchSolidEdit | BodyOperationEdit | EdgeFinishEdit | GroupEdit | PlateEdit | ThreadGaugeEdit | MoveBodiesEdit | HingeEdit | ClipJointEdit | ThreadedConnectionEdit | UngroupEdit | DeleteEdit | ConstructionEdit | ArrangeEdit | SectionReplaceEdit, revision: number): ModelResult {
     this.checkRevision(revision)
     if (('distance' in edit && edit.distance === 0) || ('editStepId' in edit && !Object.keys(edit.changes).length)) return this.model()
     const fork = this.inherited !== undefined
@@ -322,6 +343,8 @@ export class EngineDocument {
       const picked = replacementFace === undefined ? undefined : this.pick(replacementFace)
       if (picked && picked.body !== replacementBody) throw new Error('Select a face of the replacement body.')
       step = { repairStepId, missingInputId, replacementBody, replacementFace: picked?.face, ...(more?.length ? { more } : {}) }
+    } else if ('keepStepId' in edit) {
+      step = { keepStepId: edit.keepStepId }
     } else if ('editStepId' in edit) {
       step = this.resolveStepSettings(edit)
     } else if ('sketchDraft' in edit) {
@@ -331,7 +354,7 @@ export class EngineDocument {
     } else if ('transform' in edit) {
       step = { body: edit.body, transform: edit.transform }
     } else if ('bodyOperation' in edit) {
-      step = { bodyOperation: edit.bodyOperation, body: edit.body, inputs: edit.inputs }
+      step = this.bodyOperation(edit)
     } else if ('hinge' in edit) {
       step = { hinge: edit.hinge }
     } else if ('clipJoint' in edit) {
@@ -351,11 +374,13 @@ export class EngineDocument {
     } else if ('sectionTarget' in edit) {
       step = { sectionTarget: edit.sectionTarget, sectionReplacement: edit.sectionReplacement, inputs: edit.inputs }
     } else if ('arrange' in edit) {
-      step = { arrange: edit.arrange, inputs: edit.inputs }
+      step = { arrange: edit.arrange, inputs: edit.inputs, target: edit.target, contacts: edit.contacts, edges: edit.edges, editing: edit.editing }
     } else if ('construction' in edit) {
       step = { construction: edit.construction, faces: edit.faces, edges: edit.edges, inputs: edit.inputs }
     } else if ('ungroup' in edit) {
       step = { ungroup: edit.ungroup }
+    } else if ('deleteBodies' in edit) {
+      step = { deleteBodies: edit.deleteBodies, deleteGroup: edit.deleteGroup }
     } else {
       step = 'shapeKind' in edit ? { shapeKind: edit.shapeKind, values: edit.values } : this.resolve(edit)
     }
@@ -442,6 +467,17 @@ export class EngineDocument {
     return { ...state, bodies: state.bodies.map((body) => ({ ...body, shape: body.shape ?? null })) }
   }
 
+  /** Each body's latest step, and what blocks it, as the shown model has them. */
+  private bodySteps() {
+    const project = this.current.project
+    let steps = this.bodyStepLists.get(project)
+    if (!steps) {
+      steps = new Map(project.bodySteps().map(({ name, producer, blockedBy }) => [name, blockedBy ? { producer, blockedBy } : { producer }]))
+      this.bodyStepLists.set(project, steps)
+    }
+    return steps
+  }
+
   /** The newest state's steps: each step of this session adds one, so those past the cursor are its undone ones. */
   private steps(): StepInfo[] {
     const newest = (this.cursor >= this.states.length ? this.current : this.states[this.states.length - 1]).project
@@ -451,15 +487,47 @@ export class EngineDocument {
     let activeSteps = this.stepLists.get(active)
     if (!activeSteps) this.stepLists.set(active, activeSteps = active.steps())
     const shown = new Map(activeSteps.map((step) => [step.id, step]))
-    return steps.map((step) => {
+    // A step the newest state no longer has (a Delete, undone) is still the active model's: listed where it stands.
+    const newer = new Set(steps.map((step) => step.id))
+    const merged: StepInfo[] = []
+    let at = 0
+    const dropped = (until?: string) => {
+      for (; at < activeSteps.length && activeSteps[at].id !== until; at++) {
+        if (!newer.has(activeSteps[at].id)) merged.push({ ...activeSteps[at], undone: false })
+      }
+    }
+    for (const step of steps) {
       const current = shown.get(step.id)
-      return { ...(current ?? step), undone: current === undefined }
-    })
+      if (current) {
+        dropped(step.id)
+        at++
+      }
+      merged.push({ ...(current ?? step), undone: current === undefined })
+    }
+    dropped()
+    return merged
   }
 
   private display(shape: Shape): PartDisplay {
     let entry = this.displays.get(shape.key)
-    if (!entry) this.displays.set(shape.key, entry = { shape, display: shape.display() })
+    if (!entry) {
+      // A body that only moved (a Move, or its Undo) shows its partner's display moved: measuring and reading back a
+      // large imported board's mesh took over a second.
+      const partner = shape.partner()
+      const placement = shape.placement()
+      const known = this.partners.get(partner)
+      const relative = known && relativePlacement(known.placement, placement)
+      const display = known && relative ? movedDisplay(known.display, relative) : shape.display()
+      this.displays.set(shape.key, entry = { shape, display })
+      // The latest first: a Redo moves the body that the Undo before it showed, which is no longer live by then.
+      this.partners.delete(partner)
+      this.partners.set(partner, { shape, placement, display })
+      // ponytail: the 32 latest, oldest out; by bytes if huge imports crowd it
+      for (const oldest of this.partners.keys()) {
+        if (this.partners.size <= 32) break
+        this.partners.delete(oldest)
+      }
+    }
     return entry.display
   }
 
@@ -478,6 +546,14 @@ export class EngineDocument {
 
   private show(bodies: Body[]): DisplayShape {
     return combine(this.shown(bodies).map(({ body, shape }) => ({ body, display: this.display(shape) })))
+  }
+
+  /** A body operation as recorded: a Draft's display faces become that body's own face numbers. */
+  private bodyOperation({ bodyOperation, body, inputs }: BodyOperationEdit): BodyOperationEdit {
+    if (bodyOperation !== 'draft' || !Array.isArray(inputs.faces)) return { bodyOperation, body, inputs }
+    const picks = inputs.faces.map((face) => this.pick(face))
+    if (picks.some((pick) => pick.body !== body)) throw new Error('Pick the faces to taper on one body.')
+    return { bodyOperation, body, inputs: { ...inputs, faces: picks.map((pick) => pick.face) } }
   }
 
   /** Which body a face of the shown model belongs to, and its number within that body. */
@@ -552,6 +628,7 @@ export class EngineDocument {
       if (!id) throw new Error('This history step is no longer available.')
       return this.rebuiltState(project.editStepSettings(id, step.changes, this.shapes(bodies)))
     }
+    if ('keepStepId' in step) return this.rebuiltState(project.keepLastGood(step.keepStepId, this.shapes(bodies)))
     if ('repairStepId' in step) {
       const replacement = bodies[step.replacementBody]
       if (!replacement?.shape) throw new Error('Select a replacement body with geometry.')
@@ -594,7 +671,20 @@ export class EngineDocument {
         if (!bodies[index]?.shape) throw new Error('Choose bodies with geometry to arrange.')
         return bodies[index].name
       })
-      return this.rebuiltState(project.addArrangement(names, JSON.stringify(step.inputs), this.shapes(bodies)))
+      if ('mode' in step.inputs) return this.rebuiltState(project.addArrangement(names, JSON.stringify(step.inputs), this.shapes(bodies)))
+      // A face pattern's picks, as each body's own face and edge numbers.
+      const face = (shown: number) => { const pick = this.pick(shown); return { body: bodies[pick.body].name, index: pick.face } }
+      const inputs: Record<string, unknown> = { ...step.inputs }
+      if (step.target === 'plate') inputs.target = 'plate'
+      else if (step.target !== undefined) inputs.target_face = face(step.target)
+      if (step.contacts) inputs.contact_faces = step.contacts.map(face)
+      if (step.edges) {
+        inputs.boundary_edges = step.edges.map((shown) => { const pick = this.pickEdge(shown); return { body: bodies[pick.body].name, index: pick.edge } })
+      }
+      if ((step as ArrangeEdit & { preview?: boolean }).preview) inputs.preview = true
+      const request = JSON.stringify(inputs)
+      return this.rebuiltState(step.editing ? project.editArrangement(step.editing, request, this.shapes(bodies))
+        : project.addArrangement(names, request, this.shapes(bodies)))
     }
     if ('construction' in step) {
       const named = (pick: { body: number }, index: number) => ({ body: bodies[pick.body].name, index })
@@ -610,6 +700,13 @@ export class EngineDocument {
       return { bodies, project: project.group(names) }
     }
     if ('ungroup' in step) return { bodies, project: project.ungroup(step.ungroup) }
+    if ('deleteBodies' in step) {
+      const names = step.deleteBodies.map((index) => {
+        if (!bodies[index]) throw new Error('Select a body to delete.')
+        return bodies[index].name
+      })
+      return this.rebuiltState(project.deleteBodies(names, step.deleteGroup, this.shapes(bodies)))
+    }
     if ('plate' in step) return this.onPlate(project, bodies, step.plate)
     if ('moveBodies' in step) {
       let next = bodies

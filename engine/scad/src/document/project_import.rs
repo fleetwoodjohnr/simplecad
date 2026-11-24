@@ -399,7 +399,7 @@ impl Model {
         let source_cache = &payload["cache"]["entries"];
         let mut candidate = self.clone();
         let before = self.document();
-        let undo_len = array(&self.payload["history"], "undo").len();
+        let undo_len = self.history_len("undo");
         let mut names = Names::collect(&self.payload, payload)?;
         let mut assets = Assets {
             archive: zip::ZipArchive::new(Cursor::new(source_bytes)).map_err(|_| INVALID)?,
@@ -572,8 +572,8 @@ impl Model {
                 shape: Some(shape),
             });
         }
-        if let Some(undo) = candidate.payload["history"]["undo"].as_array_mut() {
-            undo.truncate(undo_len);
+        if candidate.history_len("undo") > undo_len {
+            candidate.history.stack_mut("undo")?.truncate(undo_len);
         }
         candidate.push_undo("Import", before)?;
         Ok((candidate, result))

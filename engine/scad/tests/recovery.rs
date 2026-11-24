@@ -445,9 +445,10 @@ fn a_body_waiting_on_a_repair_refuses_changes_until_it_is_repaired() {
         )
         .err()
         .expect("a body waiting on a repair was changed");
-    assert_eq!(
-        error,
-        "Repair the step marked in History that made \"Plate\" before changing it."
+    assert!(
+        error.starts_with("\"Plate\" can't change until ")
+            && error.ends_with(", marked in History, is kept as it is or repaired."),
+        "{error}"
     );
     let steps = model.steps().len();
     assert!(model.editable("Plate").is_err());

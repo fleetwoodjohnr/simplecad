@@ -8,8 +8,11 @@ const labels: Record<string, string> = {
   clearance: 'Clearance', knuckles: 'Knuckles', knuckle_od: 'Knuckle diameter', pin: 'Pin diameter', length: 'Length (0 = whole edge)',
   axial_clearance: 'Gap between knuckles', open_max: 'Opens to (°)', stop: 'Stop at the limit', flex: 'Strip thickness',
   flex_length: 'Bending length', size: 'Size', retention: 'Retention', material: 'Material', depth_clearance: 'Depth clearance',
-  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset', designation: 'Thread size', form: 'Profile'
+  min_wall: 'Minimum wall', lead_in: 'Lead-in', spacing: 'Spacing', edge_offset: 'Edge offset', designation: 'Thread size', form: 'Profile',
+  rails: 'Rails', rail_width: 'Rail width', rail_height: 'Rail height', rail_angle: 'Dovetail angle (°)', rail_length: 'Rail length (0 = full)'
 }
+/** Names that differ by step: a draft's angle is its taper, not a turn. */
+const labelsFor: Record<string, Record<string, string>> = { draft: { angle: 'Draft angle (°)' } }
 /** Choices that differ by step: a threaded pair's clearance is a thread fit, not a part fit. */
 const choicesFor: Record<string, Record<string, string[]>> = {
   threaded_connection: { clearance: ['tight', 'normal', 'loose', 'very_loose'], form: ['printed', 'iso'] }
@@ -50,9 +53,9 @@ export function StepSettingsPanel({ kind, name, busy, preset, onEdit, onCancel }
         if (toggles.includes(key)) {
           return <label key={key} className="flex items-center gap-2">
             <input type="checkbox" checked={values[key] === 'true'} disabled={busy} onChange={(event) => set(String(event.target.checked))} />
-            {labels[key]}</label>
+            {labelsFor[kind ?? '']?.[key] ?? labels[key]}</label>
         }
-        return <label key={key} className="grid gap-1">{labels[key] ?? key}
+        return <label key={key} className="grid gap-1">{labelsFor[kind ?? '']?.[key] ?? labels[key] ?? key}
           {options[key]?.includes(preset[key])
             ? <select className={inputCls} value={values[key]} disabled={busy} onChange={(event) => set(event.target.value)}>
                 {options[key].map((option) => <option key={option} value={option}>{option[0].toUpperCase() + option.slice(1)}</option>)}

@@ -15,9 +15,8 @@ fn python_project_with_an_undone_pull() -> Vec<u8> {
         .to_owned();
     let initial = model.payload["features"][0]["id"].clone();
     let first_pull = model.payload["features"][1]["id"].clone();
-    let redo_signature = model.payload["history"]["redo"][0]["cache_keys"][0]
-        .as_str()
-        .unwrap();
+    let history = model.history();
+    let redo_signature = history["redo"][0]["cache_keys"][0].as_str().unwrap();
     let second_pull = model.payload["cache"]["entries"][redo_signature]["feature_id"].clone();
     for (producer, height) in [(initial, 20.0), (first_pull, 25.0), (second_pull, 22.0)] {
         let shape = occt::make_box(40.0, 30.0, height).unwrap();
@@ -90,11 +89,13 @@ fn a_python_redo_restores_geometry_and_survives_save_and_reopen() {
 fn malformed_redo_is_rejected_without_changing_the_model() {
     let original = python_project_with_an_undone_pull();
     let mut model = Model::open(&read(&original).unwrap());
-    model.payload["history"]["undo"] = Value::String("damaged undo stack".into());
-    let before = model.payload.clone();
+    let mut history = model.history();
+    history["undo"] = Value::String("damaged undo stack".into());
+    model.set_history(history);
+    let before = (model.payload.clone(), model.history());
 
     assert!(model.redo().is_err());
-    assert_eq!(model.payload, before);
+    assert_eq!((model.payload.clone(), model.history()), before);
     assert!(model.can_redo());
 }
 
@@ -122,11 +123,13 @@ fn redo_updates_geometry_when_an_edited_box_keeps_its_producer() {
         "outputs": { &body: { "kind": "brep", "sha256": sha } },
     });
     model.blobs.insert(sha, brep.into());
-    model.payload["history"]["redo"] = json!([{
+    let mut history = model.history();
+    history["redo"] = json!([{
         "label": "Edit parameters",
         "patch": make_patch(&model.document(), &edited.document()),
         "cache_keys": [signature],
     }]);
+    model.set_history(history);
     let original = model.save(&[]).unwrap();
     let opened = read(&original).unwrap();
     assert_box_height(&opened, 20.0);

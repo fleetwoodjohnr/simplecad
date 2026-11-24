@@ -236,7 +236,12 @@ pub fn normalise(model: &mut Value) {
     // Features, then the graph over them, in document order (`DependencyGraph.__init__`).
     let mut latest: HashMap<String, (String, String)> = HashMap::new();
     let mut features = Vec::new();
-    for raw in list(payload, "features") {
+    // Taken, not copied: every step is rebuilt below and put back in its place.
+    let raw_features = match payload.get_mut("features").map(Value::take) {
+        Some(Value::Array(list)) => list,
+        _ => Vec::new(),
+    };
+    for raw in raw_features {
         let id = raw
             .get("id")
             .and_then(Value::as_str)
@@ -438,10 +443,10 @@ pub fn normalise(model: &mut Value) {
     let counters = payload.get("counters").cloned().unwrap_or(json!({}));
     payload.insert("counters".into(), counters);
     payload.insert("retired_ids".into(), json!(retired));
-    payload.insert("parameters".into(), json!(parameters));
-    payload.insert("features".into(), json!(features));
-    payload.insert("bodies".into(), json!(bodies));
-    payload.insert("groups".into(), json!(groups));
+    payload.insert("parameters".into(), Value::Array(parameters));
+    payload.insert("features".into(), Value::Array(features));
+    payload.insert("bodies".into(), Value::Array(bodies));
+    payload.insert("groups".into(), Value::Array(groups));
     let metadata = payload.get("metadata").cloned().unwrap_or(json!({}));
     payload.insert("metadata".into(), metadata);
     payload.insert("assets".into(), json!(assets));

@@ -9,6 +9,8 @@ class FakeShape implements Shape {
   constructor(readonly volume: number, readonly faces = 2) {}
   bounds() { return [0, 0, 0, 1, 1, 1] }
   isHole() { return null }
+  partner() { return this.key }
+  placement() { return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0] }
   display(): PartDisplay {
     const n = this.faces
     return {
@@ -44,8 +46,10 @@ class FakeProject implements Project {
   groups() { return [] }
   group(): never { throw new Error('Groups are covered in the packaged app.') }
   ungroup(): never { throw new Error('Groups are covered in the packaged app.') }
+  deleteBodies(): never { throw new Error('Deleting is covered in the packaged app.') }
   addConstruction(): never { throw new Error('Construction tools are covered in the packaged app.') }
   addArrangement(): never { throw new Error('Arrangements are covered in the packaged app.') }
+  editArrangement(): never { throw new Error('Arrangements are covered in the packaged app.') }
   addSectionReplace(): never { throw new Error('Section Replace is covered in the packaged app.') }
   addFaceFeature(): never { throw new Error('Face tools are covered in the packaged app.') }
   constructor(readonly made: string[] = []) {}
@@ -72,6 +76,8 @@ class FakeProject implements Project {
   moveHistory(): never { throw new Error('No saved history in this fixture.') }
   warm() {}
   repairInput(): never { throw new Error('No missing inputs in this fixture.') }
+  keepLastGood(): never { throw new Error('No missing inputs in this fixture.') }
+  bodySteps() { return [] }
   editStepSettings(): never { throw new Error('No face features in this fixture.') }
   save(undone: number) {
     const kept = this.made.length - undone

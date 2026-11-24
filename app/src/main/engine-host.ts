@@ -11,6 +11,7 @@ export class EngineHost {
   private stopping = false
   private crashes: number[] = []
   private ready: Promise<void> | null = null
+  private restarting: ReturnType<typeof setTimeout> | undefined
 
   constructor(
     private addon: string,
@@ -45,7 +46,7 @@ export class EngineHost {
         this.crashes.push(Date.now())
         this.crashes = this.crashes.filter((t) => Date.now() - t < 60_000)
         if (this.crashes.length > 3) return this.log('error', 'Engine keeps crashing; not restarting.')
-        setTimeout(() => void this.restart(), 300)
+        this.restarting = setTimeout(() => void this.restart(), 300)
       })
       child.once('error', (e) => reject(new Error(`The engine failed to start: ${String((e as { type?: string }).type ?? e)}`)))
     })
@@ -53,6 +54,7 @@ export class EngineHost {
   }
 
   private async restart() {
+    this.restarting = undefined
     await this.start()
     this.web()?.send('engine:restart')
     this.connectRenderer()
@@ -67,13 +69,24 @@ export class EngineHost {
     wc.postMessage('engine:port', null, [port2])
   }
 
-  /** Resolves once the engine has exited, so nothing it was writing lands afterwards. */
+  /** Resolves once the engine has exited, so nothing it was writing lands afterwards. A crash's pending restart is
+   * dropped. An engine still running 5 s after being asked is killed outright: quitting must not wait on it. */
   stop(): Promise<void> {
     this.stopping = true
+    clearTimeout(this.restarting)
+    this.restarting = undefined
     const child = this.child
     if (!child) return Promise.resolve()
     return new Promise((resolve) => {
-      child.once('exit', () => resolve())
+      const force = setTimeout(() => {
+        this.log('error', 'The engine did not stop when asked; killing it.')
+        try { if (child.pid) process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+        resolve()
+      }, 5000)
+      child.once('exit', () => {
+        clearTimeout(force)
+        resolve()
+      })
       child.kill()
     })
   }

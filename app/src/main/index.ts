@@ -7,7 +7,7 @@ import path from 'node:path'
 import { EngineHost } from './engine-host'
 import { checkForUpdates } from './update-dialog'
 import { readLegacyPreferences } from './preferences'
-import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, projectName, saveExportFile, saveProjectFile } from './project-files'
+import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, projectName, saveExportFile, saveProjectFile, timing } from './project-files'
 import { sendToSlicer } from './slicer'
 import { calibrationPath, readCalibration, saveCalibration } from './calibration'
 import { describeAge, leftovers, readRecovered, recoveryDir, remove, sessionFile } from './recovery'
@@ -214,10 +214,17 @@ if (process.argv.includes('--version')) {
   })
   // Stop the worker before deleting autosaves. On macOS the app can stay open
   // without a window, and an explicit Quit uses Electron's will-quit path.
-  const cleanSession = () => sessionCleanup ??= engine.stop().then(async () => {
-    await remove([autosaveFile, ...recovered])
-    recovered = []
-  })
+  const cleanSession = () => {
+    if (sessionCleanup) return sessionCleanup
+    const started = performance.now()
+    timing('quit: engine stop asked', started)
+    return sessionCleanup = engine.stop().then(async () => {
+      timing('quit: engine stopped', started)
+      await remove([autosaveFile, ...recovered])
+      recovered = []
+      timing('quit: autosaves removed', started)
+    })
+  }
   app.on('window-all-closed', () => {
     if (isMac) void cleanSession()
     else app.quit()
@@ -227,7 +234,9 @@ if (process.argv.includes('--version')) {
     event.preventDefault()
     if (quitState === 'cleaning') return
     quitState = 'cleaning'
+    const started = performance.now()
     void cleanSession().finally(() => {
+      timing('quit: quitting', started)
       quitState = 'ready'
       app.quit()
     })

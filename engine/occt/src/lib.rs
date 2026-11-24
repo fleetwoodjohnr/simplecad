@@ -165,6 +165,115 @@ pub mod ffi {
         pub male_on_a: bool,
     }
 
+    /// SimpleCAD 0.4's sliding joints (`slides.py`): rails on one part, channels on the other.
+    pub struct SlideSpec {
+        /// 0: dovetail, 1: T-rail, 2: tongue & groove.
+        pub style: u8,
+        pub width: f64,
+        pub height: f64,
+        pub angle: f64,
+        pub clearance: f64,
+        pub depth_clearance: f64,
+        pub lead_in: f64,
+        pub min_wall: f64,
+        pub lip: f64,
+        pub stop: bool,
+        /// Below zero: sized from the channel's clearance.
+        pub detent: f64,
+        pub rails: u32,
+        /// 0: the whole shared length.
+        pub rail_length: f64,
+        pub edge_offset: f64,
+        /// 0..3: +u, -u, +v, -v of face B's frame; 4: chosen from the seam.
+        pub insertion: u8,
+        /// 0: automatic, 1: cut into the part, 2: raised on its face.
+        pub female_mode: u8,
+        pub male_on_a: bool,
+        /// Part A was seated on B: a raised channel then moves it the rail's height back.
+        pub seated: bool,
+    }
+
+    pub struct SlideOutput {
+        pub first: UniquePtr<Shape>,
+        pub second: UniquePtr<Shape>,
+        pub rails: u32,
+        pub raised: bool,
+        /// The slide direction used, as `SlideSpec::insertion`.
+        pub insertion: u8,
+        /// How part A moves to come apart, and how far.
+        pub exit_a: [f64; 3],
+        pub travel: f64,
+        pub engagement: f64,
+        pub detent: f64,
+        pub warnings: Vec<String>,
+    }
+
+    /// SimpleCAD 0.4's face patterns (`arrange_on_face`): the pattern, the usable region, and how bodies stand.
+    pub struct ArrangeSpec {
+        /// grid, linear, radial, staggered, packed or custom.
+        pub pattern: String,
+        pub fixed: bool,
+        pub gap: f64,
+        pub gap_y: f64,
+        pub has_gap_y: bool,
+        /// Degrees from +U.
+        pub direction: f64,
+        pub align: String,
+        /// 0: chosen.
+        pub rows: i32,
+        pub columns: i32,
+        pub fill_columns: bool,
+        pub evenly: bool,
+        pub rotation: f64,
+        pub auto_rotate: bool,
+        pub radius: f64,
+        pub start_angle: f64,
+        pub face_center: bool,
+        pub contain: bool,
+        pub manual: bool,
+        pub margin: f64,
+        /// Left, right, top and bottom, for a manual boundary.
+        pub insets: [f64; 4],
+        pub avoid_holes: bool,
+        pub avoid_bodies: bool,
+        pub orient: bool,
+        pub standoff: f64,
+        /// Along U, V and the normal, after planning.
+        pub offset: [f64; 3],
+        pub suggest: bool,
+        /// A flat target's `reference_frame`: centre, U, V, normal.
+        pub frame: [f64; 12],
+    }
+
+    /// A suggested change that would fit: what to say, and the settings it changes.
+    pub struct ArrangeOffer {
+        pub label: String,
+        pub keys: Vec<String>,
+        pub values: Vec<String>,
+    }
+
+    pub struct ArrangeOutput {
+        /// The input index of each body, in the order the pattern placed them.
+        pub order: Vec<u32>,
+        /// The bodies moved, in that order.
+        pub shapes: Vec<ImportedBody>,
+        /// (slot, 0 outside / 1 overlap / 2 close, the other slot or -1), flattened.
+        pub problems: Vec<i32>,
+        pub gap: f64,
+        pub rows: i32,
+        pub columns: i32,
+        pub radius: f64,
+        /// U, V and the normal at the face's middle.
+        pub axes: [f64; 9],
+        /// Slots whose body had no flat face to stand on.
+        pub unseated: Vec<u32>,
+        pub offers: Vec<ArrangeOffer>,
+        /// The usable region's rings, just above the face: x, y, z of each point, each ring closed.
+        pub boundary: Vec<f64>,
+        /// How many points each ring has.
+        pub boundary_rings: Vec<u32>,
+    }
+
     pub struct ClipOutput {
         pub first: UniquePtr<Shape>,
         pub second: UniquePtr<Shape>,
@@ -310,6 +419,35 @@ pub mod ffi {
             placement: &ClipPlacementSpec,
             manual_points: &[f64],
         ) -> Result<ClipOutput>;
+        /// SimpleCAD 0.4's version-1 clips: sockets cut in both parts at `points` (u, v pairs in
+        /// `frame`: centre, X, Y and normal of face B, then the clips' turn in degrees), a connector in each.
+        fn clip_legacy(
+            body_a: &Shape,
+            body_b: &Shape,
+            face_a: &Shape,
+            face_b: &Shape,
+            clip: &ClipSpec,
+            frame: &[f64],
+            points: &[f64],
+        ) -> Result<ClipOutput>;
+        /// The printer's build plate as a face at z = 0, `x` by `y` mm (`arrange.plate_face`).
+        fn plate_face(x: f64, y: f64) -> Result<UniquePtr<Shape>>;
+        /// Bodies laid out on a flat or cylindrical face; `supports` is each body's face to stand on, or -1.
+        fn arrange_face(
+            items: &Shapes,
+            supports: &[i32],
+            target: &Shape,
+            edges: &Shapes,
+            others: &Shapes,
+            spec: &ArrangeSpec,
+        ) -> Result<ArrangeOutput>;
+        fn clip_slides(
+            body_a: &Shape,
+            body_b: &Shape,
+            face_a: &Shape,
+            face_b: &Shape,
+            spec: &SlideSpec,
+        ) -> Result<SlideOutput>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
         /// Sweep the closed radial/axial profile along a cylindrical helix.
         fn sweep_thread_tooth(
@@ -366,6 +504,10 @@ pub mod ffi {
         /// The shape placed by a 3×4 matrix, row by row (`Shape.Located`, as
         /// the Python app places a cached "located" output).
         fn located(shape: &Shape, matrix: &[f64]) -> Result<UniquePtr<Shape>>;
+        /// The geometry shared with every moved copy of the shape, and its orientation, as one number.
+        fn shape_partner(shape: &Shape) -> u64;
+        /// The shape's location, its 3×4 matrix row by row.
+        fn shape_location(shape: &Shape) -> Vec<f64>;
         fn volume(shape: &Shape) -> f64;
         fn surface_area(shape: &Shape) -> Result<f64>;
         fn volume_center(shape: &Shape) -> Result<Vec<f64>>;
@@ -401,6 +543,8 @@ pub mod ffi {
         fn faces(shape: &Shape) -> Result<Vec<FaceData>>;
         /// Face `face` (a `faces` index) as the naming fingerprints it.
         fn face_fingerprint(shape: &Shape, face: u32) -> Result<FaceFingerprint>;
+        /// Every face as `face_fingerprint` names it, in one pass.
+        fn face_fingerprints(shape: &Shape) -> Result<Vec<FaceFingerprint>>;
         fn edge_fingerprints(shape: &Shape) -> Result<Vec<EdgeFingerprint>>;
         /// Origin and direction of a straight edge in the naming index order.
         fn edge_axis(shape: &Shape, index: u32) -> Result<EdgeAxis>;

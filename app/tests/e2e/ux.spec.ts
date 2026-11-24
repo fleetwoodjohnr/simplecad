@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
@@ -448,4 +448,160 @@ test('arrow keys nudge a selected face or chosen body as one exact step, and Esc
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(bodies).not.toContainText('Cylinder')
+})
+
+test('the wheel button pans the view, and turns it with Shift, as in 0.4; the right button turns it', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-camera', /position/)
+  const camera = async () => JSON.parse((await canvas.getAttribute('data-camera'))!) as { position: number[]; target: number[] }
+  // The view frames the model once it arrives (the camera starts at the origin): start from where it settles.
+  let last = ''
+  await expect.poll(async () => {
+    const now = (await canvas.getAttribute('data-camera'))!
+    const settled = now === last && (JSON.parse(now) as { position: number[] }).position.some((v) => Math.abs(v) > 1)
+    last = now
+    return settled
+  }, { intervals: [200], timeout: 15_000 }).toBe(true)
+  const offset = (view: { position: number[]; target: number[] }) => view.position.map((v, i) => v - view.target[i])
+  const box = (await canvas.boundingBox())!
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+  const drag = async (button: 'middle' | 'right', shift = false) => {
+    const before = await camera()
+    if (shift) await page.keyboard.down('Shift')
+    await page.mouse.move(x, y)
+    await page.mouse.down({ button })
+    await page.mouse.move(x + 80, y + 30, { steps: 6 })
+    await page.mouse.up({ button })
+    if (shift) await page.keyboard.up('Shift')
+    await expect.poll(async () => JSON.stringify(await camera())).not.toBe(JSON.stringify(before))
+    return [before, await camera()]
+  }
+  // A pan carries the camera and the point it turns about together.
+  let [before, after] = await drag('middle')
+  expect(after.target).not.toEqual(before.target)
+  offset(after).forEach((v, i) => expect(v).toBeCloseTo(offset(before)[i], 1))
+  // An orbit swings the camera round the point it turns about, which stays.
+  for (const [button, shift] of [['middle', true], ['right', false]] as const) {
+    ;[before, after] = await drag(button, shift)
+    expect(after.target).toEqual(before.target)
+    expect(after.position).not.toEqual(before.position)
+  }
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// SimpleCAD 0.4.4 made it: A stacked on B, then B deleted; C cut by D, then D deleted. Both keep their last good shape.
+const lostInputs = path.join(__dirname, '../../../engine/scad/tests/data/keep/broken.scad3')
+
+test('a part whose step lost its input says why beside it, and Keep where it is lets it move again', async () => {
+  const copy = path.join(scratchDir('simplecad-keep-'), 'Lost inputs.scad3')
+  await copyFile(lostInputs, copy)
+  const { page } = await launch({ args: [copy] })
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const notice = page.getByRole('region', { name: "Part can't change" })
+  await expect(steps).toHaveText([/^Box/, /^Box3/, /^Align/, /^Combine/])
+
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(notice).toContainText("A can't change until Align is kept as it is or repaired.")
+  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+  await notice.getByRole('button', { name: 'Keep where it is' }).click()
+  await expect(steps.nth(2)).toContainText('Align (kept)')
+  await expect(notice).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
+
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(notice).toHaveCount(0)
+  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('X (mm)').fill('5')
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps.last()).toContainText('Move')
+  await expect(errors(page)).toHaveCount(0)
+
+  // A face of the blocked part, picked while another part is chosen, still refuses the tools that would change it.
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await page.getByLabel('Planar face').selectOption({ label: (await page.getByLabel('Planar face').locator('option', { hasText: /^C · / }).first().textContent())! })
+  await expect(notice).toContainText("C can't change until Combine")
+  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+
+  // The cut part offers to keep its shape, or to choose a new cutter.
+  await bodies.getByRole('button', { name: 'C', exact: true }).click()
+  await expect(notice.getByRole('button', { name: 'Keep this shape' })).toBeVisible()
+  await notice.getByRole('button', { name: 'Repair input' }).click()
+  await expect(page.getByRole('form', { name: 'Repair Combine' })).toBeVisible()
+})
+
+// SimpleCAD 0.4.4's right click: it chooses what is under the pointer and offers what can be done to it.
+test('a right click picks the face under it and offers its tools, Edit and Delete; a right drag still turns the view', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('aria-busy', 'false')
+  const box = (await canvas.boundingBox())!
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+
+  await page.mouse.click(x, y, { button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Face of Box' })
+  await expect(menu).toBeVisible()
+  await expect(page.getByRole('toolbar', { name: 'Selection tools' })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: 'Move' })).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: 'Edit Box' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+
+  await page.mouse.click(x, y, { button: 'right' })
+  await page.getByRole('menu', { name: 'Face of Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await page.getByRole('form', { name: 'Edit Box' }).getByRole('button', { name: 'Cancel' }).click()
+
+  await page.mouse.click(x, y, { button: 'right' })
+  await page.getByRole('menu', { name: 'Face of Box' }).getByRole('menuitem', { name: 'Delete Box' }).click()
+  await expect(page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })).toHaveCount(0)
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+
+  // A right drag turns the view and opens nothing.
+  const before = await canvas.getAttribute('data-camera')
+  await page.mouse.move(x, y)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(x + 80, y + 30, { steps: 6 })
+  await page.mouse.up({ button: 'right' })
+  await expect.poll(() => canvas.getAttribute('data-camera')).not.toBe(before)
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('a right click, or the menu key, on a body or a step offers what can be done to it', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const row = bodies.getByRole('button', { name: 'Box', exact: true })
+
+  await row.click({ button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Box' })
+  await expect(menu.getByRole('menuitem', { name: 'Move' })).toBeVisible()
+  await menu.getByRole('menuitem', { name: 'Hide Box' }).click()
+  await expect(bodies.getByRole('button', { name: 'Show Box' })).toBeVisible()
+
+  // From the keyboard: the menu key on the focused row, then the arrows and Enter.
+  await row.focus()
+  await page.keyboard.press('Shift+F10')
+  await expect(page.getByRole('menu', { name: 'Box' })).toBeVisible()
+  await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Show Box' }).focus()
+  await page.keyboard.press('Enter')
+  await expect(bodies.getByRole('button', { name: 'Hide Box' })).toBeVisible()
+
+  // The Menu key on a step's focused Edit button, then the arrow key to its first item.
+  await page.getByRole('button', { name: 'Edit Box' }).focus()
+  await page.keyboard.press('ContextMenu')
+  await expect(page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('list', { name: 'Model history' }).locator('li').first().click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
 })

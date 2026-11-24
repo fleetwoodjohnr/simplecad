@@ -1,0 +1,31 @@
+{
+ "last_good": {
+  "A_bounds": [
+   72.839745862,
+   2.669872881,
+   11.9999999,
+   95.160254138,
+   21.330127119,
+   20.0000001
+  ],
+  "C_volume": 8000.000000000002
+ },
+ "states": {
+  "Align": [
+   "FeatureState.NEEDS_ATTENTION",
+   "The object 'B' this feature needs was deleted. Undo the deletion or re-select its input."
+  ],
+  "Box": [
+   "FeatureState.OK",
+   ""
+  ],
+  "Box3": [
+   "FeatureState.OK",
+   ""
+  ],
+  "Combine": [
+   "FeatureState.NEEDS_ATTENTION",
+   ""
+  ]
+ }
+}

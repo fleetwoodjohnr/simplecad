@@ -1,27 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Pencil, Redo2, Search, Undo2, Ungroup } from 'lucide-react'
-import type { BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Trash2, Undo2, Ungroup } from 'lucide-react'
+import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
-import { ContextBar } from './ContextBar'
+import { HistoryList, canEdit, keepLabel } from './HistoryList'
+import { SelectionMenu, isMenuKey, type MenuEntry } from './SelectionMenu'
+import { ContextBar, faceTools } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
-import { ArrangePanel } from './ArrangePanel'
+import { ArrangePanel, type ArrangeRole } from './ArrangePanel'
 import { SectionReplacePanel } from './SectionReplacePanel'
 import { StepSettingsPanel } from './StepSettingsPanel'
 import { PrintCheckPanel } from './PrintCheckPanel'
 import { FitPanel } from './FitPanel'
 import { HingePanel } from './HingePanel'
 import { ClipJointPanel } from './ClipJointPanel'
+import { DraftPanel, type DraftInputs } from './DraftPanel'
 import { ThreadedConnectionPanel } from './ThreadedConnectionPanel'
 import { NUDGE_STEP, worldAxes } from './nudge'
 import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
 import { Viewport } from '../viewport/Viewport'
+import type { TransformView } from '../viewport/transform'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
 import { ShapePanel } from './ShapePanel'
@@ -52,8 +56,11 @@ function useTheme(chosen: Theme) {
 }
 
 const labels = [['Left', 'Right'], ['Front', 'Back'], ['Bottom', 'Top']]
+/** The tools that change the chosen part: refused while the step it waits on has lost an input. */
+const changesBody: CommandId[] = ['move', 'rotate', 'scale', 'mirror', 'rectangularPattern', 'circularPattern', 'combine', 'split',
+  'sectionReplace', 'shell', 'draft', 'vent', 'fillet', 'chamfer', 'hinge', 'clipJoint', 'threadedConnection', 'pushPull', 'hole',
+  'thread', 'matchingPart', 'text', 'faceTexture', 'stack', 'arrange']
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false })
-const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Failed', needs_attention: 'Needs attention' }
 const defaultStack: StackSettings = {
   operation: 'stack', offset: 0, rotation: 0, flip: false, horizontal: 'center', vertical: 'center',
   horizontalGap: 0, verticalGap: 0
@@ -150,13 +157,20 @@ export function App() {
   const [hingeSwing, setHingeSwing] = useState<number>()
   /** The Clip Joint tool: open or not, its two picked faces, and the printer's clearance for each fit. */
   const [clip, setClip] = useState(false)
+  // Draft: the faces to taper, all of one body; undefined while the tool is closed.
+  const [draftPicks, setDraftPicks] = useState<number[]>()
   const [clipPicks, setClipPicks] = useState<number[]>([])
   const [clipFits, setClipFits] = useState<Record<string, number>>()
   /** The Threaded connection tool: open or not, and its two picked round faces. */
   const [threadPair, setThreadPair] = useState(false)
   const [threadPicks, setThreadPicks] = useState<number[]>([])
-  /** Arrange's bodies, taken as it opens; or the saved step History is editing. */
-  const [arrange, setArrange] = useState<{ bodies: number[]; editing?: string }>()
+  /** Arrange's bodies, taken as it opens (or the saved step History is editing), and a face pattern's picks: the
+   * target face or the build plate, a face for bodies to stand on (by body), edges to keep the margin from, and how
+   * far the pattern was dragged. `repicked`: which saved picks an edit makes again. */
+  const [arrange, setArrange] = useState<{
+    bodies: number[]; editing?: string; role?: ArrangeRole; target?: number; targetName?: string; plate: boolean
+    contacts: Record<number, number>; edges: number[]; move: Vec3; repicked: { target?: true; contacts?: true; edges?: true }
+  }>()
   /** Section Replace: its picks (the replacement's face, then the target's), or the saved step History is editing. */
   const [section, setSection] = useState<{ editing?: string }>()
   /** A saved Move, Rotate, Pull or placement whose settings History is editing. */
@@ -172,6 +186,8 @@ export function App() {
   const [faceTool, setFaceTool] = useState<FaceOperation['faceOperation']>()
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
+  /** The right-click menu: what was clicked, and where. */
+  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string })>()
   const [repairBody, setRepairBody] = useState<number>()
   /** Replacements for a Combine's other lost tools, by the lost object's ID. */
   const [moreRepair, setMoreRepair] = useState<Record<string, number>>({})
@@ -456,6 +472,16 @@ export function App() {
   const closeEdgeTool = () => { setEdgeTool(undefined); setEdgePicks([]); clearPreview() }
   const closeHinge = () => { setHinge(false); setHingeEdge(undefined); setHingeSwing(undefined); clearPreview() }
   const closeClip = () => { setClip(false); setClipPicks([]); clearPreview() }
+  const closeDraft = () => { setDraftPicks(undefined); clearPreview() }
+  /** Toggle a face to taper; a face of another body starts a new pick, since one draft tapers one body. */
+  const pickDraftFace = (face: number) => {
+    const body = model?.shape.faces[face]?.body
+    if (body === undefined) return
+    setSelected(face)
+    clearPreview()
+    setDraftPicks((picks = []) => picks.includes(face) ? picks.filter((pick) => pick !== face)
+      : picks.length && model?.shape.faces[picks[0]]?.body !== body ? [face] : [...picks, face])
+  }
   const closeThreadPair = () => { setThreadPair(false); setThreadPicks([]); clearPreview() }
   const pickThreadFace = (face: number) => {
     if (threadPicks.length >= 2 || threadPicks.includes(face)) return
@@ -515,7 +541,58 @@ export function App() {
     const shown = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []) ?? []
     const bodies = chosenBodies.length >= 2 ? chosenBodies : shown
     select()
-    setArrange({ bodies })
+    setArrange({ bodies, plate: false, contacts: {}, edges: [], move: [0, 0, 0], repicked: {} })
+  }
+  const arrangeRole = (role?: ArrangeRole) => {
+    // Picks are of the model as it is, not of a preview.
+    clearPreview()
+    setArrange((tool) => tool && { ...tool, role })
+  }
+  const pickArrangeFace = (face: number) => {
+    if (!arrange || !model) return
+    const info = model.shape.faces[face]
+    if (!info) return
+    if (arrange.role === 'target') {
+      if (arrange.bodies.includes(info.body)) {
+        setError("That face is on one of the objects being arranged. Pick another object's face.")
+        return
+      }
+      setError('')
+      setSelected(face)
+      setArrange({ ...arrange, role: undefined, target: face, targetName: faceLabel(info, model.bodies, unit), plate: false, edges: [],
+        repicked: { ...arrange.repicked, target: true, edges: true } })
+    } else if (arrange.role === 'contact') {
+      if (!arrange.bodies.includes(info.body) || !info.planar) {
+        setError('Click a flat face on one of the objects being arranged.')
+        return
+      }
+      setError('')
+      setSelected(face)
+      const kept = arrange.repicked.contacts ? arrange.contacts : {}
+      setArrange({ ...arrange, contacts: { ...kept, [info.body]: face }, repicked: { ...arrange.repicked, contacts: true } })
+    }
+  }
+  const pickArrangeEdge = (edge: number) => {
+    if (!arrange || arrange.target === undefined || edgeBody(edge) !== model?.shape.faces[arrange.target]?.body) {
+      setError('Only edges of the target face can bound it.')
+      return
+    }
+    setError('')
+    const kept = arrange.repicked.edges ? arrange.edges : []
+    setArrange({ ...arrange, edges: kept.includes(edge) ? kept.filter((e) => e !== edge) : [...kept, edge],
+      repicked: { ...arrange.repicked, edges: true } })
+  }
+  /** What Arrange asks for: a row of the bodies, or a face pattern with the picks made (an edit sends only those made again). */
+  const arrangeRequest = (inputs: ArrangeEdit['inputs']): ArrangeEdit => {
+    const tool = arrange!
+    if ('mode' in inputs) return { arrange: tool.bodies, inputs }
+    const editing = tool.editing
+    const request: ArrangeEdit = { arrange: editing ? [] : tool.bodies, inputs, ...(editing ? { editing } : {}) }
+    if (tool.plate) request.target = 'plate'
+    else if (tool.target !== undefined && (!editing || tool.repicked.target)) request.target = tool.target
+    if (!editing || tool.repicked.contacts) request.contacts = Object.values(tool.contacts)
+    if (!editing || tool.repicked.edges) request.edges = tool.edges
+    return request
   }
   const closeArrange = () => { setArrange(undefined); clearPreview() }
   const closeSection = () => { setSection(undefined); setSectionPicks([]); clearPreview() }
@@ -665,6 +742,19 @@ export function App() {
   const ready = !!model && !busy
   const movingBody = selected === undefined ? undefined : model?.shape.faces[selected]?.body
   const canStack = ready && !shapePanel && !faceTool && !transformKind && !measureKind && movingBody !== undefined && model.shape.faces.some((face) => face.body !== movingBody)
+  // A face pattern's preview drags as one: the move, along the face's U, V and normal, goes into its offsets.
+  const arrangeNote = arrange && !arrange.role ? preview?.arrangement : undefined
+  const arrangeDrag: TransformView | undefined = arrangeNote && model ? {
+    kind: 'move', body: -1, enabled: ready, snap: 0,
+    bodies: arrangeNote.order.map((name) => model.bodies.findIndex((body) => body.name === name)).filter((index) => index >= 0),
+    formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+    onCommit: ({ values }) => {
+      const delta = values.map(Number)
+      const along = (axis: Vec3) => axis[0] * delta[0] + axis[1] * delta[1] + axis[2] * delta[2]
+      const [u, v, n] = arrangeNote.axes
+      setArrange((tool) => tool && { ...tool, move: [tool.move[0] + along(u), tool.move[1] + along(v), tool.move[2] + along(n)] })
+    }
+  } : undefined
   const canUseFaceTool = ready && !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !hinge && !clip && !threadPair && !construction && !arrange && !section && !measureKind && !sketchTool && !sketchEditor && !matchingPart
   const patternBodies = model?.bodies.filter((body) => body.visible && !body.empty).map((body) => body.name) ?? []
   const sketches = model?.steps.filter((step) => !step.undone && step.kind === 'sketch' && step.state === 'ok') ?? []
@@ -699,7 +789,7 @@ export function App() {
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
-    const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
+    const body = movingBody ?? (chosenBodies.length === 1 ? chosenBodies[0] : visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
     setTransformSnap(preferences.snap ? kind === 'move' ? preferences.moveStep : preferences.rotationSnap : 0)
@@ -708,7 +798,7 @@ export function App() {
   }
   const openBodyTool = (kind: BodyOperation) => {
     const visible = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : [])
-    const body = movingBody ?? (visible?.length === 1 ? visible[0] : undefined)
+    const body = movingBody ?? (chosenBodies.length === 1 ? chosenBodies[0] : visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
     setBodyTool({ kind })
@@ -721,8 +811,20 @@ export function App() {
   }
   const idle = !stack && !shapePanel && !faceTool && !transformKind && !bodyTool && !edgeTool && !hinge && !clip && !threadPair && !construction && !arrange && !section && !measureKind && !sketchTool && !matchingPart && !missingInput
   const selectedFace = selected === undefined ? undefined : model?.shape.faces[selected]
+  // A chosen part whose step lost an input keeps its last good shape and refuses changes (as 0.4.4 keeps it in
+  // place): what blocks it, said beside it, with the fix.
+  const blocked = (() => {
+    // Tools act on the selected face's part or on the chosen ones: refused if any of them is blocked.
+    const index = [...(selectedFace ? [selectedFace.body] : []), ...chosenBodies].find((b) => model?.bodies[b]?.blockedBy)
+    const body = index === undefined ? undefined : model?.bodies[index]
+    const step = body && model?.steps.find((entry) => entry.id === body.blockedBy && !entry.undone)
+    return body && step ? { body, step } : undefined
+  })()
+  const keepStep = (step: StepInfo) => {
+    if (revision !== undefined) mutate(() => keepLastGood(revision, { keepStepId: step.id }))
+  }
   // Flat faces move along their normal; round ones along their radius (typed, as they have no single normal).
-  const canPullFace = idle && ready && !!selectedFace
+  const canPullFace = idle && ready && !!selectedFace && !blocked
   const startStack = () => {
     setStackSettings(defaultStack)
     setDistance('')
@@ -741,6 +843,11 @@ export function App() {
     model?.bodies.forEach((_, body) => { if (!shown.has(body)) tree.push({ body, members: [] }) })
     return tree
   }, [model])
+  /** Delete bodies with the steps that make them (or a group with its members); Undo brings them back. */
+  const removeBodies = (bodies: number[], group?: string) => {
+    if (revision === undefined || !bodies.length) return
+    mutate(() => deleteBodies(revision, bodies, group))
+  }
   /** A plain click chooses a body, or its whole group; Ctrl- or Shift-click adds or removes one. */
   const chooseBody = (body: number, adding: boolean) => {
     const group = model?.groups.find(({ members }) => members.includes(body))?.members
@@ -757,10 +864,15 @@ export function App() {
               disabled={!ready} onClick={() => pickMeasure({ kind: 'body', body: index })}>{body.name}</button>
           : <button type="button" className="min-w-0 flex-1 truncate text-left" aria-pressed={chosenBodies.includes(index)}
               title={body.empty ? 'No saved geometry' : undefined}
-              onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}>{body.name}</button>}
+              onClick={(event) => chooseBody(index, event.ctrlKey || event.metaKey || event.shiftKey)}
+              onContextMenu={(event) => openBodyMenu(index, event)}
+              onKeyDown={(event) => { if (isMenuKey(event)) openBodyMenu(index, event) }}>{body.name}</button>}
         <IconBtn label={`${body.visible ? 'Hide' : 'Show'} ${body.name}`} tip={false} aria-pressed={body.visible}
           disabled={!ready || body.empty} onClick={() => toggleBody(index, !body.visible)}>
           {body.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+        </IconBtn>
+        <IconBtn label={`Delete ${body.name}`} tip={false} disabled={!ready || !idle} onClick={() => removeBodies([index])}>
+          <Trash2 className="size-3.5" />
         </IconBtn>
       </li>
     )
@@ -790,6 +902,9 @@ export function App() {
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
     clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    // SimpleCAD 0.4's Delete: the chosen bodies, else the body of the selected face.
+    delete: { enabled: ready && idle && (chosenBodies.length > 0 || !!selectedFace), hint: 'Select a body',
+      run: () => removeBodies(chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []) },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
     pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => distanceField.current?.focus() },
     arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
@@ -843,6 +958,7 @@ export function App() {
         void window.simplecad.readCalibration().then((calibration) => setClipFits(calibration.fits), () => setClipFits(undefined))
       } },
     chamfer: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setEdgePicks([]); setEdgeTool({ kind: 'chamfer' }) } },
+    draft: { enabled: canTransform, hint: 'Show a body first', run: () => { select(); setDraftPicks([]) } },
     sectionReplace: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
       hint: 'Show two bodies first', run: () => { select(); setSectionPicks([]); setSection({}) } },
     split: { enabled: canTransform, hint: 'Show a body first', run: () => openBodyTool('split') },
@@ -863,6 +979,53 @@ export function App() {
       })
     } },
     updates: { enabled: true, run: () => void window.simplecad.checkForUpdates().catch((err: Error) => setError(err.message)) }
+  }
+  if (blocked) {
+    for (const id of changesBody) {
+      actions[id] = { ...actions[id], enabled: false, hint: `${blocked.body.name} can't change until ${blocked.step.name} is kept or repaired` }
+    }
+  }
+
+  // SimpleCAD 0.4.4's right-click menu: the actions valid for what was clicked, then what can be done to its part.
+  const tool = (id: CommandId): MenuEntry[] => actions[id].enabled ? [{ label: commands[id].label, run: actions[id].run }] : []
+  const stepItems = (step: StepInfo): MenuEntry[] => [
+    ...(canEdit(step) ? [{ label: `Edit ${step.name}`, run: () => editHistoryStep(step) }] : []),
+    ...(!step.undone && (step.missingInput || step.state === 'failed') ? [{ label: keepLabel(step), run: () => keepStep(step) }] : []),
+    ...(!step.undone && step.missingInput ? [{ label: 'Repair input', run: () => repairHistoryStep(step) }] : [])
+  ]
+  const partItems = (index: number): MenuEntry[] => {
+    const body = model?.bodies[index]
+    if (!body) return []
+    const made = model.steps.find((step) => step.id === (body.blockedBy ?? body.producer) && !step.undone)
+    const group = model.groups.find(({ members }) => members.includes(index))
+    const items: MenuEntry[] = [
+      ...(made ? stepItems(made) : []),
+      ...(!body.empty ? [{ label: body.visible ? `Hide ${body.name}` : `Show ${body.name}`, run: () => toggleBody(index, !body.visible) }] : []),
+      ...(chosenBodies.length > 1 && chosenBodies.includes(index) && revision !== undefined
+        ? [{ label: 'Group', run: () => mutate(() => groupBodies(revision, chosenBodies)) }] : []),
+      ...(group && revision !== undefined ? [{ label: `Ungroup ${group.name}`, run: () => mutate(() => ungroup(revision, group.name)) }] : []),
+      ...(idle ? [{ label: `Delete ${body.name}`, run: () => removeBodies(chosenBodies.includes(index) ? chosenBodies : [index]) }] : [])
+    ]
+    return items.map((item, i) => i === 0 ? { ...item, group: true } : item)
+  }
+  const menuFace = menu && 'face' in menu ? model?.shape.faces[menu.face] : undefined
+  const menuItems: MenuEntry[] = !menu || !model ? []
+    : 'face' in menu ? menuFace ? [...faceTools(menuFace.planar).filter((id) => id !== 'clear').flatMap(tool), ...partItems(menuFace.body)] : []
+    : 'body' in menu ? [...(['move', 'rotate', 'scale', 'mirror', 'split', 'measure'] as CommandId[]).flatMap(tool), ...partItems(menu.body)]
+    : (() => { const step = model.steps.find((entry) => entry.id === menu.step); return step ? stepItems(step) : [] })()
+  const menuLabel = !menu || !model ? '' : 'face' in menu ? `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
+    : 'body' in menu ? model.bodies[menu.body]?.name ?? '' : model.steps.find((entry) => entry.id === menu.step)?.name ?? ''
+  /** Where the menu goes: at the pointer, or beside the row when the keyboard opened it. */
+  const menuAt = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    if ('clientX' in event && (event.clientX || event.clientY)) return { x: event.clientX, y: event.clientY }
+    const box = event.currentTarget.getBoundingClientRect()
+    return { x: box.left + 12, y: box.bottom }
+  }
+  const openBodyMenu = (index: number, event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    event.preventDefault()
+    if (!ready) return
+    if (!chosenBodies.includes(index)) chooseBody(index, false)
+    setMenu({ body: index, ...menuAt(event) })
   }
 
   // SimpleCAD 0.4's arrow-key nudge. Up and Down push or pull a selected face; with bodies chosen, the arrows step
@@ -988,6 +1151,7 @@ export function App() {
         closeEdgeTool()
         closeHinge()
         closeClip()
+        closeDraft()
         closeThreadPair()
         closeConstruction()
         closeArrange()
@@ -997,9 +1161,11 @@ export function App() {
         return
       }
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
-      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit'] as const) {
-        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit'].includes(id))) continue
-        if (!matchesShortcut(event, commands[id].shortcut)) continue
+      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit', 'delete'] as const) {
+        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete'].includes(id))) continue
+        // A Mac's delete key is Backspace.
+        const backspace = id === 'delete' && event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+        if (!backspace && !matchesShortcut(event, commands[id].shortcut)) continue
         event.preventDefault()
         actions[id].run()
         return
@@ -1009,8 +1175,72 @@ export function App() {
     return () => window.removeEventListener('keydown', handle)
   })
 
+
+  // History rows keep the same handlers across renders, so a row draws again only when its step changes.
+  const editStepNow = useRef<(step: StepInfo) => void>(() => {})
+  editStepNow.current = (step) => {
+    if (step.kind === 'sketch') {
+      void openSketch(step.id)
+      return
+    }
+    select()
+    if (step.shapeSettings) {
+      setEditingShape(step.id)
+      setShapePanel(true)
+    } else {
+      if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection' || step.kind === 'draft') {
+        setEditingMove(step.id)
+        return
+      }
+      if (step.kind === 'section_replace') {
+        setSection({ editing: step.id })
+        return
+      }
+      if (step.kind === 'arrange') {
+        const settings = step.faceSettings ?? {}
+        const names: string[] = settings.bodies ? JSON.parse(settings.bodies) : []
+        const pattern = (settings.pattern ?? 'row') !== 'row'
+        setArrange({
+          bodies: names.map((name) => model?.bodies.findIndex((body) => body.name === name) ?? -1).filter((index) => index >= 0),
+          editing: step.id, plate: pattern && !settings.target_body, targetName: settings.target_body ? `a face of ${settings.target_body}` : undefined,
+          contacts: {}, edges: [], repicked: {},
+          move: [Number(settings.move_x) || 0, Number(settings.move_y) || 0, Number(settings.move_normal) || 0]
+        })
+        return
+      }
+      if (step.kind in constructionLabels) {
+        setConstruction({ kind: step.kind as Construction, editing: step.id, axisFrom: 'edge' })
+        return
+      }
+      if (step.kind === 'fillet' || step.kind === 'chamfer') {
+        setEdgeTool({ kind: step.kind, editing: step.id })
+        return
+      }
+      if (step.kind in bodyOperationLabels) {
+        setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
+        return
+      }
+      setEditingFace(step.id)
+      if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round' || step.kind === 'vent_cut') {
+        setFaceTool(step.kind)
+      }
+    }
+  }
+  const repairStepNow = useRef<(step: StepInfo) => void>(() => {})
+  repairStepNow.current = (step) => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }
+  // A large model has hundreds of faces: their list is made once per result, not on every render.
+  const faceOptions = useMemo(() => model?.shape.faces.map((face, index) =>
+    <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>), [model, unit])
+  const editHistoryStep = useMemo(() => (step: StepInfo) => editStepNow.current(step), [])
+  const repairHistoryStep = useMemo(() => (step: StepInfo) => repairStepNow.current(step), [])
+  const keepStepNow = useRef<(step: StepInfo) => void>(() => {})
+  keepStepNow.current = keepStep
+  const keepHistoryStep = useMemo(() => (step: StepInfo) => keepStepNow.current(step), [])
+  const menuHistoryStep = useMemo(() => (step: StepInfo, at: { x: number; y: number }) => setMenu({ step: step.id, ...at }), [])
+
   return (
     <TooltipProvider>
+      {menu && menuItems.length > 0 && <SelectionMenu at={menu} label={menuLabel} items={menuItems} onClose={() => setMenu(undefined)} />}
       <main className="flex h-screen flex-col bg-bg text-text">
         <TitleBar dark={dark} onToggleTheme={toggle} project={fileName} dirty={dirty} />
         <div role="toolbar" aria-label="Modeling tools" className="@container flex shrink-0 items-stretch gap-1 overflow-x-auto border-b border-border bg-panel px-2 py-1">
@@ -1061,20 +1291,50 @@ export function App() {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
               formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
-            } : undefined}
+            } : arrangeDrag}
+            outline={arrange ? preview?.arrangement?.boundary : undefined}
+            marked={arrange ? preview?.arrangement?.marked : undefined}
             canPull={canPullFace}
-            onPickEdge={edgeTool && !edgeTool.editing && ready ? pickEdge
+            onContextMenu={(face, x, y) => {
+              if (!ready || !idle) return
+              if (face === undefined) {
+                select()
+                setMenu(undefined)
+                return
+              }
+              // As 0.4.4's select_under: what was clicked replaces the selection.
+              select(face)
+              setChosenBodies([])
+              setMenu({ face, x, y })
+            }}
+            onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge
+              : edgeTool && !edgeTool.editing && ready ? pickEdge
               : hinge && ready ? pickHingeEdge
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
-            pickedEdges={edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
-            overlay={idle && selectedFace && model ? <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
-              canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
-              onDistance={(next) => { setDistance(next); setError('') }} /> : undefined}
+            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
+            overlay={idle && model && (selectedFace || blocked) ? <div className="grid justify-items-start gap-1.5">
+              {blocked && <section aria-label="Part can't change" className="max-w-sm rounded-xl border border-border bg-elev/95 p-2 text-xs shadow-lg backdrop-blur">
+                <p><strong>{blocked.body.name}</strong> can't change until <strong>{blocked.step.name}</strong> is kept as it is or repaired.
+                  {blocked.step.message ? ` ${blocked.step.message}` : ''}</p>
+                <div className="mt-1.5 flex gap-1.5">
+                  <Btn size="sm" variant="primary" disabled={!ready} onClick={() => keepStep(blocked.step)}>{keepLabel(blocked.step)}</Btn>
+                  {blocked.step.missingInput && <Btn size="sm" disabled={!ready} onClick={() => repairHistoryStep(blocked.step)}>Repair input</Btn>}
+                </div>
+              </section>}
+              {error && <p data-testid="selection-error" className="max-w-sm rounded-md bg-elev/95 px-2 py-1 text-xs text-danger shadow">{error}</p>}
+              {selectedFace && <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
+                canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
+                onDistance={(next) => { setDistance(next); setError('') }} />}
+            </div> : undefined}
             onSelect={(face, point) => {
               if (!ready || shapePanel || sketchTool) return
               if (matchingPart) {
                 if (face !== undefined) { clearPreview(); setSelected(face) }
+                return
+              }
+              if (arrange?.role) {
+                if (face !== undefined) pickArrangeFace(face)
                 return
               }
               if (section) {
@@ -1083,6 +1343,10 @@ export function App() {
               }
               if (clip) {
                 if (face !== undefined) pickClipFace(face)
+                return
+              }
+              if (draftPicks) {
+                if (face !== undefined) pickDraftFace(face)
                 return
               }
               if (threadPair) {
@@ -1136,6 +1400,10 @@ export function App() {
                     <IconBtn label={`Ungroup ${entry.group}`} disabled={!ready} onClick={() => {
                       if (revision !== undefined) mutate(() => ungroup(revision, entry.group!))
                     }}><Ungroup className="size-3.5" /></IconBtn>
+                    <IconBtn label={`Delete ${entry.group}`} disabled={!ready || !idle}
+                      onClick={() => removeBodies(model?.groups.find((group) => group.name === entry.group)?.members ?? [], entry.group)}>
+                      <Trash2 className="size-3.5" />
+                    </IconBtn>
                   </div>
                   <ul aria-label={entry.group} className="ml-4 grid gap-1">{entry.members.map(bodyRow)}</ul>
                 </li>
@@ -1146,10 +1414,14 @@ export function App() {
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
                 onChange={(e) => {
                   const face = e.target.value === '' ? undefined : Number(e.target.value)
-                  if (section) {
+                  if (arrange?.role === 'target' || arrange?.role === 'contact') {
+                    if (face !== undefined) pickArrangeFace(face)
+                  } else if (section) {
                     if (face !== undefined && !section.editing) pickSectionFace(face)
                   } else if (clip) {
                     if (face !== undefined) pickClipFace(face)
+                  } else if (draftPicks) {
+                    if (face !== undefined) pickDraftFace(face)
                   } else if (threadPair) {
                     if (face !== undefined) pickThreadFace(face)
                   } else if (construction) {
@@ -1163,7 +1435,7 @@ export function App() {
                   } else select(face)
                 }}>
                 <option value="">Select a face</option>
-                {model?.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>)}
+                {faceOptions}
               </select>
             </label>
             {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
@@ -1244,13 +1516,30 @@ export function App() {
               onApply={(inputs) => mutate(() => applySectionReplace(revision,
                 { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
               onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: section.editing!, changes }))} />}
-            {model && arrange && revision !== undefined && <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
-              names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')}
-              preset={model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings}
-              onChange={clearPreview} onCancel={closeArrange}
-              onPreview={(inputs) => void requestPreview(() => previewArrange(revision, { arrange: arrange.bodies, inputs }))}
-              onApply={(inputs) => mutate(() => applyArrange(revision, { arrange: arrange.bodies, inputs }))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />}
+            {model && arrange && revision !== undefined && (() => {
+              const preset = model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings
+              const saved = (key: string) => arrange.editing ? Number(preset?.[key]) || 0 : 0
+              return <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
+                names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')} preset={preset}
+                target={arrange.targetName} plate={arrange.plate} role={arrange.role} note={preview?.arrangement} move={arrange.move}
+                contacts={arrange.repicked.contacts ? Object.keys(arrange.contacts).length : saved('contact_faces')}
+                edges={arrange.repicked.edges ? arrange.edges.length : saved('boundary_edges')}
+                onRole={arrangeRole}
+                onPlate={(plate) => {
+                  clearPreview()
+                  setArrange({ ...arrange, plate, role: undefined, target: undefined, targetName: undefined, edges: [],
+                    repicked: { ...arrange.repicked, target: true, edges: true } })
+                }}
+                onReset={() => { clearPreview(); setArrange({ ...arrange, move: [0, 0, 0] }) }}
+                onChange={clearPreview} onCancel={closeArrange}
+                onPreview={(inputs) => void requestPreview(() => previewArrange(revision, arrangeRequest(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyArrange(revision, arrangeRequest(inputs))
+                  closeArrange()
+                  return next
+                })}
+                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />
+            })()}
             {model && construction && revision !== undefined && <ConstructionPanel key={`${construction.kind}:${construction.editing ?? 'new'}`}
               kind={construction.kind} busy={busy} axisFrom={construction.axisFrom}
               picked={{ faces: constructPicks.faces.length, edges: constructPicks.edges.length, points: constructPicks.points.length }}
@@ -1283,6 +1572,19 @@ export function App() {
                 onApply={(inputs) => mutate(async () => {
                   const next = await applyClipJoint(revision, request(inputs))
                   closeClip()
+                  return next
+                })} />
+            })()}
+            {model && draftPicks && revision !== undefined && (() => {
+              const body = model.shape.faces[draftPicks[0]]?.body ?? 0
+              const request = (inputs: DraftInputs) => ({ bodyOperation: 'draft' as const, body, inputs: { ...inputs, faces: draftPicks } })
+              return <DraftPanel busy={busy}
+                picked={draftPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+                onClear={() => { setDraftPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeDraft}
+                onPreview={(inputs) => void requestPreview(() => previewBodyOperation(revision, request(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyBodyOperation(revision, request(inputs))
+                  closeDraft()
                   return next
                 })} />
             })()}
@@ -1402,63 +1704,9 @@ export function App() {
               </div>
             </form>}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <ol ref={historyList} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
-              {model?.steps.map((step) => (
-                <li key={step.id} className={`px-2 py-1.5 ${step.undone ? 'text-text-3' : ''}`}>
-                  <div className="flex justify-between gap-2">
-                    <span className="truncate">{step.name}</span>
-                    {step.state !== 'ok' && <span className="shrink-0 text-danger">{STATES[step.state] ?? step.state}</span>}
-                    {!step.undone && (step.faceSettings || step.shapeSettings || step.kind === 'sketch') && <IconBtn label={`Edit ${step.name}`}
-                      disabled={busy || editingFace === step.id || editingShape === step.id || bodyTool?.editing === step.id || edgeTool?.editing === step.id || construction?.editing === step.id || arrange?.editing === step.id || section?.editing === step.id || editingMove === step.id} onClick={() => {
-                        if (step.kind === 'sketch') {
-                          void openSketch(step.id)
-                          return
-                        }
-                        select()
-                        if (step.shapeSettings) {
-                          setEditingShape(step.id)
-                          setShapePanel(true)
-                        } else {
-                          if (step.kind === 'move' || step.kind === 'push_pull' || step.kind === 'align' || step.kind === 'hinge' || step.kind === 'clip_joint' || step.kind === 'threaded_connection') {
-                            setEditingMove(step.id)
-                            return
-                          }
-                          if (step.kind === 'section_replace') {
-                            setSection({ editing: step.id })
-                            return
-                          }
-                          if (step.kind === 'arrange') {
-                            setArrange({ bodies: [], editing: step.id })
-                            return
-                          }
-                          if (step.kind in constructionLabels) {
-                            setConstruction({ kind: step.kind as Construction, editing: step.id, axisFrom: 'edge' })
-                            return
-                          }
-                          if (step.kind === 'fillet' || step.kind === 'chamfer') {
-                            setEdgeTool({ kind: step.kind, editing: step.id })
-                            return
-                          }
-                          if (step.kind in bodyOperationLabels) {
-                            setBodyTool({ kind: step.kind as BodyOperation, editing: step.id })
-                            return
-                          }
-                          setEditingFace(step.id)
-                          if (step.kind === 'text' || step.kind === 'face_texture' || step.kind === 'hole' || step.kind === 'thread' || step.kind === 'offset_plane' || step.kind === 'shell' || step.kind === 'resize_round' || step.kind === 'vent_cut') {
-                            setFaceTool(step.kind)
-                          }
-                        }
-                      }}>
-                      <Pencil className="size-3.5" />
-                    </IconBtn>}
-                  </div>
-                  {!step.undone && (step.state === 'failed' || step.state === 'needs_attention' || step.kind === 'embedded_import' || step.constructionPlane) && step.message &&
-                    <p className="mt-1 break-words text-text-2">{step.message}</p>}
-                  {!step.undone && step.missingInput && <Btn size="sm" disabled={busy || repairing === step.id}
-                    aria-label={`Repair ${step.name}`} onClick={() => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }}>Repair input</Btn>}
-                </li>
-              ))}
-            </ol>
+            <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
+              editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
+              onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} onMenu={menuHistoryStep} />
           </aside>
         </div>
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">

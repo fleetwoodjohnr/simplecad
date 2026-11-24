@@ -587,6 +587,15 @@ FaceFingerprint face_fingerprint(const Shape &shape, uint32_t index) {
   return describe_face(TopoDS::Face(map.FindKey(static_cast<int>(index) + 1)));
 }
 
+rust::Vec<FaceFingerprint> face_fingerprints(const Shape &shape) {
+  ShapeMap map;
+  TopExp::MapShapes(shape.shape, TopAbs_FACE, map);
+  rust::Vec<FaceFingerprint> result;
+  result.reserve(map.Extent());
+  for (int i = 1; i <= map.Extent(); ++i) result.push_back(describe_face(TopoDS::Face(map.FindKey(i))));
+  return result;
+}
+
 rust::Vec<EdgeFingerprint> edge_fingerprints(const Shape &shape) {
   ShapeMap map;
   TopExp::MapShapes(shape.shape, TopAbs_EDGE, map);
@@ -1195,6 +1204,23 @@ double minimum_distance(const Shape &first, const Shape &second) {
     throw std::runtime_error("No minimum distance could be measured.");
   }
   return measure.Value();
+}
+
+// The geometry a shape shares with every moved copy of it (`IsPartner`), with its orientation: two shapes with the
+// same number differ only by where they are placed.
+uint64_t shape_partner(const Shape &shape) {
+  return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape.shape.TShape().get())) * 4 +
+         static_cast<uint64_t>(shape.shape.Orientation());
+}
+
+// Where the shape is placed: its location's 3×4 matrix, row by row (`location_to_wire`).
+rust::Vec<double> shape_location(const Shape &shape) {
+  const gp_Trsf trsf = shape.shape.Location().Transformation();
+  rust::Vec<double> out;
+  for (int row = 1; row <= 3; ++row) {
+    for (int column = 1; column <= 4; ++column) out.push_back(trsf.Value(row, column));
+  }
+  return out;
 }
 
 double volume(const Shape &shape) {

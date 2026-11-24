@@ -21,9 +21,15 @@ const planarTools: [CommandId, LucideIcon][] = [
 const planarMore: CommandId[] = ['shell', 'vent', 'text', 'faceTexture', 'stack', 'measure', 'clear']
 const curvedTools: [CommandId, LucideIcon][] = [['thread', Spline], ['move', Move], ['rotate', Rotate3d]]
 
+const curvedMore: CommandId[] = ['shell', 'faceTexture', 'stack', 'measure', 'clear']
+
+/** Every tool the bar offers for a face, in its order: the right-click menu lists the same. */
+export const faceTools = (planar: boolean): CommandId[] =>
+  [...(planar ? planarTools : curvedTools).map(([id]) => id), ...(planar ? planarMore : curvedMore)]
+
 /** The tools for what is selected, beside it in the view: the pull distance first, then the rest. */
 export function ContextBar({ actions, planar, distance, canPull, distanceRef, onDistance, onPull }: Props) {
-  const more: CommandId[] = planar ? planarMore : ['shell', 'faceTexture', 'stack', 'measure', 'clear']
+  const more = planar ? planarMore : curvedMore
   const value = Number(distance)
   return (
     <div role="toolbar" aria-label="Selection tools"
