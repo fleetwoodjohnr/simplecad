@@ -1095,7 +1095,9 @@ export function App() {
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
       for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit', 'delete'] as const) {
         if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete'].includes(id))) continue
-        if (!matchesShortcut(event, commands[id].shortcut)) continue
+        // A Mac's delete key is Backspace.
+        const backspace = id === 'delete' && event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+        if (!backspace && !matchesShortcut(event, commands[id].shortcut)) continue
         event.preventDefault()
         actions[id].run()
         return

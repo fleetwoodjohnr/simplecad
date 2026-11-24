@@ -17,7 +17,8 @@ async function twoCylinders(page: Page) {
   }
   const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
   await bodies.getByRole('button', { name: 'Cylinder', exact: true }).click()
-  await bodies.getByRole('button', { name: 'Cylinder2', exact: true }).click({ modifiers: ['Control'] })
+  // Cmd-click on macOS, where Ctrl-click is a right click.
+  await bodies.getByRole('button', { name: 'Cylinder2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
   await toolbar.getByRole('button', { name: 'Arrange', exact: true }).click()
   return page.getByRole('form', { name: 'Arrange' })
 }
@@ -79,7 +80,7 @@ test('lays two cylinders out in a grid on the box top, takes a suggestion, edits
   await expect(reopened.page.getByRole('form', { name: 'Arrange' }).getByRole('combobox', { name: 'Pattern', exact: true })).toHaveValue('grid')
 })
 
-test('stands a body on a picked face, drags the pattern, keeps a margin from a picked edge, and moves it to the build plate', async () => {
+test('stands a body on a picked face, drags the pattern, keeps a margin from a picked edge, and moves it to the build plate', { tag: '@viewport' }, async () => {
   const { app, page } = await launch()
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   const canvas = page.locator('canvas')

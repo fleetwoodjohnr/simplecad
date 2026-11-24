@@ -456,14 +456,14 @@ test('the wheel button pans the view, and turns it with Shift, as in 0.4; the ri
   const canvas = page.locator('canvas')
   await expect(canvas).toHaveAttribute('data-camera', /position/)
   const camera = async () => JSON.parse((await canvas.getAttribute('data-camera'))!) as { position: number[]; target: number[] }
-  // The view frames the model once it arrives: start from where it settles.
+  // The view frames the model once it arrives (the camera starts at the origin): start from where it settles.
   let last = ''
   await expect.poll(async () => {
     const now = (await canvas.getAttribute('data-camera'))!
-    const settled = now === last
+    const settled = now === last && (JSON.parse(now) as { position: number[] }).position.some((v) => Math.abs(v) > 1)
     last = now
     return settled
-  }, { intervals: [200] }).toBe(true)
+  }, { intervals: [200], timeout: 15_000 }).toBe(true)
   const offset = (view: { position: number[]; target: number[] }) => view.position.map((v, i) => v - view.target[i])
   const box = (await canvas.boundingBox())!
   const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
