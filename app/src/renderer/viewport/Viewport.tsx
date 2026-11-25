@@ -468,6 +468,9 @@ export function Viewport(props: Props) {
         animation = 0
         light.position.copy(camera.position)
         renderer.render(scene, camera)
+        // The renderer brings the camera's matrices up to date only when it draws (not while its context is lost);
+        // what is published and drawn over the view below is projected through them, as a click's raycast is.
+        camera.updateMatrixWorld()
         transform.publish()
         drawMeasure()
         placeLabels()
