@@ -821,6 +821,12 @@ test('Stack & Place shows its gaps on the face and drags the part, catching flus
   // Out along the arrow: from the part (its top's published point) towards the arrow's.
   const [ox, oy] = (JSON.parse((await canvas.getAttribute('data-body-anchors'))!) as Record<string, [number, number]>)[1]
   const [ux, uy] = [hx - ox, hy - oy].map((v, _, all) => v / Math.hypot(...all))
+  // Its handles are on the model, so the panel docks in the corner, off the arrow (beside the face, in a small
+  // window, it covered it).
+  const view = (await canvas.boundingBox())!
+  const tool = (await page.getByRole('region', { name: 'Tool' }).boundingBox())!
+  expect(Math.abs(view.x + view.width - (tool.x + tool.width) - 12)).toBeLessThan(2)
+  expect(hx >= tool.x && hx <= tool.x + tool.width && hy >= tool.y && hy <= tool.y + tool.height).toBe(false)
   await page.mouse.move(hx, hy)
   await page.mouse.down()
   let caught = ''

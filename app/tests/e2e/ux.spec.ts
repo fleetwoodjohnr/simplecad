@@ -568,6 +568,8 @@ test('a right click picks the face under it and offers its tools, Edit and Delet
   await view.getByRole('menuitem', { name: 'Select all' }).click()
   const chosen = page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })
   await expect(chosen).toHaveAttribute('aria-pressed', 'true')
+  // A menu that is still closing takes the next press (on CI's slower machines): wait until it has gone.
+  await expect(page.getByRole('menu')).toHaveCount(0)
   await page.mouse.click(box.x + 6, box.y + 6, { button: 'right' })
   await expect(chosen).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('menu', { name: 'View' }).getByRole('menuitem', { name: 'Clear selection' }).click()
@@ -939,7 +941,15 @@ test('an edge lights up under the pointer; clicked, it offers Round or Bevel wit
   await expect(canvas).toHaveAttribute('data-picked-edges', '1')
 
   const handle = page.getByRole('button', { name: 'Drag to round the edge' })
-  const box = (await handle.boundingBox())!
+  // The view places a new handle on its next frame: read it once it has stopped moving.
+  let last = ''
+  await expect.poll(async () => {
+    const now = JSON.stringify(await handle.boundingBox())
+    const settled = now === last
+    last = now
+    return settled
+  }, { intervals: [100] }).toBe(true)
+  const box = JSON.parse(last) as { x: number; y: number; width: number; height: number }
   const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
   await page.mouse.move(x, y)
   await page.mouse.down()

@@ -3,7 +3,7 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
-## 0.6.0 (2026-11-24)
+## 0.6.0 (2026-11-25)
 
 A simpler, more graphical window, as 0.2.0 worked: click what you want to
 change, then drag it, or pick a tool from the bar beside it. The ten everyday
