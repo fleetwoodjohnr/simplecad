@@ -2,7 +2,7 @@
 // check that 0.4.4 opens them and rebuilds what 0.6.0 shows (scripts/compare_projects.py --rebuild).
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { addBox, edgePoints, expect, launch, partAt, scratchDir, test } from './helpers'
+import { addBox, edgePoints, expect, handleAt, launch, partAt, scratchDir, test } from './helpers'
 
 async function saveAs(app: ElectronApplication, page: Page, name: string) {
   const target = path.join(scratchDir('simplecad-saves-'), name)
@@ -21,10 +21,7 @@ async function drag(page: Page, from: [number, number], by: [number, number], bu
   await page.mouse.up({ button })
 }
 
-const middle = async (page: Page, name: string): Promise<[number, number]> => {
-  const box = (await page.getByRole('button', { name }).boundingBox())!
-  return [box.x + box.width / 2, box.y + box.height / 2]
-}
+const middle = (page: Page, name: string): Promise<[number, number]> => handleAt(page.getByRole('button', { name }))
 
 test('a part moved and turned by its arrows and rings saves as Move and Rotate steps', { tag: '@viewport' }, async () => {
   const { app, page } = await launch()

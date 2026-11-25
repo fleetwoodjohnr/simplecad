@@ -312,6 +312,10 @@ export function Viewport(props: Props) {
       } else {
         x = at ? clamp(at.x + 24, width - w) : tool ? Math.max(8, width - w - 12) : Math.max(8, (width - w) / 2)
         y = at ? clamp(at.y + 24, height - h) : tool ? 12 : height - h - 12
+        // Kept into the view, it can land on the point it sits beside (a handle): then above it, else to its left.
+        const covers = () => !!at && at.x > x - 20 && at.x < x + w + 20 && at.y > y - 20 && at.y < y + h + 20
+        if (at && !tool && covers()) y = clamp(at.y - 24 - h, height - h)
+        if (at && !tool && covers()) x = clamp(at.x - 24 - w, width - w)
       }
       const [left, top] = [`${x}px`, `${y}px`]
       if (panel.style.left !== left) panel.style.left = left
@@ -487,7 +491,12 @@ export function Viewport(props: Props) {
         if (!button) return
         const face = selected === undefined ? undefined : shape?.faces[selected]
         button.hidden = !face || !canPull
-        if (!face) return placeBar()
+        if (!face) {
+          // A clicked edge: beside its round handle, which a bar docked at the bottom covered in a small window.
+          const first = current.current.toolOverlay ? undefined : current.current.handles?.[0]?.at[0]
+          const point = first && toScreen(new Vector3(...first))
+          return placeBar(point && point.x >= 0 && point.x <= width && point.y >= 0 && point.y <= height ? point : undefined)
+        }
         const start = new Vector3(...face.anchor)
         const normal = new Vector3(...face.normal)
         const position = toScreen(start.clone())
@@ -927,7 +936,8 @@ export function Viewport(props: Props) {
     <div ref={frameRef} className="relative min-h-0 flex-1 overflow-hidden bg-workspace">
       <div ref={host} className="absolute inset-0" />
       {props.handles?.flatMap((h) => h.at.map((_, index) => (
-        <button key={`${h.key}:${index}`} type="button" data-model-handle={h.key} data-index={index}
+        // Hidden until the view places it on its next frame: until then it would sit in the view's corner.
+        <button key={`${h.key}:${index}`} type="button" data-model-handle={h.key} data-index={index} hidden
           aria-label={index ? undefined : h.label} aria-hidden={index ? true : undefined} tabIndex={index ? -1 : undefined} title={h.label}
           className="absolute z-10 grid size-6 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full border-2 border-white bg-accent shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"
           // A handle takes no focus: Enter after a drag still applies the tool.

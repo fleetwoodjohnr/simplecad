@@ -1,4 +1,4 @@
-import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
+import { _electron as electron, expect, test as base, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { once } from 'node:events'
 import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -151,6 +151,20 @@ export async function edgePoints(page: Page): Promise<[number, number][]> {
 /** Alerts but the 3D view's own startup error: what a step reports going wrong, also where no WebGL can start. */
 export const errors = (page: Page) => page.getByRole('alert').filter({ hasNotText: 'Unable to initialize the 3D view' })
 
+/** A handle's centre once the view has placed it (on its next frame; hidden until then) and it has stopped moving. */
+export async function handleAt(handle: Locator): Promise<[number, number]> {
+  await expect(handle).toBeVisible()
+  let last = ''
+  await expect.poll(async () => {
+    const now = JSON.stringify(await handle.boundingBox())
+    const same = now === last
+    last = now
+    return same
+  }, { intervals: [100] }).toBe(true)
+  const box = JSON.parse(last) as { x: number; y: number; width: number; height: number }
+  return [box.x + box.width / 2, box.y + box.height / 2]
+}
+
 /** Opens a tool through command search, as 0.6.0's short ribbon leaves most of them (S, or the search button). */
 export async function command(page: Page, label: string) {
   await page.getByRole('button', { name: 'Command search' }).click()
@@ -164,9 +178,16 @@ export async function command(page: Page, label: string) {
 export async function partAt(page: Page, index: number): Promise<[number, number]> {
   const canvas = page.locator('canvas')
   await expect(canvas).toHaveAttribute('data-body-anchors', new RegExp(`"${index}"`))
-  await new Promise((resolve) => setTimeout(resolve, 200))
+  // Once the view has settled (it frames a model as it arrives): the same points twice, 150 ms apart.
+  let last = ''
+  await expect.poll(async () => {
+    const now = (await canvas.getAttribute('data-body-anchors')) ?? ''
+    const same = now === last
+    last = now
+    return same
+  }, { intervals: [150] }).toBe(true)
   // Beside the face's pull handle, which sits on the published point once the face is chosen.
-  const [x, y] = JSON.parse((await canvas.getAttribute('data-body-anchors'))!)[index] as [number, number]
+  const [x, y] = JSON.parse(last)[index] as [number, number]
   return [x + 20, y]
 }
 

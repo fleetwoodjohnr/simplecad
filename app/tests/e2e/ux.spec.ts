@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { edgePoints, errors, expect, launch, scratchDir, test, command, more, searchCommand } from './helpers'
+import { edgePoints, errors, expect, handleAt, launch, partAt, scratchDir, test, command, more, searchCommand } from './helpers'
 
 type Point = [number, number]
 
@@ -608,15 +608,6 @@ test('a right click, or the menu key, on a body or a step offers what can be don
   await expect(errors(page)).toHaveCount(0)
 })
 
-/** Where part `index` shows in the window (the view publishes each part's centre on small models). */
-async function partAt(page: Page, index: number): Promise<Point> {
-  const canvas = page.locator('canvas')
-  await expect(canvas).toHaveAttribute('data-body-anchors', new RegExp(`"${index}"`))
-  await page.waitForTimeout(200)
-  // Beside the face's pull handle, which sits on the published point once the face is chosen.
-  const [x, y] = JSON.parse((await canvas.getAttribute('data-body-anchors'))!)[index] as [number, number]
-  return [x + 20, y]
-}
 
 /** A 20 × 20 × 10 box beside the first, `x` mm along. */
 async function addBox(page: Page, x: string) {
@@ -940,17 +931,10 @@ test('an edge lights up under the pointer; clicked, it offers Round or Bevel wit
   await expect(bar.getByRole('button', { name: 'Measure', exact: true })).toBeVisible()
   await expect(canvas).toHaveAttribute('data-picked-edges', '1')
 
-  const handle = page.getByRole('button', { name: 'Drag to round the edge' })
-  // The view places a new handle on its next frame: read it once it has stopped moving.
-  let last = ''
-  await expect.poll(async () => {
-    const now = JSON.stringify(await handle.boundingBox())
-    const settled = now === last
-    last = now
-    return settled
-  }, { intervals: [100] }).toBe(true)
-  const box = JSON.parse(last) as { x: number; y: number; width: number; height: number }
-  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+  const [x, y] = await handleAt(page.getByRole('button', { name: 'Drag to round the edge' }))
+  // The bar sits beside the handle, never on it (docked at the bottom, it covered the handle in small windows).
+  const barBox = (await bar.boundingBox())!
+  expect(x >= barBox.x && x <= barBox.x + barBox.width && y >= barBox.y && y <= barBox.y + barBox.height).toBe(false)
   await page.mouse.move(x, y)
   await page.mouse.down()
   await page.mouse.move(x + 25, y + 25, { steps: 5 })
@@ -995,11 +979,10 @@ test('Bevel turns the edge handle into a bevel; a typed size rounds two Shift-cl
   const finish = bar.getByRole('form', { name: 'Edge finish' })
   const first = await clickEdge(page)
   await finish.getByRole('radio', { name: 'Bevel' }).click()
-  const handle = page.getByRole('button', { name: 'Drag to bevel the edge' })
-  const box = (await handle.boundingBox())!
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  const [bx, by] = await handleAt(page.getByRole('button', { name: 'Drag to bevel the edge' }))
+  await page.mouse.move(bx, by)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width / 2 + 25, box.y + box.height / 2 + 25, { steps: 5 })
+  await page.mouse.move(bx + 25, by + 25, { steps: 5 })
   await expect(page.getByRole('status', { name: 'Handle reading' })).toContainText(/^C \d/)
   await page.mouse.up()
   await expect(steps).toHaveText(['Box', 'Chamfer'])
@@ -1050,9 +1033,7 @@ test('Split shows its plane on the part; dragging a handle moves it, reading bot
   const form = page.getByRole('form', { name: 'Split' })
   const offset = form.getByLabel('Offset from the centre')
   await expect(offset).toHaveValue('0')
-  const handle = page.getByRole('button', { name: 'Drag the split plane' })
-  const box = (await handle.boundingBox())!
-  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
+  const [x, y] = await handleAt(page.getByRole('button', { name: 'Drag the split plane' }))
   await page.mouse.move(x, y)
   await page.mouse.down()
   await page.mouse.move(x, y - 30, { steps: 5 })

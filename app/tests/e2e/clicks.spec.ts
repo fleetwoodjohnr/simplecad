@@ -3,7 +3,7 @@
 // drag is 1, a drop-down list is 2, a typed value is 1, and Enter, Delete or Escape is 1. 0.6.0's target is 29 in all.
 import { writeFileSync } from 'node:fs'
 import type { Locator, Page } from '@playwright/test'
-import { addBox, edgePoints, expect, launch, partAt, test } from './helpers'
+import { addBox, edgePoints, expect, handleAt, launch, partAt, test } from './helpers'
 
 type Point = [number, number]
 const results: Record<string, { actions: number; target: number; path: string[] }> = {}
@@ -55,10 +55,7 @@ const handles = async (page: Page, set: 'handles' | 'rings') => {
   await page.waitForTimeout(200)
   return JSON.parse((await canvas.getAttribute(`data-${set}`))!) as Record<'x' | 'y' | 'z', Point>
 }
-const middle = async (l: Locator): Promise<Point> => {
-  const box = (await l.boundingBox())!
-  return [box.x + box.width / 2, box.y + box.height / 2]
-}
+const middle = (l: Locator): Promise<Point> => handleAt(l)
 const empty = async (page: Page): Promise<Point> => {
   const box = (await page.locator('canvas').boundingBox())!
   return [box.x + 8, box.y + 8]
