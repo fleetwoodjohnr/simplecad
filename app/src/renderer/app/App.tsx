@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Trash2, Undo2, Ungroup } from 'lucide-react'
-import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, HoleSettings, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, roundFaces, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { HistoryList, canEdit, keepLabel } from './HistoryList'
@@ -849,6 +849,21 @@ export function App() {
     setSketchTool(kind)
   }
   const matchable = model?.steps.filter((step) => !step.undone && step.matchingThread) ?? []
+  // Two round faces clicked on two parts, a shaft and a hole: the bar leads with Thread together, as 0.2.0's did.
+  const [threadable, setThreadable] = useState<string>()
+  const roundPair = pickedFaces.length === 2 && revision !== undefined && model &&
+    pickedFaces.every((face) => model.shape.faces[face] && !model.shape.faces[face].planar) &&
+    model.shape.faces[pickedFaces[0]].body !== model.shape.faces[pickedFaces[1]].body ? `${revision}:${pickedFaces.join(',')}` : undefined
+  useEffect(() => {
+    if (!roundPair || revision === undefined) return
+    let active = true
+    void roundFaces(revision, pickedFaces).then((kinds) => {
+      if (active && kinds[0] !== null && kinds[1] !== null && kinds[0] !== kinds[1]) setThreadable(roundPair)
+    }, () => {})
+    return () => { active = false }
+  }, [roundPair])
+  /** A threaded hole's settings from the thread it matches, for the Hole tool opened by Matching Part on a flat face. */
+  const [holeInitial, setHoleInitial] = useState<Partial<HoleSettings>>()
   const closeMatching = () => { setMatchingPart(false); clearPreview() }
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
@@ -1054,10 +1069,19 @@ export function App() {
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw a profile and a path', run: () => openSketchTool('sweep') },
     loft: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw two profiles', run: () => openSketchTool('loft') },
     path_pattern: { enabled: canUseFaceTool && sketches.length > 0 && patternBodies.length > 0, run: () => openSketchTool('path_pattern') },
-    hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
+    hole: { enabled: canUseFaceTool, run: () => { setHoleInitial(undefined); openFaceTool('hole') } },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
     // Keeps the selection: a round face picked first is the one a matching thread is cut into.
     matchingPart: { enabled: canUseFaceTool && matchable.length > 0, hint: 'Model a thread first', run: () => {
+      // As 0.2.0, it opens on what is selected: a flat face takes a threaded hole that fits the newest outside thread;
+      // a round face is threaded; with neither, a bolt or nut.
+      const spec = matchable.at(-1)?.matchingThread
+      if (selected !== undefined && model?.shape.faces[selected]?.planar && spec?.internal === 'false') {
+        setHoleInitial({ style: 'threaded', designation: spec.designation, clearance: (spec.clearance ?? 'normal') as HoleSettings['clearance'],
+          form: (spec.form ?? 'printed') as HoleSettings['form'], left_hand: spec.left_hand === 'true' ? 'true' : 'false' })
+        openFaceTool('hole')
+        return
+      }
       setPreview(undefined)
       setMatchingPart(true)
     } },
@@ -1125,8 +1149,10 @@ export function App() {
   const chosenGroup = chosenBodies.length > 1 ? model?.groups.find(({ members }) =>
     members.length === chosenBodies.length && members.every((member) => chosenBodies.includes(member))) : undefined
   const selectionKinds: SelectionKind[] = [
+    ...(roundPair && threadable === roundPair ? ['threadPair' as const] : []),
     ...(selectedEdge ? ['edge' as const] : []),
     ...(selectedFace && chosenBodies.length <= 1 ? [selectedFace.planar ? 'face' as const : 'curvedFace' as const] : []),
+    ...(matchable.length && selectedFace && chosenBodies.length <= 1 ? ['matchable' as const] : []),
     ...(chosenGroup ? ['group' as const] : chosenBodies.length === 1 ? ['part' as const]
       : chosenBodies.length === 2 ? ['parts' as const] : chosenBodies.length > 2 ? ['manyParts' as const] : [])
   ]
@@ -1152,6 +1178,13 @@ export function App() {
         })
       } },
     arrange: { ...actions.arrange, run: () => openArrange(true) },
+    // The clicked shaft and hole are the pair's two faces.
+    threadTogether: { enabled: ready && idle && !blocked, run: () => {
+      const faces = [...pickedFaces]
+      select()
+      setThreadPicks(faces)
+      setThreadPair(true)
+    } },
     // A clicked edge is the one rounded or bevelled.
     fillet: { ...actions.fillet, run: () => { const edges = selectedEdge?.edges; actions.fillet.run(); if (edges) setEdgePicks(edges) } },
     chamfer: { ...actions.chamfer, run: () => { const edges = selectedEdge?.edges; actions.chamfer.run(); if (edges) setEdgePicks(edges) } },
@@ -1702,8 +1735,9 @@ export function App() {
               onPreview={(edit) => livePreview(() => previewSketchSolid(revision, edit))}
               onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}
             {matchingPart && revision !== undefined && <MatchingPartPanel threads={matchable} busy={busy}
-              roundFace={selected !== undefined && !model?.shape.faces[selected]?.planar}
+              roundFace={selected !== undefined && !model?.shape.faces[selected]?.planar} at={String(selected)}
               onThread={(settings) => selected !== undefined && mutate(() => applyFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
+              onPreviewThread={(settings) => selected !== undefined && livePreview(() => previewFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
               onChange={keepPreview} onClose={closeMatching}
               onPreview={(edit) => livePreview(() => previewShape(revision, edit))}
               onApply={(edit) => mutate(() => createShape(revision, edit), true)} />}
@@ -1734,7 +1768,7 @@ export function App() {
               onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
               onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
             {model && faceTool === 'hole' && <HolePanel key={editingFace ?? 'new'} busy={busy} at={JSON.stringify([selected, holePosition])}
-              bodies={model.bodies} body={movingBody} preset={faceStep?.faceSettings}
+              bodies={model.bodies} body={movingBody} preset={faceStep?.faceSettings} initial={holeInitial}
               selected={!!faceStep || (selected !== undefined && !!model.shape.faces[selected]?.planar)}
               onChange={keepPreview} onCancel={cancelFaceTool}
               onPreview={(settings, untilBody) => showFacePreview({ faceOperation: 'hole', settings, untilBody, position: holePosition })}

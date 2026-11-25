@@ -128,6 +128,7 @@ function onRenderer(channel: PortLike, data: unknown) {
       case 'show': result = document.setVisible(req.body, req.visible, req.revision); break
       case 'save': result = new Uint8Array(document.save(req.revision)); break
       case 'measure': result = addon.measureShapes(document.measurementPicks(req.revision, req.picks)); break
+      case 'roundFaces': result = document.roundFaces(req.revision, req.faces); break
       case 'calibrate': calibrate(); result = ''; break
       case 'calibrationModel': result = new Uint8Array(addon.calibrationModel()); break
       case 'health': result = document.exportShapes(req.revision).map(({ name, shape }) => ({ name, ...addon.bodyHealth(shape, defaultPrinter.minFeature) })); break

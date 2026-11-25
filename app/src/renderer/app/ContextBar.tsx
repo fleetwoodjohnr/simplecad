@@ -1,6 +1,6 @@
 import { Fragment, type RefObject } from 'react'
 import {
-  ArrowUpFromLine, Box, Boxes, CircleDot, Combine, Ellipsis, EyeOff, Grid3x3, Layers, LayoutGrid, Magnet, Move, PenLine,
+  ArrowUpFromLine, Bolt, Box, Boxes, CircleDot, Combine, Ellipsis, EyeOff, Grid3x3, Layers, LayoutGrid, Magnet, Move, PenLine,
   Rotate3d, Ruler, Scaling, Scissors, SquareDashed, SquareMinus, SquareRoundCorner, SquareSlash, Spline, Trash2, Type,
   Ungroup, Paperclip, type LucideIcon
 } from 'lucide-react'
@@ -8,19 +8,20 @@ import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuSep, MenuTrigger, Segmen
 import { commands, type CommandActions, type CommandId } from './commands'
 
 /** What the bar can offer: the commands, and what is done straight to the chosen parts. */
-export type BarTool = CommandId | 'subtract' | 'join' | 'intersect' | 'group' | 'ungroup' | 'hide'
+export type BarTool = CommandId | 'subtract' | 'join' | 'intersect' | 'group' | 'ungroup' | 'hide' | 'threadTogether'
 export type BarActions = CommandActions & Record<Exclude<BarTool, CommandId>, CommandActions[CommandId]>
-export type SelectionKind = 'face' | 'curvedFace' | 'edge' | 'part' | 'parts' | 'manyParts' | 'group'
+export type SelectionKind = 'face' | 'curvedFace' | 'edge' | 'part' | 'parts' | 'manyParts' | 'group' | 'threadPair' | 'matchable'
 
 const labels: Record<Exclude<BarTool, CommandId>, string> = {
-  subtract: 'Subtract', join: 'Join', intersect: 'Intersect', group: 'Group', ungroup: 'Ungroup', hide: 'Hide'
+  subtract: 'Subtract', join: 'Join', intersect: 'Intersect', group: 'Group', ungroup: 'Ungroup', hide: 'Hide',
+  threadTogether: 'Thread together'
 }
 export const barLabel = (id: BarTool) => id in labels ? labels[id as keyof typeof labels] : commands[id as CommandId].label
 const icons: Partial<Record<BarTool, LucideIcon>> = {
   hole: CircleDot, sketch: PenLine, text: Type, shell: Box, thread: Spline, fillet: SquareRoundCorner, chamfer: SquareSlash,
   measure: Ruler, move: Move, rotate: Rotate3d, scale: Scaling, split: Scissors, hide: EyeOff, delete: Trash2,
   subtract: SquareMinus, join: Combine, intersect: Layers, group: Boxes, ungroup: Ungroup, stack: Magnet, clipJoint: Paperclip,
-  arrange: LayoutGrid, combine: Combine, faceTexture: Grid3x3, offsetPlane: SquareDashed
+  arrange: LayoutGrid, combine: Combine, faceTexture: Grid3x3, offsetPlane: SquareDashed, threadTogether: Spline, matchingPart: Bolt
 }
 
 // Each selection's tools, as 0.2.0 ordered them: the likeliest first on the bar, the rest behind ⋯.
@@ -32,7 +33,10 @@ const lists: Record<SelectionKind, [BarTool[], BarTool[]]> = {
   part: [['move', 'rotate', 'scale', 'split', 'measure', 'hide', 'delete'], ['mirror', 'rectangularPattern', 'circularPattern', 'draft']],
   parts: [['subtract', 'join', 'intersect', 'group', 'stack', 'clipJoint'], ['arrange', 'hinge', 'threadedConnection', 'sectionReplace', 'hide', 'delete']],
   manyParts: [['arrange', 'subtract', 'join', 'group', 'stack'], ['intersect', 'hide', 'delete']],
-  group: [['ungroup', 'move', 'rotate', 'hide', 'delete'], ['arrange']]
+  group: [['ungroup', 'move', 'rotate', 'hide', 'delete'], ['arrange']],
+  // A shaft and a hole clicked on two parts (0.2.0's threaded pair), and a face once the project has a thread.
+  threadPair: [['threadTogether'], []],
+  matchable: [['matchingPart'], []]
 }
 
 /** Every tool offered for these selections, in order: the bar's, then its ⋯ (the right-click menu lists the same). */

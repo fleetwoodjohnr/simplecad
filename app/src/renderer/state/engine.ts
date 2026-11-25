@@ -203,6 +203,8 @@ export const importModel = (revision: number, edit: ModelImport) => {
 export const saveModel = (revision: number) => send<Uint8Array>({ op: 'save', revision })
 export const measure = (revision: number, picks: MeasurePick[]) =>
   send<Measurement[]>({ op: 'measure', revision, picks })
+export const roundFaces = (revision: number, faces: number[]) =>
+  send<(boolean | null)[]>({ op: 'roundFaces', revision, faces })
 export const exportModel = (revision: number, format: ExportFormat) =>
   send<Uint8Array>({ op: 'export', revision, format })
 export const markSaved = (revision: number) => send<ModelResult>({ op: 'saved', revision }).then(accept)

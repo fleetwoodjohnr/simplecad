@@ -244,6 +244,15 @@ export class EngineDocument {
     })
   }
 
+  /** Which faces are holes (true), shafts (false) or not round (null): the bar offers a threaded pair from it. */
+  roundFaces(revision: number, faces: number[]) {
+    this.checkRevision(revision)
+    return faces.map((face) => {
+      const pick = this.pick(face)
+      return this.current.bodies[pick.body]?.shape?.isHole(pick.face) ?? null
+    })
+  }
+
   exportShapes(revision: number) {
     this.checkRevision(revision)
     const { bodies } = this.current

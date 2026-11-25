@@ -88,12 +88,14 @@ interface FacePanelProps {
   onCancel: () => void
 }
 
-export function HolePanel({ bodies, body, preset, selected, at, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
+export function HolePanel({ bodies, body, preset, initial, selected, at, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
   bodies: BodyInfo[]; body?: number
+  /** Settings to start from (a threaded hole that matches a thread), under any saved ones. */
+  initial?: Partial<HoleSettings>
   onPreview: (settings: HoleSettings, untilBody?: number) => void
   onApply: (settings: HoleSettings, untilBody?: number) => void
 }) {
-  const [settings, setSettings] = useState<HoleSettings>(() => ({ ...defaultHoleSettings, ...preset }))
+  const [settings, setSettings] = useState<HoleSettings>(() => ({ ...defaultHoleSettings, ...initial, ...preset }))
   const [target, setTarget] = useState<number>()
   const values = (patch: Partial<HoleSettings>) => { setSettings((current) => ({ ...current, ...patch })); onChange() }
   const field = (key: keyof HoleSettings, label: string, placeholder?: string, first = false) =>

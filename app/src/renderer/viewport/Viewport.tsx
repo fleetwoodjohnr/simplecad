@@ -409,6 +409,8 @@ export function Viewport(props: Props) {
       if (face === selected || !shape || displayed !== shape) face = undefined
       if (face === hovered) return
       hovered = face
+      // For scripted clicks: which face a click here would take.
+      canvas.dataset.hoverFace = face === undefined ? '' : String(face)
       hover.visible = face !== undefined
       if (face !== undefined) {
         hover.geometry.setAttribute('position', body.geometry.getAttribute('position'))
