@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { releaseFromGitHub, verifiedChecksum, updateAsset } from '../../../src/main/updates'
+import { DAY, dueForCheck, installCommand, releaseFromGitHub, verifiedChecksum, updateAsset, windowsUpdateFlags } from '../../../src/main/updates'
 
 describe('GitHub updates', () => {
   it('selects only newer stable releases and legacy-compatible package names', () => {
@@ -87,4 +87,22 @@ it('refuses a corrupted installer and supports an atomic AppImage swap and rollb
   } finally {
     await rm(folder, { recursive: true, force: true })
   }
+})
+
+describe('automatic updates', () => {
+  it('checks by itself at most once a day, and again if the clock went back', () => {
+    const now = 1_800_000_000_000
+    expect(dueForCheck(0, now)).toBe(true)
+    expect(dueForCheck(now - DAY + 1000, now)).toBe(false)
+    expect(dueForCheck(now - DAY, now)).toBe(true)
+    expect(dueForCheck(now + 60_000, now)).toBe(true)
+  })
+  it('installs a verified package with the system package manager, asking for the password unless root', () => {
+    expect(installCommand('rpm', '/u/SimpleCAD.rpm', false)).toEqual(['pkexec', ['dnf', 'install', '-y', '/u/SimpleCAD.rpm']])
+    expect(installCommand('deb', '/u/SimpleCAD.deb', false)).toEqual(['pkexec', ['apt-get', 'install', '-y', '/u/SimpleCAD.deb']])
+    expect(installCommand('rpm', '/u/SimpleCAD.rpm', true)).toEqual(['dnf', ['install', '-y', '/u/SimpleCAD.rpm']])
+  })
+  it('runs the Windows installer with a progress window only, and has it start SimpleCAD again', () => {
+    expect(windowsUpdateFlags).toEqual(['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH'])
+  })
 })

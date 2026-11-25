@@ -43,3 +43,11 @@ Root: HKA; Subkey: "Software\Classes\SimpleCAD.Project\shell\open\command"; Valu
 
 [Run]
 Filename: "{app}\SimpleCAD.exe"; Description: "Start SimpleCAD"; Flags: nowait postinstall skipifsilent
+; An update from inside SimpleCAD runs silently with /RELAUNCH, and starts it again as the user who ran it.
+Filename: "{app}\SimpleCAD.exe"; Flags: nowait runasoriginaluser; Check: WantsRelaunch
+
+[Code]
+function WantsRelaunch: Boolean;
+begin
+  Result := Pos('/RELAUNCH', Uppercase(GetCmdTail)) > 0;
+end;

@@ -93,7 +93,7 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
     ...(packaged ? { executablePath: packaged, args } : { args: ['.', ...args] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
     // SCAD_WINDOW=1024x700 runs as on the Windows and macOS runners, whose small screens shrink the window.
-    env: { ...process.env, ...(process.env.SCAD_WINDOW ? { SIMPLECAD_WINDOW: process.env.SCAD_WINDOW } : {}), SIMPLECAD_TIMING: '1', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
+    env: { ...process.env, ...(process.env.SCAD_WINDOW ? { SIMPLECAD_WINDOW: process.env.SCAD_WINDOW } : {}), SIMPLECAD_TIMING: '1', SIMPLECAD_UPDATE_CHECK: '0', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))

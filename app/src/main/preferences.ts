@@ -18,7 +18,9 @@ export async function readLegacyPreferences(env = process.env, platform = proces
     return sanitisePreferences({
       theme: legacy.theme, displayUnit: legacy.display_unit,
       snap: legacy.view?.snap ?? true, moveStep: legacy.modelling?.move_step,
-      rotationSnap: legacy.modelling?.rotation_snap ?? 90
+      rotationSnap: legacy.modelling?.rotation_snap ?? 90,
+      // 0.4's own choice (settings updates.check_automatically), on unless it was turned off.
+      updateCheck: legacy.updates?.check_automatically ?? true
     })
   } catch {
     // A missing or damaged legacy file never prevents startup.

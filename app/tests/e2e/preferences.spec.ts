@@ -51,3 +51,23 @@ test('migrates existing settings and persists changes without writing the rollba
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+// As the rest of the Simple suite: SimpleCAD looks for updates by itself unless Settings says not to.
+test('Settings has automatic update checks, on by default, with the version and Check now', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toContainText('24000 mm³')
+  const open = async () => {
+    await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'File', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Settings', exact: true }).click()
+    return page.getByRole('dialog', { name: 'Settings' })
+  }
+  let dialog = await open()
+  const automatic = dialog.getByRole('checkbox', { name: 'Check for updates automatically' })
+  await expect(automatic).toBeChecked()
+  await expect(dialog.getByText(/^Version \d+\.\d+\.\d+$/)).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Check now' })).toBeVisible()
+  await automatic.uncheck()
+  await dialog.getByRole('button', { name: 'Apply' }).click()
+  dialog = await open()
+  await expect(dialog.getByRole('checkbox', { name: 'Check for updates automatically' })).not.toBeChecked()
+})

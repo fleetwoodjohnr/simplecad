@@ -1508,6 +1508,19 @@ export function App() {
   })
 
 
+  // As the rest of the Simple suite: look for a new release 10 s after start, then hourly; the main process lets one
+  // through a day, and shows nothing unless there is an update. Settings turns it off.
+  useEffect(() => {
+    if (!preferences.updateCheck) return
+    const check = () => void window.simplecad.checkForUpdates(true).catch(() => {})
+    const first = window.setTimeout(check, 10_000)
+    const hourly = window.setInterval(check, 60 * 60 * 1000)
+    return () => {
+      window.clearTimeout(first)
+      window.clearInterval(hourly)
+    }
+  }, [preferences.updateCheck])
+
   // History rows keep the same handlers across renders, so a row draws again only when its step changes.
   const editStepNow = useRef<(step: StepInfo) => void>(() => {})
   /** A History click made while a step ran: it opens once that step is done, if its own step is still there. */

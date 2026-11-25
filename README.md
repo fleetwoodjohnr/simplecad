@@ -151,31 +151,38 @@ pick a tool from the bar beside it.
 
 ![Three parts box-selected: the bar leads with Arrange](docs/shots/context_bar.png)
 ![An edge rounded by dragging its handle, the radius at the cursor](docs/shots/fillet_drag.png)
+![Subtract: the kept part tinted, the cutter see-through red, the panel naming both](docs/shots/combine_roles.png)
+![Stack & Place: the part's distances from the face's edges, drawn on the face](docs/shots/stack_guides.png)
 
 | | |
 |---|---|
-| Turn the view | Left-drag on the model, right-drag anywhere, or Alt + left-drag |
-| Pan / zoom | Middle-drag (or Shift + left-drag on the model) / wheel |
+| Turn the view | Left-drag anywhere |
+| Pan / zoom | Middle-drag (or Shift + left-drag) / wheel |
 | Select a part | Left-click it: its face and the part are chosen, and the bar beside it offers what fits |
 | Add or take away a part | Shift-, Ctrl- or Cmd-click it |
-| Select several | Drag a box from empty space. Left to right takes what it surrounds, right to left what it touches; Shift adds |
+| Select several | Right-drag a box, anywhere. Left to right takes what it surrounds, right to left what it touches; Shift adds |
+| Select all | `Ctrl+A`, or right-click empty space → Select all |
 | Clear the selection | Click empty space |
 | A part in a group | A click takes the group; double-click to reach inside for the one part |
 | Change how a part was made | Double-click it: the settings of the step that made it open (or right-click it → Edit) |
-| Right-click | A part, a face, a row in Bodies or a step in History: what can be done to it. Shift+F10 or the Menu key from the keyboard |
-| Move or turn a part | Drag one of the arrows or rings already on it; letting go is one step. Several chosen parts move together |
+| Right-click | A part, a face, a row in Bodies or a step in History: what can be done to it (on a part of a several-part selection, to all of them; on empty space, Select all, Clear and Fit). Shift+F10 or the Menu key from the keyboard |
+| Move or turn a part | Drag one of the arrows or rings already on it; letting go is one step. Several chosen parts move together. A move catches flush on other parts' edges, middles, corners and centres and says what it met; a turn holds at each step. Shift drags freely, Ctrl finely |
 | An exact move or turn | Type the number while dragging, or open Move / Rotate from the bar |
 | Lock a drag to one axis / plane | While dragging, X / Y / Z, or Shift + X / Y / Z |
 | Push / pull a face | Drag its handle (snaps to 0.25 mm; Shift for free, Ctrl for 0.05 mm), or type the distance in the bar |
 | Push / pull by a step | Up / Down: 0.25 mm a press. Left / Right (and Ctrl + Up / Down) move the part |
-| Round an edge | Click the edge, drag its handle; Fillet and Chamfer are on the bar beside it |
+| Round or bevel an edge | The edge under the pointer lights up. Click it (Shift-click for more), choose Round or Bevel on the bar, then drag the handle or type the size and press Enter |
 | Split a part | Split on the bar, then drag the plane through it; the readout shows both halves |
-| Subtract, join, intersect | Click the part, Shift-click the other, then Subtract (or Join, Intersect) |
-| Arrange parts | Box-select them, Arrange, then click the face or the plate they go on |
+| Subtract, join, intersect | Click the part, Shift-click the other, then Subtract (or Join, Intersect). The kept part is tinted, the cutters drawn see-through red (green to join, blue to intersect), and the panel says which is which; Swap turns it round, and a click on another part adds it |
+| Thread a shaft into a hole | Click the shaft, Shift-click the hole on the other part, then Thread together. Matching Part on the bar threads a round face or drills a threaded hole that fits the thread |
+| Stand a part on a face | Click a face of the part, Stack & Place, click the face it goes on; drag it on that face (it catches flush and centred), with its distances from the face's edges shown |
+| Measure | With nothing selected, Measure snaps to corners, centres and midpoints: click two points for the distance and ΔX, ΔY, ΔZ |
+| Arrange parts | Right-drag a box round them, Arrange, then click the face or the plate they go on |
 | Clip two parts together | Click a face on each (Shift for the second), then Clip Joint |
 | Tools | Each opens as a short panel beside what you clicked and previews as you type. More… holds the rest of its settings. Enter applies, Esc cancels |
 | Every other tool | The ⋯ on the bar, or command search (`Ctrl+K`, or the search button) |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Updates | SimpleCAD looks for a new release by itself once a day and offers to install it and restart (Settings → Updates turns that off; File → Check for updates any time) |
 | Fit the view | `F` |
 | New / Open / Save / Save As / Import | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+I` |
 | Delete | `Delete` or `Backspace` |

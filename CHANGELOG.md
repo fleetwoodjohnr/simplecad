@@ -14,9 +14,12 @@ tasks measured for this release take 29 clicks and keys in all, against 47 in
   move arrows and turn rings are already on it. Letting go is one step; type a
   number while dragging for an exact one, and Esc puts it back. Several chosen
   parts move together.
-- **Box select.** Drag a box from empty space: left to right takes what it
-  surrounds, right to left what it touches, Shift adds. A drag that starts on
-  the model still turns the view, and so does a right drag anywhere.
+- **Box select with the right button.** Right-drag a box anywhere, over the
+  model too: left to right takes what it surrounds, right to left what it
+  touches, Shift adds. A left drag turns the view anywhere; a short right
+  click still opens the menu. Ctrl+A, or Select all in the menus, takes every
+  part, and a right click on a part of a several-part selection keeps them
+  all, so the menu offers Subtract and Join.
 - **Double-click** a part to change the step that made it; in a group, the
   first double-click reaches inside for the one part.
 - **A bar beside what you selected**, clear of its arrows and rings, with the
@@ -27,6 +30,32 @@ tasks measured for this release take 29 clicks and keys in all, against 47 in
 - **Handles on the model.** Drag a face's handle to pull it, an edge's to round
   it, or Split's plane through a part, with the size at the cursor. Drags snap
   to 0.25 mm; hold Shift for free, Ctrl for 0.05 mm.
+- **Edges: click them.** The edge under the pointer lights up. A clicked edge
+  (Shift-click for more) gets Round or Bevel on the bar: drag its handle, or
+  type the size and press Enter. There is no face list to pick from any more;
+  it stays for the keyboard, shown when it has the focus.
+- **Join and Subtract you can see.** The kept part is tinted and the cutters
+  drawn see-through red (green to join, blue to intersect), over the preview
+  too; the panel says "Removing Pin from Block", with Swap to turn it round,
+  and a click on another part adds it. Three or more parts get Subtract and
+  Join on the bar as well.
+- **Threads as 0.2.0 made them.** Click a shaft and Shift-click the hole on
+  the other part: Thread together leads the bar and threads both, sized from
+  the shaft with the clearance on the hole. Once there is a thread, Matching
+  Part is on the bar and opens on what you clicked: it threads a round face
+  (previewed first), or drills a threaded hole that fits in a flat one.
+- **Magnets and guides.** A dragged part catches flush on other parts' edges,
+  middles, corners and centres within 10 pixels and says what it met; the
+  rings hold at each step and turn freely between. Stack & Place shows the
+  part's distances from the face's edges on the face, and the part drags on
+  it, catching flush or centred. Measure with nothing selected snaps to
+  corners, centres and midpoints and gives the distance between two points.
+  Shift drags freely, Ctrl finely.
+- **Updates by themselves**, as in the rest of the Simple suite: SimpleCAD
+  looks for a new release once a day and offers to install it (Linux
+  packages through your package manager, which asks for your password) and
+  restart. Settings → Updates turns it off. From 0.5.1, update once with
+  File → Check for updates.
 - **Live preview in every tool.** There is no Preview button: the result shows
   as you type, the last one stays while the next builds, and Enter applies.
 - **Short panels** open beside what you clicked, with More… for the rest of a

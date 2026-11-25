@@ -5,7 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, type IpcMain
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { EngineHost } from './engine-host'
-import { checkForUpdates } from './update-dialog'
+import { cancelRestart, checkForUpdates } from './update-dialog'
 import { readLegacyPreferences } from './preferences'
 import { acceptProjectFile, forgetProjectFile, offerProjectFile, openProjectFile, openModelFile, projectName, saveExportFile, saveProjectFile, timing } from './project-files'
 import { sendToSlicer } from './slicer'
@@ -84,6 +84,8 @@ function createWindow() {
       buttons: ['Save', "Don't Save", 'Cancel'], defaultId: 0, cancelId: 2
     })
     if (choice === 1) event.preventDefault()
+    // Cancel keeps SimpleCAD open, so an update's Restart now is off too.
+    if (choice === 2) cancelRestart()
     // The page saves, and closes once the file is written; a cancelled or failed save keeps the window.
     if (choice === 0) mainWindow.webContents.send('app:save-and-close')
   })
@@ -156,7 +158,8 @@ function registerIpc() {
     return response === 1
   })
   handle('preferences:legacy', () => readLegacyPreferences())
-  handle('updates:check', () => mainWindow ? checkForUpdates(mainWindow) : undefined)
+  // `quiet`: the automatic check (once a day, silent unless there is an update).
+  handle('updates:check', (_event, quiet?: unknown) => mainWindow ? checkForUpdates(mainWindow, quiet === true) : undefined)
   handle('window:minimize', () => mainWindow?.minimize())
   handle('window:toggle-maximize', () => (mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize()))
   handle('window:close', () => mainWindow?.close())
