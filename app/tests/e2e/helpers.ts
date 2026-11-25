@@ -178,14 +178,21 @@ export async function command(page: Page, label: string) {
 export async function partAt(page: Page, index: number): Promise<[number, number]> {
   const canvas = page.locator('canvas')
   await expect(canvas).toHaveAttribute('data-body-anchors', new RegExp(`"${index}"`))
-  // Once the view has settled (it frames a model as it arrives): the same points twice, 150 ms apart.
+  // Once the view has settled (it frames a model as it arrives): the same point twice, 150 ms apart, and inside the
+  // view. On CI a point was seen published far off the view (1921, -866 in a 1056 x 798 view) for seconds; a hover
+  // move has the view drawn, and so published, again.
+  const view = (await canvas.boundingBox())!
   let last = ''
+  let nudge = 0
   await expect.poll(async () => {
     const now = (await canvas.getAttribute('data-body-anchors')) ?? ''
-    const same = now === last
+    const point = now ? (JSON.parse(now) as Record<string, [number, number]>)[index] : undefined
+    const inside = !!point && point[0] >= view.x && point[0] <= view.x + view.width && point[1] >= view.y && point[1] <= view.y + view.height
+    const same = inside && now === last
     last = now
+    if (!inside) await page.mouse.move(view.x + view.width / 2 + (nudge++ % 2) * 30, view.y + view.height / 2)
     return same
-  }, { intervals: [150] }).toBe(true)
+  }, { intervals: [150], timeout: 15_000 }).toBe(true)
   // Beside the face's pull handle, which sits on the published point once the face is chosen.
   const [x, y] = JSON.parse(last)[index] as [number, number]
   return [x + 20, y]
