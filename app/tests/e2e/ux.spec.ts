@@ -671,6 +671,58 @@ test('a click takes the part with its arrows and rings; dragging one moves or tu
   }
 })
 
+// The Windows and macOS runners' small screens give an 800 × 560 view, where the bar beside the face covered the X
+// arrow and the part's middle.
+test('in a small window the selection bar stays off the arrows, the rings and the middle of the part', { tag: '@viewport' }, async () => {
+  const { page } = await launch({ env: { SIMPLECAD_WINDOW: '1024x700' } })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  await expect(steps).toHaveText(['Box'])
+  expect((await canvas.boundingBox())!.height).toBeLessThan(620)
+  await page.mouse.click(...await partAt(page, 0))
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  await expect(bar).toBeVisible()
+  await expect(canvas).toHaveAttribute('data-rings', /"z"/)
+  await page.waitForTimeout(200)
+  const area = (await bar.boundingBox())!
+  const view = (await canvas.boundingBox())!
+  const points: Point[] = [...Object.values(JSON.parse((await canvas.getAttribute('data-handles'))!) as Record<string, Point>),
+    ...Object.values(JSON.parse((await canvas.getAttribute('data-rings'))!) as Record<string, Point>),
+    [view.x + view.width / 2, view.y + view.height / 2]]
+  for (const [x, y] of points) {
+    expect(x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height, `${x},${y} clear of the bar`).toBe(false)
+  }
+  const [x, y] = await handle(page, 'x')
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 30, y + 8, { steps: 4 })
+  await expect(canvas).toHaveAttribute('data-ghost', 'move')
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box'])
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// History stays clickable while a step runs (disabling hundreds of rows on each step was slow on large projects).
+test('Edit chosen in History while a step runs opens once that step is done', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toContainText('24000 mm³')
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await page.getByLabel('Pull distance').fill('2')
+  await page.getByLabel('Pull distance').press('Enter')
+  await expect(status).toContainText('26400 mm³')
+  // In one go, so Edit arrives while the Undo still runs.
+  await page.evaluate(() => {
+    const button = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!
+    button('[role=toolbar][aria-label="Modeling tools"] [aria-label="Undo"]').click()
+    button('[aria-label="Model history"] [aria-label="Edit Box"]').click()
+  })
+  await expect(status).toContainText('24000 mm³')
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})
+
 test('a box from empty space takes what it surrounds, or right to left what it touches; Shift adds; a group is one click and a double-click reaches in, then edits', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
@@ -722,6 +774,8 @@ test('a box from empty space takes what it surrounds, or right to left what it t
   await page.mouse.click(ax, ay)
   await page.keyboard.up('Shift')
   await page.getByRole('button', { name: 'Group', exact: true }).click()
+  // The Group step's result resets the selection, so the clicks wait for it.
+  await expect(bodies.getByRole('list', { name: 'Group' })).toBeVisible()
   await page.mouse.click(area.x + 6, area.y + 6)
   await page.mouse.click(ax, ay)
   await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')

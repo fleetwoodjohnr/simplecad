@@ -19,10 +19,11 @@ tasks measured for this release take 29 clicks and keys in all, against 47 in
   the model still turns the view, and so does a right drag anywhere.
 - **Double-click** a part to change the step that made it; in a group, the
   first double-click reaches inside for the one part.
-- **A bar beside what you selected**, with the likeliest tool first: the pull
-  distance and Hole for a face, Fillet for an edge, Move and Rotate for a
-  part, Subtract for two parts, Arrange for three or more, Ungroup for a group.
-  Everything else is behind its ⋯, and the right-click menu offers the same.
+- **A bar beside what you selected**, clear of its arrows and rings, with the
+  likeliest tool first: the pull distance and Hole for a face, Fillet for an
+  edge, Move and Rotate for a part, Subtract for two parts, Arrange for three
+  or more, Ungroup for a group. Everything else is behind its ⋯, and the
+  right-click menu offers the same.
 - **Handles on the model.** Drag a face's handle to pull it, an edge's to round
   it, or Split's plane through a part, with the size at the cursor. Drags snap
   to 0.25 mm; hold Shift for free, Ctrl for 0.05 mm.
@@ -38,7 +39,8 @@ tasks measured for this release take 29 clicks and keys in all, against 47 in
 - **Large projects are quicker.** A step on UPS Atlas takes about 100 ms
   (180–195 ms in 0.5.1), and on Atlas Box about 105 ms (125–130 ms). The
   window no longer sends the whole model again for every step, lays itself
-  out again on every frame, or turns History's buttons off and on.
+  out again on every frame, or turns History's buttons off and on (what you
+  click in History while a step runs opens when it is done).
 - **Undoing a Move of a large imported part** takes under half a second (UPS
   Atlas's board: 0.42–0.47 s, against 1.7–2.0 s in 0.5.1 and about 0.5 s in
   0.4.4). The part it brings back is recognised as the one shown, moved, so it

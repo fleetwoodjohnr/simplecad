@@ -54,9 +54,11 @@ function createWindow() {
     return
   }
   const dark = nativeTheme.shouldUseDarkColors
+  // SIMPLECAD_WINDOW=1024x700 opens it that size, as a small screen does (the e2e specs check the view so).
+  const [width, height] = process.env.SIMPLECAD_WINDOW?.match(/^(\d+)x(\d+)$/)?.slice(1).map(Number) ?? [1440, 920]
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width,
+    height,
     minWidth: 960,
     minHeight: 600,
     show: false,

@@ -248,6 +248,7 @@ export function Viewport(props: Props) {
     /** Beside the face, clear of the drag handle and inside the view; docked at the bottom without a point (a tool's
      * panel in the top right corner, and kept where it opened). */
     let pinned: Vector2 | 'dock' | undefined
+    let held: { chosen: string; reach: ReturnType<typeof transform.reach> } | undefined
     const placeBar = (at?: Vector2) => {
       const panel = bar.current
       if (!panel) return
@@ -264,8 +265,25 @@ export function Viewport(props: Props) {
       if (panelSize?.panel !== panel) panelSize = { panel, w: panel.offsetWidth, h: panel.offsetHeight }
       const { w, h } = panelSize
       const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max - 8))
-      const left = `${at ? clamp(at.x + 24, width - w) : tool ? Math.max(8, width - w - 12) : Math.max(8, (width - w) / 2)}px`
-      const top = `${at ? clamp(at.y + 24, height - h) : tool ? 12 : height - h - 12}px`
+      // The bar stays off the part's arrows and rings, and off the face's pull handle: centred over them (a model on
+      // the plate leaves room above it, where the bar covers least of it and of the parts beside it), else under them,
+      // else docked at the bottom. Beside the face it covered the X arrow (and the part's middle) in a small window.
+      // While a step runs the handles go but the same parts stay chosen: the bar keeps its place instead of jumping.
+      const chosen = String(current.current.chosen ?? [])
+      const reach = transform.reach()
+      if (reach || held?.chosen !== chosen) held = { chosen, reach }
+      const gizmo = tool ? undefined : held.reach
+      let x: number, y: number
+      if (gizmo && gizmo.x >= 0 && gizmo.x <= width && gizmo.y >= 0 && gizmo.y <= height) {
+        x = clamp(gizmo.x - w / 2, width - w)
+        const clear = (top: number) => top >= 8 && top + h <= height - 8 &&
+          !(at && at.x > x - 20 && at.x < x + w + 20 && at.y > top - 20 && at.y < top + h + 20)
+        y = [gizmo.y - gizmo.r - 8 - h, gizmo.y + gizmo.r + 8].find(clear) ?? height - h - 12
+      } else {
+        x = at ? clamp(at.x + 24, width - w) : tool ? Math.max(8, width - w - 12) : Math.max(8, (width - w) / 2)
+        y = at ? clamp(at.y + 24, height - h) : tool ? 12 : height - h - 12
+      }
+      const [left, top] = [`${x}px`, `${y}px`]
       if (panel.style.left !== left) panel.style.left = left
       if (panel.style.top !== top) panel.style.top = top
     }

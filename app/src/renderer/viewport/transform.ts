@@ -397,10 +397,23 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (rings.object) put(arrows.object ? 'rings' : 'handles', anchors(rings))
     if (!arrows.object || !rings.object) delete canvas.dataset.rings
   }
+  // TransformControls' own scale: the handles keep one size on screen.
+  const scaleOf = (which: TransformControls, from = hub.position) => from.distanceTo(camera.position) *
+    Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7) * which.size / 4
+  /** Where the handles are in the view, in its pixels: their middle, and how far their rings (or the arrows' tips)
+   * reach, so the selection bar can stay off them. From where a drag started, so the bar holds still during one. */
+  const reach = () => {
+    if (!live || !config) return undefined
+    const { width, height } = measure()
+    // The rings' pick shape and the arrows' tips both end 0.6 of a handle's size out.
+    const out = 0.6 * scaleOf(rings.object ? rings : arrows, pivot)
+    const middle = pivot.clone().project(camera)
+    const edge = at.setFromMatrixColumn(camera.matrixWorld, 1).multiplyScalar(out).add(pivot).project(camera)
+    const [x, y] = [(middle.x + 1) / 2 * width, (1 - middle.y) / 2 * height]
+    return { x, y, r: Math.hypot((edge.x + 1) / 2 * width - x, (1 - edge.y) / 2 * height - y) }
+  }
   const points = (which: TransformControls) => {
-    // TransformControls' own scale: the handles keep one size on screen.
-    const scale = hub.position.distanceTo(camera.position) *
-      Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7) * which.size / 4
+    const scale = scaleOf(which)
     const rect = measure()
     return [0, 1, 2].map((axis) => {
       if (which === arrows) {
@@ -432,5 +445,5 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     label.remove()
     scene.remove(hub, handle, moving, rest, restEdges, ghost)
   }
-  return { set, publish, claimed: () => claimed, hits, dispose }
+  return { set, publish, reach, claimed: () => claimed, hits, dispose }
 }

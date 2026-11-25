@@ -1385,9 +1385,14 @@ export function App() {
 
   // History rows keep the same handlers across renders, so a row draws again only when its step changes.
   const editStepNow = useRef<(step: StepInfo) => void>(() => {})
+  /** A History click made while a step ran: it opens once that step is done, if its own step is still there. */
+  const waitingStep = useRef<{ id: string; repair: boolean }>(undefined)
   editStepNow.current = (step) => {
     // History stays enabled while a step runs: what it opens waits for that step.
-    if (busyRef.current) return
+    if (busyRef.current) {
+      waitingStep.current = { id: step.id, repair: false }
+      return
+    }
     if (step.kind === 'sketch') {
       void openSketch(step.id)
       return
@@ -1437,9 +1442,19 @@ export function App() {
   }
   const repairStepNow = useRef<(step: StepInfo) => void>(() => {})
   repairStepNow.current = (step) => {
-    if (busyRef.current) return
+    if (busyRef.current) {
+      waitingStep.current = { id: step.id, repair: true }
+      return
+    }
     select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({})
   }
+  useEffect(() => {
+    const waiting = waitingStep.current
+    if (busy || !waiting) return
+    waitingStep.current = undefined
+    const step = model?.steps.find((entry) => entry.id === waiting.id)
+    if (step && (waiting.repair ? !step.undone && step.missingInput : canEdit(step))) (waiting.repair ? repairStepNow : editStepNow).current(step)
+  }, [busy, model])
   // A large model has thousands of faces: their list is made only while it is open (and once per result), since
   // laying thousands of options out again took UPS Atlas's every step tens of milliseconds.
   const [faceListOpen, setFaceListOpen] = useState(false)
