@@ -106,7 +106,7 @@ test('4 round an edge 2 mm', { tag: '@viewport' }, async () => {
   const c = counter(page, 'Round an edge 2 mm', 2)
   for (const point of await edgePoints(page)) {
     await page.mouse.click(...point)
-    if (await bar.getByRole('button', { name: 'Fillet', exact: true }).count() && !(await bar.getByLabel('Pull distance').count())) {
+    if (await bar.getByRole('form', { name: 'Edge finish' }).count() && !(await bar.getByLabel('Pull distance').count())) {
       c.result.actions++
       c.result.path.push('click the edge')
       break
@@ -162,11 +162,11 @@ test('8 arrange three parts on the plate', { tag: '@viewport' }, async () => {
   const c = counter(page, 'Arrange three parts on the plate', 4)
   const box = (await page.locator('canvas').boundingBox())!
   c.result.actions++
-  c.result.path.push('drag a box around them')
+  c.result.path.push('right-drag a box around them')
   await page.mouse.move(box.x + 8, box.y + 8)
-  await page.mouse.down()
+  await page.mouse.down({ button: 'right' })
   await page.mouse.move(box.x + box.width - 8, box.y + box.height - 8, { steps: 6 })
-  await page.mouse.up()
+  await page.mouse.up({ button: 'right' })
   await c.click(bar.getByRole('button', { name: 'Arrange', exact: true }), 'Arrange')
   await c.at([box.x + 30, box.y + box.height - 30], 'the plate')
   await expect(page.getByRole('form', { name: 'Arrange' }).getByRole('status', { name: 'Arrangement fit' })).toHaveText(/^3 objects/)

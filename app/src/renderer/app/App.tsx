@@ -186,7 +186,10 @@ export function App() {
   /** The faces clicked to choose them, in order: a two-face tool (Clip Joint) starts from them. */
   const [pickedFaces, setPickedFaces] = useState<number[]>([])
   /** An edge clicked in the view (display edge index), and where: it carries a handle that rounds it. */
-  const [selectedEdge, setSelectedEdge] = useState<{ edge: number; point: Vec3 }>()
+  /** Clicked edges (Shift adds), and where the last was clicked: the round or bevel handle goes there. */
+  const [selectedEdge, setSelectedEdge] = useState<{ edges: number[]; point: Vec3 }>()
+  /** The edge bar's finish and typed size. */
+  const [edgeFinish, setEdgeFinish] = useState<{ kind: 'fillet' | 'chamfer'; size: string }>({ kind: 'fillet', size: '' })
   /** Split's plane: across which axis, and its offset from the part's middle (mm), dragged in the view or typed. */
   const [split, setSplit] = useState<{ axis: 'x' | 'y' | 'z'; position: string }>({ axis: 'z', position: '0' })
   const splitFrom = useRef<number>(undefined)
@@ -197,7 +200,7 @@ export function App() {
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
   /** The right-click menu: what was clicked, and where. */
-  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string })>()
+  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string } | { view: true })>()
   const [repairBody, setRepairBody] = useState<number>()
   /** Replacements for a Combine's other lost tools, by the lost object's ID. */
   const [moreRepair, setMoreRepair] = useState<Record<string, number>>({})
@@ -362,6 +365,27 @@ export function App() {
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
   }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, edgeTool, hinge, clip, threadPair, construction, arrange, section, measureKind, sketchTool, matchingPart])
+  // The edge bar's typed size previews as the pull distance does; Enter or its button applies.
+  const edgeSize = Number(edgeFinish.size)
+  useEffect(() => {
+    if (!selectedEdge) return
+    setPreview(undefined)
+    if (busy || revision === undefined || !(edgeSize > 0)) return
+    let active = true
+    const edit = { edgeFinish: edgeFinish.kind, edges: selectedEdge.edges, value: `${edgeSize} mm` }
+    const timer = window.setTimeout(() => {
+      void previewEdgeFinish(revision, edit).then(
+        (next) => { if (active && !busyRef.current) setPreview(next) },
+        () => { if (active) setPreview(undefined) }
+      )
+    }, 48)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [busy, selectedEdge, revision, edgeSize, edgeFinish.kind])
+  const applyEdge = () => {
+    if (!selectedEdge || revision === undefined || !(edgeSize > 0)) return
+    const edit = { edgeFinish: edgeFinish.kind, edges: selectedEdge.edges, value: `${edgeSize} mm` }
+    mutate(() => applyEdgeFinish(revision, edit))
+  }
 
   useEffect(() => {
     if (!stack) return
@@ -844,6 +868,8 @@ export function App() {
     if (kind === 'split') setSplit({ axis: 'z', position: '0' })
     setBodyTool({ kind })
   }
+  /** Combine is open on new parts (not a History edit): the view shows which part is kept and which are the tools. */
+  const combining = bodyTool?.kind === 'boolean' && !bodyTool.editing
   /** Subtract, Join or Intersect from the bar: the first chosen part is cut (or kept), the rest are the tools. */
   const openCombine = (operation: string) => {
     const [body, ...tools] = chosenBodies
@@ -1001,7 +1027,14 @@ export function App() {
     undo: { enabled: canUndo, run: () => history('undo') },
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
-    clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    clear: { enabled: !busy && (selected !== undefined || selectedEdge !== undefined || chosenBodies.length > 0), run: () => select() },
+    // Every part that shows, groups whole, as 0.4.4's Ctrl+A.
+    selectAll: { enabled: ready && idle && !!model?.bodies.some((body) => body.visible && !body.empty),
+      run: () => {
+        select()
+        setPickedFaces([])
+        setChosenBodies(model!.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []))
+      } },
     // SimpleCAD 0.4's Delete: the chosen bodies, else the body of the selected face.
     delete: { enabled: ready && idle && (chosenBodies.length > 0 || !!selectedFace), hint: 'Select a body',
       run: () => removeBodies(chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []) },
@@ -1120,8 +1153,8 @@ export function App() {
       } },
     arrange: { ...actions.arrange, run: () => openArrange(true) },
     // A clicked edge is the one rounded or bevelled.
-    fillet: { ...actions.fillet, run: () => { const edge = selectedEdge?.edge; actions.fillet.run(); if (edge !== undefined) setEdgePicks([edge]) } },
-    chamfer: { ...actions.chamfer, run: () => { const edge = selectedEdge?.edge; actions.chamfer.run(); if (edge !== undefined) setEdgePicks([edge]) } },
+    fillet: { ...actions.fillet, run: () => { const edges = selectedEdge?.edges; actions.fillet.run(); if (edges) setEdgePicks(edges) } },
+    chamfer: { ...actions.chamfer, run: () => { const edges = selectedEdge?.edges; actions.chamfer.run(); if (edges) setEdgePicks(edges) } },
     // Two clicked faces on two parts are the clip's two faces.
     clipJoint: { ...actions.clipJoint, run: () => {
       const faces = twoFaces ? [...pickedFaces] : []
@@ -1134,14 +1167,16 @@ export function App() {
   const lengthText = (mm: number) => `${format.format(displayLength(mm, unit))} ${unit}`
   const modelHandles: ModelHandle[] = []
   if (idle && ready && selectedEdge && revision !== undefined) {
-    const edges = [selectedEdge.edge]
+    const { edges } = selectedEdge
+    const kind = edgeFinish.kind
     modelHandles.push({
-      key: 'round', label: 'Drag to round the edge', at: [selectedEdge.point], reading: (r) => `R ${lengthText(r)}`,
+      key: 'round', label: kind === 'fillet' ? 'Drag to round the edge' : 'Drag to bevel the edge', at: [selectedEdge.point],
+      reading: (r) => `${kind === 'fillet' ? 'R' : 'C'} ${lengthText(r)}`,
       onDrag: (r, commit) => {
         if (commit) {
-          if (r > 0) mutate(() => applyEdgeFinish(revision, { edgeFinish: 'fillet', edges, value: `${r} mm` }))
+          if (r > 0) mutate(() => applyEdgeFinish(revision, { edgeFinish: kind, edges, value: `${r} mm` }))
           else clearPreview()
-        } else if (r > 0) livePreview(() => previewEdgeFinish(revision, { edgeFinish: 'fillet', edges, value: `${r} mm` }))
+        } else if (r > 0) livePreview(() => previewEdgeFinish(revision, { edgeFinish: kind, edges, value: `${r} mm` }))
       },
       onCancel: clearPreview
     })
@@ -1205,8 +1240,10 @@ export function App() {
   const menuItems: MenuEntry[] = !menu || !model ? []
     : 'face' in menu ? menuFace ? [...menuTools(selectionKinds), ...partItems(menuFace.body)] : []
     : 'body' in menu ? [...menuTools(selectionKinds), ...partItems(menu.body)]
+    : 'view' in menu ? (['selectAll', 'clear', 'fit'] as const).flatMap((id) => actions[id].enabled ? [{ label: commands[id].label, run: actions[id].run }] : [])
     : (() => { const step = model.steps.find((entry) => entry.id === menu.step); return step ? stepItems(step) : [] })()
-  const menuLabel = !menu || !model ? '' : 'face' in menu ? `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
+  const menuLabel = !menu || !model ? '' : 'view' in menu ? 'View'
+    : 'face' in menu ? chosenBodies.length > 1 ? `${chosenBodies.length} parts` : `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
     : 'body' in menu ? model.bodies[menu.body]?.name ?? '' : model.steps.find((entry) => entry.id === menu.step)?.name ?? ''
   /** Where the menu goes: at the pointer, or beside the row when the keyboard opened it. */
   const menuAt = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
@@ -1360,7 +1397,8 @@ export function App() {
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
       // As 0.2.0's tools: Enter applies the open one, wherever the focus is but a field or a button of its own.
       if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !typing &&
-        !(event.target instanceof HTMLElement && event.target.matches('button, a, [role="menuitem"], summary'))) {
+        // A segmented choice is a radio: Enter there applies, as it submits a form from a native radio.
+        !(event.target instanceof HTMLElement && event.target.matches('button:not([role="radio"]), a, [role="menuitem"], summary'))) {
         const form = document.querySelector<HTMLFormElement>('[data-tool-panel] form')
         if (form) {
           event.preventDefault()
@@ -1368,8 +1406,8 @@ export function App() {
           return
         }
       }
-      for (const id of ['newBox', 'open', 'save', 'saveAs', 'importModel', 'undo', 'redo', 'fit', 'delete'] as const) {
-        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete'].includes(id))) continue
+      for (const id of ['newBox', 'open', 'save', 'saveAs', 'importModel', 'undo', 'redo', 'fit', 'delete', 'selectAll'] as const) {
+        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete', 'selectAll'].includes(id))) continue
         // A Mac's delete key is Backspace.
         const backspace = id === 'delete' && event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
         if (!backspace && !matchesShortcut(event, commands[id].shortcut)) continue
@@ -1643,6 +1681,8 @@ export function App() {
             {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
               kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy} centre={bodyCentre}
               tools={bodyTool.tools} operation={bodyTool.operation}
+              onTools={bodyTool.kind === 'boolean' && !bodyTool.editing ? (tools) => { clearPreview(); setBodyTool((tool) => tool && { ...tool, tools }) } : undefined}
+              onOperation={(operation) => setBodyTool((tool) => tool && { ...tool, operation })}
               split={bodyTool.kind === 'split' ? { ...split, onAxis: (axis) => setSplit((s) => ({ ...s, axis })), onPosition: (position) => setSplit((s) => ({ ...s, position })) } : undefined}
               preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
               onBody={(body) => { clearPreview(); setTransformBody(body) }} onChange={keepPreview} onCancel={closeBodyTool}
@@ -1798,13 +1838,14 @@ export function App() {
             canPull={canPullFace}
             onContextMenu={(face, x, y) => {
               if (!ready || !idle) return
+              // Empty space: what can be done to the view and the selection, which stays.
               if (face === undefined) {
-                select()
-                setMenu(undefined)
+                setMenu({ view: true, x, y })
                 return
               }
-              // As 0.4.4's select_under: what was clicked (the face and its part) replaces the selection.
-              clickPart(face, undefined, false)
+              // As 0.4.4's select_under: a part outside the selection replaces it; one inside keeps every chosen
+              // part, so two parts get Subtract and Join.
+              if (!chosenBodies.includes(model!.shape.faces[face].body)) clickPart(face, undefined, false)
               setMenu({ face, x, y })
             }}
             onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge
@@ -1812,7 +1853,7 @@ export function App() {
               : hinge && ready ? pickHingeEdge
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
-            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measureKind ? measuredEdges : selectedEdge ? [selectedEdge.edge] : measuredEdges}
+            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measureKind ? measuredEdges : selectedEdge ? selectedEdge.edges : measuredEdges}
             toolOverlay={toolOpen && (arrange || transformKind) ? 'dock' : toolOpen}
             overlay={toolOpen ? <section aria-label="Tool" data-tool-panel="" className="grid w-72 gap-2 overflow-y-auto rounded-xl border border-border bg-elev/95 p-3 text-xs shadow-lg backdrop-blur [&>form]:max-h-none">{toolPanels}</section>
               : idle && model && (selectedFace || selectedEdge || chosenBodies.length || blocked) ? <div className="grid justify-items-start gap-1.5">
@@ -1827,14 +1868,25 @@ export function App() {
               {error && <p data-testid="selection-error" className="max-w-sm rounded-md bg-elev/95 px-2 py-1 text-xs text-danger shadow">{error}</p>}
               {selectionKinds.length > 0 && !blocked && <ContextBar actions={barActions} kinds={selectionKinds}
                 pull={selectedFace && chosenBodies.length <= 1 ? { distance, canPull: canPullFace, distanceRef: distanceField, onPull: () => pull(value),
-                  onDistance: (next) => { setDistance(next); setError('') } } : undefined} />}
+                  onDistance: (next) => { setDistance(next); setError('') } } : undefined}
+                edge={selectedEdge ? { kind: edgeFinish.kind, size: edgeFinish.size, count: selectedEdge.edges.length, canApply: ready && edgeSize > 0,
+                  onKind: (kind) => setEdgeFinish((finish) => ({ ...finish, kind })),
+                  onSize: (size) => { setEdgeFinish((finish) => ({ ...finish, size })); setError('') }, onApply: applyEdge } : undefined} />}
             </div> : undefined}
             onBoxSelect={idle && ready ? boxSelect : undefined}
-            onSelectEdge={idle && ready ? (edge, point) => { select(); setSelectedEdge({ edge, point }) } : undefined}
+            onSelectEdge={idle && ready ? (edge, point, adding) => {
+              // Shift, Ctrl or Cmd adds an edge, or takes it away again; a plain click starts over with this one.
+              const kept = adding ? selectedEdge?.edges ?? [] : []
+              const edges = kept.includes(edge) ? kept.filter((e) => e !== edge) : [...kept, edge]
+              select()
+              setEdgeFinish((finish) => ({ ...finish, size: adding ? finish.size : '' }))
+              setSelectedEdge(edges.length ? { edges, point } : undefined)
+            } : undefined}
             handles={modelHandles.length ? modelHandles : undefined}
             plane={splitPlane && { centre: splitPlane.centre, normal: splitPlane.normal, size: splitPlane.size }}
             onOpenBody={idle && ready ? openPart : undefined}
-            chosen={chosenBodies}
+            chosen={combining && transformBody !== undefined ? [transformBody] : chosenBodies}
+            roles={combining ? { kept: transformBody, tools: (bodyTool.tools ?? []).filter((tool) => tool !== transformBody), operation: bodyTool.operation ?? 'join' } : undefined}
             onSelect={(face, point, adding) => {
               if (!ready || shapePanel || sketchTool) return
               if (matchingPart) {
@@ -1877,6 +1929,17 @@ export function App() {
                     pickMeasure({ kind: 'face', face })
                   }
                 }
+              } else if (bodyTool?.kind === 'boolean' && !bodyTool.editing) {
+                // As 0.2.0's Combine: the first part clicked is kept; each other part clicked is added as a tool, or
+                // taken away again. The model is picked under a preview too.
+                if (face === undefined) return
+                const body = model.shape.faces[face].body
+                clearPreview()
+                if (transformBody === undefined) setTransformBody(body)
+                else if (body !== transformBody) {
+                  const tools = bodyTool.tools ?? []
+                  setBodyTool({ ...bodyTool, tools: tools.includes(body) ? tools.filter((tool) => tool !== body) : [...tools, body] })
+                }
               } else if (transformKind || bodyTool) {
                 if (face !== undefined) {
                   clearPreview()
@@ -1914,7 +1977,8 @@ export function App() {
                 </li>
               ))}
             </ul>
-            <label className="grid gap-1 text-xs text-text-2">
+            {/* Faces are picked in the view; this list is the keyboard's way, shown only while it has the focus. */}
+            <label className="sr-only grid gap-1 text-xs text-text-2 focus-within:not-sr-only">
               Planar face
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
                 onFocus={() => setFaceListOpen(true)} onPointerDown={() => setFaceListOpen(true)} onBlur={() => setFaceListOpen(false)}
@@ -1967,6 +2031,7 @@ export function App() {
               <MenuContent side="top" align="end">
                 <MenuItem onSelect={() => setShowEdges((v) => !v)}>{showEdges ? 'Hide edges' : 'Show edges'}</MenuItem>
                 <MenuItem disabled={!actions.fit.enabled} onSelect={actions.fit.run}>{commands.fit.label}</MenuItem>
+                <MenuItem disabled={!actions.selectAll.enabled} onSelect={actions.selectAll.run}>{commands.selectAll.label}</MenuItem>
                 <MenuItem disabled={!actions.clear.enabled} onSelect={actions.clear.run}>{commands.clear.label}</MenuItem>
               </MenuContent>
             </Menu>

@@ -8,7 +8,7 @@ export const bodyOperationLabels: Record<BodyOperation, string> = {
   mirror: 'Mirror', rectangular_pattern: 'Rectangular Pattern', circular_pattern: 'Circular Pattern', scale: 'Scale',
   boolean: 'Combine', split: 'Split', draft: 'Draft'
 }
-const combinations = [{ value: 'join', label: 'Join' }, { value: 'cut', label: 'Cut' }, { value: 'intersect', label: 'Intersect' }]
+const combinations = [{ value: 'cut', label: 'Subtract' }, { value: 'join', label: 'Join' }, { value: 'intersect', label: 'Intersect' }]
 
 /** SimpleCAD 0.4's defaults; the settings History can edit later are the expressions. */
 const defaults: Record<BodyOperation, Record<string, string>> = {
@@ -41,7 +41,11 @@ interface Props {
   preset?: Record<string, string>
   /** A Combine opened on chosen parts: its tools and operation to start with. */
   tools?: number[]
+  /** Given, the tools are the window's (a click in the view adds or takes one away): `tools` is what they are now. */
+  onTools?: (tools: number[]) => void
   operation?: string
+  /** Told when Subtract, Join or Intersect is chosen, so the view can colour the parts by what they do. */
+  onOperation?: (operation: string) => void
   /** Split's plane, held by the window so it can be dragged in the view. */
   split?: { axis: Axis; position: string; onAxis: (axis: Axis) => void; onPosition: (position: string) => void }
   onBody: (body?: number) => void
@@ -52,14 +56,28 @@ interface Props {
   onCancel: () => void
 }
 
-export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, tools: chosen, operation, split, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
+/** 0.2.0's line saying which part is kept and which do the cutting, joining or overlapping. */
+function combineSentence(operation: string, body: number | undefined, tools: number[], bodies: BodyInfo[]) {
+  const kept = body === undefined ? undefined : bodies[body]?.name
+  const names = tools.filter((tool) => tool !== body).map((tool) => bodies[tool]?.name ?? '')
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]
+  if (kept === undefined) return 'Click the part to keep.'
+  if (!list) return `Keeping ${kept}. Click the part to ${operation === 'cut' ? 'cut from it' : operation === 'join' ? 'join to it' : 'overlap it'}.`
+  if (operation === 'cut') return `Removing ${list} from ${kept}. The result keeps the name ${kept}.`
+  if (operation === 'join') return `Joining ${list} to ${kept}.`
+  return `Keeping where ${kept} and ${list} overlap.`
+}
+
+export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, tools: chosen, onTools, operation, onOperation, split, onBody, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
   const [own, setValues] = useState<Record<string, string>>({ ...defaults[kind], ...(operation ? { operation } : {}), ...preset })
   const [ownAxis, setAxis] = useState<Axis>(kind === 'mirror' ? 'x' : 'z')
   const held = kind === 'split' && !preset ? split : undefined
   const values = held ? { ...own, position: held.position } : own
   const axis = held?.axis ?? ownAxis
   const [center, setCenter] = useState<[string, string, string]>(['0', '0', '0'])
-  const [tools, setTools] = useState<number[]>(chosen ?? [])
+  const [ownTools, setOwnTools] = useState<number[]>(chosen ?? [])
+  const tools = onTools ? chosen ?? [] : ownTools
+  const setTools = (next: number[]) => onTools ? onTools(next) : setOwnTools(next)
   const name = bodyOperationLabels[kind]
   const set = (key: string, value: string) => {
     if (held && key === 'position') held.onPosition(value)
@@ -112,16 +130,27 @@ export function BodyOperationPanel({ kind, bodies, body, centre, busy, preset, t
           onChange={(event) => set(key, event.target.value)} />
       </label>)}
       {kind === 'boolean' && <div className="grid gap-1">Operation
-        <Segmented label="Operation" value={values.operation} options={combinations} onChange={(next) => set('operation', next)} />
+        <Segmented label="Operation" value={values.operation} options={combinations} onChange={(next) => { set('operation', next); onOperation?.(next) }} />
       </div>}
+      {kind === 'boolean' && !preset && <div className="grid gap-1">
+        <p role="status" aria-label="What is combined">{combineSentence(values.operation, body, tools, bodies)}</p>
+        <Btn type="button" size="sm" className="justify-self-start" disabled={busy || body === undefined || !tools.length}
+          onClick={() => {
+            // As 0.2.0's Swap: the first tool is kept and the part that was kept becomes a tool.
+            const [next, ...rest] = tools
+            onBody(next)
+            setTools([...rest, body!])
+            onChange()
+          }}>Swap</Btn>
+      </div>}
+      <More>
       {kind === 'boolean' && !preset && <fieldset className="grid gap-1" disabled={busy}>
         <legend className="pb-1">With</legend>
         {bodies.map((part, index) => part.visible && !part.empty && index !== body ? <label key={index} className="flex items-center gap-2">
           <input type="checkbox" checked={tools.includes(index)}
-            onChange={(event) => { setTools((current) => event.target.checked ? [...current, index] : current.filter((tool) => tool !== index)); onChange() }} />
+            onChange={(event) => { setTools(event.target.checked ? [...tools, index] : tools.filter((tool) => tool !== index)); onChange() }} />
           {part.name}</label> : null)}
       </fieldset>}
-      <More>
       {!preset && body !== undefined && bodyField}
       {!preset && (kind === 'mirror' || kind === 'circular_pattern') && <fieldset className="grid grid-cols-3 gap-2" disabled={busy}>
         <legend className="pb-1">{kind === 'mirror' ? 'Through point (mm)' : 'Centre (mm)'}</legend>

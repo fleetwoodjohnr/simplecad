@@ -213,8 +213,9 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       cancel('right button')
       return
     }
+    // A drag's press is claimed until the next press of any button, so the release that ends it opens no menu.
+    claimed = false
     if (event.button === 0) {
-      claimed = false
       shift = event.shiftKey
       fine = event.ctrlKey
       // Of an arrow and a ring under the pointer, the one nearer the eye takes the press. Shift, Ctrl or Cmd held as
@@ -252,8 +253,6 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     }
     return best
   }
-  /** Whether a press here lands on a handle. */
-  const hits = (event: { clientX: number; clientY: number }) => nearest(event) !== undefined
   /** Only the nearer handle lights up under the pointer. */
   const hover = (event: PointerEvent) => {
     if (active || !live) return
@@ -467,5 +466,5 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     label.remove()
     scene.remove(hub, handle, moving, rest, restEdges, ghost)
   }
-  return { set, publish, reach, claimed: () => claimed, hits, dispose }
+  return { set, publish, reach, claimed: () => claimed, dispose }
 }

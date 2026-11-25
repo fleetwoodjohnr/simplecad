@@ -14,11 +14,11 @@ async function saveAs(app: ElectronApplication, page: Page, name: string) {
   await expect(page.getByText(name, { exact: true })).toBeVisible()
 }
 
-async function drag(page: Page, from: [number, number], by: [number, number]) {
+async function drag(page: Page, from: [number, number], by: [number, number], button: 'left' | 'right' = 'left') {
   await page.mouse.move(...from)
-  await page.mouse.down()
+  await page.mouse.down({ button })
   await page.mouse.move(from[0] + by[0], from[1] + by[1], { steps: 6 })
-  await page.mouse.up()
+  await page.mouse.up({ button })
 }
 
 const middle = async (page: Page, name: string): Promise<[number, number]> => {
@@ -59,7 +59,7 @@ test('an edge rounded by its handle saves as a Fillet step', { tag: '@viewport' 
   await expect(steps).toHaveText(['Box'])
   for (const point of await edgePoints(page)) {
     await page.mouse.click(...point)
-    if (await bar.getByRole('button', { name: 'Fillet', exact: true }).count() && !(await bar.getByLabel('Pull distance').count())) break
+    if (await bar.getByRole('form', { name: 'Edge finish' }).count() && !(await bar.getByLabel('Pull distance').count())) break
     const box = (await page.locator('canvas').boundingBox())!
     await page.mouse.click(box.x + 6, box.y + 6)
   }
@@ -90,7 +90,7 @@ test('three parts box-selected and arranged on the plate save as an Arrange step
   await page.getByRole('button', { name: 'Fit view' }).click()
   const box = (await page.locator('canvas').boundingBox())!
   await page.mouse.click(box.x + 8, box.y + 8)
-  await drag(page, [box.x + 8, box.y + 8], [box.width - 16, box.height - 16])
+  await drag(page, [box.x + 8, box.y + 8], [box.width - 16, box.height - 16], 'right')
   await page.getByRole('toolbar', { name: 'Selection tools' }).getByRole('button', { name: 'Arrange', exact: true }).click()
   await page.mouse.click(box.x + 30, box.y + box.height - 30)
   await expect(page.getByRole('form', { name: 'Arrange' }).getByRole('status', { name: 'Arrangement fit' })).toHaveText(/^3 objects/)

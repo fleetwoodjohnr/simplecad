@@ -46,6 +46,9 @@ interface Props {
   onOpenBody?: (body: number) => void
   /** The chosen parts, tinted (a gizmo on them tints them itself). */
   chosen?: number[]
+  /** Combine's parts by what they do: the kept part (tinted as chosen) and the tools, drawn see-through in the
+   * operation's colour over the model or its preview. Clicks pick the model under a preview while it is set. */
+  roles?: { kept?: number; tools: number[]; operation: string }
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
@@ -114,9 +117,9 @@ export function Viewport(props: Props) {
     const camera = new PerspectiveCamera(35, 1, 0.1, 10_000)
     camera.up.set(0, 0, 1)
     const controls = new OrbitControls(camera, canvas)
-    // As in SimpleCAD 0.4: middle-drag pans and Shift+middle-drag orbits, right-drag orbits; left-drag orbits too, as
-    // in 0.5.0 (Shift+left pans).
-    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }
+    // Left drag turns the view anywhere (Shift+left pans), middle drag pans (Shift+middle turns). A right drag draws
+    // the selection box instead (`press`), and a short right click opens the menu.
+    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: -1 as MOUSE }
     // A middle press would otherwise start the browser's autoscroll.
     const noAutoscroll = (event: MouseEvent) => { if (event.button === 1) event.preventDefault() }
     canvas.addEventListener('mousedown', noAutoscroll)
@@ -150,6 +153,12 @@ export function Viewport(props: Props) {
     const ghost = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: 0x8a93a3, transparent: true, opacity: 0.22, depthWrite: false }))
     ghost.renderOrder = 1
     let ghostKey = ''
+    // Combine's tools, as 0.2.0 coloured a cut: red cut away, green joined, blue kept where they overlap.
+    const toolGhost = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe5484d, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    toolGhost.renderOrder = 2
+    let toolGhostKey = ''
     const prism = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
       color: 0x3b82f6, transparent: true, opacity: 0.35, depthTest: false, depthWrite: false, side: DoubleSide
     }))
@@ -183,6 +192,10 @@ export function Viewport(props: Props) {
     const chosen = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0xe8a33a, depthTest: false }))
     chosen.renderOrder = 3
     let chosenKey = ''
+    // The edge a click would take, lit under the pointer as a face is.
+    const edgeHover = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0xf2c27a, depthTest: false }))
+    edgeHover.renderOrder = 3
+    edgeHover.visible = false
     /** Which edge each line segment of the displayed shape belongs to, made on the first edge pick. */
     let segmentEdge: { shape: DisplayShape; owner: Uint32Array } | undefined
     const edgeOf = (shape: DisplayShape, segment: number) => {
@@ -211,13 +224,14 @@ export function Viewport(props: Props) {
     }))
     plane.renderOrder = 2
     plane.visible = false
-    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked, parts, plane)
+    scene.add(body, highlight, hover, edges, ghost, toolGhost, prism, chosen, edgeHover, outline, marked, parts, plane)
     // The selection box, drawn over the view while dragged from empty space.
     const area = document.createElement('div')
     area.className = 'pointer-events-none absolute z-10 hidden border border-accent bg-accent/10'
     area.dataset.testid = 'selection-box'
     el.append(area)
     let hovered: number | undefined
+    let hoveredEdge: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
     let animation = 0
@@ -403,6 +417,18 @@ export function Viewport(props: Props) {
       }
       draw()
     }
+    /** Light up edge `edge` of the displayed shape under the pointer; undefined clears it. */
+    const showEdgeHover = (edge?: number) => {
+      const shape = current.current.shape
+      if (!shape || displayed !== shape) edge = undefined
+      if (edge === hoveredEdge) return
+      hoveredEdge = edge
+      edgeHover.geometry.dispose()
+      edgeHover.geometry = edge !== undefined ? edgeGeometry(shape!, [[edge, edge + 1]]) : new BufferGeometry()
+      edgeHover.visible = edge !== undefined
+      canvas.dataset.hoverEdge = edge === undefined ? '' : String(edge)
+      draw()
+    }
 
     sync.current = () => {
       const { shape, shown, selected, showEdges, placingBody, transform: tool } = current.current
@@ -410,6 +436,8 @@ export function Viewport(props: Props) {
       if (displayed !== next) {
         hovered = undefined
         hover.visible = false
+        hoveredEdge = undefined
+        edgeHover.visible = false
         hover.geometry.dispose()
         hover.geometry = new BufferGeometry()
         body.geometry.dispose()
@@ -419,7 +447,8 @@ export function Viewport(props: Props) {
         displayed = next
       }
       const ghostBody = shown ? placingBody ?? tool?.body : undefined
-      const pickShape = ghostBody !== undefined ? shape : undefined
+      const roles = current.current.roles
+      const pickShape = ghostBody !== undefined || roles ? shape : undefined
       if (pickShape !== committedShape) {
         committed.geometry.dispose()
         committed.geometry = pickShape ? surfaceGeometry(pickShape) : new BufferGeometry()
@@ -433,6 +462,19 @@ export function Viewport(props: Props) {
         ghostKey = key
       }
       ghost.visible = !!range
+      const toolRanges = roles && pickShape ? pickShape.ranges.filter(({ body: index }) => roles.tools.includes(index)) : []
+      const toolKey = toolRanges.length ? `${roles!.operation}:${toolRanges.map(({ indices }) => indices).join('|')}:${committed.geometry.id}` : ''
+      if (toolKey !== toolGhostKey) {
+        toolGhost.geometry.dispose()
+        const parts = toolRanges.map(({ indices }) => pickShape!.indices.subarray(...indices))
+        const joined = new Uint32Array(parts.reduce((n, part) => n + part.length, 0))
+        parts.reduce((at, part) => { joined.set(part, at); return at + part.length }, 0)
+        toolGhost.geometry = toolRanges.length ? indexedGeometry(committed.geometry, joined) : new BufferGeometry()
+        toolGhost.material.color.setHex(roles?.operation === 'cut' ? 0xe5484d : roles?.operation === 'join' ? 0x3fbf7f : 0x3b82f6)
+        toolGhostKey = toolKey
+      }
+      toolGhost.visible = !!toolKey
+      canvas.dataset.roles = roles ? JSON.stringify({ kept: roles.kept ?? null, tools: roles.tools, operation: roles.operation }) : ''
       // A live drag (transform.ts) owns the flag while it lasts.
       if (!canvas.dataset.ghost || canvas.dataset.ghost === 'preview') {
         canvas.dataset.ghost = range ? 'preview' : ''
@@ -519,21 +561,19 @@ export function Viewport(props: Props) {
     observer.observe(el)
     const ray = new Raycaster()
     const down = new Vector2()
-    /** A selection box being dragged from empty space: where it started, and whether it adds. */
+    /** A selection box being dragged with the right button: where it started, and whether it adds. */
     let box: { x: number; y: number; adding: boolean } | undefined
     const endBox = () => {
       box = undefined
       area.classList.add('hidden')
-      controls.mouseButtons.LEFT = MOUSE.ROTATE
     }
     const press = (e: PointerEvent) => {
       down.set(e.clientX, e.clientY)
       const { onBoxSelect, onPickEdge, shape } = current.current
-      // On empty space a left drag draws a box (Alt+left still turns the view); on the model it turns the view.
-      if (e.button !== 0 || e.altKey || !onBoxSelect || onPickEdge || !shape || displayed !== shape ||
-        transform.hits(e) || faceAt(e.clientX, e.clientY)) return
+      // A right drag draws a box anywhere, over the model too (a right press during a handle drag cancels the drag
+      // and never gets here); released within 4 px, it is a right click instead.
+      if (e.button !== 2 || !onBoxSelect || onPickEdge || !shape || displayed !== shape) return
       box = { x: e.clientX, y: e.clientY, adding: e.shiftKey || e.ctrlKey || e.metaKey }
-      controls.mouseButtons.LEFT = -1 as MOUSE
     }
     const drawBox = (e: PointerEvent) => {
       if (!box) return
@@ -571,9 +611,18 @@ export function Viewport(props: Props) {
       const hit = ray.intersectObject(edges)[0]
       return hit?.index === undefined ? undefined : { edge: edgeOf(shape, hit.index / 2), point: hit.point.toArray() as Vec3 }
     }
+    /** The edge a click here takes, as 0.2.0: an edge has a pick zone wider than its line, and wins over the face it
+     * bounds, not one in front of it. Only while edges can be clicked. */
+    const edgeOver = (x: number, y: number, face?: { point: Vector3 }) => {
+      if (!current.current.onSelectEdge || current.current.shape !== displayed) return
+      const edge = edgeAt(x, y)
+      const depth = camera.position.distanceTo(controls.target)
+      return edge && (!face || camera.position.distanceTo(new Vector3(...edge.point)) <= camera.position.distanceTo(face.point) + depth * 0.01)
+        ? edge : undefined
+    }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
-      if (box && e.button === 0) {
+      if (box && e.button === 2) {
         const started = box
         endBox()
         if (down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 && shape && displayed === shape) {
@@ -601,10 +650,8 @@ export function Viewport(props: Props) {
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
       const picked = faceAt(e.clientX, e.clientY)
-      // As 0.2.0: an edge has a pick zone wider than its line, and wins over the face it bounds, not one in front.
-      const edge = current.current.onSelectEdge && shape === displayed ? edgeAt(e.clientX, e.clientY) : undefined
-      const depth = camera.position.distanceTo(controls.target)
-      if (edge && (!picked || camera.position.distanceTo(new Vector3(...edge.point)) <= camera.position.distanceTo(picked.point) + depth * 0.01)) {
+      const edge = edgeOver(e.clientX, e.clientY, picked)
+      if (edge) {
         current.current.onSelectEdge!(edge.edge, edge.point, e.shiftKey || e.ctrlKey || e.metaKey)
         return
       }
@@ -624,18 +671,26 @@ export function Viewport(props: Props) {
     const move = (e: PointerEvent) => {
       drawBox(e)
       pointer = e.buttons ? null : { x: e.clientX, y: e.clientY }
-      if (!pointer) return showHover(undefined)
+      if (!pointer) {
+        showEdgeHover(undefined)
+        return showHover(undefined)
+      }
       hoverFrame ||= requestAnimationFrame(() => {
         hoverFrame = 0
         if (!pointer) return
         const started = performance.now()
-        showHover(faceAt(pointer.x, pointer.y)?.face)
+        // The edge a click would take lights up instead of its face.
+        const face = faceAt(pointer.x, pointer.y)
+        const edge = edgeOver(pointer.x, pointer.y, face)
+        showEdgeHover(edge?.edge)
+        showHover(edge ? undefined : face?.face)
         // What one hover costs, for the performance check.
         canvas.dataset.hoverMs = (performance.now() - started).toFixed(2)
       })
     }
     const leave = () => {
       pointer = null
+      showEdgeHover(undefined)
       showHover(undefined)
     }
     // Capturing, so a box can be started before the orbit controls see the press.
@@ -662,7 +717,7 @@ export function Viewport(props: Props) {
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked, parts, plane]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, toolGhost, prism, chosen, edgeHover, outline, marked, parts, plane]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -675,7 +730,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, props.chosen, props.plane, props.handles, props.toolOverlay])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, String(props.chosen), JSON.stringify(props.roles), props.plane, props.handles, props.toolOverlay])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {
