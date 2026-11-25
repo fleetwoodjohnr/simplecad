@@ -182,6 +182,13 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     moving.position.set(0, 0, 0)
     moving.quaternion.identity()
   }
+  /** A newer result that came while a drag lasted, shown once it ends. */
+  let later: Parameters<typeof set> | undefined
+  const showLater = () => {
+    const waiting = later
+    later = undefined
+    if (waiting) set(...waiting)
+  }
   const cancel = () => {
     if (!active) return
     active = false
@@ -194,6 +201,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     restorePose()
     orbit(true)
     draw()
+    showLater()
   }
 
   const press = (event: PointerEvent) => {
@@ -307,10 +315,12 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       onCommit({ kind, values: [String(delta.x), String(delta.y), String(delta.z)] })
     } else if (kind === 'rotate') {
       const axis = new Vector3(rotation.x, rotation.y, rotation.z)
-      if (axis.lengthSq() <= 1e-10) return
-      const angle = Math.atan2(axis.length(), rotation.w) * 2 * degrees
-      onCommit({ kind, values: [String(angle)], axis: axis.normalize().toArray(), pivot: pivot.toArray() })
+      if (axis.lengthSq() > 1e-10) {
+        const angle = Math.atan2(axis.length(), rotation.w) * 2 * degrees
+        onCommit({ kind, values: [String(angle)], axis: axis.normalize().toArray(), pivot: pivot.toArray() })
+      }
     }
+    showLater()
   }
   for (const [each, which] of [[arrows, 'move'], [rings, 'rotate']] as const) {
     each.addEventListener('change', draw)
@@ -331,6 +341,12 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   }
   const set = (shape: DisplayShape | undefined, model: BufferGeometry, next: TransformView | undefined,
     showEdges: boolean) => {
+    // A newer result arriving mid-drag (a live preview landing) waits for the drag to end instead of cancelling it.
+    if (active && shape && drawn !== shape && next?.enabled) {
+      later = [shape, model, next, showEdges]
+      return true
+    }
+    later = undefined
     if (drawn !== shape || config?.body !== next?.body || String(config?.bodies) !== String(next?.bodies) ||
       config?.kind !== next?.kind || config?.pivot !== next?.pivot) {
       cancel()
@@ -429,6 +445,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     })
   }
   const dispose = () => {
+    later = undefined
     cancel()
     arrows.dispose()
     rings.dispose()
