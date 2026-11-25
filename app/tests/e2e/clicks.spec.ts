@@ -86,7 +86,7 @@ test('2 rotate a part 90°', { tag: '@viewport' }, async () => {
   const c = counter(page, 'Rotate a part 90°', 2)
   await c.at(await partAt(page, 0), 'the part')
   const { z } = await handles(page, 'rings')
-  await c.drag(z, [1, 0], page.getByRole('status', { name: 'Transform reading' }), /^-?90°$/, 'the Z ring')
+  await c.drag(z, [1, 0], page.getByRole('status', { name: 'Transform reading' }), /^-?90° · snapped$/, 'the Z ring')
   await expect(steps).toHaveText(['Box', 'Rotate'])
   expect(c.result.actions).toBeLessThanOrEqual(c.result.target)
 })

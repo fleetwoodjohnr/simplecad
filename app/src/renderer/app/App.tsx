@@ -32,7 +32,7 @@ import { ShapePanel } from './ShapePanel'
 import { SketchEditor } from './SketchEditor'
 import { profileOperations, SketchSolidPanel } from './SketchSolidPanel'
 import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
-import { MeasurePanel } from './MeasurePanel'
+import { MeasurePanel, type MeasureKind } from './MeasurePanel'
 import { MatchingPartPanel } from './MatchingPartPanel'
 import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
@@ -126,6 +126,15 @@ function StackOptions({ settings, onChange }: { settings: StackSettings; onChang
   </>
 }
 
+/** Two measured points: how far apart, and along each axis, as 0.2.0's point-to-point Measure reported. */
+function pointReadings(points: Vec3[]): Measurement[] {
+  if (points.length < 2) return []
+  const [a, b] = points
+  const d = [0, 1, 2].map((i) => Math.abs(b[i] - a[i]))
+  return [{ label: 'Distance', values: [Math.hypot(...d)], unit: 'mm' },
+    ...d.map((value, i) => ({ label: `Δ${'XYZ'[i]}`, values: [value], unit: 'mm' }))]
+}
+
 export function App() {
   const { preferences, apply: applyPreferences, loaded: preferencesLoaded } = usePreferences()
   const unit = preferences.displayUnit
@@ -138,7 +147,9 @@ export function App() {
   const [selected, setSelected] = useState<number>()
   const [holePosition, setHolePosition] = useState<Vec3>()
   const [stack, setStack] = useState(false)
-  const [measureKind, setMeasureKind] = useState<MeasurePick['kind']>()
+  const [measureKind, setMeasureKind] = useState<MeasureKind>()
+  /** 0.2.0's point-to-point Measure: the snapped points clicked (a third click starts again). */
+  const [measurePoints, setMeasurePoints] = useState<Vec3[]>([])
   const [measurePicks, setMeasurePicks] = useState<MeasurePick[]>([])
   const [measurements, setMeasurements] = useState<Measurement[]>([])
   const [measuring, setMeasuring] = useState(false)
@@ -252,6 +263,7 @@ export function App() {
   }
   const closeMeasure = () => {
     setMeasureKind(undefined)
+    setMeasurePoints([])
     setMeasurePicks([])
     setMeasurements([])
     setMeasuring(false)
@@ -917,11 +929,51 @@ export function App() {
       enabled: ready, highlight: true,
       // As 0.2.0, a drag in place snaps unless Shift is held: 0.25 mm and 15° unless Settings chooses steps.
       snap: preferences.snap ? preferences.moveStep : 0.25, angleSnap: preferences.snap ? preferences.rotationSnap : 15,
-      formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+      formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`, magnets: model.bodies.map((body) => body.name),
       onCommit: (transform) => mutate(() => chosenBodies.length > 1 && transform.kind === 'move'
         ? moveBodies(revision, chosenBodies, transform.values.map(Number) as Vec3)
         : applyTransform(revision, { body: chosenBodies[0], transform }), false, chosenBodies)
     } : undefined
+  // Stack & Place by face edges (0.2.0's Align guides): the placed part drags on the target face with its arrows and
+  // the magnets, letting go sets the two gaps, and lines from the face's chosen edges to the part show them.
+  const placeNote = stack ? preview?.placement : undefined
+  const onFace = (u: number, v: number): Vec3 =>
+    [0, 1, 2].map((i) => placeNote!.center[i] + placeNote!.u[i] * u + placeNote!.v[i] * v + placeNote!.normal[i] * 0.05) as Vec3
+  /** The gap a side keeps when the part's mounting face's centre is at `at` (the engine's rule, the other way round). */
+  const sideGap = (side: string, at: number, face: [number, number], part: [number, number]) =>
+    side === 'left' || side === 'bottom' ? at + part[0] - face[0]
+      : side === 'right' || side === 'top' ? face[1] - at - part[1]
+      : at - ((face[0] + face[1]) / 2 - (part[0] + part[1]) / 2)
+  const stackGuides = placeNote ? (() => {
+    const { at: [cu, cv], face_u: fu, face_v: fv, part_u: pu, part_v: pv } = placeNote
+    const end = (side: string, face: [number, number], part: [number, number], at: number) =>
+      side === 'left' || side === 'bottom' ? [face[0], at + part[0]] : side === 'right' || side === 'top' ? [face[1], at + part[1]]
+        : [(face[0] + face[1]) / 2, at + (part[0] + part[1]) / 2]
+    const [u0, u1] = end(stackSettings.horizontal, fu, pu, cu)
+    const [v0, v1] = end(stackSettings.vertical, fv, pv, cv)
+    const name = (side: string) => side === 'center' ? 'Centre' : side[0].toUpperCase() + side.slice(1)
+    const mm = (value: number) => `${format.format(displayLength(value, unit))} ${unit}`
+    return {
+      lines: [[onFace(u0, cv), onFace(u1, cv)], [onFace(cu, v0), onFace(cu, v1)]],
+      labels: [
+        { at: onFace((u0 + u1) / 2, cv), text: `${name(stackSettings.horizontal)} ${mm(sideGap(stackSettings.horizontal, cu, fu, pu))}` },
+        { at: onFace(cu, (v0 + v1) / 2), text: `${name(stackSettings.vertical)} ${mm(sideGap(stackSettings.vertical, cv, fv, pv))}` }
+      ]
+    }
+  })() : undefined
+  const stackDrag: TransformView | undefined = placeNote && movingBody !== undefined && model ? {
+    kind: 'move', body: movingBody, bodies: [movingBody], enabled: ready, snap: 0.25, magnets: model.bodies.map((body) => body.name),
+    formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+    onCommit: ({ values }) => {
+      const delta = values.map(Number)
+      const along = (axis: Vec3) => axis[0] * delta[0] + axis[1] * delta[1] + axis[2] * delta[2]
+      const [cu, cv] = [placeNote.at[0] + along(placeNote.u), placeNote.at[1] + along(placeNote.v)]
+      const round = (value: number) => Math.round(value * 1e6) / 1e6
+      setStackSettings((settings) => ({ ...settings,
+        horizontalGap: round(sideGap(settings.horizontal, cu, placeNote.face_u, placeNote.part_u)),
+        verticalGap: round(sideGap(settings.vertical, cv, placeNote.face_v, placeNote.part_v)) }))
+    }
+  } : undefined
   const keepStep = (step: StepInfo) => {
     if (revision !== undefined) mutate(() => keepLastGood(revision, { keepStepId: step.id }))
   }
@@ -1086,7 +1138,9 @@ export function App() {
       setMatchingPart(true)
     } },
     measure: { enabled: canUseFaceTool, run: () => {
-      setMeasureKind('face')
+      // On a selected face, that face; with nothing selected, two points on the model (0.2.0's point-to-point).
+      setMeasureKind(selected === undefined ? 'point' : 'face')
+      setMeasurePoints([])
       setPreview(undefined)
       setDistance('')
       setError('')
@@ -1544,14 +1598,19 @@ export function App() {
 
   // An open tool's panel: beside what was clicked, in the view (the side panel keeps the Bodies list and History).
   const toolPanels = <>
-            {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
-              selections={measurePicks.map((pick) => ({
+            {measureKind && model && <MeasurePanel kind={measureKind} displayUnit={unit}
+              readings={measureKind === 'point' ? pointReadings(measurePoints) : measurements} loading={measureKind !== 'point' && measuring}
+              selections={measureKind === 'point' ? measurePoints.map((point, i) => ({
+                key: `point:${i}`, label: `Point ${i + 1} · ${point.map((v) => format.format(displayLength(v, unit))).join(', ')}`
+              })) : measurePicks.map((pick) => ({
                 key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
                   pick.kind === 'edge' ? `${model.bodies[edgeBody(pick.edge) ?? -1]?.name ?? 'Body'} · Edge ${pick.edge + 1}` :
                   pick.kind === 'vertex' ? `${model.bodies[pick.body]?.name ?? 'Body'} · Corner ${pick.point.map((v) => format.format(displayLength(v, unit))).join(', ')}` :
                   model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies, unit) : 'Face'
               }))}
-              onKind={setMeasureKind} onRemove={(key) => setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
+              onKind={(kind) => { setMeasureKind(kind); setMeasurePoints([]) }}
+              onRemove={(key) => key.startsWith('point:') ? setMeasurePoints((points) => points.filter((_, i) => `point:${i}` !== key))
+                : setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
               onClose={closeMeasure} />}
             {stack && model && (
               <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
@@ -1864,10 +1923,11 @@ export function App() {
             placingBody={stack ? movingBody : undefined}
             transform={transformKind && transformBody !== undefined && revision !== undefined ? {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
-              formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+              formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`, magnets: model?.bodies.map((body) => body.name),
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
-            } : arrangeDrag ?? partsDrag}
-            outline={arrange ? preview?.arrangement?.boundary : undefined}
+            } : arrangeDrag ?? stackDrag ?? partsDrag}
+            outline={arrange ? preview?.arrangement?.boundary : stackGuides?.lines}
+            labels={stackGuides?.labels}
             marked={arrange ? preview?.arrangement?.marked : undefined}
             canPull={canPullFace}
             onContextMenu={(face, x, y) => {
@@ -1920,6 +1980,8 @@ export function App() {
             plane={splitPlane && { centre: splitPlane.centre, normal: splitPlane.normal, size: splitPlane.size }}
             onOpenBody={idle && ready ? openPart : undefined}
             chosen={combining && transformBody !== undefined ? [transformBody] : chosenBodies}
+            measurePoints={measureKind === 'point' && ready ? { points: measurePoints, format: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+              onPick: (point) => setMeasurePoints((points) => points.length >= 2 ? [point] : [...points, point]) } : undefined}
             roles={combining ? { kept: transformBody, tools: (bodyTool.tools ?? []).filter((tool) => tool !== transformBody), operation: bodyTool.operation ?? 'join' } : undefined}
             onSelect={(face, point, adding) => {
               if (!ready || shapePanel || sketchTool) return

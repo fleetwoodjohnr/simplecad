@@ -1116,3 +1116,84 @@ test('Subtract shows the kept part and the cutters, Swap turns them round, and a
   await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Box3', 'Move2', 'Combine'])
   await expect(errors(page)).toHaveCount(0)
 })
+
+// 0.2.0's move magnets: dragged towards another part, the moving part's box catches on that part's edges, middle,
+// corners and centres within 10 pixels, and the reading says what met what; Shift drags freely.
+test('a dragged part catches flush on its neighbour and says so; with Shift it moves freely', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  await expect(steps).toHaveText(['Box'])
+  await addBox(page, '45')
+  await page.getByRole('button', { name: 'Fit view' }).click()
+  const [px, py] = await partAt(page, 1)
+  await page.mouse.click(px, py)
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await page.waitForTimeout(200)
+  const [hx, hy] = JSON.parse((await canvas.getAttribute('data-handles'))!).x as [number, number]
+  // Back along the X arrow, a few pixels at a time, until the part's near edge meets Box's far edge.
+  const [ux, uy] = [hx - (px - 20), hy - py].map((v, _, all) => v / Math.hypot(...all))
+  const drag = async (shift: boolean) => {
+    await page.mouse.move(hx, hy)
+    await page.mouse.down()
+    if (shift) await page.keyboard.down('Shift')
+    let caught = ''
+    for (let step = 1; step < 120 && !caught; step++) {
+      await page.mouse.move(hx - ux * step * 2, hy - uy * step * 2)
+      caught = (await canvas.getAttribute('data-snap')) ?? ''
+      if (shift && step > 60) break
+    }
+    return caught
+  }
+  const caught = await drag(false)
+  expect(caught).toBe('Box: near edge to far edge')
+  await expect(page.getByRole('status', { name: 'Transform reading' })).toHaveText('ΔX -5 mm · snapped to Box: near edge to far edge')
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Move2'])
+  await page.getByRole('button', { name: 'Edit Move2' }).click()
+  await expect(page.getByRole('form', { name: 'Move' }).getByLabel('Move X')).toHaveValue('-5')
+  await page.keyboard.press('Escape')
+
+  // Shift: no magnet catches.
+  await page.mouse.click(...await partAt(page, 1))
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await page.waitForTimeout(200)
+  expect(await drag(true)).toBe('')
+  await page.keyboard.press('Escape')
+  await page.keyboard.up('Shift')
+  await page.mouse.up()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// 0.2.0's point-to-point Measure: the pointer snaps to named points, and two clicks give the distance between them.
+test('Measure with nothing selected snaps two points and gives the distance between them', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const canvas = page.locator('canvas')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await command(page, 'Measure')
+  const panel = page.getByRole('region', { name: 'Measure' })
+  await expect(panel.getByLabel('Measure selection')).toHaveValue('point')
+  await expect(canvas).toHaveAttribute('data-edge-anchors', /\d/)
+  const anchors = (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as (number[] | null)[]).filter((a) => a !== null) as number[][]
+  const picked: number[][] = []
+  for (const anchor of anchors) {
+    // Nudged until a snap shows: moves made while command search's dialog closes land on the dialog.
+    let snap: string | null = ''
+    for (let nudge = 0; nudge < 30 && !snap; nudge++) {
+      await page.mouse.move(anchor[0] + (nudge % 2), anchor[1])
+      await page.waitForTimeout(50)
+      snap = await canvas.getAttribute('data-measure-snap')
+    }
+    const { kind, point } = JSON.parse(snap!) as { kind: string; point: number[] }
+    if (kind !== 'midpoint' || picked.some((p) => Math.hypot(...p.map((v, i) => v - point[i])) < 1e-6)) continue
+    await page.mouse.click(anchor[0], anchor[1])
+    picked.push(point)
+    if (picked.length === 2) break
+  }
+  expect(picked).toHaveLength(2)
+  const distance = Math.hypot(...picked[0].map((v, i) => v - picked[1][i]))
+  const readings = panel.getByRole('definition')
+  await expect(readings.first()).toHaveText(`${+distance.toFixed(3)} mm`)
+  await expect(page.getByTestId('measure-length')).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})

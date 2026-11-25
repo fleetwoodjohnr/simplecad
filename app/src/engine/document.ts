@@ -2,7 +2,7 @@ import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared
 import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { movedDisplay, relativePlacement } from './placement'
 import { combine, type PartDisplay } from '../shared/display'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type PlacementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -60,7 +60,7 @@ export interface Project {
   place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
     viewDirection?: number[]; viewUp?: number[]
-  }): { project: Project; shape: Shape }
+  }): { project: Project; shape: Shape; note?: string | null }
   transform(body: string, shape: Shape, request: Transform): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
@@ -217,7 +217,9 @@ export class EngineDocument {
     const state = this.prepare(step)
     const shape = this.show(state.bodies)
     if (!state.stepNote) return shape
-    const note = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'>
+    const parsed = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'> | { placement: PlacementNote }
+    if ('placement' in parsed) return { ...shape, placement: parsed.placement }
+    const note = parsed
     const problems = new Set(note.problems.map((problem) => problem.name))
     const marked = this.shown(state.bodies).flatMap(({ body }) => problems.has(state.bodies[body].name) ? [body] : [])
     return { ...shape, arrangement: { ...note, marked } }
@@ -775,7 +777,13 @@ export class EngineDocument {
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
     let next
-    if ('target' in step) next = this.place(project, bodies, shape, step)
+    let stepNote: string | undefined
+    if ('target' in step) {
+      const placed = this.place(project, bodies, shape, step)
+      next = placed
+      // Placed by face edges: the frame the window drags the preview by.
+      if (placed.note) stepNote = JSON.stringify({ placement: JSON.parse(placed.note) })
+    }
     else if ('transform' in step) {
       next = project.transform(bodies[body].name, shape, step.transform)
     } else if ('faceOperation' in step) {
@@ -791,7 +799,7 @@ export class EngineDocument {
         inputs: step.settings, position: hole?.position, target: target?.shape ? { name: target.name, shape: target.shape } : undefined })
     }
     else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)
-    return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project }
+    return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project, stepNote }
   }
 
   /** SimpleCAD 0.4's place_on_plate and center_on_plate, on its default printer's plate: one offset for everything shown, keeping its layout. */

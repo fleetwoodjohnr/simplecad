@@ -34,6 +34,17 @@ export interface DisplayShape extends MeshData {
   ranges: BodyRange[]
   /** A face pattern's preview: how it fits. */
   arrangement?: ArrangementNote
+  /** Stack & Place by face edges: what its drag and guides are drawn from. */
+  placement?: PlacementNote
+}
+
+/** The target face's frame (its centre, normal and in-face axes u and v) with its extent along each from the centre,
+ * the placed part's extent about its mounting face's centre, and where that centre went (u, v) and how far off the face. */
+export interface PlacementNote {
+  center: Vec3; normal: Vec3; u: Vec3; v: Vec3
+  face_u: [number, number]; face_v: [number, number]
+  part_u: [number, number]; part_v: [number, number]
+  at: [number, number]; offset: number
 }
 
 export interface BodyInfo {

@@ -478,6 +478,10 @@ fn anchor(value: Option<&Value>) -> Option<String> {
 pub struct Placement {
     pub transform: UniquePtr<Trsf>,
     pub description: String,
+    /// For a placement by face edges, what the window drags and draws its guides from: the target face's frame
+    /// (`center`, `normal`, `u`, `v` and its `face_u`/`face_v` extents from the centre), the turned part's extents
+    /// about its mounting face's centre (`part_u`, `part_v`) and where that centre went (`at`, in u and v).
+    pub note: Option<Value>,
 }
 
 /// `AlignFeature.execute`'s solve: where the step puts its body.
@@ -674,13 +678,14 @@ fn solve_faces(
         Some(b) => crate::rebuild::alias(b),
         None => String::new(),
     };
-    let done = |transform, description: String| {
+    let done = |transform, description: String, note: Option<Value>| {
         Ok((
             body.clone(),
             name.clone(),
             Placement {
                 transform,
                 description,
+                note,
             },
         ))
     };
@@ -713,7 +718,7 @@ fn solve_faces(
             m.radius * 2.0,
             t.radius * 2.0
         );
-        return done(then(&rotate, &shift), description);
+        return done(then(&rotate, &shift), description, None);
     }
     let (Some(moving), Some(target)) = (moving, target) else {
         return Err(failed(
@@ -752,7 +757,16 @@ fn solve_faces(
         let rotate = seating_rotation(moving, target.normal, flip, rotation, operation == "stack")?;
         let destination = frame.point(cu, cv, offset);
         let shift = translation(sub(destination, moving.center));
-        return done(then(&rotate, &shift), "Placed from face edges.".into());
+        let note = serde_json::json!({
+            "center": frame.center, "normal": frame.normal, "u": frame.x_axis, "v": frame.y_axis,
+            "face_u": [frame.x_bounds.0, frame.x_bounds.1], "face_v": [frame.y_bounds.0, frame.y_bounds.1],
+            "part_u": [moving_u.0, moving_u.1], "part_v": [moving_v.0, moving_v.1], "at": [cu, cv], "offset": offset,
+        });
+        return done(
+            then(&rotate, &shift),
+            "Placed from face edges.".into(),
+            Some(note),
+        );
     }
     if moving_anchor.is_some() || target_anchor.is_some() || u.is_some() || v.is_some() {
         let pick = |a: &Option<String>| match a.as_deref() {
@@ -770,7 +784,7 @@ fn solve_faces(
             operation != "center",
         )?;
         let description = format!("Placed {from} anchor on {to}{}.", offset_text(offset));
-        return done(transform, description);
+        return done(transform, description, None);
     }
     // Saved before anchors existed: edge distances in the face's own frame.
     let frame = planar_frame(&target_face)?;
@@ -782,7 +796,11 @@ fn solve_faces(
     if operation == "center" {
         let spin = seating_rotation(moving, target.normal, false, rotation, false)?;
         let shift = translation(sub(destination, moving.center));
-        return done(then(&spin, &shift), "Centred on the target face.".into());
+        return done(
+            then(&spin, &shift),
+            "Centred on the target face.".into(),
+            None,
+        );
     }
     let rotate = seating_rotation(moving, target.normal, flip, rotation, true)?;
     let shift = translation(sub(destination, moving.center));
@@ -792,7 +810,7 @@ fn solve_faces(
     } else {
         format!("Stacked face to face{gap}.")
     };
-    done(then(&rotate, &shift), description)
+    done(then(&rotate, &shift), description, None)
 }
 
 /// The current body and the face the user picked on it.
@@ -847,7 +865,7 @@ pub fn place(
     moving: PickedFace<'_>,
     target: PickedFace<'_>,
     mut inputs: Value,
-) -> Result<UniquePtr<occt::Shape>, String> {
+) -> Result<(UniquePtr<occt::Shape>, Option<Value>), String> {
     if moving.name == target.name {
         return Err("Pick a face on each of two different parts.".into());
     }
@@ -896,7 +914,7 @@ pub fn place(
         brep,
         &placement.description,
     )?;
-    Ok(placed)
+    Ok((placed, placement.note))
 }
 
 /// The step itself: the body placed, geometry copied (`occ.transformed`).
@@ -975,7 +993,7 @@ mod tests {
             "view_direction": [0.0, 0.0, -1.0], "view_up": [-1.0, 0.28, 0.0],
         });
         let mut fallback = model.clone();
-        let placed = stack(&mut model, settings);
+        let (placed, note) = stack(&mut model, settings);
         let recipe = &model.payload["features"][2]["inputs"];
         assert!((recipe["target_u"][1].as_f64().unwrap() - 1.0).abs() < 1e-9);
         assert!(recipe["target_u"][0].as_f64().unwrap().abs() < 1e-9);
@@ -994,8 +1012,21 @@ mod tests {
         assert!(recipe.get("view_up").is_none());
         let min_y = |shape| occt::bounds(shape).unwrap()[1];
         assert!((min_y(&placed) - min_y(&target)).abs() < 1e-6);
+        // The note the window drags by: flush left puts the part's low edge on the face's.
+        let note = note.unwrap();
+        let pair = |key: &str| {
+            [
+                note[key][0].as_f64().unwrap(),
+                note[key][1].as_f64().unwrap(),
+            ]
+        };
+        assert!(
+            (note["at"][0].as_f64().unwrap() - (pair("face_u")[0] - pair("part_u")[0])).abs()
+                < 1e-9
+        );
+        assert!((pair("face_u")[1] - pair("face_u")[0] - 30.0).abs() < 1e-6);
 
-        let placed = stack(
+        let (placed, _) = stack(
             &mut fallback,
             json!({ "operation": "stack", "placement_mode": "edge_gap", "horizontal": "left" }),
         );

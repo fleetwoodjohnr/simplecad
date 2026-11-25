@@ -320,6 +320,14 @@ pub struct Pulled {
     pub shape: Shape,
 }
 
+/// A part placed on another's face, and (placed by face edges) the note the window drags and draws guides by, as JSON.
+#[napi(object, object_from_js = false)]
+pub struct Placed {
+    pub project: Project,
+    pub shape: Shape,
+    pub note: Option<String>,
+}
+
 #[napi(object, object_from_js = false)]
 pub struct CreatedShape {
     pub project: Project,
@@ -653,7 +661,7 @@ impl Project {
         })
     }
     #[napi]
-    pub fn place(&self, moving: &Shape, target: &Shape, edit: StackRequest) -> Result<Pulled> {
+    pub fn place(&self, moving: &Shape, target: &Shape, edit: StackRequest) -> Result<Placed> {
         use scad::align::PickedFace;
         let mut model = self.model.clone();
         let mut inputs = serde_json::json!({
@@ -671,7 +679,7 @@ impl Project {
                 inputs["view_up"] = serde_json::json!(up);
             }
         }
-        let placed = scad::align::place(
+        let (placed, note) = scad::align::place(
             &mut model,
             PickedFace {
                 name: &edit.moving_name,
@@ -686,13 +694,14 @@ impl Project {
             inputs,
         )
         .map_err(Error::from_reason)?;
-        Ok(Pulled {
+        Ok(Placed {
             project: Project {
                 model,
                 original: self.original.clone(),
                 signatures: None,
             },
             shape: Shape::new(placed),
+            note: note.map(|note| note.to_string()),
         })
     }
 

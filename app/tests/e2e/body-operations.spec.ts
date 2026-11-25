@@ -791,3 +791,53 @@ test('deletes a body with the step that made it, from the Bodies list and with t
   await expect(status).toHaveText(/ 26000 mm³/)
   await expect(errors(page)).toHaveCount(0)
 })
+
+// 0.2.0's Align guides: the placed part drags on the target face with its arrows, catching flush on the face's part,
+// and lines from the face's edges to it show the two gaps; letting go sets them.
+test('Stack & Place shows its gaps on the face and drags the part, catching flush, into new gaps', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  const faces = page.getByLabel('Planar face')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('cylinder')
+  await shape.getByLabel('Radius').fill('5 mm')
+  await shape.getByLabel('Height').fill('10 mm')
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await faces.selectOption({ label: (await faces.locator('option', { hasText: /^Cylinder · Bottom/ }).innerText()).trim() })
+  await command(page, 'Stack & Place')
+  await page.getByLabel('Target face').selectOption({ label: (await page.getByLabel('Target face').locator('option', { hasText: /^Box · Top/ }).innerText()).trim() })
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
+  const labels = page.getByTestId('guide-labels').locator('span')
+  await expect(labels).toHaveText([/^Centre 0 mm$/, /^Centre 0 mm$/])
+
+  // Along the X arrow, a few pixels at a time, until the part catches on the box's edge.
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await page.waitForTimeout(300)
+  const [hx, hy] = (JSON.parse((await canvas.getAttribute('data-handles'))!) as Record<string, [number, number]>).x
+  // Out along the arrow: from the part (its top's published point) towards the arrow's.
+  const [ox, oy] = (JSON.parse((await canvas.getAttribute('data-body-anchors'))!) as Record<string, [number, number]>)[1]
+  const [ux, uy] = [hx - ox, hy - oy].map((v, _, all) => v / Math.hypot(...all))
+  await page.mouse.move(hx, hy)
+  await page.mouse.down()
+  let caught = ''
+  for (let step = 1; step < 150 && !caught.startsWith('Box:'); step++) {
+    await page.mouse.move(hx + ux * step * 2, hy + uy * step * 2)
+    caught = (await canvas.getAttribute('data-snap')) ?? ''
+  }
+  expect(caught).toMatch(/^Box: /)
+  await page.mouse.up()
+  // The arrow runs along the face's U or V; that side's gap is no longer 0.
+  await expect.poll(async () => (await labels.allTextContents()).some((text) => !/ 0 mm$/.test(text))).toBe(true)
+  const moved = (await labels.allTextContents()).find((text) => !/ 0 mm$/.test(text))!
+  const gap = Number(moved.match(/(-?[\d.]+) mm$/)![1])
+  expect(Math.abs(gap)).toBeGreaterThan(1)
+  const fields = [await page.getByLabel('Horizontal gap').inputValue(), await page.getByLabel('Vertical gap').inputValue()].map(Number)
+  expect(fields).toContain(gap)
+  await page.getByRole('button', { name: 'Place', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Align'])
+  await expect(errors(page)).toHaveCount(0)
+})

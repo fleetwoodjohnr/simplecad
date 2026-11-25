@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
 import type { DisplayShape, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { bodiesInRect, edgeGeometry, faceAtTriangle, facePrism, indexedGeometry, surfaceGeometry } from './geometry'
+import { nearestSnap, snapPoints, type SnapKind, type SnapPoint } from './snapping'
 import { viewportTransform, type TransformView } from './transform'
 
 /** A handle dragged on the model, shown at each of its points: along `axis` it reads millimetres along it;
@@ -49,6 +50,11 @@ interface Props {
   /** Combine's parts by what they do: the kept part (tinted as chosen) and the tools, drawn see-through in the
    * operation's colour over the model or its preview. Clicks pick the model under a preview while it is set. */
   roles?: { kept?: number; tools: number[]; operation: string }
+  /** 0.2.0's point-to-point Measure: the pointer snaps to corners, centres, midpoints and face centres; a click picks
+   * the snapped point. The points picked so far are drawn with the line between them and its length. */
+  measurePoints?: { points: Vec3[]; format: (mm: number) => string; onPick: (point: Vec3) => void }
+  /** Words at model points, kept in place as the view turns: Stack & Place's guide lengths ("Left 3 mm"). */
+  labels?: { at: Vec3; text: string }[]
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
@@ -226,6 +232,15 @@ export function Viewport(props: Props) {
     plane.visible = false
     scene.add(body, highlight, hover, edges, ghost, toolGhost, prism, chosen, edgeHover, outline, marked, parts, plane)
     // The selection box, drawn over the view while dragged from empty space.
+    // Measure's snap indicator, rubber band and length, drawn over the view in window pixels.
+    const measureLayer = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    measureLayer.setAttribute('class', 'pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible')
+    measureLayer.dataset.testid = 'measure-layer'
+    el.append(measureLayer)
+    /** The snap drawn under the pointer, and the window point it was found at. */
+    let measureSnap: { point: Vec3; kind: SnapKind; x: number; y: number } | undefined
+    const snapCache = new Map<number, SnapPoint[]>()
+    let snapShape: DisplayShape | undefined
     const area = document.createElement('div')
     area.className = 'pointer-events-none absolute z-10 hidden border border-accent bg-accent/10'
     area.dataset.testid = 'selection-box'
@@ -311,9 +326,94 @@ export function Viewport(props: Props) {
     })
     let watched: Element | null = null
     /** While edges can be picked or clicked, a window point on each of the first edges, for scripted picks. */
+    // The guide labels, as spans over the view.
+    const labelLayer = document.createElement('div')
+    labelLayer.className = 'pointer-events-none absolute inset-0 z-10'
+    labelLayer.dataset.testid = 'guide-labels'
+    el.append(labelLayer)
+    const placeLabels = () => {
+      const labels = current.current.labels ?? []
+      while (labelLayer.children.length > labels.length) labelLayer.lastElementChild!.remove()
+      while (labelLayer.children.length < labels.length) {
+        const span = document.createElement('span')
+        span.className = 'absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-elev/95 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-accent-ink shadow'
+        labelLayer.append(span)
+      }
+      labels.forEach(({ at, text }, i) => {
+        const span = labelLayer.children[i] as HTMLElement
+        const [x, y] = toView(at)
+        if (span.textContent !== text) span.textContent = text
+        span.style.left = `${x}px`
+        span.style.top = `${y - 4}px`
+      })
+    }
+    /** A model point in view pixels. */
+    const toView = (point: Vec3) => {
+      const at = new Vector3(...point).project(camera)
+      return [(at.x + 1) / 2 * bounds.width, (1 - at.y) / 2 * bounds.height] as [number, number]
+    }
+    /** The snap under window point (x, y): the named snaps of the part under it within 22 pixels, by 0.2.0's
+     * priorities, else the surface point itself. */
+    const snapAt = (x: number, y: number) => {
+      const shape = current.current.shape
+      const hit = faceAt(x, y)
+      // Off every face but on an edge (a silhouette): that edge's part.
+      const edge = hit || !shape ? undefined : edgeAt(x, y)
+      if (!shape || (!hit && !edge)) return
+      if (snapShape !== shape) {
+        snapShape = shape
+        snapCache.clear()
+      }
+      const body = hit ? shape.faces[hit.face].body : shape.ranges.find(({ edges }) => edge!.edge >= edges[0] && edge!.edge < edges[1])?.body
+      if (body === undefined) return
+      if (!snapCache.has(body)) snapCache.set(body, snapPoints(shape, body))
+      const pointer: [number, number] = [x - bounds.left, y - bounds.top]
+      const named = snapCache.get(body)!.map((snap) => ({ ...snap, at: toView(snap.point) }))
+      const own = hit ? { point: hit.point.toArray() as Vec3, kind: 'surface' as const, body, at: pointer }
+        : { point: edge!.point, kind: 'edge' as const, body, at: pointer }
+      return nearestSnap([...named, own], pointer)
+    }
+    const glyph = (kind: SnapKind, [x, y]: [number, number]) => ({
+      vertex: `<rect x="${x - 2.5}" y="${y - 2.5}" width="5" height="5" fill="none" stroke-width="1.6"/>`,
+      center: `<circle cx="${x}" cy="${y}" r="2.5" fill="none" stroke-width="1.6"/>`,
+      midpoint: `<path d="M${x} ${y - 3}L${x + 3} ${y}L${x} ${y + 3}L${x - 3} ${y}Z" fill="none" stroke-width="1.6"/>`,
+      edge: `<path d="M${x - 2.5} ${y}H${x + 2.5}" stroke-width="1.6"/>`,
+      face: `<circle cx="${x}" cy="${y}" r="1.3" stroke-width="2.6"/>`,
+      surface: `<circle cx="${x}" cy="${y}" r="1.3" stroke-width="2.6"/>`
+    })[kind]
+    /** The picked points, the hovered snap, the dashed line to it and the length at its middle (0.2.0's overlay). */
+    const drawMeasure = () => {
+      const measuring = current.current.measurePoints
+      if (!measuring) {
+        if (measureLayer.innerHTML) measureLayer.innerHTML = ''
+        return
+      }
+      const { points, format } = measuring
+      const end = points.length === 1 ? measureSnap?.point : points[1]
+      const parts: string[] = []
+      if (points[0] && end) {
+        const [a, b] = [toView(points[0]), toView(end)]
+        const length = format(Math.hypot(...[0, 1, 2].map((i) => end[i] - points[0][i])))
+        parts.push(`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${points.length === 2 ? 'var(--accent)' : 'var(--text-2)'}" stroke-width="1.6" ${points.length === 2 ? '' : 'stroke-dasharray="5 4"'}/>`)
+        const [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+        const width = 12 + length.length * 6.6
+        parts.push(`<g data-testid="measure-length"><rect x="${mx - width / 2}" y="${my - 10}" width="${width}" height="20" rx="8" fill="var(--elev)" stroke="var(--border)"/>` +
+          `<text x="${mx}" y="${my + 4}" text-anchor="middle" font-size="11.5" fill="var(--text)">${length}</text></g>`)
+      }
+      points.forEach((point, i) => {
+        const at = toView(point)
+        parts.push(`<g stroke="var(--accent)"><circle cx="${at[0]}" cy="${at[1]}" r="6.5" stroke-width="2" fill="${i === 0 ? 'var(--accent)' : 'none'}"/></g>`)
+      })
+      if (measureSnap && points.length < 2) {
+        const at = toView(measureSnap.point)
+        parts.push(`<g data-snap="${measureSnap.kind}" stroke="var(--accent)" fill="var(--accent)"><circle cx="${at[0]}" cy="${at[1]}" r="6.5" fill="none" stroke-width="2"/>${glyph(measureSnap.kind, at)}</g>`)
+      }
+      const html = parts.join('')
+      if (measureLayer.innerHTML !== html) measureLayer.innerHTML = html
+    }
     const publishEdges = () => {
       const shape = current.current.shape
-      if ((!current.current.onPickEdge && !current.current.onSelectEdge) || !shape || displayed !== shape) {
+      if ((!current.current.onPickEdge && !current.current.onSelectEdge && !current.current.measurePoints) || !shape || displayed !== shape) {
         delete canvas.dataset.edgeAnchors
         return
       }
@@ -365,6 +465,8 @@ export function Viewport(props: Props) {
         light.position.copy(camera.position)
         renderer.render(scene, camera)
         transform.publish()
+        drawMeasure()
+        placeLabels()
         publishEdges()
         publishBodies()
         // Where the camera is and what it turns about, for scripted checks of the mouse.
@@ -644,6 +746,13 @@ export function Viewport(props: Props) {
         current.current.onContextMenu(faceAt(e.clientX, e.clientY)?.face, e.clientX, e.clientY)
         return
       }
+      if (e.button === 0 && current.current.measurePoints && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
+        // As 0.2.0: the snap the indicator shows, if the pointer has moved 3 pixels or less since.
+        const shown = measureSnap && Math.hypot(e.clientX - measureSnap.x, e.clientY - measureSnap.y) <= 3 ? measureSnap : undefined
+        const snap = shown ?? snapAt(e.clientX, e.clientY)
+        if (snap) current.current.measurePoints.onPick(snap.point)
+        return
+      }
       if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
         const hit = edgeAt(e.clientX, e.clientY)
         if (hit) current.current.onPickEdge(hit.edge, hit.point)
@@ -681,6 +790,12 @@ export function Viewport(props: Props) {
         hoverFrame = 0
         if (!pointer) return
         const started = performance.now()
+        if (current.current.measurePoints) {
+          const snap = snapAt(pointer.x, pointer.y)
+          measureSnap = snap && { point: snap.point, kind: snap.kind, x: pointer.x, y: pointer.y }
+          canvas.dataset.measureSnap = snap ? JSON.stringify({ kind: snap.kind, point: snap.point.map((v) => Math.round(v * 1000) / 1000) }) : ''
+          draw()
+        }
         // The edge a click would take lights up instead of its face.
         const face = faceAt(pointer.x, pointer.y)
         const edge = edgeOver(pointer.x, pointer.y, face)
@@ -715,6 +830,8 @@ export function Viewport(props: Props) {
       canvas.removeEventListener('pointercancel', endBox)
       canvas.removeEventListener('dblclick', open)
       area.remove()
+      measureLayer.remove()
+      labelLayer.remove()
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
@@ -732,7 +849,7 @@ export function Viewport(props: Props) {
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, String(props.chosen), JSON.stringify(props.roles), props.plane, props.handles, props.toolOverlay])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, String(props.chosen), JSON.stringify(props.roles), JSON.stringify(props.measurePoints?.points ?? null), JSON.stringify(props.labels ?? null), props.plane, props.handles, props.toolOverlay])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {

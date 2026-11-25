@@ -5,6 +5,7 @@ import {
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { DisplayShape, Transform, Vec3 } from '@/shared/engine-protocol'
 import { edgeGeometry, indexedGeometry } from './geometry'
+import { axisTargets, bodyBox, moveCapture, snapAngle, snapAxis, snapPoints, type AxisTarget, type MoveLock, type SnapPoint } from './snapping'
 
 export interface TransformView {
   /** Arrows only (move) or rings only (rotate); unset shows both, and the handle dragged decides. */
@@ -22,6 +23,9 @@ export interface TransformView {
   pivot?: Vec3
   /** A length in the display unit, with the unit: the live label shows it. */
   formatLength?: (mm: number) => string
+  /** 0.2.0's magnets: a move lines the parts' box up with the other parts' edges, middles, corners and centres;
+   * the parts' names say what it met. Off for Arrange's pattern drag. */
+  magnets?: string[]
   onCommit: (transform: Transform) => void
 }
 
@@ -94,6 +98,20 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   let shift = false
   let fine = false
   const degrees = 180 / Math.PI
+  /** This drag's magnets (made when it starts), what each axis is held to, and what the turn is held at. */
+  let magnets: { from: [number, number, number][]; targets: AxisTarget[][] } | undefined
+  let locks: (MoveLock | undefined)[] = []
+  let snapText = ''
+  let ringLock: number | undefined
+  let ringSnapped = false
+  // The part a move snapped to, lit as a hover lights a face.
+  const met = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: 0xe8a33a, transparent: true, opacity: 0.35, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }))
+  met.visible = false
+  met.renderOrder = 2
+  scene.add(met)
+  let metBody: number | undefined
+  /** The whole model's mesh, which the snapped-to part's tint is drawn from. */
+  let modelGeometry: BufferGeometry | undefined
 
   const length = (mm: number) => config?.formatLength?.(mm) ?? `${+mm.toFixed(2)} mm`
   /** The axis the handle drags along or turns about, if it is a single one. */
@@ -109,10 +127,12 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (kind === 'move') {
       const parts = [0, 1, 2].filter((i) => Math.abs(delta.getComponent(i)) > 1e-9)
       text = parts.length ? parts.map((i) => `Δ${AXES[i]} ${length(delta.getComponent(i))}`).join('  ') : 'Δ 0'
+      if (snapText) text += ` · snapped to ${snapText}`
     } else {
       const angle = Math.atan2(axisVector.set(rotation.x, rotation.y, rotation.z).length(), rotation.w) * 2 * degrees
-      text = `${+angle.toFixed(2)}°`
+      text = ringSnapped ? `${Math.round(angle)}° · snapped` : `${+angle.toFixed(2)}°`
     }
+    if (canvas.dataset.snap !== snapText) canvas.dataset.snap = snapText
     // Moved by a transform, and only rewritten when it changes: moving it by left/top laid out the whole window
     // on every frame of a Move drag, which cost frames on large projects.
     const reading = typed ? `${typed}${kind === 'move' ? '' : '°'} ⏎` : text
@@ -153,16 +173,63 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     }
     const defaultStep = kind === 'move' ? 1 : 15
     const snap = kind === 'rotate' && !config.kind ? config.angleSnap ?? 0 : config.snap
-    const step = (shift ? (snap ? 0 : defaultStep) : snap) * (fine ? 0.1 : 1)
-    if (step && kind === 'move') {
-      for (let i = 0; i < 3; i++) delta.setComponent(i, Math.round(delta.getComponent(i) / step) * step)
-    } else if (step && kind === 'rotate') {
+    const base = shift ? (snap ? 0 : defaultStep) : snap
+    const step = base * (fine ? 0.1 : 1)
+    if (kind === 'move') {
+      // 0.2.0's magnets first (not with Shift, free, or Ctrl, fine), each dragged axis on its own; the step otherwise.
+      snapText = ''
+      let snappedTo: number | undefined
+      for (let i = 0; i < 3; i++) {
+        const raw = delta.getComponent(i)
+        const hit = magnets && !shift && !fine && Math.abs(raw) > 1e-9
+          ? snapAxis(raw, magnets.from[i], magnets.targets[i], moveCapture(mmPerPixel()), locks[i]) : undefined
+        locks[i] = hit?.lock
+        if (hit) {
+          delta.setComponent(i, hit.value)
+          snapText = hit.label
+          snappedTo = hit.lock.body
+        } else if (step) delta.setComponent(i, Math.round(raw / step) * step)
+      }
+      showMet(snappedTo)
+    } else if (base) {
+      // 0.2.0's ring detents: held near each step, free between; Ctrl takes whole degrees.
       const axis = axisVector.set(rotation.x, rotation.y, rotation.z)
-      const angle = Math.atan2(axis.length(), rotation.w) * 2
-      const snapped = Math.round(angle * degrees / step) * step / degrees
-      rotation.setFromAxisAngle(axis.normalize(), snapped)
+      const angle = Math.atan2(axis.length(), rotation.w) * 2 * degrees
+      const held = snapAngle(angle, base, ringLock, false, fine)
+      ringLock = held.locked
+      ringSnapped = held.snapped
+      rotation.setFromAxisAngle(axis.normalize(), held.angle / degrees)
     }
     place()
+  }
+  /** Millimetres per window pixel at the pivot's depth: 0.2.0's magnets catch within 10 pixels. */
+  function mmPerPixel() {
+    const { height } = measure()
+    return 2 * camera.position.distanceTo(pivot) * Math.tan((camera.fov * Math.PI) / 360) / Math.max(1, height)
+  }
+  /** Light part `body` (what a move snapped to), or none. */
+  function showMet(body?: number) {
+    if (body === metBody) return
+    metBody = body
+    met.geometry.dispose()
+    const range = body === undefined ? undefined : drawn?.ranges.find((entry) => entry.body === body)
+    met.geometry = range && modelGeometry && drawn ? indexedGeometry(modelGeometry, drawn.indices.subarray(...range.indices)) : new BufferGeometry()
+    met.visible = !!range
+  }
+  /** The magnets for a drag of the parts on `picked`: their box against every other part's, and the named snaps of
+   * the eight nearest (0.2.0's limit). */
+  function makeMagnets(shape: DisplayShape, picked: number[], names: string[]) {
+    const box = mesh.geometry.boundingBox
+    if (!box) return
+    const from = [0, 1, 2].map((i) => [box.min.getComponent(i), (box.min.getComponent(i) + box.max.getComponent(i)) / 2, box.max.getComponent(i)]) as [number, number, number][]
+    const others = shape.ranges.filter(({ body }) => !picked.includes(body)).flatMap(({ body }) => {
+      const other = bodyBox(shape, body)
+      return other ? [{ body, name: names[body] ?? `Part ${body + 1}`, box: other, points: [] as SnapPoint[] }] : []
+    })
+    const gap = (other: { box: { low: Vec3; high: Vec3 } }) => [0, 1, 2].reduce((sum, i) =>
+      sum + Math.max(0, other.box.low[i] - box.max.getComponent(i), box.min.getComponent(i) - other.box.high[i]) ** 2, 0)
+    for (const other of [...others].sort((a, b) => gap(a) - gap(b)).slice(0, 8)) other.points = snapPoints(shape, other.body)
+    magnets = { from, targets: axisTargets(others) }
   }
   function place() {
     moving.quaternion.copy(rotation)
@@ -194,6 +261,8 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (!active) return
     canvas.dataset.drag = `cancelled: ${typeof why === 'string' ? why : why?.type ?? ''}`
     active = false
+    snapText = ''
+    showMet(undefined)
     dragging(false)
     showLabel()
     for (const each of [arrows, rings]) {
@@ -298,6 +367,13 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   const start = (which: Transform['kind']) => {
     kind = which
     claimed = active = true
+    locks = []
+    ringLock = undefined
+    ringSnapped = false
+    snapText = ''
+    magnets = undefined
+    const names = config?.magnets
+    if (which === 'move' && names && drawn) makeMagnets(drawn, config?.bodies ?? [config!.body], names)
     canvas.dataset.drag = 'dragging'
     lock = undefined
     delta.set(0, 0, 0)
@@ -311,6 +387,8 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (!active || !config) return
     canvas.dataset.drag = 'done'
     active = false
+    snapText = ''
+    showMet(undefined)
     dragging(false)
     showLabel()
     orbit(true)
@@ -343,14 +421,17 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     part.geometry.dispose()
     part.geometry = geometry
   }
-  const set = (shape: DisplayShape | undefined, model: BufferGeometry, next: TransformView | undefined,
+  const set = (shape: DisplayShape | undefined, geometry: BufferGeometry, next: TransformView | undefined,
     showEdges: boolean) => {
+    const model = geometry
     // A newer result arriving mid-drag (a live preview landing) waits for the drag to end instead of cancelling it.
     if (active && shape && drawn !== shape && next?.enabled) {
       later = [shape, model, next, showEdges]
       return true
     }
     later = undefined
+    // Kept with the shape it belongs to: a result waiting for the drag to end doesn't replace it.
+    modelGeometry = model
     if (drawn !== shape || config?.body !== next?.body || String(config?.bodies) !== String(next?.bodies) ||
       config?.kind !== next?.kind || config?.pivot !== next?.pivot) {
       cancel('the view changed')
@@ -459,7 +540,8 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     canvas.removeEventListener('lostpointercapture', cancel)
     window.removeEventListener('keydown', key, true)
     window.removeEventListener('keyup', key, true)
-    for (const part of [mesh, edges, rest, restEdges]) part.geometry.dispose()
+    for (const part of [mesh, edges, rest, restEdges, met]) part.geometry.dispose()
+    met.material.dispose()
     tinted.dispose()
     chosen.dispose()
     ghost.material.dispose()
