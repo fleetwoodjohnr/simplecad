@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { StepInfo } from '@/shared/engine-protocol'
 import type { SketchSolidEdit } from '@/shared/sketch'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More, firstField } from '../ui'
 
 export const profileOperations = {
   extrude: 'Extrude', revolve: 'Revolve', sweep: 'Sweep', loft: 'Loft', path_pattern: 'Pattern Along Path'
@@ -35,6 +35,7 @@ export function SketchSolidPanel({ kind, sketches, bodies, busy, onChange, onPre
     (kind === 'path_pattern' ? bodies.includes(body) && !!amount.trim()
       : (kind !== 'extrude' && kind !== 'revolve') || !!amount.trim())
 
+  useLivePreview(valid ? JSON.stringify(edit()) : '', valid && !busy, () => onPreview(edit()))
   function edit(): SketchSolidEdit {
     const inputs = kind === 'extrude' ? { distance: amount, symmetric } :
       kind === 'revolve' ? { angle: amount, axis_direction: {
@@ -70,7 +71,7 @@ export function SketchSolidPanel({ kind, sketches, bodies, busy, onChange, onPre
       className="justify-self-start" onClick={() => { setProfiles([...profiles, '']); onChange() }}>Add section</Btn>}
     {(kind === 'extrude' || kind === 'revolve') && <label className="grid gap-1">
       {kind === 'extrude' ? 'Distance' : 'Angle'}
-      <input className={inputCls} disabled={busy} value={amount} onChange={(event) => { setAmount(event.target.value); onChange() }} />
+      <input className={inputCls} disabled={busy} value={amount} {...firstField} onChange={(event) => { setAmount(event.target.value); onChange() }} />
     </label>}
     {kind === 'path_pattern' && <>
       <label className="grid gap-1">Body
@@ -85,6 +86,7 @@ export function SketchSolidPanel({ kind, sketches, bodies, busy, onChange, onPre
           onChange={(event) => { setAmount(event.target.value); onChange() }} />
       </label>
     </>}
+    {kind !== 'path_pattern' && <More>
     {kind === 'revolve' && <label className="grid gap-1">Axis
       <select aria-label="Axis" className={inputCls} disabled={busy} value={axis} onChange={(event) => { setAxis(event.target.value as typeof axis); onChange() }}>
         <option value="profile">Sketch X</option>
@@ -105,8 +107,8 @@ export function SketchSolidPanel({ kind, sketches, bodies, busy, onChange, onPre
         <input type="checkbox" disabled={busy} checked={keepOrientation} onChange={(event) => { setOrientation(event.target.checked); onChange() }} /> Keep orientation
       </label>
     </>}
+    </More>}
     <div className="flex flex-wrap gap-1.5">
-      <Btn type="button" size="sm" disabled={busy || !valid} onClick={() => onPreview(edit())}>Preview</Btn>
       <Btn type="submit" size="sm" variant="primary" disabled={busy || !valid}>Apply</Btn>
       <Btn type="button" size="sm" disabled={busy} onClick={onClose}>Cancel</Btn>
     </div>

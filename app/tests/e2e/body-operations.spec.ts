@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { edgePoints, errors, expect, launch, scratchDir, test } from './helpers'
+import { edgePoints, errors, expect, launch, scratchDir, test, command, searchCommand, more } from './helpers'
 
 test('patterns a body, edits the count from History in one step, and keeps it through restart and reopen', async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-pattern-'))
@@ -13,13 +13,12 @@ test('patterns a body, edits the count from History in one step, and keeps it th
     const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
     await expect(status).toHaveText(/24000 mm³/)
 
-    await toolbar.getByRole('button', { name: 'Pattern' }).click()
-    await page.getByRole('menuitem', { name: 'Rectangular Pattern' }).click()
+    await command(page, 'Rectangular Pattern')
     const form = page.getByRole('form', { name: 'Rectangular Pattern' })
     await expect(form.getByLabel('Body')).toHaveValue('0')
     await form.getByLabel('Count along X').fill('3')
     await form.getByLabel('Spacing X').fill('5 cm')
-    await form.getByRole('button', { name: 'Preview' }).click()
+    await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
     await expect(errors(page)).toHaveCount(0)
     await expect(steps).toHaveText(['Box'])
     await form.getByRole('button', { name: 'Apply' }).click()
@@ -67,14 +66,15 @@ test('mirrors and scales a body as single undoable steps', async () => {
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   await expect(status).toHaveText(/24000 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Mirror', exact: true }).click()
+  await command(page, 'Mirror')
   const mirror = page.getByRole('form', { name: 'Mirror' })
+  await more(mirror)
   await expect(mirror.getByLabel('Keep the original')).toBeChecked()
   await mirror.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Mirror'])
   await expect(status).toHaveText(/48000 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Scale', exact: true }).click()
+  await command(page, 'Scale')
   const scale = page.getByRole('form', { name: 'Scale' })
   await scale.getByLabel('Factor').fill('1 / 2')
   await scale.getByRole('button', { name: 'Apply' }).click()
@@ -91,7 +91,8 @@ test('combines a cut that consumes its tool, then keeps the tool from History as
   const bodies = page.getByRole('list', { name: 'Bodies' })
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   await expect(status).toHaveText(/24000 mm³/)
-  await expect(toolbar.getByRole('button', { name: 'Combine', exact: true })).toBeDisabled()
+  await expect(await searchCommand(page, 'Combine')).toBeDisabled()
+  await page.keyboard.press('Escape')
   await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
   const shape = page.getByRole('form', { name: 'Create shape' })
   await shape.getByLabel('Shape type').selectOption('cylinder')
@@ -100,11 +101,13 @@ test('combines a cut that consumes its tool, then keeps the tool from History as
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(status).toHaveText(/24942.48 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Combine', exact: true }).click()
+  await command(page, 'Combine')
   const combine = page.getByRole('form', { name: 'Combine' })
   await combine.getByLabel('Body').selectOption({ label: 'Box' })
-  await combine.getByRole('radio', { name: 'Cut' }).click()
+  await combine.getByRole('radio', { name: 'Subtract' }).click()
+  await more(combine)
   await combine.getByRole('checkbox', { name: 'Cylinder' }).check()
+  await expect(combine.getByRole('status', { name: 'What is combined' })).toHaveText('Removing Cylinder from Box. The result keeps the name Box.')
   await combine.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Combine'])
   await expect(bodies).not.toContainText('Cylinder')
@@ -113,6 +116,7 @@ test('combines a cut that consumes its tool, then keeps the tool from History as
 
   await page.getByRole('button', { name: 'Edit Combine' }).click()
   const saved = page.getByRole('form', { name: 'Combine' })
+  await more(saved)
   await saved.getByLabel('Keep the tool bodies').check()
   await saved.getByRole('button', { name: 'Apply' }).click()
   await expect(bodies).toContainText('Cylinder')
@@ -129,7 +133,7 @@ test('shells a body through the selected face and edits its wall from History in
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   await expect(status).toHaveText(/24000 mm³/)
   await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
-  await toolbar.getByRole('button', { name: 'Shell', exact: true }).click()
+  await command(page, 'Shell')
   const shell = page.getByRole('form', { name: 'Shell' })
   await shell.getByLabel('Wall thickness').fill('1 mm')
   await shell.getByRole('button', { name: 'Apply' }).click()
@@ -155,7 +159,7 @@ test('fillets every edge of a body, then chamfers one clicked edge and edits it 
   const volume = async () => Number((await status.innerText()).match(/([\d.]+) mm³/)![1])
   await expect(status).toHaveText(/24000 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Fillet', exact: true }).click()
+  await command(page, 'Fillet')
   const fillet = page.getByRole('form', { name: 'Fillet' })
   await fillet.getByRole('button', { name: 'All edges' }).click()
   await expect(fillet.getByRole('status', { name: 'Picked edges' })).toHaveText('12 edges of Box')
@@ -168,7 +172,7 @@ test('fillets every edge of a body, then chamfers one clicked edge and edits it 
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(/24000 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Chamfer', exact: true }).click()
+  await command(page, 'Chamfer')
   const canvas = page.locator('canvas')
   const [[x, y]] = await edgePoints(page)
   await page.mouse.click(x, y)
@@ -197,7 +201,7 @@ test('splits a body into two named halves, edits the cut from History, and saves
     const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
     const status = page.getByTestId('engine-status')
     await expect(status).toHaveText(/24000 mm³/)
-    await toolbar.getByRole('button', { name: 'Split', exact: true }).click()
+    await command(page, 'Split')
     const split = page.getByRole('form', { name: 'Split' })
     await split.getByRole('radio', { name: 'XY' }).click()
     await split.getByLabel('Offset from the centre').fill('5 mm')
@@ -245,12 +249,12 @@ test('arranges the shown bodies in a row with a fixed gap, and edits the gap fro
   }
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2'])
 
-  await toolbar.getByRole('button', { name: 'Arrange', exact: true }).click()
+  await command(page, 'Arrange')
   const arrange = page.getByRole('form', { name: 'Arrange' })
   await expect(arrange.getByRole('status', { name: 'Arranged bodies' })).toHaveText('Box, Cylinder, Cylinder2')
   await arrange.getByRole('radio', { name: 'Fixed gap' }).click()
   await arrange.getByLabel('Gap').fill('5 mm')
-  await arrange.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   await expect(errors(page)).toHaveCount(0)
   await arrange.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Cylinder2', 'Arrange'])
@@ -283,7 +287,7 @@ test('sets a cylinder into the top of the box with Section Replace, and edits it
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(bodies).toContainText('Cylinder')
 
-  await toolbar.getByRole('button', { name: 'Section Replace', exact: true }).click()
+  await command(page, 'Section Replace')
   const form = page.getByRole('form', { name: 'Section Replace' })
   const faces = page.getByLabel('Planar face')
   await faces.selectOption({ label: (await faces.locator('option', { hasText: /^Cylinder · Bottom/ }).innerText()).trim() })
@@ -354,7 +358,7 @@ test('edits a saved Move from History, as one undoable step', async () => {
     await panel.getByRole('button', { name: 'Close' }).click()
     return value
   }
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('X (mm)').fill('1 cm')
   await move.getByRole('button', { name: 'Apply' }).click()
@@ -393,6 +397,7 @@ test('vents the top of the box from the selection bar, and makes a vent plate fr
   const shape = page.getByRole('form', { name: 'Create shape' })
   await shape.getByLabel('Shape type').selectOption('vent_plate')
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled({ timeout: 60_000 })
   await expect(steps).toHaveText(['Box', 'Vent', 'Vent2'])
   await expect(page.getByRole('list', { name: 'Bodies', exact: true })).toContainText('Vent')
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
@@ -425,7 +430,7 @@ test('edits a saved Pull and a saved placement from History', async () => {
   await shape.getByLabel('Height').fill('10 mm')
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
   await faces.selectOption({ label: (await faces.locator('option', { hasText: /^Cylinder · Bottom/ }).innerText()).trim() })
-  await toolbar.getByRole('button', { name: 'Stack & Place', exact: true }).click()
+  await command(page, 'Stack & Place')
   await page.getByLabel('Target face').selectOption({ label: (await page.getByLabel('Target face').locator('option', { hasText: /^Box · Top/ }).innerText()).trim() })
   const place = page.getByRole('button', { name: 'Place', exact: true })
   await expect(place).toBeEnabled()
@@ -453,15 +458,14 @@ test('hinges a lid to the box along its top back edge, and edits the knuckles fr
   await shape.getByLabel('Height').fill('4')
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(steps).toHaveText(['Box', 'Box2'])
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('Body').selectOption({ label: 'Box2' })
   await move.getByLabel('Z (mm)').fill('22')
   await move.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Move'])
 
-  await toolbar.getByRole('button', { name: 'Joints' }).click()
-  await page.getByRole('menuitem', { name: 'Hinge' }).click()
+  await command(page, 'Hinge')
   const hinge = page.getByRole('form', { name: 'Hinge' })
   await edgePoints(page)
   const anchors: (number[] | null)[] = JSON.parse((await page.locator('canvas').getAttribute('data-edge-anchors'))!)
@@ -475,6 +479,7 @@ test('hinges a lid to the box along its top back edge, and edits the knuckles fr
 
   await page.getByRole('button', { name: 'Edit Hinge' }).click()
   const saved = page.getByRole('form', { name: 'Hinge' })
+  await more(saved)
   await expect(saved.getByLabel('Knuckles', { exact: true })).toHaveValue('5')
   await expect(saved.getByRole('combobox', { name: /^Clearance/ })).toHaveValue('sliding')
   await saved.getByLabel('Knuckles', { exact: true }).fill('3')
@@ -498,20 +503,20 @@ test('joins two boxes with printed connectors, and edits the clearance from Hist
   await shape.getByLabel('Shape type').selectOption('box')
   for (const [label, value] of [['Width', '40'], ['Depth', '30'], ['Height', '20']]) await shape.getByLabel(label).fill(value)
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('Body').selectOption({ label: 'Box2' })
   await move.getByLabel('X (mm)').fill('40')
   await move.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Move'])
 
-  await toolbar.getByRole('button', { name: 'Joints' }).click()
-  await page.getByRole('menuitem', { name: 'Clip Joint' }).click()
+  await command(page, 'Clip Joint')
   const clip = page.getByRole('form', { name: 'Clip Joint' })
   await page.getByLabel('Planar face').selectOption({ label: 'Box · Right · 600 mm²' })
   await page.getByLabel('Planar face').selectOption({ label: 'Box2 · Left · 600 mm²' })
   await expect(clip.getByRole('status', { name: 'Joined faces' })).toHaveText('Box · Right · 600 mm² meets Box2 · Left · 600 mm²')
   await clip.getByLabel('Style').selectOption({ label: 'Printed connector' })
+  await more(clip)
   await clip.getByLabel(/^Number of joints/).fill('1')
   await clip.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
@@ -536,14 +541,14 @@ test('drafts the side walls of a box, edits the angle from History in one step, 
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/24000 mm³/)
-  await toolbar.getByRole('button', { name: 'Draft', exact: true }).click()
+  await command(page, 'Draft')
   const draft = page.getByRole('form', { name: 'Draft' })
   for (const side of ['Front · 800 mm²', 'Back · 800 mm²', 'Left · 600 mm²', 'Right · 600 mm²']) {
     await page.getByLabel('Planar face').selectOption({ label: side })
   }
   await expect(draft.getByRole('status', { name: 'Drafted faces' })).toHaveText('Front · 800 mm², Back · 800 mm², Left · 600 mm², Right · 600 mm²')
   await expect(draft.getByLabel('Draft angle (°)')).toHaveValue('3')
-  await draft.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   await expect(errors(page)).toHaveCount(0)
   await draft.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Draft'])
@@ -586,25 +591,25 @@ test('joins two boxes with a dovetail rail, previews it slid out, edits the rail
   await shape.getByLabel('Shape type').selectOption('box')
   for (const [label, value] of [['Width', '40'], ['Depth', '30'], ['Height', '20']]) await shape.getByLabel(label).fill(value)
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('Body').selectOption({ label: 'Box2' })
   await move.getByLabel('X (mm)').fill('40')
   await move.getByRole('button', { name: 'Apply' }).click()
   await expect(status).toHaveText(/ 48000 mm³/)
 
-  await toolbar.getByRole('button', { name: 'Joints' }).click()
-  await page.getByRole('menuitem', { name: 'Clip Joint' }).click()
+  await command(page, 'Clip Joint')
   const clip = page.getByRole('form', { name: 'Clip Joint' })
   await page.getByLabel('Planar face').selectOption({ label: 'Box · Right · 600 mm²' })
   await page.getByLabel('Planar face').selectOption({ label: 'Box2 · Left · 600 mm²' })
   await clip.getByLabel('Style').selectOption({ label: 'Dovetail rail' })
   // Rails need room to slide, so the fit follows; the push-together settings go.
+  await more(clip)
   await expect(clip.getByLabel('Fit')).toHaveValue('sliding')
   await expect(clip.getByLabel('Size')).toHaveCount(0)
   await clip.getByLabel('Rails', { exact: true }).fill('1')
   await clip.getByLabel('Preview the first part slid out').check()
-  await clip.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
   await expect(errors(page)).toHaveCount(0)
   await clip.getByRole('button', { name: 'Apply' }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
@@ -650,7 +655,7 @@ test('joins two boxes with snap tabs and with a keyed tab & slot, edits one from
   await shape.getByLabel('Shape type').selectOption('box')
   for (const [label, value] of [['Width', '40'], ['Depth', '30'], ['Height', '20']]) await shape.getByLabel(label).fill(value)
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('Body').selectOption({ label: 'Box2' })
   await move.getByLabel('X (mm)').fill('40')
@@ -658,12 +663,12 @@ test('joins two boxes with snap tabs and with a keyed tab & slot, edits one from
   await expect(steps).toHaveText(['Box', 'Box2', 'Move'])
   await expect(status).toHaveText(/ 48000 mm³/)
   const join = async (style: string, tabs?: string) => {
-    await toolbar.getByRole('button', { name: 'Joints' }).click()
-    await page.getByRole('menuitem', { name: 'Clip Joint' }).click()
+    await command(page, 'Clip Joint')
     const clip = page.getByRole('form', { name: 'Clip Joint' })
     await page.getByLabel('Planar face').selectOption({ label: 'Box · Right · 600 mm²' })
     await page.getByLabel('Planar face').selectOption({ label: 'Box2 · Left · 600 mm²' })
     await clip.getByLabel('Style').selectOption({ label: style })
+    await more(clip)
     if (tabs) await clip.getByLabel('Tabs on').selectOption({ label: tabs })
     await clip.getByRole('button', { name: 'Apply' }).click()
     await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Clip Joint'])
@@ -723,13 +728,13 @@ test('threads a shaft into the bore of a tube as a matched pair, and edits the c
   await create('tube', [['Outer radius', '10'], ['Inner radius', '5'], ['Height', '10']])
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Tube'])
 
-  await toolbar.getByRole('button', { name: 'Joints' }).click()
-  await page.getByRole('menuitem', { name: 'Threaded Connection' }).click()
+  await command(page, 'Threaded Connection')
   const pair = page.getByRole('form', { name: 'Threaded Connection' })
   await page.getByLabel('Planar face').selectOption({ label: 'Cylinder · Curved · 376.99 mm²' })
   await page.getByLabel('Planar face').selectOption({ label: 'Tube · Curved · 314.16 mm²' })
   await expect(pair.getByRole('status', { name: 'Threaded faces' })).toContainText('both threads are made together')
   await pair.getByRole('button', { name: 'Apply' }).click()
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled({ timeout: 60_000 })
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Tube', 'Threaded Connection'])
   await expect(errors(page)).toHaveCount(0)
 
@@ -786,5 +791,74 @@ test('deletes a body with the step that made it, from the Bodies list and with t
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(steps).toHaveText(['Box', 'Box2', 'Box3'])
   await expect(status).toHaveText(/ 26000 mm³/)
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// 0.2.0's Align guides: the placed part drags on the target face with its arrows, catching flush on the face's part,
+// and lines from the face's edges to it show the two gaps; letting go sets them.
+test('Stack & Place shows its gaps on the face and drags the part, catching flush, into new gaps', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  const faces = page.getByLabel('Planar face')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('cylinder')
+  await shape.getByLabel('Radius').fill('5 mm')
+  await shape.getByLabel('Height').fill('10 mm')
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await faces.selectOption({ label: (await faces.locator('option', { hasText: /^Cylinder · Bottom/ }).innerText()).trim() })
+  await command(page, 'Stack & Place')
+  await page.getByLabel('Target face').selectOption({ label: (await page.getByLabel('Target face').locator('option', { hasText: /^Box · Top/ }).innerText()).trim() })
+  await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
+  const labels = page.getByTestId('guide-labels').locator('span')
+  await expect(labels).toHaveText([/^Centre 0 mm$/, /^Centre 0 mm$/])
+
+  // Along the X arrow, a few pixels at a time, until the part catches on the box's edge.
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  // The preview and camera framing update on animation frames. Aim only after the part
+  // and its arrow are stationary and the canvas receives pointer events at the arrow.
+  const readAim = () => canvas.evaluate((element) => {
+    const arrow = JSON.parse(element.getAttribute('data-handles') ?? '{}').x as [number, number] | undefined
+    const part = JSON.parse(element.getAttribute('data-body-anchors') ?? '{}')[1] as [number, number] | undefined
+    if (!arrow || !part || document.elementFromPoint(...arrow) !== element) return ''
+    return JSON.stringify([arrow, part])
+  })
+  let aim = ''
+  await expect.poll(async () => {
+    const current = await readAim()
+    const settled = current !== '' && current === aim
+    aim = current
+    return settled
+  }, { intervals: [150] }).toBe(true)
+  const [[hx, hy], [ox, oy]] = JSON.parse(aim) as [[number, number], [number, number]]
+  const [ux, uy] = [hx - ox, hy - oy].map((v, _, all) => v / Math.hypot(...all))
+  // Its handles are on the model, so the panel docks in the corner, off the arrow (beside the face, in a small
+  // window, it covered it).
+  const view = (await canvas.boundingBox())!
+  const tool = (await page.getByRole('region', { name: 'Tool' }).boundingBox())!
+  expect(Math.abs(view.x + view.width - (tool.x + tool.width) - 12)).toBeLessThan(2)
+  expect(hx >= tool.x && hx <= tool.x + tool.width && hy >= tool.y && hy <= tool.y + tool.height).toBe(false)
+  await page.mouse.move(hx, hy)
+  await page.mouse.down()
+  await expect(canvas).toHaveAttribute('data-drag', 'dragging')
+  let caught = ''
+  for (let step = 1; step < 150 && !caught.startsWith('Box:'); step++) {
+    await page.mouse.move(hx + ux * step * 2, hy + uy * step * 2)
+    caught = (await canvas.getAttribute('data-snap')) ?? ''
+  }
+  expect(caught).toMatch(/^Box: /)
+  await page.mouse.up()
+  // The arrow runs along the face's U or V; that side's gap is no longer 0.
+  await expect.poll(async () => (await labels.allTextContents()).some((text) => !/ 0 mm$/.test(text))).toBe(true)
+  const moved = (await labels.allTextContents()).find((text) => !/ 0 mm$/.test(text))!
+  const gap = Number(moved.match(/(-?[\d.]+) mm$/)![1])
+  expect(Math.abs(gap)).toBeGreaterThan(1)
+  const fields = [await page.getByLabel('Horizontal gap').inputValue(), await page.getByLabel('Vertical gap').inputValue()].map(Number)
+  expect(fields).toContain(gap)
+  await page.getByRole('button', { name: 'Place', exact: true }).click()
+  await expect(steps).toHaveText(['Box', 'Cylinder', 'Align'])
   await expect(errors(page)).toHaveCount(0)
 })

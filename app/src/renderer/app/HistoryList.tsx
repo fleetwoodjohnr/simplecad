@@ -8,7 +8,6 @@ const STATES: Record<string, string> = { suppressed: 'Suppressed', failed: 'Fail
 
 interface Props {
   steps: StepInfo[]
-  busy: boolean
   /** Steps whose own panel is open, so they can't be edited again from here. */
   editing: (string | undefined)[]
   repairing?: string
@@ -24,16 +23,15 @@ export const canEdit = (step: StepInfo) => !step.undone && !!(step.faceSettings 
 /** What keeping a step that lost an input does: a placement stays where it is, anything else keeps its shape. */
 export const keepLabel = (step: StepInfo) => step.kind === 'align' ? 'Keep where it is' : 'Keep this shape'
 
-/** The model's steps. A large project has hundreds, so each row draws again only when its step changes, and
- * the busy state disables every button through the fieldset rather than through each row. */
-export const HistoryList = forwardRef<HTMLOListElement, Props>(function HistoryList({ steps, busy, editing, repairing, onEdit, onRepair, onKeep, onMenu }, ref) {
+/** The model's steps. A large project has hundreds, so each row draws again only when its step changes. They are
+ * not disabled while a step runs (what they do waits for it): turning hundreds of buttons off and on again cost
+ * every step of a large project tens of milliseconds of style and layout. */
+export const HistoryList = forwardRef<HTMLOListElement, Props>(function HistoryList({ steps, editing, repairing, onEdit, onRepair, onKeep, onMenu }, ref) {
   return (
-    <fieldset disabled={busy} className="contents">
-      <ol ref={ref} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
-        {steps.map((step) => <Row key={step.id} step={step} editing={editing.includes(step.id)}
-          repairing={repairing === step.id} onEdit={onEdit} onRepair={onRepair} onKeep={onKeep} onMenu={onMenu} />)}
-      </ol>
-    </fieldset>
+    <ol ref={ref} aria-label="Model history" className="min-h-16 flex-1 overflow-auto text-xs">
+      {steps.map((step) => <Row key={step.id} step={step} editing={editing.includes(step.id)}
+        repairing={repairing === step.id} onEdit={onEdit} onRepair={onRepair} onKeep={onKeep} onMenu={onMenu} />)}
+    </ol>
   )
 })
 

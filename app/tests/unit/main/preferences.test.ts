@@ -16,7 +16,7 @@ it('keeps valid legacy fields and leaves damaged or unsupported data untouched',
     const original = '{"theme":"dark","display_unit":"in","modelling":{"move_step": 200},"extra":true}'
     await writeFile(file, original)
     expect(await readLegacyPreferences(env)).toEqual({
-      theme: 'dark', displayUnit: 'in', snap: true, moveStep: 1, rotationSnap: 90
+      theme: 'dark', displayUnit: 'in', snap: true, moveStep: 1, rotationSnap: 90, updateCheck: true
     })
     expect(await readFile(file, 'utf8')).toBe(original)
     expect(displayLength(25.4 ** 3, 'in', 3)).toBe(1)

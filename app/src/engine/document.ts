@@ -1,7 +1,8 @@
 import type { SketchDraftEdit, SketchSolidEdit, SketchSolution } from '../shared/sketch'
 import { overhangFraction, overhangSeverity } from '../shared/printing'
 import { movedDisplay, relativePlacement } from './placement'
-import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
+import { combine, type PartDisplay } from '../shared/display'
+import { MAX_BODIES, MAX_EDITS, MAX_PROJECT_BYTES, type BodyInfo, type BodyOperationEdit, type EdgeFinishEdit, type GroupEdit, type PlateEdit, type ThreadGaugeEdit, type MoveBodiesEdit, type HingeEdit, type ClipJointEdit, type ThreadedConnectionEdit, type ConstructionEdit, type ArrangeEdit, type ArrangementNote, type PlacementNote, type SectionReplaceEdit, type UngroupEdit, type DeleteEdit, type Checkpoint, type DisplayShape, type FaceEdit, type FaceInfo, type FaceOperation, type FacePick, type ImportRef, type ImportRequest, type ImportSource, type KeepEdit, type ModelResult, type MeasurePick, type PullEdit, type ReferenceRepair, type SavedStepEdit, type SavedStep, type ShapeEdit, type Source, type StackEdit, type StackSettings, type StackStep, type Step, type StepInfo, type Transform, type TransformEdit, type Vec3 } from '../shared/engine-protocol'
 
 /** The build plate and overhang limit of SimpleCAD 0.4's bundled default printer. */
 const PLATE = [256, 256]
@@ -10,8 +11,7 @@ const MAX_OVERHANG = 50
 const LAYS = [[0, 0, 0], [90, 0, 0], [180, 0, 0], [270, 0, 0], [0, 90, 0], [0, 270, 0]]
 const SEVERITY = { ok: 0, note: 1, warning: 2 }
 
-/** One body's display, as the addon returns it. */
-export type PartDisplay = Omit<DisplayShape, 'faces' | 'ranges'> & { faces: Omit<FaceInfo, 'body'>[] }
+export { combine, type PartDisplay } from '../shared/display'
 
 export interface Shape {
   /** The engine's shape behind this wrapper: a step hands back an unchanged body's shape in a new wrapper. */
@@ -60,7 +60,7 @@ export interface Project {
   place(moving: Shape, target: Shape, request: Omit<StackSettings, 'view'> & {
     movingName: string; movingFace: number; targetName: string; targetFace: number
     viewDirection?: number[]; viewUp?: number[]
-  }): { project: Project; shape: Shape }
+  }): { project: Project; shape: Shape; note?: string | null }
   transform(body: string, shape: Shape, request: Transform): { project: Project; shape: Shape }
   /** The file, with the newest `undone` steps taken back and kept to redo. */
   save(undone: number): Uint8Array
@@ -85,45 +85,6 @@ interface State { bodies: Body[]; project: Project; stepNote?: string | null }
 
 function initialState({ bodies, visible, project }: Opened): State {
   return { bodies: bodies.map((body, index) => ({ ...body, visible: visible[index] })), project }
-}
-
-/** The shown bodies' meshes as one, faces numbered body by body, so the viewport and the edits see one model. */
-export function combine(parts: { body: number; display: PartDisplay }[]): DisplayShape {
-  const sum = (count: (d: PartDisplay) => number) => parts.reduce((n, p) => n + count(p.display), 0)
-  const faceCount = sum((d) => d.faceTriStart.length - 1)
-  const edgeCount = sum((d) => d.edgeStart.length - 1)
-  const out: DisplayShape = {
-    volume: 0, faces: [], ranges: [],
-    positions: new Float32Array(sum((d) => d.positions.length)),
-    normals: new Float32Array(sum((d) => d.normals.length)),
-    indices: new Uint32Array(sum((d) => d.indices.length)),
-    faceTriStart: new Uint32Array(faceCount + 1),
-    edgePoints: new Float32Array(sum((d) => d.edgePoints.length)),
-    edgeStart: new Uint32Array(edgeCount + 1)
-  }
-  let vertex = 0, index = 0, triangle = 0, face = 0, point = 0, edge = 0
-  for (const { body, display: d } of parts) {
-    out.ranges.push({ body, indices: [index, index + d.indices.length],
-      edges: [edge, edge + d.edgeStart.length - 1] })
-    out.volume += d.volume
-    out.positions.set(d.positions, vertex * 3)
-    out.normals.set(d.normals, vertex * 3)
-    for (const i of d.indices) out.indices[index++] = i + vertex
-    const faces = d.faceTriStart.length - 1
-    for (let f = 0; f < faces; f++) out.faceTriStart[face + f] = d.faceTriStart[f] + triangle
-    for (const info of d.faces) out.faces.push({ ...info, body })
-    out.edgePoints.set(d.edgePoints, point * 3)
-    const edges = d.edgeStart.length - 1
-    for (let e = 0; e < edges; e++) out.edgeStart[edge + e] = d.edgeStart[e] + point
-    vertex += d.positions.length / 3
-    triangle += d.faceTriStart[faces]
-    face += faces
-    point += d.edgePoints.length / 3
-    edge += edges
-  }
-  out.faceTriStart[face] = triangle
-  out.edgeStart[edge] = point
-  return out
 }
 
 export class EngineDocument {
@@ -162,8 +123,13 @@ export class EngineDocument {
 
   model(): ModelResult {
     const { bodies } = this.current
+    const started = performance.now()
+    const parts = this.parts(bodies)
+    this.lastParts = parts
+    const shape = combine(parts)
+    if (process.env.SIMPLECAD_TIMING) console.error(`[timing] engine shown in ${Math.round(performance.now() - started)} ms`)
     return {
-      shape: this.show(bodies),
+      shape,
       bodies: bodies.map((b): BodyInfo => ({ name: b.name, visible: this.isVisible(b), empty: !b.shape, ...this.bodySteps().get(b.name) })),
       unsaved: this.unsaved,
       canUndo: this.canStep(-1),
@@ -251,7 +217,9 @@ export class EngineDocument {
     const state = this.prepare(step)
     const shape = this.show(state.bodies)
     if (!state.stepNote) return shape
-    const note = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'>
+    const parsed = JSON.parse(state.stepNote) as Omit<ArrangementNote, 'marked'> | { placement: PlacementNote }
+    if ('placement' in parsed) return { ...shape, placement: parsed.placement }
+    const note = parsed
     const problems = new Set(note.problems.map((problem) => problem.name))
     const marked = this.shown(state.bodies).flatMap(({ body }) => problems.has(state.bodies[body].name) ? [body] : [])
     return { ...shape, arrangement: { ...note, marked } }
@@ -275,6 +243,15 @@ export class EngineDocument {
       if (!shape) throw new Error('Select a body with geometry.')
       return { shape, face: 'face' in pick ? pick.face : undefined, edge: 'edge' in pick ? pick.edge : undefined,
         point: 'point' in pick ? pick.point : undefined }
+    })
+  }
+
+  /** Which faces are holes (true), shafts (false) or not round (null): the bar offers a threaded pair from it. */
+  roundFaces(revision: number, faces: number[]) {
+    this.checkRevision(revision)
+    return faces.map((face) => {
+      const pick = this.pick(face)
+      return this.current.bodies[pick.body]?.shape?.isHole(pick.face) ?? null
     })
   }
 
@@ -406,7 +383,9 @@ export class EngineDocument {
     this.checkRevision(revision)
     if (this.canStep(direction)) {
       const next = this.cursor + direction
+      const started = performance.now()
       this.inherited = this.states[next] ? undefined : this.moveInherited(this.current, direction)
+      if (process.env.SIMPLECAD_TIMING) console.error(`[timing] engine history moved in ${Math.round(performance.now() - started)} ms`)
       this.cursor = next
       this.advance()
     }
@@ -545,8 +524,16 @@ export class EngineDocument {
   }
 
   private show(bodies: Body[]): DisplayShape {
-    return combine(this.shown(bodies).map(({ body, shape }) => ({ body, display: this.display(shape) })))
+    return combine(this.parts(bodies))
   }
+
+  /** Each shown body's display, with its shape's key: the window keeps the last model's, so only new ones go to it. */
+  private parts(bodies: Body[]) {
+    return this.shown(bodies).map(({ body, shape }) => ({ body, key: shape.key, display: this.display(shape) }))
+  }
+
+  /** The parts of the model last returned by `model()`. */
+  lastParts: { body: number; key: number; display: PartDisplay }[] = []
 
   /** A body operation as recorded: a Draft's display faces become that body's own face numbers. */
   private bodyOperation({ bodyOperation, body, inputs }: BodyOperationEdit): BodyOperationEdit {
@@ -790,7 +777,13 @@ export class EngineDocument {
     const shape = bodies[body]?.shape
     if (!shape) throw new Error('That body has no geometry to edit.')
     let next
-    if ('target' in step) next = this.place(project, bodies, shape, step)
+    let stepNote: string | undefined
+    if ('target' in step) {
+      const placed = this.place(project, bodies, shape, step)
+      next = placed
+      // Placed by face edges: the frame the window drags the preview by.
+      if (placed.note) stepNote = JSON.stringify({ placement: JSON.parse(placed.note) })
+    }
     else if ('transform' in step) {
       next = project.transform(bodies[body].name, shape, step.transform)
     } else if ('faceOperation' in step) {
@@ -806,7 +799,7 @@ export class EngineDocument {
         inputs: step.settings, position: hole?.position, target: target?.shape ? { name: target.name, shape: target.shape } : undefined })
     }
     else next = project.pushPull(bodies[body].name, shape, step.face, step.distance)
-    return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project }
+    return { bodies: bodies.map((b, i) => i === body ? { ...b, shape: next.shape } : b), project: next.project, stepNote }
   }
 
   /** SimpleCAD 0.4's place_on_plate and center_on_plate, on its default printer's plate: one offset for everything shown, keeping its layout. */

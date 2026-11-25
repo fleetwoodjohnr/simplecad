@@ -9,17 +9,15 @@ boxing it in, and every dimension accepts an expression as readily as a number.
 
 ![SimpleCAD](docs/shots/app_selection.png)
 
-**New in 0.3.0** ([full notes](CHANGELOG.md)):
-- **A new look, "Graphite"**, in light and dark, with the same type on every system.
-- **Move, Rotate, Scale and Align & Arrange** sit on the rail.
-- **A Properties card** for exact position and size.
-- **Lock, Select all**, and right-click that selects what you clicked.
-- **Moving:** dragging a part slides it along the ground and never changes its height. Plane squares, and Esc or right-click to cancel a drag.
-- **One Align & Arrange tool:** line up and spread out, stack and place, or arrange on a face or the build plate.
-- **Mirror**, in place or as a mirrored copy.
-- **A new icon**, and every installer installed and run before release.
+**New in 0.6.0** ([full notes](CHANGELOG.md)): fewer clicks, as 0.2.0 worked.
+- **Click a part and drag it.** The arrows and rings are already on it; letting go is one step.
+- **A bar beside what you selected**, with the likeliest tool first: Subtract for two parts, Arrange for three.
+- **Handles on the model:** drag a face to pull it, an edge to round it, a plane to split a part.
+- **Live preview** in every tool, with no Preview button; Enter applies, Esc cancels.
+- **Short panels** beside what you clicked, with More… for the rest, and a short ribbon.
+- **Box select, double-click to edit, right-click** for what can be done.
 
-![Align & Arrange](docs/shots/align_arrange.png)
+![The bar beside a selected part](docs/shots/selection_bar.png)
 
 ## What works today
 
@@ -148,63 +146,51 @@ FreeCAD does, and not something you will notice.
 
 ## Interaction
 
+0.6.0 works the way 0.2.0 did: click what you want to change, then drag it or
+pick a tool from the bar beside it.
+
+![Three parts box-selected: the bar leads with Arrange](docs/shots/context_bar.png)
+![An edge rounded by dragging its handle, the radius at the cursor](docs/shots/fillet_drag.png)
+![Subtract: the kept part tinted, the cutter see-through red, the panel naming both](docs/shots/combine_roles.png)
+![Stack & Place: the part's distances from the face's edges, drawn on the face](docs/shots/stack_guides.png)
+
 | | |
 |---|---|
-| Orbit | Shift + middle-drag, or Alt + left-drag |
-| Pan | Middle-drag; Ctrl+Shift + two-finger scroll on a trackpad |
-| Zoom | Wheel |
-| Select | Left-click. Shift or Ctrl to add |
-| Select several | Drag a box over them. Left-to-right surrounds, right-to-left touches |
-| Push / pull a face | Select it, then drag it |
-| Push / pull by an exact step | Select a face, then press Up / Down; each press moves the surface 0.25 mm and shows both the signed change and resulting total beside the face |
-| Make a shaft or tube thinner | Select its round side, then drag it inward |
-| Nudge selected bodies | Arrow keys move exactly 0.25 mm along the world axis nearest screen right/up; Ctrl+Up / Ctrl+Down move in depth |
-| Draw a sketch | Sketch → pick a plane → Draw it instead |
-| Dimension | `D`, then click geometry, type, Enter |
-| Measure | Select geometry, then Measure |
-| Measure point to point | Search `S` → Measure point to point, then click two places |
-| Subtract one body from another | Select both, then Subtract |
-| Hollow a body | Select the face to open, then Hollow |
-| Vent a wall | Select a flat face, then Vent |
-| Ground grid | The grid button, bottom right |
-| Sketch on a face | Select a flat face, then Sketch |
-| Raise or engrave text | Select a flat face, then Add Text |
-| Move / rotate a body | Move or Rotate, then drag the gizmo handles (the tool stays open; Esc finishes) |
-| Lock a drag to one axis / one plane | While dragging, X / Y / Z — or Shift+X / Y / Z for the plane across it |
-| Move to exact coordinates | Move → Move to, pick Centre / Minimum / Maximum corner, type |
-| Turn about an edge, a hole or a face | Rotate → Turn about: Edge or face axis, click it, drag the Z ring or type |
-| Change a dimension after the fact | Right-click the step in History → Edit parameters… (or select the body → Edit parameters) |
-| Slide-in rails, dovetails, a removable cover | Select the two faces → Joint → Dovetail rail / T-rail / Tongue & groove |
-| Hinge a lid | Select the box's top back edge and the lid → Hinge |
-| Quarter turn / sit on the plate | Right-click a body: Turn 90° about X / Y / Z, Drop to plate |
-| Colour a body | Right-click → Colour… (undoable; exported to 3MF) |
-| Theme, units, snapping, undo depth, shortcuts, updates | Menu (top left) → Settings…, or search `S` |
-| Place exactly on a face | Select the moving body and target face, then Place on Face |
-| Add a printable face pattern | Select a flat face or cylindrical wall, then Face Texture |
-| Change or remove a placed texture | Click the textured part, then Edit texture or Remove texture. If the part has several textures, choose one by its feature name and pattern. Edit loads its saved settings; Save changes updates it in place. Removal preserves the part and supports undo/redo |
-| Line objects up, or spread them out | Select two or more objects → Align & Arrange → Align: pick the side and axis, or Spread out evenly |
-| Arrange objects on a face or the plate | Select two or more objects → Align & Arrange → Arrange, then click the face (or Use the build plate); pick a pattern, adjust, Apply |
-| Mirror, or make a mirrored copy | Select objects → Mirror; tick "Keep the original" for a copy beside it |
-| Exact position or size | Select objects; type into Properties under the model tree |
-| Lock an object | The lock button on its row in the model tree |
-| New project / Select all | `Ctrl+N` / `Ctrl+A` |
-| Change an arrangement | Click an arranged object, then Edit arrangement (or right-click it in History) |
-| Join split parts for printing | Joint, click each part (any visible face), check the live preview, Apply. Joints are placed along the seam automatically; style, size, fit, count and which part carries the tabs stay editable from History |
-| Make the part that screws into this one | Select the thread **and** where its mate goes — a flat face, a hole, or the whole part — then Create Matching Part |
-| Command search | `S` |
+| Turn the view | Left-drag anywhere |
+| Pan / zoom | Middle-drag (or Shift + left-drag) / wheel |
+| Select a part | Left-click it: its face and the part are chosen, and the bar beside it offers what fits |
+| Add or take away a part | Shift-, Ctrl- or Cmd-click it |
+| Select several | Right-drag a box, anywhere. Left to right takes what it surrounds, right to left what it touches; Shift adds |
+| Select all | `Ctrl+A`, or right-click empty space → Select all |
+| Clear the selection | Click empty space |
+| A part in a group | A click takes the group; double-click to reach inside for the one part |
+| Change how a part was made | Double-click it: the settings of the step that made it open (or right-click it → Edit) |
+| Right-click | A part, a face, a row in Bodies or a step in History: what can be done to it (on a part of a several-part selection, to all of them; on empty space, Select all, Clear and Fit). Shift+F10 or the Menu key from the keyboard |
+| Move or turn a part | Drag one of the arrows or rings already on it; letting go is one step. Several chosen parts move together. A move catches flush on other parts' edges, middles, corners and centres and says what it met; a turn holds at each step. Shift drags freely, Ctrl finely |
+| An exact move or turn | Type the number while dragging, or open Move / Rotate from the bar |
+| Lock a drag to one axis / plane | While dragging, X / Y / Z, or Shift + X / Y / Z |
+| Push / pull a face | Drag its handle (snaps to 0.25 mm; Shift for free, Ctrl for 0.05 mm), or type the distance in the bar |
+| Push / pull by a step | Up / Down: 0.25 mm a press. Left / Right (and Ctrl + Up / Down) move the part |
+| Round or bevel an edge | The edge under the pointer lights up. Click it (Shift-click for more), choose Round or Bevel on the bar, then drag the handle or type the size and press Enter |
+| Split a part | Split on the bar, then drag the plane through it; the readout shows both halves |
+| Subtract, join, intersect | Click the part, Shift-click the other, then Subtract (or Join, Intersect). The kept part is tinted, the cutters drawn see-through red (green to join, blue to intersect), and the panel says which is which; Swap turns it round, and a click on another part adds it |
+| Thread a shaft into a hole | Click the shaft, Shift-click the hole on the other part, then Thread together. Matching Part on the bar threads a round face or drills a threaded hole that fits the thread |
+| Stand a part on a face | Click a face of the part, Stack & Place, click the face it goes on; drag it on that face (it catches flush and centred), with its distances from the face's edges shown |
+| Measure | With nothing selected, Measure snaps to corners, centres and midpoints: click two points for the distance and ΔX, ΔY, ΔZ |
+| Arrange parts | Right-drag a box round them, Arrange, then click the face or the plate they go on |
+| Clip two parts together | Click a face on each (Shift for the second), then Clip Joint |
+| Tools | Each opens as a short panel beside what you clicked and previews as you type. More… holds the rest of its settings. Enter applies, Esc cancels |
+| Every other tool | The ⋯ on the bar, or command search (`Ctrl+K`, or the search button) |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
-| Standard views | `1`–`7` (front, back, left, right, top, bottom, iso) |
-| Zoom to fit | `F` |
-| Zoom to selection | `Ctrl+Shift+F` |
-| Cancel / confirm | `Esc` / `Enter` |
-| Save / Save As / Open | `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+O` |
-| Export | `Ctrl+E` |
-| Copy / paste bodies or groups | `Ctrl+C` / `Ctrl+V` |
+| Updates | SimpleCAD looks for a new release by itself once a day and offers to install it and restart (Settings → Updates turns that off; File → Check for updates any time) |
+| Fit the view | `F` |
+| New / Open / Save / Save As / Import | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+I` |
 | Delete | `Delete` or `Backspace` |
 
-Arrow steps work from the viewport or Bodies tree. Hold an arrow to repeat;
-release it and pause to finish one undoable edit. Further presses during that
-edit's rebuild are retained. Escape cancels pending steps.
+On a Mac, Cmd stands for Ctrl.
+
+Hold an arrow to repeat; release it and pause to finish one undoable edit.
+Escape cancels pending steps.
 
 Dimension fields take expressions: `12`, `12mm`, `0.5in`, `wall`, `width / 2`,
 `hole + 0.4mm`.

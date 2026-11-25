@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Ellipsis, Eye, EyeOff, Focus, Folder, Redo2, Search, Trash2, Undo2, Ungroup } from 'lucide-react'
-import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
+import type { ArrangeEdit, BodyHealth, BodyInfo, ClipJointEdit, ThreadedConnectionEdit, HingeEdit, DisplayShape, ExportFormat, FaceInfo, FaceOperation, HoleSettings, MeasurePick, Measurement, ModelResult, StackEdit, StepInfo, StackSettings, Transform, Vec3, ViewFrame } from '@/shared/engine-protocol'
 import { displayLength, type DisplayUnit, type Theme } from '@/shared/preferences'
 import { basePlanes, type SketchPlane, type SketchRecipe, type SketchSolidEdit } from '@/shared/sketch'
 import type { OfferedProject } from '@/shared/ipc-types'
-import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
+import { deleteBodies, applySectionReplace, previewSectionReplace, applyArrange, previewArrange, applyConstruction, bodyHealth, groupBodies, placeOnPlate, reloadCalibration, calibrationModel, addThreadGauges, moveBodies, previewHinge, applyHinge, previewClipJoint, applyClipJoint, previewThreadedConnection, applyThreadedConnection, ungroup, applyBodyOperation, previewBodyOperation, applyEdgeFinish, previewEdgeFinish, roundFaces, applySketchDraft, applySketchSolid, previewSketchSolid, previewShape, readSketch, applyFace, applyPull, applyStack, applyTransform, cancelQueuedStackPreview, createShape, editSavedStep, exportModel, importModel, keepLastGood, markSaved, measure, onEngineConnected, openProject, openSession, previewFace, previewPull, previewSavedStep, previewStack, previewTransform, repairInput, resetModel, saveModel, showBody, stepHistory } from '../state/engine'
 import { Btn, IconBtn, Menu, MenuContent, MenuItem, MenuTrigger, TooltipProvider, inputCls } from '../ui'
 import { Ribbon } from './Ribbon'
 import { HistoryList, canEdit, keepLabel } from './HistoryList'
 import { SelectionMenu, isMenuKey, type MenuEntry } from './SelectionMenu'
-import { ContextBar, faceTools } from './ContextBar'
+import { ContextBar, barLabel, selectionTools, type BarActions, type BarTool, type SelectionKind } from './ContextBar'
 import { BodyOperationPanel, bodyOperationLabels, type BodyOperation } from './BodyOperationPanel'
 import { EdgeFinishPanel, type EdgeFinish } from './EdgeFinishPanel'
 import { ArrangePanel, type ArrangeRole } from './ArrangePanel'
@@ -24,7 +24,7 @@ import { ThreadedConnectionPanel } from './ThreadedConnectionPanel'
 import { NUDGE_STEP, worldAxes } from './nudge'
 import { healthChecks, printChecks } from './printability'
 import { ConstructionPanel, constructionLabels, needs, type AxisFrom, type Construction } from './ConstructionPanel'
-import { Viewport } from '../viewport/Viewport'
+import { Viewport, snapped, type ModelHandle } from '../viewport/Viewport'
 import type { TransformView } from '../viewport/transform'
 import { TitleBar } from './TitleBar'
 import { CommandSearch } from './CommandSearch'
@@ -32,7 +32,7 @@ import { ShapePanel } from './ShapePanel'
 import { SketchEditor } from './SketchEditor'
 import { profileOperations, SketchSolidPanel } from './SketchSolidPanel'
 import { defaultHoleSettings, defaultThreadSettings, HolePanel, ThreadPanel } from './HolePanel'
-import { MeasurePanel } from './MeasurePanel'
+import { MeasurePanel, type MeasureKind } from './MeasurePanel'
 import { MatchingPartPanel } from './MatchingPartPanel'
 import { PreferencesDialog } from './PreferencesDialog'
 import { usePreferences } from './preferences'
@@ -126,6 +126,15 @@ function StackOptions({ settings, onChange }: { settings: StackSettings; onChang
   </>
 }
 
+/** Two measured points: how far apart, and along each axis, as 0.2.0's point-to-point Measure reported. */
+function pointReadings(points: Vec3[]): Measurement[] {
+  if (points.length < 2) return []
+  const [a, b] = points
+  const d = [0, 1, 2].map((i) => Math.abs(b[i] - a[i]))
+  return [{ label: 'Distance', values: [Math.hypot(...d)], unit: 'mm' },
+    ...d.map((value, i) => ({ label: `Δ${'XYZ'[i]}`, values: [value], unit: 'mm' }))]
+}
+
 export function App() {
   const { preferences, apply: applyPreferences, loaded: preferencesLoaded } = usePreferences()
   const unit = preferences.displayUnit
@@ -138,7 +147,9 @@ export function App() {
   const [selected, setSelected] = useState<number>()
   const [holePosition, setHolePosition] = useState<Vec3>()
   const [stack, setStack] = useState(false)
-  const [measureKind, setMeasureKind] = useState<MeasurePick['kind']>()
+  const [measureKind, setMeasureKind] = useState<MeasureKind>()
+  /** 0.2.0's point-to-point Measure: the snapped points clicked (a third click starts again). */
+  const [measurePoints, setMeasurePoints] = useState<Vec3[]>([])
   const [measurePicks, setMeasurePicks] = useState<MeasurePick[]>([])
   const [measurements, setMeasurements] = useState<Measurement[]>([])
   const [measuring, setMeasuring] = useState(false)
@@ -148,7 +159,8 @@ export function App() {
   const [shapePanel, setShapePanel] = useState(false)
   const [editingShape, setEditingShape] = useState<string>()
   const [transformKind, setTransformKind] = useState<Transform['kind']>()
-  const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string }>()
+  /** A body operation's panel; a Combine opened from the bar starts with its tools and operation. */
+  const [bodyTool, setBodyTool] = useState<{ kind: BodyOperation; editing?: string; tools?: number[]; operation?: string }>()
   const [edgeTool, setEdgeTool] = useState<{ kind: EdgeFinish; editing?: string }>()
   const [edgePicks, setEdgePicks] = useState<number[]>([])
   /** The Hinge tool: open or not, its picked edge on the fixed part, and the part that swings. */
@@ -169,6 +181,8 @@ export function App() {
    * far the pattern was dragged. `repicked`: which saved picks an edit makes again. */
   const [arrange, setArrange] = useState<{
     bodies: number[]; editing?: string; role?: ArrangeRole; target?: number; targetName?: string; plate: boolean
+    /** A Grid opened from the selection bar, waiting for the face (or the plate) it goes on. */
+    pattern?: 'grid'
     contacts: Record<number, number>; edges: number[]; move: Vec3; repicked: { target?: true; contacts?: true; edges?: true }
   }>()
   /** Section Replace: its picks (the replacement's face, then the target's), or the saved step History is editing. */
@@ -178,8 +192,18 @@ export function App() {
   const [sectionPicks, setSectionPicks] = useState<number[]>([])
   const [construction, setConstruction] = useState<{ kind: Construction; editing?: string; axisFrom: AxisFrom }>()
   const [constructPicks, setConstructPicks] = useState<{ faces: number[]; edges: number[]; points: Vec3[] }>({ faces: [], edges: [], points: [] })
-  /** Bodies chosen in the Bodies list (Ctrl- or Shift-click adds), e.g. to group them. */
+  /** Bodies chosen in the view or the Bodies list (Shift, Ctrl or Cmd adds), e.g. to group them. */
   const [chosenBodies, setChosenBodies] = useState<number[]>([])
+  /** The faces clicked to choose them, in order: a two-face tool (Clip Joint) starts from them. */
+  const [pickedFaces, setPickedFaces] = useState<number[]>([])
+  /** An edge clicked in the view (display edge index), and where: it carries a handle that rounds it. */
+  /** Clicked edges (Shift adds), and where the last was clicked: the round or bevel handle goes there. */
+  const [selectedEdge, setSelectedEdge] = useState<{ edges: number[]; point: Vec3 }>()
+  /** The edge bar's finish and typed size. */
+  const [edgeFinish, setEdgeFinish] = useState<{ kind: 'fillet' | 'chamfer'; size: string }>({ kind: 'fillet', size: '' })
+  /** Split's plane: across which axis, and its offset from the part's middle (mm), dragged in the view or typed. */
+  const [split, setSplit] = useState<{ axis: 'x' | 'y' | 'z'; position: string }>({ axis: 'z', position: '0' })
+  const splitFrom = useRef<number>(undefined)
   const [transformBody, setTransformBody] = useState<number>()
   const [transformSnap, setTransformSnap] = useState(0)
   const [transformPivot, setTransformPivot] = useState<Vec3>()
@@ -187,7 +211,7 @@ export function App() {
   const [editingFace, setEditingFace] = useState<string>()
   const [repairing, setRepairing] = useState<string>()
   /** The right-click menu: what was clicked, and where. */
-  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string })>()
+  const [menu, setMenu] = useState<{ x: number; y: number } & ({ face: number } | { body: number } | { step: string } | { view: true })>()
   const [repairBody, setRepairBody] = useState<number>()
   /** Replacements for a Combine's other lost tools, by the lost object's ID. */
   const [moreRepair, setMoreRepair] = useState<Record<string, number>>({})
@@ -239,6 +263,7 @@ export function App() {
   }
   const closeMeasure = () => {
     setMeasureKind(undefined)
+    setMeasurePoints([])
     setMeasurePicks([])
     setMeasurements([])
     setMeasuring(false)
@@ -250,6 +275,7 @@ export function App() {
     setError('')
   }
   const select = (face?: number, position?: Vec3) => {
+    setSelectedEdge(undefined)
     setSelected(face)
     setHolePosition(position)
     setPreview(undefined)
@@ -257,6 +283,7 @@ export function App() {
     setError('')
     if (face === undefined) {
       setChosenBodies([])
+      setPickedFaces([])
       cancelPlacement()
       closeMeasure()
       setTransformKind(undefined)
@@ -350,6 +377,27 @@ export function App() {
     }, 48)
     return () => { active = false; window.clearTimeout(timer) }
   }, [busy, selected, revision, value, stack, shapePanel, faceTool, transformKind, bodyTool, edgeTool, hinge, clip, threadPair, construction, arrange, section, measureKind, sketchTool, matchingPart])
+  // The edge bar's typed size previews as the pull distance does; Enter or its button applies.
+  const edgeSize = Number(edgeFinish.size)
+  useEffect(() => {
+    if (!selectedEdge) return
+    setPreview(undefined)
+    if (busy || revision === undefined || !(edgeSize > 0)) return
+    let active = true
+    const edit = { edgeFinish: edgeFinish.kind, edges: selectedEdge.edges, value: `${edgeSize} mm` }
+    const timer = window.setTimeout(() => {
+      void previewEdgeFinish(revision, edit).then(
+        (next) => { if (active && !busyRef.current) setPreview(next) },
+        () => { if (active) setPreview(undefined) }
+      )
+    }, 48)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [busy, selectedEdge, revision, edgeSize, edgeFinish.kind])
+  const applyEdge = () => {
+    if (!selectedEdge || revision === undefined || !(edgeSize > 0)) return
+    const edit = { edgeFinish: edgeFinish.kind, edges: selectedEdge.edges, value: `${edgeSize} mm` }
+    mutate(() => applyEdgeFinish(revision, edit))
+  }
 
   useEffect(() => {
     if (!stack) return
@@ -398,8 +446,13 @@ export function App() {
     return () => { active = false }
   }, [measureKind, measurePicks, revision])
 
-  const mutate = (run: () => Promise<ModelResult | undefined>, reframe = false) => {
+  /** Run a change; `keep` names the chosen parts to keep chosen after it (a drag keeps its parts, as in 0.2.0). */
+  const mutate = (run: () => Promise<ModelResult | undefined>, reframe = false, keep?: number[]) => {
     if (busyRef.current) return
+    const kept = keep?.map((body) => model?.bodies[body]?.name)
+    // A preview still building is of the model before this change.
+    live.current.token++
+    live.current.next = undefined
     const generation = connection.current
     updateBusy(true)
     setError('')
@@ -409,6 +462,7 @@ export function App() {
         if (!next || connection.current !== generation) return
         setModel(next)
         select()
+        if (kept) setChosenBodies(kept.flatMap((name) => { const index = next.bodies.findIndex((body) => body.name === name); return index >= 0 ? [index] : [] }))
         if (reframe) setFrame((n) => n + 1)
       },
       (failure: Error) => { if (connection.current === generation) setError(failure.message) }
@@ -427,29 +481,43 @@ export function App() {
     return { editStepId: faceStep.id, changes }
   }
 
-  const clearPreview = () => { setPreview(undefined); setError('') }
-  const requestPreview = async (run: () => Promise<DisplayShape>) => {
-    if (busyRef.current) return
+  const clearPreview = () => { live.current.token++; live.current.next = undefined; setPreview(undefined); setError('') }
+  /** A tool's setting changed: its last exact preview stays shown until the next one (live) replaces it. */
+  const keepPreview = () => setError('')
+  /** Live previews: one builds at a time and the newest wanted runs next, so none queue up in the engine; the last
+   * exact one stays shown while the next builds, and one made stale by a newer request or a change is dropped. */
+  const live = useRef<{ running: boolean; token: number; next?: () => Promise<DisplayShape> }>({ running: false, token: 0 })
+  const livePreview = (run: () => Promise<DisplayShape>) => {
+    const state = live.current
+    state.token++
+    state.next = run
+    if (state.running) return
     const generation = connection.current
-    clearPreview()
-    updateBusy(true)
-    try {
-      const next = await run()
-      if (connection.current === generation) setPreview(next)
-    } catch (failure) {
-      if (connection.current === generation) setError((failure as Error).message)
-    } finally {
-      if (connection.current === generation) updateBusy(false)
-    }
+    state.running = true
+    void (async () => {
+      while (state.next && connection.current === generation) {
+        const job = state.next
+        state.next = undefined
+        const token = state.token
+        try {
+          const shape = await job()
+          if (token === state.token && connection.current === generation) { setPreview(shape); setError('') }
+        } catch (failure) {
+          if (token === state.token && connection.current === generation) setError((failure as Error).message)
+        }
+      }
+      state.running = false
+    })()
   }
+
 
   const showFacePreview = (operation: FaceOperation) => {
     if (revision === undefined) return
     const saved = savedFaceRequest(operation)
     if (saved) {
-      if (Object.keys(saved.changes).length) void requestPreview(() => previewSavedStep(revision, saved))
+      if (Object.keys(saved.changes).length) livePreview(() => previewSavedStep(revision, saved))
     } else if (selected !== undefined) {
-      void requestPreview(() => previewFace(revision, { face: selected, ...operation }))
+      livePreview(() => previewFace(revision, { face: selected, ...operation }))
     }
   }
 
@@ -537,11 +605,19 @@ export function App() {
     setConstructPicks({ faces: [], edges: [], points: [] })
     setConstruction({ kind, axisFrom: 'edge' })
   }
-  const openArrange = () => {
+  /** Arrange; from the selection bar, as 0.2.0's, a Grid that waits for the face (or the plate) to go on. */
+  const openArrange = (fromBar = false) => {
     const shown = model?.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []) ?? []
     const bodies = chosenBodies.length >= 2 ? chosenBodies : shown
     select()
-    setArrange({ bodies, plate: false, contacts: {}, edges: [], move: [0, 0, 0], repicked: {} })
+    setArrange({ bodies, plate: false, contacts: {}, edges: [], move: [0, 0, 0], repicked: {},
+      ...(fromBar ? { pattern: 'grid' as const, role: 'target' as const } : {}) })
+  }
+  /** Lay the arrangement out on the build plate (or not); a click on empty space while it waits for a face does too. */
+  const arrangeOnPlate = (plate: boolean) => {
+    clearPreview()
+    setArrange((tool) => tool && { ...tool, plate, role: undefined, target: undefined, targetName: undefined, edges: [],
+      repicked: { ...tool.repicked, target: true, edges: true } })
   }
   const arrangeRole = (role?: ArrangeRole) => {
     // Picks are of the model as it is, not of a preview.
@@ -785,6 +861,21 @@ export function App() {
     setSketchTool(kind)
   }
   const matchable = model?.steps.filter((step) => !step.undone && step.matchingThread) ?? []
+  // Two round faces clicked on two parts, a shaft and a hole: the bar leads with Thread together, as 0.2.0's did.
+  const [threadable, setThreadable] = useState<string>()
+  const roundPair = pickedFaces.length === 2 && revision !== undefined && model &&
+    pickedFaces.every((face) => model.shape.faces[face] && !model.shape.faces[face].planar) &&
+    model.shape.faces[pickedFaces[0]].body !== model.shape.faces[pickedFaces[1]].body ? `${revision}:${pickedFaces.join(',')}` : undefined
+  useEffect(() => {
+    if (!roundPair || revision === undefined) return
+    let active = true
+    void roundFaces(revision, pickedFaces).then((kinds) => {
+      if (active && kinds[0] !== null && kinds[1] !== null && kinds[0] !== kinds[1]) setThreadable(roundPair)
+    }, () => {})
+    return () => { active = false }
+  }, [roundPair])
+  /** A threaded hole's settings from the thread it matches, for the Hole tool opened by Matching Part on a flat face. */
+  const [holeInitial, setHoleInitial] = useState<Partial<HoleSettings>>()
   const closeMatching = () => { setMatchingPart(false); clearPreview() }
   const canTransform = canUseFaceTool && model.bodies.some((body) => body.visible && !body.empty)
   const openTransform = (kind: Transform['kind']) => {
@@ -801,7 +892,17 @@ export function App() {
     const body = movingBody ?? (chosenBodies.length === 1 ? chosenBodies[0] : visible?.length === 1 ? visible[0] : undefined)
     select()
     setTransformBody(body)
+    if (kind === 'split') setSplit({ axis: 'z', position: '0' })
     setBodyTool({ kind })
+  }
+  /** Combine is open on new parts (not a History edit): the view shows which part is kept and which are the tools. */
+  const combining = bodyTool?.kind === 'boolean' && !bodyTool.editing
+  /** Subtract, Join or Intersect from the bar: the first chosen part is cut (or kept), the rest are the tools. */
+  const openCombine = (operation: string) => {
+    const [body, ...tools] = chosenBodies
+    select()
+    setTransformBody(body)
+    setBodyTool({ kind: 'boolean', tools, operation })
   }
   const openFaceTool = (tool: FaceOperation['faceOperation']) => {
     setDistance('')
@@ -820,11 +921,64 @@ export function App() {
     const step = body && model?.steps.find((entry) => entry.id === body.blockedBy && !entry.undone)
     return body && step ? { body, step } : undefined
   })()
+  // The chosen parts carry the arrows and rings while nothing else is open: letting go is one step. Several parts
+  // move together (no rings: a turn is one part's).
+  const partsDrag: TransformView | undefined = idle && ready && revision !== undefined && !preview && !blocked &&
+    chosenBodies.length && chosenBodies.every((b) => model.bodies[b]?.visible && !model.bodies[b]?.empty) ? {
+      kind: chosenBodies.length > 1 ? 'move' : undefined, body: chosenBodies[0], bodies: chosenBodies.length > 1 ? chosenBodies : undefined,
+      enabled: ready, highlight: true,
+      // As 0.2.0, a drag in place snaps unless Shift is held: 0.25 mm and 15° unless Settings chooses steps.
+      snap: preferences.snap ? preferences.moveStep : 0.25, angleSnap: preferences.snap ? preferences.rotationSnap : 15,
+      formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`, magnets: model.bodies.map((body) => body.name),
+      onCommit: (transform) => mutate(() => chosenBodies.length > 1 && transform.kind === 'move'
+        ? moveBodies(revision, chosenBodies, transform.values.map(Number) as Vec3)
+        : applyTransform(revision, { body: chosenBodies[0], transform }), false, chosenBodies)
+    } : undefined
+  // Stack & Place by face edges (0.2.0's Align guides): the placed part drags on the target face with its arrows and
+  // the magnets, letting go sets the two gaps, and lines from the face's chosen edges to the part show them.
+  const placeNote = stack ? preview?.placement : undefined
+  const onFace = (u: number, v: number): Vec3 =>
+    [0, 1, 2].map((i) => placeNote!.center[i] + placeNote!.u[i] * u + placeNote!.v[i] * v + placeNote!.normal[i] * 0.05) as Vec3
+  /** The gap a side keeps when the part's mounting face's centre is at `at` (the engine's rule, the other way round). */
+  const sideGap = (side: string, at: number, face: [number, number], part: [number, number]) =>
+    side === 'left' || side === 'bottom' ? at + part[0] - face[0]
+      : side === 'right' || side === 'top' ? face[1] - at - part[1]
+      : at - ((face[0] + face[1]) / 2 - (part[0] + part[1]) / 2)
+  const stackGuides = placeNote ? (() => {
+    const { at: [cu, cv], face_u: fu, face_v: fv, part_u: pu, part_v: pv } = placeNote
+    const end = (side: string, face: [number, number], part: [number, number], at: number) =>
+      side === 'left' || side === 'bottom' ? [face[0], at + part[0]] : side === 'right' || side === 'top' ? [face[1], at + part[1]]
+        : [(face[0] + face[1]) / 2, at + (part[0] + part[1]) / 2]
+    const [u0, u1] = end(stackSettings.horizontal, fu, pu, cu)
+    const [v0, v1] = end(stackSettings.vertical, fv, pv, cv)
+    const name = (side: string) => side === 'center' ? 'Centre' : side[0].toUpperCase() + side.slice(1)
+    const mm = (value: number) => `${format.format(displayLength(value, unit))} ${unit}`
+    return {
+      lines: [[onFace(u0, cv), onFace(u1, cv)], [onFace(cu, v0), onFace(cu, v1)]],
+      labels: [
+        { at: onFace((u0 + u1) / 2, cv), text: `${name(stackSettings.horizontal)} ${mm(sideGap(stackSettings.horizontal, cu, fu, pu))}` },
+        { at: onFace(cu, (v0 + v1) / 2), text: `${name(stackSettings.vertical)} ${mm(sideGap(stackSettings.vertical, cv, fv, pv))}` }
+      ]
+    }
+  })() : undefined
+  const stackDrag: TransformView | undefined = placeNote && movingBody !== undefined && model ? {
+    kind: 'move', body: movingBody, bodies: [movingBody], enabled: ready, snap: 0.25, magnets: model.bodies.map((body) => body.name),
+    formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+    onCommit: ({ values }) => {
+      const delta = values.map(Number)
+      const along = (axis: Vec3) => axis[0] * delta[0] + axis[1] * delta[1] + axis[2] * delta[2]
+      const [cu, cv] = [placeNote.at[0] + along(placeNote.u), placeNote.at[1] + along(placeNote.v)]
+      const round = (value: number) => Math.round(value * 1e6) / 1e6
+      setStackSettings((settings) => ({ ...settings,
+        horizontalGap: round(sideGap(settings.horizontal, cu, placeNote.face_u, placeNote.part_u)),
+        verticalGap: round(sideGap(settings.vertical, cv, placeNote.face_v, placeNote.part_v)) }))
+    }
+  } : undefined
   const keepStep = (step: StepInfo) => {
     if (revision !== undefined) mutate(() => keepLastGood(revision, { keepStepId: step.id }))
   }
   // Flat faces move along their normal; round ones along their radius (typed, as they have no single normal).
-  const canPullFace = idle && ready && !!selectedFace && !blocked
+  const canPullFace = idle && ready && !!selectedFace && !blocked && chosenBodies.length <= 1
   const startStack = () => {
     setStackSettings(defaultStack)
     setDistance('')
@@ -843,6 +997,44 @@ export function App() {
     model?.bodies.forEach((_, body) => { if (!shown.has(body)) tree.push({ body, members: [] }) })
     return tree
   }, [model])
+  /** A part and the rest of its group: what one click in the view takes. */
+  const partOf = (body: number) => model?.groups.find(({ members }) => members.includes(body))?.members ?? [body]
+  /** A click in the view, as 0.2.0: the face and its part (a group member: the group, unless a double-click
+   * already reached inside it); Shift, Ctrl or Cmd adds the part or takes it away. */
+  const clickPart = (face: number | undefined, point: Vec3 | undefined, adding: boolean) => {
+    if (face === undefined) {
+      if (!adding) select()
+      return
+    }
+    const body = model!.shape.faces[face].body
+    const part = chosenBodies.length === 1 && chosenBodies[0] === body ? [body] : partOf(body)
+    if (!adding) {
+      select(face, point)
+      setChosenBodies(part)
+      setPickedFaces([face])
+      return
+    }
+    const removing = part.every((b) => chosenBodies.includes(b))
+    if (removing) setSelected(undefined)
+    else select(face, point)
+    setChosenBodies(removing ? chosenBodies.filter((b) => !part.includes(b)) : [...chosenBodies, ...part.filter((b) => !chosenBodies.includes(b))])
+    setPickedFaces((faces) => removing ? faces.filter((f) => !part.includes(model!.shape.faces[f]?.body)) : [...faces, face])
+  }
+  const boxSelect = (bodies: number[], adding: boolean) => {
+    const taken = [...new Set(bodies.flatMap(partOf))]
+    if (!adding) select()
+    setPickedFaces([])
+    setChosenBodies((chosen) => adding ? [...chosen, ...taken.filter((b) => !chosen.includes(b))] : taken)
+  }
+  /** A double-click: inside a chosen group it takes the one part; on a part, it opens the step that made it. */
+  const openPart = (body: number) => {
+    if (partOf(body).length > 1 && !(chosenBodies.length === 1 && chosenBodies[0] === body)) {
+      setChosenBodies([body])
+      return
+    }
+    const step = model?.steps.find((entry) => entry.id === model.bodies[body]?.producer && !entry.undone)
+    if (step && canEdit(step)) editHistoryStep(step)
+  }
   /** Delete bodies with the steps that make them (or a group with its members); Undo brings them back. */
   const removeBodies = (bodies: number[], group?: string) => {
     if (revision === undefined || !bodies.length) return
@@ -878,7 +1070,7 @@ export function App() {
     )
   }
   /** The middle of the chosen body's display bounds. */
-  const bodyCentre = useMemo(() => {
+  const bodyBounds = useMemo(() => {
     const range = model?.shape.ranges.find(({ body }) => body === transformBody)
     if (!model || !range) return undefined
     const low = [Infinity, Infinity, Infinity]
@@ -890,8 +1082,9 @@ export function App() {
         high[axis] = Math.max(high[axis], model.shape.positions[vertex + axis])
       }
     }
-    return low.map((value, axis) => (value + high[axis]) / 2) as Vec3
+    return { low, high }
   }, [model, transformBody])
+  const bodyCentre = bodyBounds && bodyBounds.low.map((value, axis) => (value + bodyBounds.high[axis]) / 2) as Vec3
   const canPlace = !!placement && revision !== undefined && stackPrepared?.edit === placement && stackPrepared.revision === revision && ready
   const actions: CommandActions = {
     newBox: { enabled: ready, run: start },
@@ -901,14 +1094,23 @@ export function App() {
     undo: { enabled: canUndo, run: () => history('undo') },
     redo: { enabled: canRedo, run: () => history('redo') },
     fit: { enabled: !!model, run: () => setFrame((n) => n + 1) },
-    clear: { enabled: !busy && selected !== undefined, run: () => select() },
+    clear: { enabled: !busy && (selected !== undefined || selectedEdge !== undefined || chosenBodies.length > 0), run: () => select() },
+    // Every part that shows, groups whole, as 0.4.4's Ctrl+A.
+    selectAll: { enabled: ready && idle && !!model?.bodies.some((body) => body.visible && !body.empty),
+      run: () => {
+        select()
+        setPickedFaces([])
+        setChosenBodies(model!.bodies.flatMap((body, index) => body.visible && !body.empty ? [index] : []))
+      } },
     // SimpleCAD 0.4's Delete: the chosen bodies, else the body of the selected face.
     delete: { enabled: ready && idle && (chosenBodies.length > 0 || !!selectedFace), hint: 'Select a body',
       run: () => removeBodies(chosenBodies.length ? chosenBodies : selectedFace ? [selectedFace.body] : []) },
     shape: { enabled: canUseFaceTool, run: () => { select(); setShapePanel(true) } },
-    pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => distanceField.current?.focus() },
+    importModel: { enabled: ready, run: () => importSolid() },
+    // After whatever opened it (command search) has closed and let the focus go.
+    pushPull: { enabled: canPullFace, hint: 'Select a face', run: () => requestAnimationFrame(() => distanceField.current?.focus()) },
     arrange: { enabled: canTransform && model.bodies.filter((body) => body.visible && !body.empty).length > 1,
-      hint: 'Show two or more bodies first', run: openArrange },
+      hint: 'Show two or more bodies first', run: () => openArrange() },
     stack: { enabled: canStack && !stack, hint: 'Select a face on the part to move', run: startStack },
     sketch: { enabled: canUseFaceTool, run: () => void openSketch() },
     offsetPlane: { enabled: canUseFaceTool, run: () => openFaceTool('offset_plane') },
@@ -919,15 +1121,26 @@ export function App() {
     sweep: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw a profile and a path', run: () => openSketchTool('sweep') },
     loft: { enabled: canUseFaceTool && sketches.length >= 2, hint: 'Draw two profiles', run: () => openSketchTool('loft') },
     path_pattern: { enabled: canUseFaceTool && sketches.length > 0 && patternBodies.length > 0, run: () => openSketchTool('path_pattern') },
-    hole: { enabled: canUseFaceTool, run: () => openFaceTool('hole') },
+    hole: { enabled: canUseFaceTool, run: () => { setHoleInitial(undefined); openFaceTool('hole') } },
     thread: { enabled: canUseFaceTool, run: () => openFaceTool('thread') },
     // Keeps the selection: a round face picked first is the one a matching thread is cut into.
     matchingPart: { enabled: canUseFaceTool && matchable.length > 0, hint: 'Model a thread first', run: () => {
+      // As 0.2.0, it opens on what is selected: a flat face takes a threaded hole that fits the newest outside thread;
+      // a round face is threaded; with neither, a bolt or nut.
+      const spec = matchable.at(-1)?.matchingThread
+      if (selected !== undefined && model?.shape.faces[selected]?.planar && spec?.internal === 'false') {
+        setHoleInitial({ style: 'threaded', designation: spec.designation, clearance: (spec.clearance ?? 'normal') as HoleSettings['clearance'],
+          form: (spec.form ?? 'printed') as HoleSettings['form'], left_hand: spec.left_hand === 'true' ? 'true' : 'false' })
+        openFaceTool('hole')
+        return
+      }
       setPreview(undefined)
       setMatchingPart(true)
     } },
     measure: { enabled: canUseFaceTool, run: () => {
-      setMeasureKind('face')
+      // On a selected face, that face; with nothing selected, two points on the model (0.2.0's point-to-point).
+      setMeasureKind(selected === undefined ? 'point' : 'face')
+      setMeasurePoints([])
       setPreview(undefined)
       setDistance('')
       setError('')
@@ -986,8 +1199,110 @@ export function App() {
     }
   }
 
+  // What is selected, for the bar: a clicked face (while one part or none is chosen), then the parts.
+  const chosenGroup = chosenBodies.length > 1 ? model?.groups.find(({ members }) =>
+    members.length === chosenBodies.length && members.every((member) => chosenBodies.includes(member))) : undefined
+  const selectionKinds: SelectionKind[] = [
+    ...(roundPair && threadable === roundPair ? ['threadPair' as const] : []),
+    ...(selectedEdge ? ['edge' as const] : []),
+    ...(selectedFace && chosenBodies.length <= 1 ? [selectedFace.planar ? 'face' as const : 'curvedFace' as const] : []),
+    ...(matchable.length && selectedFace && chosenBodies.length <= 1 ? ['matchable' as const] : []),
+    ...(chosenGroup ? ['group' as const] : chosenBodies.length === 1 ? ['part' as const]
+      : chosenBodies.length === 2 ? ['parts' as const] : chosenBodies.length > 2 ? ['manyParts' as const] : [])
+  ]
+  const several = ready && idle && !blocked && chosenBodies.length >= 2
+  const twoFaces = pickedFaces.length === 2 && model?.shape.faces[pickedFaces[0]]?.body !== model?.shape.faces[pickedFaces[1]]?.body
+  const barActions: BarActions = {
+    ...actions,
+    subtract: { enabled: several, hint: 'Choose the part to cut, then the cutter', run: () => openCombine('cut') },
+    join: { enabled: several, hint: 'Choose two parts', run: () => openCombine('join') },
+    intersect: { enabled: several, hint: 'Choose two parts', run: () => openCombine('intersect') },
+    group: { enabled: ready && idle && chosenBodies.length > 1 && !chosenGroup, hint: 'Choose two parts',
+      run: () => { if (revision !== undefined) mutate(() => groupBodies(revision, chosenBodies)) } },
+    ungroup: { enabled: ready && idle && !!chosenGroup,
+      run: () => { if (revision !== undefined && chosenGroup) mutate(() => ungroup(revision, chosenGroup.name)) } },
+    hide: { enabled: ready && idle && chosenBodies.length > 0, hint: 'Choose a part',
+      run: () => {
+        if (revision === undefined) return
+        const hiding = [...chosenBodies]
+        mutate(async () => {
+          let next: ModelResult | undefined
+          for (const body of hiding) next = await showBody(next?.revision ?? revision, body, false)
+          return next
+        })
+      } },
+    arrange: { ...actions.arrange, run: () => openArrange(true) },
+    // The clicked shaft and hole are the pair's two faces.
+    threadTogether: { enabled: ready && idle && !blocked, run: () => {
+      const faces = [...pickedFaces]
+      select()
+      setThreadPicks(faces)
+      setThreadPair(true)
+    } },
+    // A clicked edge is the one rounded or bevelled.
+    fillet: { ...actions.fillet, run: () => { const edges = selectedEdge?.edges; actions.fillet.run(); if (edges) setEdgePicks(edges) } },
+    chamfer: { ...actions.chamfer, run: () => { const edges = selectedEdge?.edges; actions.chamfer.run(); if (edges) setEdgePicks(edges) } },
+    // Two clicked faces on two parts are the clip's two faces.
+    clipJoint: { ...actions.clipJoint, run: () => {
+      const faces = twoFaces ? [...pickedFaces] : []
+      actions.clipJoint.run()
+      if (faces.length) setClipPicks(faces)
+    } }
+  }
+
+  // 0.2.0's handles on the model: a clicked edge's round (letting go applies), and Split's plane (it sets the position).
+  const lengthText = (mm: number) => `${format.format(displayLength(mm, unit))} ${unit}`
+  const modelHandles: ModelHandle[] = []
+  if (idle && ready && selectedEdge && revision !== undefined) {
+    const { edges } = selectedEdge
+    const kind = edgeFinish.kind
+    modelHandles.push({
+      key: 'round', label: kind === 'fillet' ? 'Drag to round the edge' : 'Drag to bevel the edge', at: [selectedEdge.point],
+      reading: (r) => `${kind === 'fillet' ? 'R' : 'C'} ${lengthText(r)}`,
+      onDrag: (r, commit) => {
+        if (commit) {
+          if (r > 0) mutate(() => applyEdgeFinish(revision, { edgeFinish: kind, edges, value: `${r} mm` }))
+          else clearPreview()
+        } else if (r > 0) livePreview(() => previewEdgeFinish(revision, { edgeFinish: kind, edges, value: `${r} mm` }))
+      },
+      onCancel: clearPreview
+    })
+  }
+  const splitAxis = ['x', 'y', 'z'].indexOf(split.axis)
+  const splitPlane = bodyTool?.kind === 'split' && !bodyTool.editing && bodyBounds && bodyCentre ? (() => {
+    const offset = Number(split.position) || 0
+    const normal = [0, 1, 2].map((i) => Number(i === splitAxis)) as Vec3
+    const centre = bodyCentre.map((v, i) => v + normal[i] * offset) as Vec3
+    const [u, v] = [0, 1, 2].filter((i) => i !== splitAxis)
+    const size = Math.max(bodyBounds.high[u] - bodyBounds.low[u], bodyBounds.high[v] - bodyBounds.low[v]) * 0.6 + 2
+    const along = (i: number, d: number) => centre.map((c, k) => k === i ? c + d : c) as Vec3
+    return { centre, normal, size, at: [centre, along(u, size), along(u, -size), along(v, size), along(v, -size)] }
+  })() : undefined
+  if (splitPlane && bodyBounds && bodyCentre) {
+    modelHandles.push({
+      key: 'split', label: 'Drag the split plane', at: splitPlane.at, axis: splitPlane.normal,
+      reading: (d) => {
+        const at = bodyCentre[splitAxis] + (splitFrom.current ?? (Number(split.position) || 0)) + d
+        return `${lengthText(at - bodyBounds.low[splitAxis])} | ${lengthText(bodyBounds.high[splitAxis] - at)}`
+      },
+      onDrag: (d, commit) => {
+        splitFrom.current ??= Number(split.position) || 0
+        const position = String(snapped(splitFrom.current + d, 0.01))
+        setSplit((s) => ({ ...s, position }))
+        if (commit) splitFrom.current = undefined
+      },
+      onCancel: () => {
+        const from = splitFrom.current
+        splitFrom.current = undefined
+        if (from !== undefined) setSplit((s) => ({ ...s, position: String(from) }))
+      }
+    })
+  }
+
   // SimpleCAD 0.4.4's right-click menu: the actions valid for what was clicked, then what can be done to its part.
-  const tool = (id: CommandId): MenuEntry[] => actions[id].enabled ? [{ label: commands[id].label, run: actions[id].run }] : []
+  const tool = (id: BarTool): MenuEntry[] => barActions[id].enabled ? [{ label: barLabel(id), run: barActions[id].run }] : []
+  /** The bar's tools for a menu; the part's own items (Hide, Group, Delete…) come after, named for it. */
+  const menuTools = (kinds: SelectionKind[]) => selectionTools(kinds).filter((id) => !['hide', 'delete', 'group', 'ungroup', 'clear'].includes(id)).flatMap(tool)
   const stepItems = (step: StepInfo): MenuEntry[] => [
     ...(canEdit(step) ? [{ label: `Edit ${step.name}`, run: () => editHistoryStep(step) }] : []),
     ...(!step.undone && (step.missingInput || step.state === 'failed') ? [{ label: keepLabel(step), run: () => keepStep(step) }] : []),
@@ -1010,10 +1325,12 @@ export function App() {
   }
   const menuFace = menu && 'face' in menu ? model?.shape.faces[menu.face] : undefined
   const menuItems: MenuEntry[] = !menu || !model ? []
-    : 'face' in menu ? menuFace ? [...faceTools(menuFace.planar).filter((id) => id !== 'clear').flatMap(tool), ...partItems(menuFace.body)] : []
-    : 'body' in menu ? [...(['move', 'rotate', 'scale', 'mirror', 'split', 'measure'] as CommandId[]).flatMap(tool), ...partItems(menu.body)]
+    : 'face' in menu ? menuFace ? [...menuTools(selectionKinds), ...partItems(menuFace.body)] : []
+    : 'body' in menu ? [...menuTools(selectionKinds), ...partItems(menu.body)]
+    : 'view' in menu ? (['selectAll', 'clear', 'fit'] as const).flatMap((id) => actions[id].enabled ? [{ label: commands[id].label, run: actions[id].run }] : [])
     : (() => { const step = model.steps.find((entry) => entry.id === menu.step); return step ? stepItems(step) : [] })()
-  const menuLabel = !menu || !model ? '' : 'face' in menu ? `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
+  const menuLabel = !menu || !model ? '' : 'view' in menu ? 'View'
+    : 'face' in menu ? chosenBodies.length > 1 ? `${chosenBodies.length} parts` : `Face of ${model.bodies[menuFace?.body ?? -1]?.name ?? 'part'}`
     : 'body' in menu ? model.bodies[menu.body]?.name ?? '' : model.steps.find((entry) => entry.id === menu.step)?.name ?? ''
   /** Where the menu goes: at the pointer, or beside the row when the keyboard opened it. */
   const menuAt = (event: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
@@ -1061,7 +1378,11 @@ export function App() {
       if (!plain && !(depth && vertical)) return
       const sign = direction === 'right' || direction === 'up' ? 1 : -1
       const step = (value: number, by: number) => Math.round((value + by * NUDGE_STEP) * 1e9) / 1e9
-      if (!nudge && selected !== undefined && !chosenBodies.length) {
+      // A clicked face is chosen with its part: Up and Down still push or pull the face, as in 0.5.1, and Left and
+      // Right (or Ctrl+Up/Down) move the part.
+      const faceFirst = selected !== undefined && (!chosenBodies.length ||
+        (chosenBodies.length === 1 && chosenBodies[0] === model?.shape.faces[selected]?.body))
+      if (!nudge && faceFirst && (!chosenBodies.length || (vertical && !depth))) {
         if (depth || !vertical) return
         faceNudge.current = true
         const amount = step(Number(distance) || 0, sign)
@@ -1161,8 +1482,19 @@ export function App() {
         return
       }
       const typing = event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable=true]')
-      for (const id of ['newBox', 'open', 'save', 'saveAs', 'undo', 'redo', 'fit', 'delete'] as const) {
-        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete'].includes(id))) continue
+      // As 0.2.0's tools: Enter applies the open one, wherever the focus is but a field or a button of its own.
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !typing &&
+        // A segmented choice is a radio: Enter there applies, as it submits a form from a native radio.
+        !(event.target instanceof HTMLElement && event.target.matches('button:not([role="radio"]), a, [role="menuitem"], summary'))) {
+        const form = document.querySelector<HTMLFormElement>('[data-tool-panel] form')
+        if (form) {
+          event.preventDefault()
+          form.requestSubmit()
+          return
+        }
+      }
+      for (const id of ['newBox', 'open', 'save', 'saveAs', 'importModel', 'undo', 'redo', 'fit', 'delete', 'selectAll'] as const) {
+        if (!actions[id].enabled || (typing && ['undo', 'redo', 'fit', 'delete', 'selectAll'].includes(id))) continue
         // A Mac's delete key is Backspace.
         const backspace = id === 'delete' && event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
         if (!backspace && !matchesShortcut(event, commands[id].shortcut)) continue
@@ -1176,9 +1508,29 @@ export function App() {
   })
 
 
+  // As the rest of the Simple suite: look for a new release 10 s after start, then hourly; the main process lets one
+  // through a day, and shows nothing unless there is an update. Settings turns it off.
+  useEffect(() => {
+    if (!preferences.updateCheck) return
+    const check = () => void window.simplecad.checkForUpdates(true).catch(() => {})
+    const first = window.setTimeout(check, 10_000)
+    const hourly = window.setInterval(check, 60 * 60 * 1000)
+    return () => {
+      window.clearTimeout(first)
+      window.clearInterval(hourly)
+    }
+  }, [preferences.updateCheck])
+
   // History rows keep the same handlers across renders, so a row draws again only when its step changes.
   const editStepNow = useRef<(step: StepInfo) => void>(() => {})
+  /** A History click made while a step ran: it opens once that step is done, if its own step is still there. */
+  const waitingStep = useRef<{ id: string; repair: boolean }>(undefined)
   editStepNow.current = (step) => {
+    // History stays enabled while a step runs: what it opens waits for that step.
+    if (busyRef.current) {
+      waitingStep.current = { id: step.id, repair: false }
+      return
+    }
     if (step.kind === 'sketch') {
       void openSketch(step.id)
       return
@@ -1227,16 +1579,311 @@ export function App() {
     }
   }
   const repairStepNow = useRef<(step: StepInfo) => void>(() => {})
-  repairStepNow.current = (step) => { select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({}) }
-  // A large model has hundreds of faces: their list is made once per result, not on every render.
-  const faceOptions = useMemo(() => model?.shape.faces.map((face, index) =>
-    <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>), [model, unit])
+  repairStepNow.current = (step) => {
+    if (busyRef.current) {
+      waitingStep.current = { id: step.id, repair: true }
+      return
+    }
+    select(); setRepairing(step.id); setRepairBody(undefined); setMoreRepair({})
+  }
+  useEffect(() => {
+    const waiting = waitingStep.current
+    if (busy || !waiting) return
+    waitingStep.current = undefined
+    const step = model?.steps.find((entry) => entry.id === waiting.id)
+    if (step && (waiting.repair ? !step.undone && step.missingInput : canEdit(step))) (waiting.repair ? repairStepNow : editStepNow).current(step)
+  }, [busy, model])
+  // A large model has thousands of faces: their list is made only while it is open (and once per result), since
+  // laying thousands of options out again took UPS Atlas's every step tens of milliseconds.
+  const [faceListOpen, setFaceListOpen] = useState(false)
+  const manyFaces = (model?.shape.faces.length ?? 0) > 400
+  const faceOptions = useMemo(() => !model ? null : !manyFaces || faceListOpen
+    ? model.shape.faces.map((face, index) => <option key={index} value={index}>{faceLabel(face, model.bodies, unit)}</option>)
+    : selected !== undefined && model.shape.faces[selected]
+      ? <option value={selected}>{faceLabel(model.shape.faces[selected], model.bodies, unit)}</option> : null,
+  [model, unit, manyFaces, faceListOpen, manyFaces && !faceListOpen ? selected : undefined])
   const editHistoryStep = useMemo(() => (step: StepInfo) => editStepNow.current(step), [])
   const repairHistoryStep = useMemo(() => (step: StepInfo) => repairStepNow.current(step), [])
   const keepStepNow = useRef<(step: StepInfo) => void>(() => {})
   keepStepNow.current = keepStep
   const keepHistoryStep = useMemo(() => (step: StepInfo) => keepStepNow.current(step), [])
   const menuHistoryStep = useMemo(() => (step: StepInfo, at: { x: number; y: number }) => setMenu({ step: step.id, ...at }), [])
+
+  // An open tool's panel: beside what was clicked, in the view (the side panel keeps the Bodies list and History).
+  const toolPanels = <>
+            {measureKind && model && <MeasurePanel kind={measureKind} displayUnit={unit}
+              readings={measureKind === 'point' ? pointReadings(measurePoints) : measurements} loading={measureKind !== 'point' && measuring}
+              selections={measureKind === 'point' ? measurePoints.map((point, i) => ({
+                key: `point:${i}`, label: `Point ${i + 1} · ${point.map((v) => format.format(displayLength(v, unit))).join(', ')}`
+              })) : measurePicks.map((pick) => ({
+                key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
+                  pick.kind === 'edge' ? `${model.bodies[edgeBody(pick.edge) ?? -1]?.name ?? 'Body'} · Edge ${pick.edge + 1}` :
+                  pick.kind === 'vertex' ? `${model.bodies[pick.body]?.name ?? 'Body'} · Corner ${pick.point.map((v) => format.format(displayLength(v, unit))).join(', ')}` :
+                  model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies, unit) : 'Face'
+              }))}
+              onKind={(kind) => { setMeasureKind(kind); setMeasurePoints([]) }}
+              onRemove={(key) => key.startsWith('point:') ? setMeasurePoints((points) => points.filter((_, i) => `point:${i}` !== key))
+                : setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
+              onClose={closeMeasure} />}
+            {stack && model && (
+              <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
+                <label className="grid gap-1">Target face
+                  <select value={target ?? ''} className={inputCls} disabled={busy}
+                    onChange={(e) => pickTarget(e.target.value === '' ? undefined : Number(e.target.value))}>
+                    <option value="">Select a target face</option>
+                    {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies, unit)}</option>)}
+                  </select>
+                </label>
+                <StackOptions settings={stackSettings} onChange={setStackSettings} />
+                <div className="flex gap-2">
+                  <Btn size="sm" variant="primary" disabled={!canPlace} onClick={() => {
+                    if (canPlace) mutate(() => applyStack(revision, placement))
+                  }}>Place</Btn>
+                  <Btn size="sm" disabled={busy} onClick={() => { cancelPlacement(); setError('') }}>Cancel</Btn>
+                </div>
+              </section>
+            )}
+            {model && transformKind && revision !== undefined && <TransformPanel key={transformKind}
+              kind={transformKind} body={transformBody} bodies={model.bodies} busy={busy}
+              snap={transformSnap} onSnap={setTransformSnap}
+              preferredSnap={transformKind === 'move' ? preferences.moveStep : preferences.rotationSnap} onPivot={setTransformPivot}
+              onBody={(body) => { clearPreview(); setTransformBody(body) }}
+              onChange={keepPreview} onPreview={(body, transform) => livePreview(() => previewTransform(revision, { body, transform }))}
+              onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
+              onCancel={cancelTransform} />}
+            {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
+              busy={busy} onPlate={(how) => { if (revision !== undefined) mutate(() => placeOnPlate(revision, how)) }}
+              onFit={() => setFitPanel(true)} onClose={() => setPrintCheck(false)} />}
+            {fitPanel && <FitPanel busy={busy} onClose={() => setFitPanel(false)} onTestPrint={() => {
+              if (revision === undefined) return
+              mutate(async () => {
+                setNotice('Building the calibration model…')
+                const next = await importModel(revision, { importName: 'Calibration model', data: await calibrationModel(), importFormat: 'step' })
+                setNotice('8 test fits at 0.05–0.50 mm on a 10 mm pin. Print both pieces, then enter the first clearance that fits.')
+                return next
+              }, true)
+            }} onThreadGauges={() => {
+              if (revision === undefined) return
+              mutate(async () => {
+                setNotice('Building the P30 plug and 0.40/0.60/0.80/1.00 mm gauges…')
+                const next = await addThreadGauges(revision)
+                setNotice('Print the P30 plug and gauges axis-up, and save the smallest value that turns freely as Normal.')
+                return next
+              }, true)
+            }} onSave={async (measured) => {
+              try {
+                await window.simplecad.saveCalibration(measured)
+                await reloadCalibration()
+                setNotice('Saved. Fits and threads rebuilt from now on use these clearances.')
+              } catch (failure) {
+                setError((failure as Error).message)
+              }
+            }} />}
+            {model && editingMove && revision !== undefined && (() => {
+              const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
+              return step?.faceSettings && <StepSettingsPanel key={step.id} kind={step.kind} name={step.name} busy={busy} preset={step.faceSettings}
+                onCancel={() => setEditingMove(undefined)}
+                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: step.id, changes }))} />
+            })()}
+            {model && section && revision !== undefined && <SectionReplacePanel key={section.editing ?? 'new'} busy={busy}
+              picked={sectionPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+              preset={model.steps.find((step) => step.id === section.editing && !step.undone)?.faceSettings}
+              onClear={() => { setSectionPicks([]); setSelected(undefined); clearPreview() }} onChange={keepPreview} onCancel={closeSection}
+              onPreview={(inputs) => livePreview(() => previewSectionReplace(revision,
+                { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
+              onApply={(inputs) => mutate(() => applySectionReplace(revision,
+                { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: section.editing!, changes }))} />}
+            {model && arrange && revision !== undefined && (() => {
+              const preset = model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings
+              const saved = (key: string) => arrange.editing ? Number(preset?.[key]) || 0 : 0
+              return <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
+                names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')} preset={preset}
+                target={arrange.targetName} plate={arrange.plate} role={arrange.role} note={preview?.arrangement} move={arrange.move}
+                contacts={arrange.repicked.contacts ? Object.keys(arrange.contacts).length : saved('contact_faces')}
+                edges={arrange.repicked.edges ? arrange.edges.length : saved('boundary_edges')}
+                onRole={arrangeRole}
+                onPlate={arrangeOnPlate} pattern={arrange.pattern}
+                onReset={() => { clearPreview(); setArrange({ ...arrange, move: [0, 0, 0] }) }}
+                onChange={keepPreview} onCancel={closeArrange}
+                onPreview={(inputs) => livePreview(() => previewArrange(revision, arrangeRequest(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyArrange(revision, arrangeRequest(inputs))
+                  closeArrange()
+                  return next
+                })}
+                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />
+            })()}
+            {model && construction && revision !== undefined && <ConstructionPanel key={`${construction.kind}:${construction.editing ?? 'new'}`}
+              kind={construction.kind} busy={busy} axisFrom={construction.axisFrom}
+              picked={{ faces: constructPicks.faces.length, edges: constructPicks.edges.length, points: constructPicks.points.length }}
+              preset={model.steps.find((step) => step.id === construction.editing && !step.undone)?.faceSettings}
+              onAxisFrom={(axisFrom) => setConstruction({ ...construction, axisFrom })}
+              onClear={() => { setSelected(undefined); setConstructPicks({ faces: [], edges: [], points: [] }) }} onCancel={closeConstruction}
+              onApply={(values) => mutate(() => applyConstruction(revision, { construction: construction.kind,
+                faces: constructPicks.faces, edges: constructPicks.edges,
+                inputs: construction.kind === 'plane_through_points' ? { ...values, points: constructPicks.points } : values }))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: construction.editing!, changes }))} />}
+            {model && threadPair && revision !== undefined && (() => {
+              const request = (inputs: ThreadedConnectionEdit['threadedConnection']['inputs'], align: boolean) =>
+                ({ threadedConnection: { faces: [threadPicks[0], threadPicks[1]] as [number, number], align, inputs } })
+              return <ThreadedConnectionPanel busy={busy}
+                picked={threadPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+                onClear={() => { setThreadPicks([]); setSelected(undefined); clearPreview() }} onChange={keepPreview} onCancel={closeThreadPair}
+                onPreview={(inputs, align) => livePreview(() => previewThreadedConnection(revision, request(inputs, align)))}
+                onApply={(inputs, align) => mutate(async () => {
+                  const next = await applyThreadedConnection(revision, request(inputs, align))
+                  closeThreadPair()
+                  return next
+                })} />
+            })()}
+            {model && clip && revision !== undefined && (() => {
+              const request = (inputs: ClipJointEdit['clipJoint']['inputs']) => ({ clipJoint: { faces: [clipPicks[0], clipPicks[1]] as [number, number], inputs } })
+              return <ClipJointPanel busy={busy} fits={clipFits}
+                picked={clipPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+                onClear={() => { setClipPicks([]); setSelected(undefined); clearPreview() }} onChange={keepPreview} onCancel={closeClip}
+                onPreview={(inputs) => livePreview(() => previewClipJoint(revision, request(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyClipJoint(revision, request(inputs))
+                  closeClip()
+                  return next
+                })} />
+            })()}
+            {model && draftPicks && revision !== undefined && (() => {
+              const body = model.shape.faces[draftPicks[0]]?.body ?? 0
+              const request = (inputs: DraftInputs) => ({ bodyOperation: 'draft' as const, body, inputs: { ...inputs, faces: draftPicks } })
+              return <DraftPanel busy={busy}
+                picked={draftPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
+                onClear={() => { setDraftPicks([]); setSelected(undefined); clearPreview() }} onChange={keepPreview} onCancel={closeDraft}
+                onPreview={(inputs) => livePreview(() => previewBodyOperation(revision, request(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyBodyOperation(revision, request(inputs))
+                  closeDraft()
+                  return next
+                })} />
+            })()}
+            {model && hinge && revision !== undefined && (() => {
+              const fixed = hingeEdge === undefined ? undefined : edgeBody(hingeEdge)
+              const request = (inputs: HingeEdit['hinge']['inputs']) => ({ hinge: { edge: hingeEdge!, swinging: hingeSwing!, inputs } })
+              return <HingePanel busy={busy} edge={fixed === undefined ? undefined : `Along an edge of ${model.bodies[fixed]?.name}, which stays fixed.`}
+                parts={model.bodies.flatMap((body, index) => body.visible && !body.empty && index !== fixed ? [{ index, name: body.name }] : [])}
+                swinging={hingeSwing === -1 ? undefined : hingeSwing} onSwinging={setHingeSwing} onChange={keepPreview} onClose={closeHinge}
+                onPreview={(inputs) => livePreview(() => previewHinge(revision, request(inputs)))}
+                onApply={(inputs) => mutate(async () => {
+                  const next = await applyHinge(revision, request(inputs))
+                  closeHinge()
+                  return next
+                })} />
+            })()}
+            {model && edgeTool && revision !== undefined && <EdgeFinishPanel key={`${edgeTool.kind}:${edgeTool.editing ?? 'new'}`} at={edgePicks.join(',')}
+              kind={edgeTool.kind} busy={busy} picked={edgePicks.length}
+              body={edgePicks.length ? model.bodies[edgeBody(edgePicks[0]) ?? -1]?.name : undefined}
+              preset={model.steps.find((step) => step.id === edgeTool.editing && !step.undone)?.faceSettings}
+              onAll={pickAllEdges} onClear={() => setEdgePicks([])} onChange={keepPreview} onCancel={closeEdgeTool}
+              onPreview={(value) => livePreview(() => previewEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
+              onApply={(value) => mutate(() => applyEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: edgeTool.editing!, changes }))} />}
+            {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
+              kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy} centre={bodyCentre}
+              tools={bodyTool.tools} operation={bodyTool.operation}
+              onTools={bodyTool.kind === 'boolean' && !bodyTool.editing ? (tools) => { clearPreview(); setBodyTool((tool) => tool && { ...tool, tools }) } : undefined}
+              onOperation={(operation) => setBodyTool((tool) => tool && { ...tool, operation })}
+              split={bodyTool.kind === 'split' ? { ...split, onAxis: (axis) => setSplit((s) => ({ ...s, axis })), onPosition: (position) => setSplit((s) => ({ ...s, position })) } : undefined}
+              preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
+              onBody={(body) => { clearPreview(); setTransformBody(body) }} onChange={keepPreview} onCancel={closeBodyTool}
+              onPreview={(edit) => livePreview(() => previewBodyOperation(revision, edit))}
+              onApply={(edit) => mutate(() => applyBodyOperation(revision, edit))}
+              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: bodyTool.editing!, changes }))} />}
+            {shapePanel && revision !== undefined && <ShapePanel key={editingShape ?? 'new'} busy={busy} saved={savedShape}
+              onApply={(edit) => shapeStep
+                ? mutate(() => editSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
+                : mutate(() => createShape(revision, edit), true)}
+              onPreview={(edit) => {
+                if (shapeStep) livePreview(() => previewSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
+              }}
+              onChange={keepPreview} onCancel={cancelShapePanel} />}
+            {sketchTool && revision !== undefined && <SketchSolidPanel key={sketchTool} kind={sketchTool} sketches={sketches} bodies={patternBodies}
+              busy={busy} onChange={keepPreview} onClose={closeSketchTool}
+              onPreview={(edit) => livePreview(() => previewSketchSolid(revision, edit))}
+              onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}
+            {matchingPart && revision !== undefined && <MatchingPartPanel threads={matchable} busy={busy}
+              roundFace={selected !== undefined && !model?.shape.faces[selected]?.planar} at={String(selected)}
+              onThread={(settings) => selected !== undefined && mutate(() => applyFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
+              onPreviewThread={(settings) => selected !== undefined && livePreview(() => previewFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
+              onChange={keepPreview} onClose={closeMatching}
+              onPreview={(edit) => livePreview(() => previewShape(revision, edit))}
+              onApply={(edit) => mutate(() => createShape(revision, edit), true)} />}
+            {faceTool === 'text' && <TextPanel key={editingFace ?? 'new'} busy={busy} at={JSON.stringify([selected, holePosition])} preset={faceStep?.faceSettings}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
+              onChange={keepPreview} onCancel={cancelFaceTool}
+              onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
+              onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
+            {faceTool === 'vent_cut' && <VentPanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
+              preset={faceStep?.faceSettings} onChange={keepPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'vent_cut', settings })} />}
+            {faceTool === 'resize_round' && <ResizePanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || selected !== undefined}
+              preset={faceStep?.faceSettings} onChange={keepPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'resize_round', settings })} />}
+            {faceTool === 'shell' && <ShellPanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || selected !== undefined}
+              preset={faceStep?.faceSettings} onChange={keepPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'shell', settings })} />}
+            {faceTool === 'offset_plane' && <OffsetPlanePanel key={editingFace ?? 'new'} busy={busy}
+              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
+              preset={faceStep?.faceSettings} onChange={keepPreview} onCancel={cancelFaceTool}
+              onApply={(settings) => commitFace({ faceOperation: 'offset_plane', settings })} />}
+            {faceTool === 'face_texture' && <TexturePanel key={editingFace ?? 'new'} busy={busy} at={String(selected)} preset={faceStep?.faceSettings}
+              selected={!!faceStep || selected !== undefined}
+              onChange={keepPreview} onCancel={cancelFaceTool}
+              onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
+              onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
+            {model && faceTool === 'hole' && <HolePanel key={editingFace ?? 'new'} busy={busy} at={JSON.stringify([selected, holePosition])}
+              bodies={model.bodies} body={movingBody} preset={faceStep?.faceSettings} initial={holeInitial}
+              selected={!!faceStep || (selected !== undefined && !!model.shape.faces[selected]?.planar)}
+              onChange={keepPreview} onCancel={cancelFaceTool}
+              onPreview={(settings, untilBody) => showFacePreview({ faceOperation: 'hole', settings, untilBody, position: holePosition })}
+              onApply={(settings, untilBody) => commitFace({ faceOperation: 'hole', settings, untilBody, position: holePosition })} />}
+            {model && faceTool === 'thread' && <ThreadPanel key={editingFace ?? 'new'} busy={busy} at={String(selected)}
+              preset={faceStep?.faceSettings}
+              selected={!!faceStep || (selected !== undefined && !model.shape.faces[selected]?.planar)}
+              onChange={keepPreview} onCancel={cancelFaceTool}
+              onPreview={(settings) => showFacePreview({ faceOperation: 'thread', settings })}
+              onApply={(settings) => commitFace({ faceOperation: 'thread', settings })} />}
+            {model && repairStep && missingInput && <form aria-label={`Repair ${repairStep.name}`} className="grid gap-2 text-xs"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const body = missingInput.face && selected !== undefined ? model.shape.faces[selected]?.body : repairBody
+                if (body === undefined || revision === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined)) return
+                const more = moreMissing.map(({ objectId }) => ({ missingInputId: objectId, replacementBody: moreRepair[objectId] }))
+                mutate(() => repairInput(revision, { repairStepId: repairStep.id, missingInputId: missingInput.objectId,
+                  replacementBody: body, replacementFace: missingInput.face ? selected : undefined, ...(more.length ? { more } : {}) }))
+              }}>
+              <div className="font-semibold">Repair {repairStep.name}</div>
+              {missingInput.face ? <p>Pick a target face to replace {missingInput.name}.</p> :
+                [missingInput, ...moreMissing].map((input, i) => {
+                  const value = i === 0 ? repairBody : moreRepair[input.objectId]
+                  return <label key={input.objectId} className="grid gap-1">
+                    {moreMissing.length ? `Replacement for ${input.name}` : 'Replacement tool'}
+                    <select value={value ?? ''} className={inputCls} disabled={busy} onChange={(event) => {
+                      const chosen = event.target.value === '' ? undefined : Number(event.target.value)
+                      if (i === 0) setRepairBody(chosen)
+                      else setMoreRepair(({ [input.objectId]: _, ...rest }) => chosen === undefined ? rest : { ...rest, [input.objectId]: chosen })
+                    }}>
+                      <option value="">Select a body</option>
+                      {model.bodies.map((body, b) => body.empty ? null : <option key={b} value={b}>{body.name}</option>)}
+                    </select>
+                  </label>
+                })}
+              <div className="flex gap-2">
+                <Btn size="sm" variant="primary" type="submit" disabled={busy || (missingInput.face ? selected === undefined
+                  : repairBody === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined))}>Apply repair</Btn>
+                <Btn size="sm" type="button" disabled={busy} onClick={() => { setRepairing(undefined); setError('') }}>Cancel</Btn>
+              </div>
+            </form>}
+  </>
+  const toolOpen = !idle || !!draftPicks || !!editingMove || printCheck || fitPanel
 
   return (
     <TooltipProvider>
@@ -1289,22 +1936,23 @@ export function App() {
             placingBody={stack ? movingBody : undefined}
             transform={transformKind && transformBody !== undefined && revision !== undefined ? {
               kind: transformKind, body: transformBody, enabled: ready, snap: transformSnap, pivot: transformPivot,
-              formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+              formatLength: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`, magnets: model?.bodies.map((body) => body.name),
               onCommit: (transform) => mutate(() => applyTransform(revision, { body: transformBody, transform }))
-            } : arrangeDrag}
-            outline={arrange ? preview?.arrangement?.boundary : undefined}
+            } : arrangeDrag ?? stackDrag ?? partsDrag}
+            outline={arrange ? preview?.arrangement?.boundary : stackGuides?.lines}
+            labels={stackGuides?.labels}
             marked={arrange ? preview?.arrangement?.marked : undefined}
             canPull={canPullFace}
             onContextMenu={(face, x, y) => {
               if (!ready || !idle) return
+              // Empty space: what can be done to the view and the selection, which stays.
               if (face === undefined) {
-                select()
-                setMenu(undefined)
+                setMenu({ view: true, x, y })
                 return
               }
-              // As 0.4.4's select_under: what was clicked replaces the selection.
-              select(face)
-              setChosenBodies([])
+              // As 0.4.4's select_under: a part outside the selection replaces it; one inside keeps every chosen
+              // part, so two parts get Subtract and Join.
+              if (!chosenBodies.includes(model!.shape.faces[face].body)) clickPart(face, undefined, false)
               setMenu({ face, x, y })
             }}
             onPickEdge={arrange?.role === 'edges' && ready ? pickArrangeEdge
@@ -1312,8 +1960,10 @@ export function App() {
               : hinge && ready ? pickHingeEdge
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
-            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measuredEdges}
-            overlay={idle && model && (selectedFace || blocked) ? <div className="grid justify-items-start gap-1.5">
+            pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measureKind ? measuredEdges : selectedEdge ? selectedEdge.edges : measuredEdges}
+            toolOverlay={toolOpen && (arrange || transformKind || stack) ? 'dock' : toolOpen}
+            overlay={toolOpen ? <section aria-label="Tool" data-tool-panel="" className="grid w-72 gap-2 overflow-y-auto rounded-xl border border-border bg-elev/95 p-3 text-xs shadow-lg backdrop-blur [&>form]:max-h-none">{toolPanels}</section>
+              : idle && model && (selectedFace || selectedEdge || chosenBodies.length || blocked) ? <div className="grid justify-items-start gap-1.5">
               {blocked && <section aria-label="Part can't change" className="max-w-sm rounded-xl border border-border bg-elev/95 p-2 text-xs shadow-lg backdrop-blur">
                 <p><strong>{blocked.body.name}</strong> can't change until <strong>{blocked.step.name}</strong> is kept as it is or repaired.
                   {blocked.step.message ? ` ${blocked.step.message}` : ''}</p>
@@ -1323,11 +1973,30 @@ export function App() {
                 </div>
               </section>}
               {error && <p data-testid="selection-error" className="max-w-sm rounded-md bg-elev/95 px-2 py-1 text-xs text-danger shadow">{error}</p>}
-              {selectedFace && <ContextBar actions={actions} planar={selectedFace.planar} distance={distance}
-                canPull={canPullFace} distanceRef={distanceField} onPull={() => pull(value)}
-                onDistance={(next) => { setDistance(next); setError('') }} />}
+              {selectionKinds.length > 0 && !blocked && <ContextBar actions={barActions} kinds={selectionKinds}
+                pull={selectedFace && chosenBodies.length <= 1 ? { distance, canPull: canPullFace, distanceRef: distanceField, onPull: () => pull(value),
+                  onDistance: (next) => { setDistance(next); setError('') } } : undefined}
+                edge={selectedEdge ? { kind: edgeFinish.kind, size: edgeFinish.size, count: selectedEdge.edges.length, canApply: ready && edgeSize > 0,
+                  onKind: (kind) => setEdgeFinish((finish) => ({ ...finish, kind })),
+                  onSize: (size) => { setEdgeFinish((finish) => ({ ...finish, size })); setError('') }, onApply: applyEdge } : undefined} />}
             </div> : undefined}
-            onSelect={(face, point) => {
+            onBoxSelect={idle && ready ? boxSelect : undefined}
+            onSelectEdge={idle && ready ? (edge, point, adding) => {
+              // Shift, Ctrl or Cmd adds an edge, or takes it away again; a plain click starts over with this one.
+              const kept = adding ? selectedEdge?.edges ?? [] : []
+              const edges = kept.includes(edge) ? kept.filter((e) => e !== edge) : [...kept, edge]
+              select()
+              setEdgeFinish((finish) => ({ ...finish, size: adding ? finish.size : '' }))
+              setSelectedEdge(edges.length ? { edges, point } : undefined)
+            } : undefined}
+            handles={modelHandles.length ? modelHandles : undefined}
+            plane={splitPlane && { centre: splitPlane.centre, normal: splitPlane.normal, size: splitPlane.size }}
+            onOpenBody={idle && ready ? openPart : undefined}
+            chosen={combining && transformBody !== undefined ? [transformBody] : chosenBodies}
+            measurePoints={measureKind === 'point' && ready ? { points: measurePoints, format: (mm) => `${format.format(displayLength(mm, unit))} ${unit}`,
+              onPick: (point) => setMeasurePoints((points) => points.length >= 2 ? [point] : [...points, point]) } : undefined}
+            roles={combining ? { kept: transformBody, tools: (bodyTool.tools ?? []).filter((tool) => tool !== transformBody), operation: bodyTool.operation ?? 'join' } : undefined}
+            onSelect={(face, point, adding) => {
               if (!ready || shapePanel || sketchTool) return
               if (matchingPart) {
                 if (face !== undefined) { clearPreview(); setSelected(face) }
@@ -1335,6 +2004,7 @@ export function App() {
               }
               if (arrange?.role) {
                 if (face !== undefined) pickArrangeFace(face)
+                else if (arrange.role === 'target') arrangeOnPlate(true)
                 return
               }
               if (section) {
@@ -1368,12 +2038,23 @@ export function App() {
                     pickMeasure({ kind: 'face', face })
                   }
                 }
+              } else if (bodyTool?.kind === 'boolean' && !bodyTool.editing) {
+                // As 0.2.0's Combine: the first part clicked is kept; each other part clicked is added as a tool, or
+                // taken away again. The model is picked under a preview too.
+                if (face === undefined) return
+                const body = model.shape.faces[face].body
+                clearPreview()
+                if (transformBody === undefined) setTransformBody(body)
+                else if (body !== transformBody) {
+                  const tools = bodyTool.tools ?? []
+                  setBodyTool({ ...bodyTool, tools: tools.includes(body) ? tools.filter((tool) => tool !== body) : [...tools, body] })
+                }
               } else if (transformKind || bodyTool) {
                 if (face !== undefined) {
                   clearPreview()
                   setTransformBody(model.shape.faces[face]?.body)
                 }
-              } else if (!stack) select(face, point)
+              } else if (!stack) clickPart(face, point, !!adding)
               else if (face !== undefined && face !== target && model.shape.faces[face]?.body !== movingBody) {
                 pickTarget(face)
               }
@@ -1386,11 +2067,7 @@ export function App() {
             onError={setViewportError}
           />
           <aside aria-label="Model inspector" className="flex min-h-0 w-56 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-panel p-3">
-            <div className="flex items-center justify-between border-b border-border pb-2 text-xs font-semibold">Bodies
-              {chosenBodies.length > 1 && <Btn size="sm" disabled={!ready} onClick={() => {
-                if (revision !== undefined) mutate(() => groupBodies(revision, chosenBodies))
-              }}>Group</Btn>}
-            </div>
+            <div className="flex items-center justify-between border-b border-border pb-2 text-xs font-semibold">Bodies</div>
             <ul aria-label="Bodies" className="grid max-h-[40%] min-h-16 shrink-0 auto-rows-min gap-1 overflow-auto">
               {bodyTree.map((entry) => entry.group === undefined ? bodyRow(entry.body) : (
                 <li key={`group:${entry.group}`} className="grid gap-1">
@@ -1409,9 +2086,11 @@ export function App() {
                 </li>
               ))}
             </ul>
-            <label className="grid gap-1 text-xs text-text-2">
+            {/* Faces are picked in the view; this list is the keyboard's way, shown only while it has the focus. */}
+            <label className="sr-only grid gap-1 text-xs text-text-2 focus-within:not-sr-only">
               Planar face
               <select value={selected ?? ''} disabled={!ready || stack || !!transformKind} className={`${inputCls} w-full`}
+                onFocus={() => setFaceListOpen(true)} onPointerDown={() => setFaceListOpen(true)} onBlur={() => setFaceListOpen(false)}
                 onChange={(e) => {
                   const face = e.target.value === '' ? undefined : Number(e.target.value)
                   if (arrange?.role === 'target' || arrange?.role === 'contact') {
@@ -1432,286 +2111,21 @@ export function App() {
                   } else if (measureKind === 'face') {
                     setSelected(face)
                     if (face !== undefined) pickMeasure({ kind: 'face', face })
-                  } else select(face)
+                  } else clickPart(face, undefined, false)
                 }}>
                 <option value="">Select a face</option>
                 {faceOptions}
               </select>
             </label>
-            {measureKind && model && <MeasurePanel kind={measureKind} readings={measurements} loading={measuring} displayUnit={unit}
-              selections={measurePicks.map((pick) => ({
-                key: pickKey(pick), label: pick.kind === 'body' ? model.bodies[pick.body]?.name ?? 'Body' :
-                  pick.kind === 'edge' ? `${model.bodies[edgeBody(pick.edge) ?? -1]?.name ?? 'Body'} · Edge ${pick.edge + 1}` :
-                  pick.kind === 'vertex' ? `${model.bodies[pick.body]?.name ?? 'Body'} · Corner ${pick.point.map((v) => format.format(displayLength(v, unit))).join(', ')}` :
-                  model.shape.faces[pick.face] ? faceLabel(model.shape.faces[pick.face], model.bodies, unit) : 'Face'
-              }))}
-              onKind={setMeasureKind} onRemove={(key) => setMeasurePicks((picks) => picks.filter((pick) => pickKey(pick) !== key))}
-              onClose={closeMeasure} />}
-            {stack && model && (
-              <section aria-label="Stack & Place" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs">
-                <label className="grid gap-1">Target face
-                  <select value={target ?? ''} className={inputCls} disabled={busy}
-                    onChange={(e) => pickTarget(e.target.value === '' ? undefined : Number(e.target.value))}>
-                    <option value="">Select a target face</option>
-                    {model.shape.faces.map((face, i) => face.body === movingBody ? null : <option key={i} value={i}>{faceLabel(face, model.bodies, unit)}</option>)}
-                  </select>
-                </label>
-                <StackOptions settings={stackSettings} onChange={setStackSettings} />
-                <div className="flex gap-2">
-                  <Btn size="sm" variant="primary" disabled={!canPlace} onClick={() => {
-                    if (canPlace) mutate(() => applyStack(revision, placement))
-                  }}>Place</Btn>
-                  <Btn size="sm" disabled={busy} onClick={() => { cancelPlacement(); setError('') }}>Cancel</Btn>
-                </div>
-              </section>
-            )}
-            {model && transformKind && revision !== undefined && <TransformPanel key={transformKind}
-              kind={transformKind} body={transformBody} bodies={model.bodies} busy={busy}
-              snap={transformSnap} onSnap={setTransformSnap}
-              preferredSnap={transformKind === 'move' ? preferences.moveStep : preferences.rotationSnap} onPivot={setTransformPivot}
-              onBody={(body) => { clearPreview(); setTransformBody(body) }}
-              onChange={clearPreview} onPreview={(body, transform) => void requestPreview(() => previewTransform(revision, { body, transform }))}
-              onApply={(body, transform) => mutate(() => applyTransform(revision, { body, transform }))}
-              onCancel={cancelTransform} />}
-            {model && printCheck && <PrintCheckPanel findings={[...printChecks(model.shape), ...healthChecks(health ?? [])]}
-              busy={busy} onPlate={(how) => { if (revision !== undefined) mutate(() => placeOnPlate(revision, how)) }}
-              onFit={() => setFitPanel(true)} onClose={() => setPrintCheck(false)} />}
-            {fitPanel && <FitPanel busy={busy} onClose={() => setFitPanel(false)} onTestPrint={() => {
-              if (revision === undefined) return
-              mutate(async () => {
-                setNotice('Building the calibration model…')
-                const next = await importModel(revision, { importName: 'Calibration model', data: await calibrationModel(), importFormat: 'step' })
-                setNotice('8 test fits at 0.05–0.50 mm on a 10 mm pin. Print both pieces, then enter the first clearance that fits.')
-                return next
-              }, true)
-            }} onThreadGauges={() => {
-              if (revision === undefined) return
-              mutate(async () => {
-                setNotice('Building the P30 plug and 0.40/0.60/0.80/1.00 mm gauges…')
-                const next = await addThreadGauges(revision)
-                setNotice('Print the P30 plug and gauges axis-up, and save the smallest value that turns freely as Normal.')
-                return next
-              }, true)
-            }} onSave={async (measured) => {
-              try {
-                await window.simplecad.saveCalibration(measured)
-                await reloadCalibration()
-                setNotice('Saved. Fits and threads rebuilt from now on use these clearances.')
-              } catch (failure) {
-                setError((failure as Error).message)
-              }
-            }} />}
-            {model && editingMove && revision !== undefined && (() => {
-              const step = model.steps.find((entry) => entry.id === editingMove && !entry.undone)
-              return step?.faceSettings && <StepSettingsPanel key={step.id} kind={step.kind} name={step.name} busy={busy} preset={step.faceSettings}
-                onCancel={() => setEditingMove(undefined)}
-                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: step.id, changes }))} />
-            })()}
-            {model && section && revision !== undefined && <SectionReplacePanel key={section.editing ?? 'new'} busy={busy}
-              picked={sectionPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
-              preset={model.steps.find((step) => step.id === section.editing && !step.undone)?.faceSettings}
-              onClear={() => { setSectionPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeSection}
-              onPreview={(inputs) => void requestPreview(() => previewSectionReplace(revision,
-                { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
-              onApply={(inputs) => mutate(() => applySectionReplace(revision,
-                { sectionReplacement: sectionPicks[0], sectionTarget: sectionPicks[1], inputs }))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: section.editing!, changes }))} />}
-            {model && arrange && revision !== undefined && (() => {
-              const preset = model.steps.find((step) => step.id === arrange.editing && !step.undone)?.faceSettings
-              const saved = (key: string) => arrange.editing ? Number(preset?.[key]) || 0 : 0
-              return <ArrangePanel key={arrange.editing ?? 'new'} busy={busy}
-                names={arrange.bodies.map((body) => model.bodies[body]?.name ?? '')} preset={preset}
-                target={arrange.targetName} plate={arrange.plate} role={arrange.role} note={preview?.arrangement} move={arrange.move}
-                contacts={arrange.repicked.contacts ? Object.keys(arrange.contacts).length : saved('contact_faces')}
-                edges={arrange.repicked.edges ? arrange.edges.length : saved('boundary_edges')}
-                onRole={arrangeRole}
-                onPlate={(plate) => {
-                  clearPreview()
-                  setArrange({ ...arrange, plate, role: undefined, target: undefined, targetName: undefined, edges: [],
-                    repicked: { ...arrange.repicked, target: true, edges: true } })
-                }}
-                onReset={() => { clearPreview(); setArrange({ ...arrange, move: [0, 0, 0] }) }}
-                onChange={clearPreview} onCancel={closeArrange}
-                onPreview={(inputs) => void requestPreview(() => previewArrange(revision, arrangeRequest(inputs)))}
-                onApply={(inputs) => mutate(async () => {
-                  const next = await applyArrange(revision, arrangeRequest(inputs))
-                  closeArrange()
-                  return next
-                })}
-                onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: arrange.editing!, changes }))} />
-            })()}
-            {model && construction && revision !== undefined && <ConstructionPanel key={`${construction.kind}:${construction.editing ?? 'new'}`}
-              kind={construction.kind} busy={busy} axisFrom={construction.axisFrom}
-              picked={{ faces: constructPicks.faces.length, edges: constructPicks.edges.length, points: constructPicks.points.length }}
-              preset={model.steps.find((step) => step.id === construction.editing && !step.undone)?.faceSettings}
-              onAxisFrom={(axisFrom) => setConstruction({ ...construction, axisFrom })}
-              onClear={() => { setSelected(undefined); setConstructPicks({ faces: [], edges: [], points: [] }) }} onCancel={closeConstruction}
-              onApply={(values) => mutate(() => applyConstruction(revision, { construction: construction.kind,
-                faces: constructPicks.faces, edges: constructPicks.edges,
-                inputs: construction.kind === 'plane_through_points' ? { ...values, points: constructPicks.points } : values }))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: construction.editing!, changes }))} />}
-            {model && threadPair && revision !== undefined && (() => {
-              const request = (inputs: ThreadedConnectionEdit['threadedConnection']['inputs'], align: boolean) =>
-                ({ threadedConnection: { faces: [threadPicks[0], threadPicks[1]] as [number, number], align, inputs } })
-              return <ThreadedConnectionPanel busy={busy}
-                picked={threadPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
-                onClear={() => { setThreadPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeThreadPair}
-                onPreview={(inputs, align) => void requestPreview(() => previewThreadedConnection(revision, request(inputs, align)))}
-                onApply={(inputs, align) => mutate(async () => {
-                  const next = await applyThreadedConnection(revision, request(inputs, align))
-                  closeThreadPair()
-                  return next
-                })} />
-            })()}
-            {model && clip && revision !== undefined && (() => {
-              const request = (inputs: ClipJointEdit['clipJoint']['inputs']) => ({ clipJoint: { faces: [clipPicks[0], clipPicks[1]] as [number, number], inputs } })
-              return <ClipJointPanel busy={busy} fits={clipFits}
-                picked={clipPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
-                onClear={() => { setClipPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeClip}
-                onPreview={(inputs) => void requestPreview(() => previewClipJoint(revision, request(inputs)))}
-                onApply={(inputs) => mutate(async () => {
-                  const next = await applyClipJoint(revision, request(inputs))
-                  closeClip()
-                  return next
-                })} />
-            })()}
-            {model && draftPicks && revision !== undefined && (() => {
-              const body = model.shape.faces[draftPicks[0]]?.body ?? 0
-              const request = (inputs: DraftInputs) => ({ bodyOperation: 'draft' as const, body, inputs: { ...inputs, faces: draftPicks } })
-              return <DraftPanel busy={busy}
-                picked={draftPicks.map((face) => model.shape.faces[face] ? faceLabel(model.shape.faces[face], model.bodies, unit) : 'Face')}
-                onClear={() => { setDraftPicks([]); setSelected(undefined); clearPreview() }} onChange={clearPreview} onCancel={closeDraft}
-                onPreview={(inputs) => void requestPreview(() => previewBodyOperation(revision, request(inputs)))}
-                onApply={(inputs) => mutate(async () => {
-                  const next = await applyBodyOperation(revision, request(inputs))
-                  closeDraft()
-                  return next
-                })} />
-            })()}
-            {model && hinge && revision !== undefined && (() => {
-              const fixed = hingeEdge === undefined ? undefined : edgeBody(hingeEdge)
-              const request = (inputs: HingeEdit['hinge']['inputs']) => ({ hinge: { edge: hingeEdge!, swinging: hingeSwing!, inputs } })
-              return <HingePanel busy={busy} edge={fixed === undefined ? undefined : `Along an edge of ${model.bodies[fixed]?.name}, which stays fixed.`}
-                parts={model.bodies.flatMap((body, index) => body.visible && !body.empty && index !== fixed ? [{ index, name: body.name }] : [])}
-                swinging={hingeSwing === -1 ? undefined : hingeSwing} onSwinging={setHingeSwing} onChange={clearPreview} onClose={closeHinge}
-                onPreview={(inputs) => void requestPreview(() => previewHinge(revision, request(inputs)))}
-                onApply={(inputs) => mutate(async () => {
-                  const next = await applyHinge(revision, request(inputs))
-                  closeHinge()
-                  return next
-                })} />
-            })()}
-            {model && edgeTool && revision !== undefined && <EdgeFinishPanel key={`${edgeTool.kind}:${edgeTool.editing ?? 'new'}`}
-              kind={edgeTool.kind} busy={busy} picked={edgePicks.length}
-              body={edgePicks.length ? model.bodies[edgeBody(edgePicks[0]) ?? -1]?.name : undefined}
-              preset={model.steps.find((step) => step.id === edgeTool.editing && !step.undone)?.faceSettings}
-              onAll={pickAllEdges} onClear={() => setEdgePicks([])} onChange={clearPreview} onCancel={closeEdgeTool}
-              onPreview={(value) => void requestPreview(() => previewEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
-              onApply={(value) => mutate(() => applyEdgeFinish(revision, { edgeFinish: edgeTool.kind, edges: edgePicks, value }))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: edgeTool.editing!, changes }))} />}
-            {model && bodyTool && revision !== undefined && <BodyOperationPanel key={`${bodyTool.kind}:${bodyTool.editing ?? 'new'}`}
-              kind={bodyTool.kind} bodies={model.bodies} body={transformBody} busy={busy} centre={bodyCentre}
-              preset={model.steps.find((step) => step.id === bodyTool.editing && !step.undone)?.faceSettings}
-              onBody={(body) => { clearPreview(); setTransformBody(body) }} onChange={clearPreview} onCancel={closeBodyTool}
-              onPreview={(edit) => void requestPreview(() => previewBodyOperation(revision, edit))}
-              onApply={(edit) => mutate(() => applyBodyOperation(revision, edit))}
-              onEdit={(changes) => mutate(() => editSavedStep(revision, { editStepId: bodyTool.editing!, changes }))} />}
-            {shapePanel && revision !== undefined && <ShapePanel key={editingShape ?? 'new'} busy={busy} saved={savedShape}
-              onApply={(edit) => shapeStep
-                ? mutate(() => editSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
-                : mutate(() => createShape(revision, edit), true)}
-              onPreview={(edit) => {
-                if (shapeStep) void requestPreview(() => previewSavedStep(revision, { editStepId: shapeStep.id, changes: edit.values }))
-              }}
-              onChange={clearPreview} onCancel={cancelShapePanel} />}
-            {sketchTool && revision !== undefined && <SketchSolidPanel key={sketchTool} kind={sketchTool} sketches={sketches} bodies={patternBodies}
-              busy={busy} onChange={clearPreview} onClose={closeSketchTool}
-              onPreview={(edit) => void requestPreview(() => previewSketchSolid(revision, edit))}
-              onApply={(edit) => mutate(() => applySketchSolid(revision, edit), true)} />}
-            {matchingPart && revision !== undefined && <MatchingPartPanel threads={matchable} busy={busy}
-              roundFace={selected !== undefined && !model?.shape.faces[selected]?.planar}
-              onThread={(settings) => selected !== undefined && mutate(() => applyFace(revision, { face: selected, faceOperation: 'matching_thread', settings }))}
-              onChange={clearPreview} onClose={closeMatching}
-              onPreview={(edit) => void requestPreview(() => previewShape(revision, edit))}
-              onApply={(edit) => mutate(() => createShape(revision, edit), true)} />}
-            {faceTool === 'text' && <TextPanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
-              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
-              onChange={clearPreview} onCancel={cancelFaceTool}
-              onPreview={(settings) => void showFacePreview({ faceOperation: 'text', settings })}
-              onApply={(settings) => commitFace({ faceOperation: 'text', settings })} />}
-            {faceTool === 'vent_cut' && <VentPanel key={editingFace ?? 'new'} busy={busy}
-              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
-              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
-              onApply={(settings) => commitFace({ faceOperation: 'vent_cut', settings })} />}
-            {faceTool === 'resize_round' && <ResizePanel key={editingFace ?? 'new'} busy={busy}
-              planar={!!faceStep || selected !== undefined}
-              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
-              onApply={(settings) => commitFace({ faceOperation: 'resize_round', settings })} />}
-            {faceTool === 'shell' && <ShellPanel key={editingFace ?? 'new'} busy={busy}
-              planar={!!faceStep || selected !== undefined}
-              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
-              onApply={(settings) => commitFace({ faceOperation: 'shell', settings })} />}
-            {faceTool === 'offset_plane' && <OffsetPlanePanel key={editingFace ?? 'new'} busy={busy}
-              planar={!!faceStep || (selected !== undefined && !!model?.shape.faces[selected]?.planar)}
-              preset={faceStep?.faceSettings} onChange={clearPreview} onCancel={cancelFaceTool}
-              onApply={(settings) => commitFace({ faceOperation: 'offset_plane', settings })} />}
-            {faceTool === 'face_texture' && <TexturePanel key={editingFace ?? 'new'} busy={busy} preset={faceStep?.faceSettings}
-              selected={!!faceStep || selected !== undefined}
-              onChange={clearPreview} onCancel={cancelFaceTool}
-              onPreview={(settings) => void showFacePreview({ faceOperation: 'face_texture', settings })}
-              onApply={(settings) => commitFace({ faceOperation: 'face_texture', settings })} />}
-            {model && faceTool === 'hole' && <HolePanel key={editingFace ?? 'new'} busy={busy}
-              bodies={model.bodies} body={movingBody} preset={faceStep?.faceSettings}
-              selected={!!faceStep || (selected !== undefined && !!model.shape.faces[selected]?.planar)}
-              onChange={clearPreview} onCancel={cancelFaceTool}
-              onPreview={(settings, untilBody) => showFacePreview({ faceOperation: 'hole', settings, untilBody, position: holePosition })}
-              onApply={(settings, untilBody) => commitFace({ faceOperation: 'hole', settings, untilBody, position: holePosition })} />}
-            {model && faceTool === 'thread' && <ThreadPanel key={editingFace ?? 'new'} busy={busy}
-              preset={faceStep?.faceSettings}
-              selected={!!faceStep || (selected !== undefined && !model.shape.faces[selected]?.planar)}
-              onChange={clearPreview} onCancel={cancelFaceTool}
-              onPreview={(settings) => showFacePreview({ faceOperation: 'thread', settings })}
-              onApply={(settings) => commitFace({ faceOperation: 'thread', settings })} />}
-            {model && repairStep && missingInput && <form aria-label={`Repair ${repairStep.name}`} className="grid gap-2 text-xs"
-              onSubmit={(event) => {
-                event.preventDefault()
-                const body = missingInput.face && selected !== undefined ? model.shape.faces[selected]?.body : repairBody
-                if (body === undefined || revision === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined)) return
-                const more = moreMissing.map(({ objectId }) => ({ missingInputId: objectId, replacementBody: moreRepair[objectId] }))
-                mutate(() => repairInput(revision, { repairStepId: repairStep.id, missingInputId: missingInput.objectId,
-                  replacementBody: body, replacementFace: missingInput.face ? selected : undefined, ...(more.length ? { more } : {}) }))
-              }}>
-              <div className="font-semibold">Repair {repairStep.name}</div>
-              {missingInput.face ? <p>Pick a target face to replace {missingInput.name}.</p> :
-                [missingInput, ...moreMissing].map((input, i) => {
-                  const value = i === 0 ? repairBody : moreRepair[input.objectId]
-                  return <label key={input.objectId} className="grid gap-1">
-                    {moreMissing.length ? `Replacement for ${input.name}` : 'Replacement tool'}
-                    <select value={value ?? ''} className={inputCls} disabled={busy} onChange={(event) => {
-                      const chosen = event.target.value === '' ? undefined : Number(event.target.value)
-                      if (i === 0) setRepairBody(chosen)
-                      else setMoreRepair(({ [input.objectId]: _, ...rest }) => chosen === undefined ? rest : { ...rest, [input.objectId]: chosen })
-                    }}>
-                      <option value="">Select a body</option>
-                      {model.bodies.map((body, b) => body.empty ? null : <option key={b} value={b}>{body.name}</option>)}
-                    </select>
-                  </label>
-                })}
-              <div className="flex gap-2">
-                <Btn size="sm" variant="primary" type="submit" disabled={busy || (missingInput.face ? selected === undefined
-                  : repairBody === undefined || moreMissing.some(({ objectId }) => moreRepair[objectId] === undefined))}>Apply repair</Btn>
-                <Btn size="sm" type="button" disabled={busy} onClick={() => { setRepairing(undefined); setError('') }}>Cancel</Btn>
-              </div>
-            </form>}
             <div className="border-b border-border pb-2 pt-2 text-xs font-semibold">History</div>
-            <HistoryList ref={historyList} steps={model?.steps ?? []} busy={busy} repairing={repairing}
+            <HistoryList ref={historyList} steps={model?.steps ?? []} repairing={repairing}
               editing={[editingFace, editingShape, bodyTool?.editing, edgeTool?.editing, construction?.editing, arrange?.editing, section?.editing, editingMove]}
               onEdit={editHistoryStep} onRepair={repairHistoryStep} onKeep={keepHistoryStep} onMenu={menuHistoryStep} />
           </aside>
         </div>
         <footer className="grid shrink-0 grid-cols-[1fr_auto] items-center gap-2 border-t border-border bg-panel px-2 py-1">
           <div className="min-w-0 text-xs text-text-2">
-            <span data-testid="engine-status" role="status">
+            <span data-testid="engine-status" role="status" data-preview={preview ? 'shown' : ''}>
               {model ? `Engine ready · ${format.format(displayLength(model.shape.volume, unit, 3))} ${unit}³` : 'Starting the geometry engine…'}
             </span>
             {model?.notes.map((note) => <div key={note}>{note}</div>)}
@@ -1726,6 +2140,7 @@ export function App() {
               <MenuContent side="top" align="end">
                 <MenuItem onSelect={() => setShowEdges((v) => !v)}>{showEdges ? 'Hide edges' : 'Show edges'}</MenuItem>
                 <MenuItem disabled={!actions.fit.enabled} onSelect={actions.fit.run}>{commands.fit.label}</MenuItem>
+                <MenuItem disabled={!actions.selectAll.enabled} onSelect={actions.selectAll.run}>{commands.selectAll.label}</MenuItem>
                 <MenuItem disabled={!actions.clear.enabled} onSelect={actions.clear.run}>{commands.clear.label}</MenuItem>
               </MenuContent>
             </Menu>
@@ -1740,7 +2155,7 @@ export function App() {
           } }))} />}
         {settingsOpen && <PreferencesDialog current={preferences} onClose={() => setSettingsOpen(false)}
           onApply={(next) => { applyPreferences(next); setSettingsOpen(false) }} />}
-        {searchOpen && <CommandSearch actions={actions} close={() => setSearchOpen(false)} />}
+        {searchOpen && <CommandSearch actions={{ ...barActions, ...actions }} close={() => setSearchOpen(false)} />}
       </main>
     </TooltipProvider>
   )

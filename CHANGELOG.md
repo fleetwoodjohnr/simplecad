@@ -3,6 +3,86 @@
 Each version's section is the GitHub release's notes, and what the in-app
 updater shows (`scripts/release_notes.py`).
 
+## 0.6.0 (2026-11-25)
+
+A simpler, more graphical window, as 0.2.0 worked: click what you want to
+change, then drag it, or pick a tool from the bar beside it. The ten everyday
+tasks measured for this release take 29 clicks and keys in all, against 47 in
+0.5.1. Projects saved in 0.6.0 still open in 0.4.4 and 0.5.x.
+
+- **Click a part and drag it.** A click takes the part and its face, and the
+  move arrows and turn rings are already on it. Letting go is one step; type a
+  number while dragging for an exact one, and Esc puts it back. Several chosen
+  parts move together.
+- **Box select with the right button.** Right-drag a box anywhere, over the
+  model too: left to right takes what it surrounds, right to left what it
+  touches, Shift adds. A left drag turns the view anywhere; a short right
+  click still opens the menu. Ctrl+A, or Select all in the menus, takes every
+  part, and a right click on a part of a several-part selection keeps them
+  all, so the menu offers Subtract and Join.
+- **Double-click** a part to change the step that made it; in a group, the
+  first double-click reaches inside for the one part.
+- **A bar beside what you selected**, clear of its arrows and rings, with the
+  likeliest tool first: the pull distance and Hole for a face, Fillet for an
+  edge, Move and Rotate for a part, Subtract for two parts, Arrange for three
+  or more, Ungroup for a group. Everything else is behind its ⋯, and the
+  right-click menu offers the same.
+- **Handles on the model.** Drag a face's handle to pull it, an edge's to round
+  it, or Split's plane through a part, with the size at the cursor. Drags snap
+  to 0.25 mm; hold Shift for free, Ctrl for 0.05 mm.
+- **Edges: click them.** The edge under the pointer lights up. A clicked edge
+  (Shift-click for more) gets Round or Bevel on the bar: drag its handle, or
+  type the size and press Enter. There is no face list to pick from any more;
+  it stays for the keyboard, shown when it has the focus.
+- **Join and Subtract you can see.** The kept part is tinted and the cutters
+  drawn see-through red (green to join, blue to intersect), over the preview
+  too; the panel says "Removing Pin from Block", with Swap to turn it round,
+  and a click on another part adds it. Three or more parts get Subtract and
+  Join on the bar as well.
+- **Threads as 0.2.0 made them.** Click a shaft and Shift-click the hole on
+  the other part: Thread together leads the bar and threads both, sized from
+  the shaft with the clearance on the hole. Once there is a thread, Matching
+  Part is on the bar and opens on what you clicked: it threads a round face
+  (previewed first), or drills a threaded hole that fits in a flat one.
+- **Magnets and guides.** A dragged part catches flush on other parts' edges,
+  middles, corners and centres within 10 pixels and says what it met; the
+  rings hold at each step and turn freely between. Stack & Place shows the
+  part's distances from the face's edges on the face, and the part drags on
+  it, catching flush or centred. Measure with nothing selected snaps to
+  corners, centres and midpoints and gives the distance between two points.
+  Shift drags freely, Ctrl finely.
+- **Updates by themselves**, as in the rest of the Simple suite: SimpleCAD
+  looks for a new release once a day and offers to install it (Linux
+  packages through your package manager, which asks for your password) and
+  restart. Settings → Updates turns it off. From 0.5.1, update once with
+  File → Check for updates.
+- **Live preview in every tool.** There is no Preview button: the result shows
+  as you type, the last one stays while the next builds, and Enter applies.
+- **Short panels** open beside what you clicked, with More… for the rest of a
+  tool's settings. The side panel keeps the Bodies list and History.
+- **A short ribbon**: Shape, Sketch, Import, Measure and Print. Every tool is in
+  the bar, the right-click menu and command search (Ctrl+K), which lists them all.
+
+### Fixed
+
+- **Large projects are quicker.** A step on UPS Atlas takes about 100 ms
+  (180–195 ms in 0.5.1), and on Atlas Box about 105 ms (125–130 ms). The
+  window no longer sends the whole model again for every step, lays itself
+  out again on every frame, or turns History's buttons off and on (what you
+  click in History while a step runs opens when it is done).
+- **Undoing a Move of a large imported part** takes under half a second (UPS
+  Atlas's board: 0.42–0.47 s, against 1.7–2.0 s in 0.5.1 and about 0.5 s in
+  0.4.4). The part it brings back is recognised as the one shown, moved, so it
+  is not meshed and measured again.
+- Installers are checked upgrading from 0.5.1, as well as from 0.4.4, on Linux,
+  Windows and macOS.
+
+### Still slower than 0.4.4
+
+- A light step on a project as large as UPS Atlas takes about 100 ms from
+  click to screen; 0.4.4's engine does it in 10–30 ms (its window's share was
+  not measured).
+
 ## 0.5.1 (2026-11-23)
 
 Undo and Redo are quick again on large projects, and what 0.5.0 could not

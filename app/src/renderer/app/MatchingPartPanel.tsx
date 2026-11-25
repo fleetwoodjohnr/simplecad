@@ -2,24 +2,27 @@ import { useState } from 'react'
 import type { FaceOperation, ShapeEdit, StepInfo } from '@/shared/engine-protocol'
 
 type ThreadSettings = Extract<FaceOperation, { faceOperation: 'matching_thread' }>['settings']
-import { Btn, Segmented, inputCls } from '../ui'
+import { Btn, Segmented, inputCls, useLivePreview, More } from '../ui'
 
 interface Props {
   threads: StepInfo[]
   busy: boolean
   onPreview: (edit: ShapeEdit) => void
   onApply: (edit: ShapeEdit) => void
-  /** A round face is selected, so a matching thread can be cut into it. */
+  /** A round face is selected, so a matching thread can be cut into it (and the panel opens to do that). */
   roundFace: boolean
+  /** Where the thread goes (the selected face): a new place previews again. */
+  at?: string
   onThread: (settings: ThreadSettings) => void
+  onPreviewThread: (settings: ThreadSettings) => void
   onChange: () => void
   onClose: () => void
 }
 
-export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace, onThread, onChange, onClose }: Props) {
+export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace, at, onThread, onPreviewThread, onChange, onClose }: Props) {
   const [source, setSource] = useState(threads.at(-1)?.id ?? '')
   /** Make a separate bolt or nut, or cut the matching thread into a round face of a part already made. */
-  const [mode, setMode] = useState<'part' | 'thread'>('part')
+  const [mode, setMode] = useState<'part' | 'thread'>(roundFace ? 'thread' : 'part')
   const [resize, setResize] = useState(false)
   const [length, setLength] = useState('')
   const [threaded, setThreaded] = useState('')
@@ -36,13 +39,25 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
     const values = Object.fromEntries(Object.entries({ ...thread, ...sizes, ...position }).filter(([, value]) => value.trim()))
     return { shapeKind, values }
   }
+  useLivePreview(JSON.stringify(edit() ?? null), !!spec && !busy && mode === 'part', () => send(onPreview))
+  // The thread cut into the selected round face: locked to the source's size, form, hand and clearance.
+  const threadSettings: ThreadSettings | undefined = spec && {
+    designation: spec.designation, clearance: (spec.clearance ?? 'normal') as ThreadSettings['clearance'], form: (spec.form ?? 'printed') as ThreadSettings['form'],
+    left_hand: spec.left_hand === 'true' ? 'true' : 'false', resize: resize ? 'true' : 'false'
+  }
+  const canThread = !!threadSettings && roundFace && !busy
+  useLivePreview(JSON.stringify([threadSettings ?? null, at]), canThread && mode === 'thread', () => threadSettings && onPreviewThread(threadSettings))
   function send(action: (edit: ShapeEdit) => void) {
     const request = edit()
     if (request) action(request)
   }
 
   return <form aria-label="Matching part" className="grid max-h-[50%] shrink-0 gap-2 overflow-auto text-xs"
-    onSubmit={(event) => { event.preventDefault(); send(onApply) }}>
+    onSubmit={(event) => {
+      event.preventDefault()
+      if (mode === 'part') send(onApply)
+      else if (canThread) onThread(threadSettings!)
+    }}>
     <label className="grid gap-1">Thread to match
       <select aria-label="Thread to match" className={inputCls} value={source} disabled={busy}
         onChange={(event) => { setSource(event.target.value); setLength(''); onChange() }}>
@@ -58,10 +73,7 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
       <label className="flex items-center gap-2"><input type="checkbox" checked={resize} disabled={busy}
         onChange={(event) => { setResize(event.target.checked); onChange() }} />Resize the face to the thread's size</label>
       <div className="flex flex-wrap gap-1.5">
-        <Btn size="sm" type="button" variant="primary" disabled={!spec || !roundFace || busy} onClick={() => spec && onThread({
-          designation: spec.designation, clearance: (spec.clearance ?? 'normal') as ThreadSettings['clearance'], form: (spec.form ?? 'printed') as ThreadSettings['form'],
-          left_hand: spec.left_hand === 'true' ? 'true' : 'false', resize: resize ? 'true' : 'false'
-        })}>Cut thread</Btn>
+        <Btn size="sm" type="submit" variant="primary" disabled={!canThread}>Cut thread</Btn>
         <Btn size="sm" type="button" onClick={onClose} disabled={busy}>Cancel</Btn>
       </div>
     </> : <>
@@ -70,6 +82,7 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
       <input className={inputCls} value={length} placeholder="Use standard length" disabled={busy}
         onChange={(event) => { setLength(event.target.value); onChange() }} />
     </label>
+    <More>
     {!nut && <>
       <label className="grid gap-1">Threaded length
         <input className={inputCls} value={threaded} placeholder="Entire shank" disabled={busy}
@@ -88,8 +101,8 @@ export function MatchingPartPanel({ threads, busy, onPreview, onApply, roundFace
           onChange={(event) => { setPosition({ ...position, [axis]: event.target.value }); onChange() }} />
       </label>)}
     </div>
+    </More>
     <div className="flex flex-wrap gap-1.5">
-      <Btn size="sm" type="button" disabled={!spec || busy} onClick={() => send(onPreview)}>Preview</Btn>
       <Btn size="sm" type="submit" variant="primary" disabled={!spec || busy}>Create</Btn>
       <Btn size="sm" type="button" onClick={onClose} disabled={busy}>Cancel</Btn>
     </div>

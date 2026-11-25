@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { edgePoints, errors, expect, launch, test } from './helpers'
+import { edgePoints, errors, expect, launch, test, command, more } from './helpers'
 
 test('draws and dimensions a sketch, then edits its extrusion through history and reopen', async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), 'simplecad-sketch-'))
@@ -26,11 +26,10 @@ test('draws and dimensions a sketch, then edits its extrusion through history an
     await expect(editor.getByLabel('Constraint status')).toHaveText('2 degrees of freedom remaining.')
     await editor.getByRole('button', { name: 'Save sketch' }).click()
     await expect(editor).toBeHidden()
-    await toolbar.getByRole('button', { name: 'From Sketch' }).click()
-    await page.getByRole('menuitem', { name: 'Extrude', exact: true }).click()
+    await command(page, 'Extrude')
     const tool = page.getByRole('form', { name: 'Extrude' })
     await tool.getByLabel('Distance').fill('5 mm * 2')
-    await tool.getByRole('button', { name: 'Preview' }).click()
+    await expect(page.getByTestId('engine-status')).toHaveAttribute('data-preview', 'shown')
     await tool.getByRole('button', { name: 'Apply' }).click()
     await expect(status).toContainText('785.4 mm³')
 
@@ -85,8 +84,7 @@ test('creates Loft, Sweep, Revolve and a path pattern from drawn sketches', asyn
   }
 
   async function openTool(name: string) {
-    await toolbar.getByRole('button', { name: 'From Sketch' }).click()
-    await page.getByRole('menuitem', { name, exact: true }).click()
+    await command(page, name)
     return page.getByRole('form', { name, exact: true })
   }
 
@@ -95,6 +93,7 @@ test('creates Loft, Sweep, Revolve and a path pattern from drawn sketches', asyn
   const loft = await openTool('Loft')
   await loft.getByLabel('Section 1').selectOption({ label: 'Sketch' })
   await loft.getByLabel('Section 2').selectOption({ label: 'Sketch2' })
+  await more(loft)
   await loft.getByLabel('Ruled').check()
   await loft.getByRole('button', { name: 'Apply' }).click()
   await expect(status).toContainText('1277.58 mm³')
@@ -144,8 +143,7 @@ test('sketches and extrudes on a construction plane saved by v0.4.4', async () =
     await editor.getByRole('button', { name: 'Save sketch' }).click()
     await expect(editor).toBeHidden()
 
-    await toolbar.getByRole('button', { name: 'From Sketch' }).click()
-    await page.getByRole('menuitem', { name: 'Extrude', exact: true }).click()
+    await command(page, 'Extrude')
     const tool = page.getByRole('form', { name: 'Extrude' })
     await tool.getByRole('button', { name: 'Apply' }).click()
     await expect(page.getByRole('list', { name: 'Model history' })).toContainText('Extrude')
@@ -177,7 +175,7 @@ test('creates and edits an offset plane through history and a worker restart', a
   const history = page.getByRole('list', { name: 'Model history' })
   await expect(status).toContainText('24000 mm³')
   await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
-  await toolbar.getByRole('button', { name: 'Offset Plane', exact: true }).click()
+  await command(page, 'Offset Plane')
   const plane = page.getByRole('form', { name: 'Offset Plane' })
   await plane.getByLabel('Distance', { exact: true }).fill('1 cm + 5 mm')
   await plane.getByRole('button', { name: 'Apply' }).click()
@@ -215,8 +213,7 @@ test('creates a midplane, a plane at an angle, an axis and a point from picks, a
   const faces = page.getByLabel('Planar face')
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
   const datum = async (name: string) => {
-    await toolbar.getByRole('button', { name: 'Datums' }).click()
-    await page.getByRole('menuitem', { name, exact: true }).click()
+    await command(page, name)
     return page.getByRole('form', { name, exact: true })
   }
   const clickEdge = async () => {

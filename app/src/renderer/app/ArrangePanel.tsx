@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ArrangeEdit, ArrangementNote, ArrangePattern, ArrangePatternSettings, ArrangeRow } from '@/shared/engine-protocol'
-import { Btn, Segmented, inputCls } from '../ui'
+import { Btn, Segmented, inputCls, useLivePreview, More } from '../ui'
 
 /** What the window is waiting for a click on. */
 export type ArrangeRole = 'target' | 'contact' | 'edges'
@@ -95,15 +95,17 @@ interface Props {
   onChange: () => void
   onPreview: (inputs: ArrangeEdit['inputs']) => void
   onApply: (inputs: ArrangeEdit['inputs']) => void
+  /** The pattern a new arrangement starts with (a Grid from the selection bar, waiting for its face). */
+  pattern?: Settings['pattern']
   onEdit: (changes: Record<string, string>) => void
   onCancel: () => void
 }
 
 /** Several bodies laid out without fusing or renaming any: in a row where they are, or in a pattern on a face or the
  * build plate, as SimpleCAD 0.4's Arrange panel lays them. */
-export function ArrangePanel({ busy, names, preset, target, plate, role, contacts, edges, note, move, onRole, onPlate, onReset,
+export function ArrangePanel({ busy, names, preset, pattern, target, plate, role, contacts, edges, note, move, onRole, onPlate, onReset,
   onChange, onPreview, onApply, onEdit, onCancel }: Props) {
-  const [settings, setSettings] = useState<Settings>(() => preset ? recorded(preset) : DEFAULTS)
+  const [settings, setSettings] = useState<Settings>(() => preset ? recorded(preset) : { ...DEFAULTS, ...(pattern ? { pattern } : {}) })
   const s = settings
   const set = (next: Partial<Settings>) => { setSettings((current) => ({ ...current, ...next })); onChange() }
   const row = s.pattern === 'row'
@@ -113,6 +115,7 @@ export function ArrangePanel({ busy, names, preset, target, plate, role, contact
   const valid = row ? !!s.row_gap.trim() && (editingRow || names.length >= enough)
     : names.length >= 1 && onFace && !!s.gap.trim() && !!s.margin.trim()
   const inputs = (): ArrangeEdit['inputs'] => row ? { mode: s.mode, axis: s.axis, gap: s.row_gap } : patternInputs(s, move)
+  useLivePreview(JSON.stringify([inputs(), names, target, plate, contacts, edges]), valid && !busy && !editingRow && !role, () => onPreview(inputs()))
   const choose = (pattern: Settings['pattern']) => {
     set({ pattern })
     if (pattern !== 'row' && !onFace) onRole('target')
@@ -188,6 +191,7 @@ export function ArrangePanel({ busy, names, preset, target, plate, role, contact
           <Btn type="button" size="sm" aria-pressed={plate} disabled={busy} title="No face to arrange on? Lay the objects out on the printer's build plate."
             onClick={() => onPlate(!plate)}>Use the build plate</Btn>
         </div>
+        <More>
         <div className="font-semibold">Spacing</div>
         <Segmented label="Pattern spacing" value={s.spacing} onChange={(spacing) => set({ spacing })}
           options={[{ value: 'auto', label: 'Automatic' }, { value: 'fixed', label: 'Fixed' }]} />
@@ -243,6 +247,7 @@ export function ArrangePanel({ busy, names, preset, target, plate, role, contact
           Moved {move.map((amount) => +amount.toFixed(2)).join(', ')} mm along U, V and off the face.</div>}
         <Btn type="button" size="sm" className="justify-self-start" disabled={busy} title="Back to the default settings, and undo any drag."
           onClick={() => { setSettings({ ...DEFAULTS, pattern: s.pattern }); onReset() }}>Reset</Btn>
+        </More>
         {note && <div role="status" aria-label="Arrangement fit" className={note.fits ? 'text-text-2' : 'text-danger'}>{note.summary}</div>}
         {note && !note.fits && note.problems.map((problem) => <p key={problem.name} className="text-danger">{problem.name} {problem.reason}.</p>)}
         {note?.suggestions.map((offer) => <Btn key={offer.label} type="button" size="sm" className="justify-self-start" disabled={busy}
@@ -250,7 +255,6 @@ export function ArrangePanel({ busy, names, preset, target, plate, role, contact
       </>}
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Apply</Btn>
-        {!editingRow && <Btn type="button" size="sm" disabled={!valid || busy} onClick={() => onPreview(inputs())}>{note ? 'Recalculate' : 'Preview'}</Btn>}
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>
     </form>

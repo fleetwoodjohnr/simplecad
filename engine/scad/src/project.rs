@@ -19,6 +19,8 @@ pub struct SavedBody {
     pub visible: bool,
     /// The saved B-Rep; `None` when the file has none for this body or it is damaged.
     pub brep: Option<Vec<u8>>,
+    /// Its sha256, when the file names it: rebuilds read the same blob by it, and share the shape read.
+    pub sha: Option<String>,
     /// Where the B-Rep is placed: the 3×4 matrix of a cached "located" output.
     pub location: Option<[f64; 12]>,
 }
@@ -107,17 +109,19 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
         let id = body["id"].as_str().unwrap_or_default().to_owned();
         let visible = body.get("visible") != Some(&Value::Bool(false));
         if format >= 2
-            && let Some((blob, location)) = cached_output(&model, body, &mut entry)
+            && let Some((blob, sha, location)) = cached_output(&model, body, &mut entry)
         {
             bodies.push(SavedBody {
                 id,
                 name: name.to_string(),
                 visible,
                 brep: Some(blob),
+                sha: Some(sha),
                 location,
             });
             continue;
         }
+        let mut known = None;
         let brep = if format >= 2 {
             let sha = body
                 .get("id")
@@ -128,6 +132,7 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
                         && s.bytes()
                             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
                 });
+            known = sha.map(String::from);
             sha.and_then(|sha| {
                 entry(&format!("geometry/{sha}.brep"))
                     .filter(|blob| format!("{:x}", Sha256::digest(blob)) == sha)
@@ -156,6 +161,7 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
             id,
             name: name.to_string(),
             visible,
+            sha: known.filter(|_| brep.is_some()),
             brep,
             location: None,
         });
@@ -192,8 +198,9 @@ fn read_bodies(data: &[u8], recover: bool) -> Result<Project, String> {
                 geometry.push((oid.to_string(), json!({
                     "sha256": sha, "feature_id": saved["producer"], "signature": null, "current": false,
                 })));
-                recovered_blobs.insert(sha, blob.clone());
+                recovered_blobs.insert(sha.clone(), blob.clone());
                 body.brep = Some(blob);
+                body.sha = Some(sha);
             } else if model["geometry"][oid]["sha256"].is_string() {
                 notes.push(format!(
                     "\"{}\" could not be read from this file.",
@@ -259,8 +266,9 @@ fn rebuild_legacy_display(project: &mut Project, original: &[u8]) -> Result<(), 
             let id = body["id"].as_str()?;
             let name = body["name"].as_str()?;
             let made = &model.payload["geometry"][id];
-            let brep = made["sha256"]
-                .as_str()
+            let sha = made["sha256"].as_str().map(String::from);
+            let brep = sha
+                .as_deref()
                 .and_then(|sha| model.blobs.get(sha))
                 .map(|blob| blob.to_vec());
             // A moved body is its base's blob and where it is placed.
@@ -275,6 +283,7 @@ fn rebuild_legacy_display(project: &mut Project, original: &[u8]) -> Result<(), 
                 id: id.into(),
                 name: name.into(),
                 visible: body["visible"] != false,
+                sha: sha.filter(|_| brep.is_some()),
                 brep,
                 location,
             })
@@ -303,7 +312,7 @@ fn cached_output(
     model: &Value,
     body: &Value,
     entry: &mut impl FnMut(&str) -> Option<Vec<u8>>,
-) -> Option<(Vec<u8>, Option<[f64; 12]>)> {
+) -> Option<(Vec<u8>, String, Option<[f64; 12]>)> {
     let id = body.get("id")?.as_str()?;
     let saved = model.get("geometry")?.get(id)?;
     if saved.get("current") != Some(&Value::Bool(true)) {
@@ -354,7 +363,7 @@ fn cached_output(
                     None
                 };
                 if oid == id {
-                    found = Some((blob, location));
+                    found = Some((blob, sha.to_string(), location));
                 }
             }
             "sketch" | "ConstructionPlane" | "ConstructionAxis" | "ConstructionPoint" => {}

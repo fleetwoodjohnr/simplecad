@@ -1,4 +1,4 @@
-import { forwardRef, useRef, useState, type ButtonHTMLAttributes, type ComponentProps, type ReactNode } from 'react'
+import { forwardRef, useEffect, useRef, useState, type ButtonHTMLAttributes, type ComponentProps, type ReactNode } from 'react'
 import { DropdownMenu, Tooltip, Dialog, Popover, Switch as RSwitch, ContextMenu } from 'radix-ui'
 import { Check, ChevronRight, X } from 'lucide-react'
 import { formatShortcut } from '../app/commands'
@@ -260,7 +260,8 @@ export function Modal({
           style={{ width }}
           // Dialogs that close by giving the grid focus (closeDialog, focusGrid) keep it there: Radix's own return of focus
           // to the opener runs on a timer, later, and would take it away again.
-          onCloseAutoFocus={(e) => document.activeElement?.hasAttribute('data-doc-focus') && e.preventDefault()}
+          // So do dialogs that opened something which took the focus itself (a tool's first field from command search).
+          onCloseAutoFocus={(e) => document.activeElement && document.activeElement !== document.body && e.preventDefault()}
           className="dialog-in fixed left-1/2 top-1/2 z-[81] max-h-[86vh] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-elev text-text shadow-[var(--shadow-pop)] outline-none"
         >
           <div className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">
@@ -382,4 +383,31 @@ export function ColorGrid({ onPick, onClear, clearLabel = 'Automatic', value }: 
       </label>
     </div>
   )
+}
+
+/** Live preview, as 0.2.0's tools did: `run` once the inputs (`key`) have been still for a moment and are valid. */
+export function useLivePreview(key: string, enabled: boolean, run: () => void, pause = 250) {
+  const latest = useRef(run)
+  latest.current = run
+  useEffect(() => {
+    if (!enabled) return
+    const timer = setTimeout(() => latest.current(), pause)
+    return () => clearTimeout(timer)
+  }, [key, enabled, pause])
+}
+
+/** A tool's less used settings, folded under More… as 0.2.0's short panels kept them. */
+export function More({ children, label = 'More…' }: { children: ReactNode; label?: string }) {
+  return (
+    <details className="group grid gap-2">
+      <summary className="cursor-pointer select-none text-text-2 hover:text-text">{label}</summary>
+      <div className="mt-2 grid gap-2">{children}</div>
+    </details>
+  )
+}
+
+/** The first field of a tool's panel: focused as it opens, its value selected so typing replaces it. */
+export const firstField = {
+  autoFocus: true,
+  onFocus: (event: { currentTarget: HTMLInputElement }) => event.currentTarget.select()
 }

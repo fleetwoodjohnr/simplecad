@@ -31,7 +31,8 @@ export interface SimpleCadApi {
   /** Closing with unsaved work, the user chose Save: save, then close. Returns the unsubscribe. */
   onSaveAndClose(run: () => void): () => void
   legacyPreferences(): Promise<Preferences | undefined>
-  checkForUpdates(): Promise<void>
+  /** `quiet`: the automatic check, at most once a day and silent unless there is an update. */
+  checkForUpdates(quiet?: boolean): Promise<void>
   windowMinimize(): Promise<void>
   windowToggleMaximize(): Promise<void>
   windowClose(): Promise<void>

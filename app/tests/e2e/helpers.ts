@@ -1,4 +1,4 @@
-import { _electron as electron, expect, test as base, type ElectronApplication, type Page } from '@playwright/test'
+import { _electron as electron, expect, test as base, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { once } from 'node:events'
 import { copyFileSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -92,7 +92,8 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged, args } : { args: ['.', ...args] }),
     // Never the user's own recovery folder, which SimpleCAD 0.4 shares.
-    env: { ...process.env, SIMPLECAD_TIMING: '1', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
+    // SCAD_WINDOW=1024x700 runs as on the Windows and macOS runners, whose small screens shrink the window.
+    env: { ...process.env, ...(process.env.SCAD_WINDOW ? { SIMPLECAD_WINDOW: process.env.SCAD_WINDOW } : {}), SIMPLECAD_TIMING: '1', SIMPLECAD_UPDATE_CHECK: '0', SIMPLECAD_RECOVERY_DIR: scratchDir('scad-recovery-'), SIMPLECAD_LEGACY_SETTINGS: path.join(userData, 'legacy-settings.json'), SIMPLECAD_PRINTER_PROFILE: path.join(userData, 'printer-profile.json'), ...opts.env, SIMPLECAD_USER_DATA: userData }
   })
   if (process.env.SCAD_DEBUG) {
     app.process().stdout?.on('data', (d) => process.stdout.write(`main: ${d}`))
@@ -124,6 +125,9 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   page.on('console', (m) => {
     if (m.type() === 'error' && /Content Security Policy/.test(m.text())) throw new Error(m.text())
   })
+  // firstWindow resolves before the geometry worker has delivered the initial model.
+  // Use the same startup condition and budget as the suite's warm-up launch.
+  await page.getByTestId('engine-status').filter({ hasText: 'Engine ready' }).waitFor({ timeout: 60_000 })
   return { app, page }
 }
 
@@ -149,3 +153,79 @@ export async function edgePoints(page: Page): Promise<[number, number][]> {
 
 /** Alerts but the 3D view's own startup error: what a step reports going wrong, also where no WebGL can start. */
 export const errors = (page: Page) => page.getByRole('alert').filter({ hasNotText: 'Unable to initialize the 3D view' })
+
+/** A handle's centre once the view has placed it (on its next frame; hidden until then) and it has stopped moving. */
+export async function handleAt(handle: Locator): Promise<[number, number]> {
+  await expect(handle).toBeVisible()
+  let last = ''
+  await expect.poll(async () => {
+    const now = JSON.stringify(await handle.boundingBox())
+    const same = now === last
+    last = now
+    return same
+  }, { intervals: [100] }).toBe(true)
+  const box = JSON.parse(last) as { x: number; y: number; width: number; height: number }
+  return [box.x + box.width / 2, box.y + box.height / 2]
+}
+
+/** Opens a tool through command search, as 0.6.0's short ribbon leaves most of them (S, or the search button). */
+export async function command(page: Page, label: string) {
+  await page.getByRole('button', { name: 'Command search' }).click()
+  const search = page.getByRole('dialog', { name: 'Command search' })
+  await search.getByLabel('Search commands').fill(label)
+  await search.getByRole('button', { name: label, exact: true }).click()
+  await expect(search).toHaveCount(0)
+}
+
+/** Where part `index` shows in the window: the view publishes a point on each part's top face on small models. */
+export async function partAt(page: Page, index: number): Promise<[number, number]> {
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-body-anchors', new RegExp(`"${index}"`))
+  // Once the view has settled (it frames a model as it arrives): the same point twice, 150 ms apart, and inside the
+  // view. On CI a point was seen published far off the view (1921, -866 in a 1056 x 798 view) for seconds; a hover
+  // move has the view drawn, and so published, again.
+  const view = (await canvas.boundingBox())!
+  let last = ''
+  let nudge = 0
+  await expect.poll(async () => {
+    const now = (await canvas.getAttribute('data-body-anchors')) ?? ''
+    const point = now ? (JSON.parse(now) as Record<string, [number, number]>)[index] : undefined
+    const inside = !!point && point[0] >= view.x && point[0] <= view.x + view.width && point[1] >= view.y && point[1] <= view.y + view.height
+    const same = inside && now === last
+    last = now
+    if (!inside) await page.mouse.move(view.x + view.width / 2 + (nudge++ % 2) * 30, view.y + view.height / 2)
+    return same
+  }, { intervals: [150], timeout: 15_000 }).toBe(true)
+  // Beside the face's pull handle, which sits on the published point once the face is chosen.
+  const [x, y] = JSON.parse(last)[index] as [number, number]
+  return [x + 20, y]
+}
+
+/** A 20 × 20 × 10 box beside the first, `x` mm along, made with the Shape and Move tools. */
+export async function addBox(page: Page, x: string) {
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('box')
+  for (const [label, value] of [['Width', '20'], ['Depth', '20'], ['Height', '10']]) await shape.getByLabel(label).fill(value)
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await command(page, 'Move')
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('Body').selectOption({ index: (await move.getByLabel('Body').locator('option').count()) - 1 })
+  await move.getByLabel('X (mm)').fill(x)
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await page.keyboard.press('Escape')
+}
+
+/** Opens a tool panel's More… settings, where 0.6.0's short panels keep the less used ones. */
+export async function more(form: import('@playwright/test').Locator) {
+  const folded = form.locator('details:not([open]) > summary')
+  while (await folded.count()) await folded.first().click()
+}
+
+/** A command's button in command search, to check it is offered (enabled or not); Escape closes search after. */
+export async function searchCommand(page: Page, label: string) {
+  await page.getByRole('button', { name: 'Command search' }).click()
+  const search = page.getByRole('dialog', { name: 'Command search' })
+  await search.getByLabel('Search commands').fill(label)
+  return search.getByRole('button', { name: label, exact: true })
+}

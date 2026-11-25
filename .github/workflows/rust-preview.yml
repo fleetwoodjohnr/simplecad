@@ -185,11 +185,15 @@ jobs:
           $env:SIMPLECAD_BUNDLE = (Resolve-Path app/release/win-unpacked).Path
           $env:SIMPLECAD_VERSION = node -p "require('./app/package.json').version"
           python packaging/build.py icons windows
-          $baseline = 'SimpleCAD-0.4.4-windows-x86_64-setup.exe'
           $candidate = "SimpleCAD-${env:SIMPLECAD_VERSION}-windows-x86_64-setup.exe"
-          gh release download v0.4.4 --dir baseline -p $baseline -p SHA256SUMS -p SHA256SUMS.sig
-          python scripts/verify_release_package.py "baseline/$baseline"
-          scripts/windows_upgrade_drill.ps1 (Resolve-Path "baseline/$baseline") (Resolve-Path "dist/release/$candidate") $env:SIMPLECAD_VERSION
+          # From the last Python release and from the last Electron one, each with its signed checksums.
+          foreach ($from in @('0.4.4', '0.5.1')) {
+            $baseline = "SimpleCAD-$from-windows-x86_64-setup.exe"
+            $folder = "baseline-$from"
+            gh release download "v$from" --dir $folder -p $baseline -p SHA256SUMS -p SHA256SUMS.sig
+            python scripts/verify_release_package.py "$folder/$baseline"
+            scripts/windows_upgrade_drill.ps1 (Resolve-Path "$folder/$baseline") (Resolve-Path "dist/release/$candidate") $env:SIMPLECAD_VERSION $from
+          }
       - name: Verify the macOS disk image on upgrade and rollback
         if: runner.os == 'macOS'
         env:
@@ -202,11 +206,14 @@ jobs:
           export SIMPLECAD_VERSION
           SIMPLECAD_VERSION=$(node -p "require('./app/package.json').version")
           arch=$(uname -m)
-          baseline="SimpleCAD-0.4.4-macos-$arch.dmg"
           python packaging/build.py macos
-          gh release download v0.4.4 --dir baseline -p "$baseline" -p SHA256SUMS -p SHA256SUMS.sig
-          python scripts/verify_release_package.py "baseline/$baseline"
-          scripts/macos_upgrade_drill.sh "baseline/$baseline" "dist/release/SimpleCAD-$SIMPLECAD_VERSION-macos-$arch.dmg" "$SIMPLECAD_VERSION"
+          # From the last Python release and from the last Electron one, each with its signed checksums.
+          for from in 0.4.4 0.5.1; do
+            baseline="SimpleCAD-$from-macos-$arch.dmg"
+            gh release download "v$from" --dir "baseline-$from" -p "$baseline" -p SHA256SUMS -p SHA256SUMS.sig
+            python scripts/verify_release_package.py "baseline-$from/$baseline"
+            scripts/macos_upgrade_drill.sh "baseline-$from/$baseline" "dist/release/SimpleCAD-$SIMPLECAD_VERSION-macos-$arch.dmg" "$SIMPLECAD_VERSION" "$from"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: runner.os != 'Linux'
         with:
@@ -255,3 +262,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libgl1-mesa-dri libegl1 libgles2
           SCAD_PACKAGED="$PWD/release/linux-unpacked/simplecad" xvfb-run -a npx playwright test --fail-on-flaky-tests
+      - name: Save packaged Linux test failures
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaged-window-linux
+          path: app/test-results
+          if-no-files-found: ignore

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, firstField } from '../ui'
 
 export type EdgeFinish = 'fillet' | 'chamfer'
 
@@ -16,6 +16,8 @@ interface Props {
   body?: string
   /** A saved step's settings: History edits its size; its edges stay as picked. */
   preset?: Record<string, string>
+  /** Which edges are picked: new picks preview again. */
+  at?: string
   onAll: () => void
   onClear: () => void
   onChange: () => void
@@ -25,10 +27,11 @@ interface Props {
   onCancel: () => void
 }
 
-export function EdgeFinishPanel({ kind, busy, picked, body, preset, onAll, onClear, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
+export function EdgeFinishPanel({ kind, busy, picked, body, preset, at, onAll, onClear, onChange, onPreview, onApply, onEdit, onCancel }: Props) {
   const { name, key, label, initial } = fields[kind]
   const [value, setValue] = useState(preset?.[key] ?? initial)
   const valid = !!value.trim() && (!!preset || picked > 0)
+  useLivePreview(`${value}:${at}`, valid && !preset && !busy, () => onPreview(value))
   return (
     <form aria-label={name} className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -46,12 +49,11 @@ export function EdgeFinishPanel({ kind, busy, picked, body, preset, onAll, onCle
         </div>
       </>}
       <label className="grid gap-1">{label}
-        <input className={inputCls} value={value} maxLength={255} disabled={busy}
+        <input className={inputCls} value={value} maxLength={255} disabled={busy} {...firstField}
           onChange={(event) => { setValue(event.target.value); onChange() }} />
       </label>
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Apply</Btn>
-        {!preset && <Btn type="button" size="sm" disabled={!valid || busy} onClick={() => onPreview(value)}>Preview</Btn>}
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>
     </form>

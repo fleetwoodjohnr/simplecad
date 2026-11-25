@@ -178,21 +178,24 @@ jobs:
             useradd -m tester
             runuser -u tester -- /usr/bin/simplecad --self-test --no-sandbox
             runuser -u tester -- env -u QT_QPA_PLATFORM /smoke.sh deb-ubuntu-24.04 /usr/bin/simplecad --no-sandbox'
-      - name: Upgrade and roll back from the signed v0.4.4 installers
+      - name: Upgrade and roll back from the signed v0.4.4 and v0.5.1 installers
         env:
           GH_TOKEN: ${{ github.token }}
           SIMPLECAD_CONTAINER_ENGINE: docker
         run: |
           set -euo pipefail
-          gh release download v0.4.4 --dir baseline -p '*.deb' -p '*.rpm' -p '*.AppImage' -p SHA256SUMS -p SHA256SUMS.sig
-          for kind in deb rpm; do
-            old="baseline/SimpleCAD-0.4.4-linux-x86_64.$kind"
+          # From the last Python release and from the last Electron one.
+          for from in 0.4.4 0.5.1; do
+            gh release download "v$from" --dir "baseline-$from" -p '*.deb' -p '*.rpm' -p '*.AppImage' -p SHA256SUMS -p SHA256SUMS.sig
+            for kind in deb rpm; do
+              old="baseline-$from/SimpleCAD-$from-linux-x86_64.$kind"
+              python scripts/verify_release_package.py "$old"
+              scripts/upgrade_drill.sh "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.$kind"
+            done
+            old="baseline-$from/SimpleCAD-$from-linux-x86_64.AppImage"
             python scripts/verify_release_package.py "$old"
-            scripts/upgrade_drill.sh "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.$kind"
+            node scripts/appimage_upgrade_drill.mjs "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.AppImage" "$SIMPLECAD_VERSION" "$from"
           done
-          old=baseline/SimpleCAD-0.4.4-linux-x86_64.AppImage
-          python scripts/verify_release_package.py "$old"
-          node scripts/appimage_upgrade_drill.mjs "$old" "dist/release/SimpleCAD-${SIMPLECAD_VERSION}-linux-x86_64.AppImage" "$SIMPLECAD_VERSION"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

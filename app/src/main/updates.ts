@@ -136,3 +136,18 @@ export async function replaceAppImage(installer: string, target: string, expecte
 export function rollbackAppImage(target: string) {
   return rename(`${target}.bak`, target)
 }
+
+/** An automatic check runs at most once a day; a manual one always runs. */
+export const DAY = 24 * 60 * 60 * 1000
+export const dueForCheck = (last: number, now: number) => !(now - last < DAY && now >= last)
+
+/** The command that installs a verified rpm or deb: the system's package manager, through pkexec (which asks for the
+ * password) unless SimpleCAD already runs as root. */
+export function installCommand(kind: 'rpm' | 'deb', file: string, root: boolean): [string, string[]] {
+  const command = kind === 'rpm' ? ['dnf', 'install', '-y', file] : ['apt-get', 'install', '-y', file]
+  return root ? [command[0], command.slice(1)] : ['pkexec', command]
+}
+
+/** Inno Setup's flags for an update: a progress window only, no restart of the computer, and SimpleCAD started again
+ * after (`/RELAUNCH`, which simplecad.iss checks). The install keeps its scope through Inno's UsePreviousPrivileges. */
+export const windowsUpdateFlags = ['/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH']

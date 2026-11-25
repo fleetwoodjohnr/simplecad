@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory)][string]$Baseline,
     [Parameter(Mandatory)][string]$Candidate,
-    [Parameter(Mandatory)][string]$CandidateVersion
+    [Parameter(Mandatory)][string]$CandidateVersion,
+    # The version the baseline installer is: a 0.4.4 or a 0.5.x one.
+    [string]$BaselineVersion = '0.4.4'
 )
 $ErrorActionPreference = 'Stop'
 $scratch = Join-Path $env:RUNNER_TEMP ("SimpleCAD-drill-" + [guid]::NewGuid())
@@ -53,12 +55,12 @@ try {
     '{"theme":"dark"}' | Set-Content -Encoding utf8 $prefs
     $protected = Get-FileHash -Algorithm SHA256 -LiteralPath @($model, $prefs)
     Install $Baseline
-    Check '0.4.4'
+    Check $BaselineVersion
     Install $Candidate
     Check $CandidateVersion
     if (-not (Test-Path (Join-Path $install 'resources/app.asar'))) { throw 'Electron was not installed.' }
     Install $Baseline
-    Check '0.4.4'
+    Check $BaselineVersion
     Write-Output 'Install, upgrade and rollback passed on Windows.'
 } finally {
     $uninstaller = Join-Path $install 'unins000.exe'

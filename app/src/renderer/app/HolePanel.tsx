@@ -7,7 +7,7 @@ import unc from '../../../../simplecad/data/threads/unc.json'
 import unf from '../../../../simplecad/data/threads/unf.json'
 import bsp from '../../../../simplecad/data/threads/bsp.json'
 import npt from '../../../../simplecad/data/threads/npt.json'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More, firstField } from '../ui'
 
 const threadDefaults: ThreadOptions = {
   designation: '', clearance: 'normal', form: 'printed', from_end: 'top', left_hand: 'false'
@@ -60,19 +60,20 @@ function ThreadOptionsFields({ options, onChange }: { options: ThreadOptions; on
   </>
 }
 
-function ExpressionField({ label, value, onChange, placeholder }: {
-  label: string; value: string; onChange: (value: string) => void; placeholder?: string
+function ExpressionField({ label, value, onChange, placeholder, first }: {
+  label: string; value: string; onChange: (value: string) => void; placeholder?: string; first?: boolean
 }) {
   return <label className="grid gap-1">{label}
-    <input className={inputCls} maxLength={255} value={value} placeholder={placeholder}
+    <input className={inputCls} maxLength={255} value={value} placeholder={placeholder} {...(first ? firstField : {})}
       onChange={(event) => onChange(event.target.value)} />
   </label>
 }
 
-function FaceActions({ enabled, onPreview, onCancel }: { enabled: boolean; onPreview: () => void; onCancel: () => void }) {
+/** Apply and Cancel; the result previews by itself whenever `live` (the settings and where) changes. */
+function FaceActions({ enabled, live, onPreview, onCancel }: { enabled: boolean; live: string; onPreview: () => void; onCancel: () => void }) {
+  useLivePreview(live, enabled, onPreview)
   return <div className="flex gap-2">
     <Btn type="submit" size="sm" variant="primary" disabled={!enabled}>Apply</Btn>
-    <Btn type="button" size="sm" disabled={!enabled} onClick={onPreview}>Preview</Btn>
     <Btn type="button" size="sm" onClick={onCancel}>Cancel</Btn>
   </div>
 }
@@ -80,21 +81,25 @@ function FaceActions({ enabled, onPreview, onCancel }: { enabled: boolean; onPre
 interface FacePanelProps {
   preset?: Record<string, string>
   selected: boolean
+  /** Where it goes (the picked face and point): a new place previews again. */
+  at?: string
   busy: boolean
   onChange: () => void
   onCancel: () => void
 }
 
-export function HolePanel({ bodies, body, preset, selected, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
+export function HolePanel({ bodies, body, preset, initial, selected, at, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
   bodies: BodyInfo[]; body?: number
+  /** Settings to start from (a threaded hole that matches a thread), under any saved ones. */
+  initial?: Partial<HoleSettings>
   onPreview: (settings: HoleSettings, untilBody?: number) => void
   onApply: (settings: HoleSettings, untilBody?: number) => void
 }) {
-  const [settings, setSettings] = useState<HoleSettings>(() => ({ ...defaultHoleSettings, ...preset }))
+  const [settings, setSettings] = useState<HoleSettings>(() => ({ ...defaultHoleSettings, ...initial, ...preset }))
   const [target, setTarget] = useState<number>()
   const values = (patch: Partial<HoleSettings>) => { setSettings((current) => ({ ...current, ...patch })); onChange() }
-  const field = (key: keyof HoleSettings, label: string, placeholder?: string) =>
-    <ExpressionField label={label} value={settings[key]} onChange={(value) => values({ [key]: value })} placeholder={placeholder} />
+  const field = (key: keyof HoleSettings, label: string, placeholder?: string, first = false) =>
+    <ExpressionField label={label} value={settings[key]} onChange={(value) => values({ [key]: value })} placeholder={placeholder} first={first} />
   const until = settings.depth_mode === 'to_object' ? target : undefined
   const enabled = selected && !!settings.diameter.trim() &&
     (settings.depth_mode !== 'to_object' || !!preset || (until !== undefined && until !== body))
@@ -103,14 +108,7 @@ export function HolePanel({ bodies, body, preset, selected, busy, onChange, onCa
     onSubmit={(event) => { event.preventDefault(); submit(onApply) }}>
     <fieldset disabled={busy} className="grid gap-2">
       {!selected && <p>Select a flat face.</p>}
-      <label className="grid gap-1">Style
-        <select className={inputCls} value={settings.style}
-          onChange={(event) => values({ style: event.target.value as HoleSettings['style'] })}>
-          <option value="simple">Simple</option><option value="counterbore">Counterbore</option>
-          <option value="countersink">Countersink</option><option value="threaded">Threaded</option>
-        </select>
-      </label>
-      {field('diameter', 'Diameter')}
+      {field('diameter', 'Diameter', undefined, true)}
       <label className="grid gap-1">Depth mode
         <select className={inputCls} value={settings.depth_mode}
           onChange={(event) => values({ depth_mode: event.target.value as HoleSettings['depth_mode'] })}>
@@ -127,6 +125,14 @@ export function HolePanel({ bodies, body, preset, selected, busy, onChange, onCa
           {bodies.map((part, index) => index !== body && !part.empty ? <option key={index} value={index}>{part.name}</option> : null)}
         </select>
       </label>}
+      <More>
+      <label className="grid gap-1">Style
+        <select className={inputCls} value={settings.style}
+          onChange={(event) => values({ style: event.target.value as HoleSettings['style'] })}>
+          <option value="simple">Simple</option><option value="counterbore">Counterbore</option>
+          <option value="countersink">Countersink</option><option value="threaded">Threaded</option>
+        </select>
+      </label>
       {settings.style === 'counterbore' && <>
         {field('counterbore_diameter', 'Recess diameter', '1.8 × diameter')}
         {field('counterbore_depth', 'Recess depth', '0.6 × diameter')}
@@ -139,12 +145,13 @@ export function HolePanel({ bodies, body, preset, selected, busy, onChange, onCa
         <ThreadOptionsFields options={settings} onChange={values} />
         {field('thread_length', 'Threaded length')}
       </>}
-      <FaceActions enabled={enabled} onCancel={onCancel} onPreview={() => submit(onPreview)} />
+      </More>
+      <FaceActions enabled={enabled && !busy} live={JSON.stringify([settings, until, at])} onCancel={onCancel} onPreview={() => submit(onPreview)} />
     </fieldset>
   </form>
 }
 
-export function ThreadPanel({ preset, selected, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
+export function ThreadPanel({ preset, selected, at, busy, onChange, onCancel, onPreview, onApply }: FacePanelProps & {
   onPreview: (settings: ThreadSettings) => void; onApply: (settings: ThreadSettings) => void
 }) {
   const [settings, setSettings] = useState<ThreadSettings>(() => ({ ...defaultThreadSettings, ...preset }))
@@ -159,7 +166,7 @@ export function ThreadPanel({ preset, selected, busy, onChange, onCancel, onPrev
         <input type="checkbox" checked={settings.resize === 'true'} onChange={(event) => values({ resize: event.target.checked ? 'true' : 'false' })} />
         Resize to fit
       </label>
-      <FaceActions enabled={selected} onCancel={onCancel} onPreview={() => { if (!busy) onPreview(settings) }} />
+      <FaceActions enabled={selected && !busy} live={JSON.stringify([settings, at])} onCancel={onCancel} onPreview={() => onPreview(settings)} />
     </fieldset>
   </form>
 }

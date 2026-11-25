@@ -1,13 +1,33 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import {
   AmbientLight, Box3, BufferGeometry, DirectionalLight, DoubleSide, Float32BufferAttribute, GridHelper, LineBasicMaterial, LineSegments,
-  MOUSE, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer
+  MOUSE, Matrix4, Mesh, MeshBasicMaterial, MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Quaternion, Raycaster, Scene,
+  Vector2, Vector3, WebGLRenderer
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { ArrowUpDown } from 'lucide-react'
 import type { DisplayShape, Vec3, ViewFrame } from '@/shared/engine-protocol'
-import { edgeGeometry, faceAtTriangle, facePrism, indexedGeometry, surfaceGeometry } from './geometry'
+import { bodiesInRect, edgeGeometry, faceAtTriangle, facePrism, indexedGeometry, surfaceGeometry } from './geometry'
+import { nearestSnap, snapPoints, type SnapKind, type SnapPoint } from './snapping'
 import { viewportTransform, type TransformView } from './transform'
+
+/** A handle dragged on the model, shown at each of its points: along `axis` it reads millimetres along it;
+ * without one, millimetres dragged on screen at its depth (a round's radius). Drags snap to 0.25 mm, Shift for free,
+ * Ctrl for 0.05 mm, as 0.2.0's did. */
+export interface ModelHandle {
+  key: string
+  label: string
+  at: Vec3[]
+  axis?: Vec3
+  /** What the drag reads beside the cursor. */
+  reading: (value: number) => string
+  onDrag: (value: number, commit: boolean) => void
+  onCancel: () => void
+}
+
+/** The step a drag snaps to: 0.25 mm, free with Shift, 0.05 mm with Ctrl. */
+export const snapStep = (event: { shiftKey: boolean; ctrlKey: boolean }) => event.shiftKey ? 0 : event.ctrlKey ? 0.05 : 0.25
+export const snapped = (value: number, step: number) => Math.round((step ? Math.round(value / step) * step : value) * 100) / 100
 
 interface Props {
   shape?: DisplayShape
@@ -19,7 +39,22 @@ interface Props {
   canPull: boolean
   frame: number
   readViewFrame: RefObject<(() => ViewFrame) | undefined>
-  onSelect: (face?: number, point?: Vec3) => void
+  /** A click: the face under it (none on empty space), and whether Shift, Ctrl or Cmd was held to add. */
+  onSelect: (face?: number, point?: Vec3, adding?: boolean) => void
+  /** A box dragged from empty space: the bodies it took (right to left: any it touches), and whether to add them. */
+  onBoxSelect?: (bodies: number[], adding: boolean) => void
+  /** A double-click on a part. */
+  onOpenBody?: (body: number) => void
+  /** The chosen parts, tinted (a gizmo on them tints them itself). */
+  chosen?: number[]
+  /** Combine's parts by what they do: the kept part (tinted as chosen) and the tools, drawn see-through in the
+   * operation's colour over the model or its preview. Clicks pick the model under a preview while it is set. */
+  roles?: { kept?: number; tools: number[]; operation: string }
+  /** 0.2.0's point-to-point Measure: the pointer snaps to corners, centres, midpoints and face centres; a click picks
+   * the snapped point. The points picked so far are drawn with the line between them and its length. */
+  measurePoints?: { points: Vec3[]; format: (mm: number) => string; onPick: (point: Vec3) => void }
+  /** Words at model points, kept in place as the view turns: Stack & Place's guide lengths ("Left 3 mm"). */
+  labels?: { at: Vec3; text: string }[]
   onDrag: (distance: number, commit: boolean) => void
   onDragCancel: () => void
   onError: (error: string) => void
@@ -27,6 +62,10 @@ interface Props {
   onContextMenu?: (face: number | undefined, x: number, y: number) => void
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
+  /** The overlay is an open tool's panel: placed beside the face once, as it opens, and kept there while the tool
+   * picks; with no face, it docks in the top right corner. 'dock' docks it there from the start: a tool whose handles
+   * are on the model (Arrange's pattern, Move and Rotate), which a panel beside the face could cover. */
+  toolOverlay?: boolean | 'dock'
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
   onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
@@ -34,6 +73,12 @@ interface Props {
   outline?: Vec3[][]
   /** Bodies of the displayed shape tinted red: those a face pattern could not fit. */
   marked?: number[]
+  /** Handles dragged on the model: an edge's round, a split plane's. */
+  handles?: ModelHandle[]
+  /** A plane drawn through the model (Split's): its centre, normal and half-size. */
+  plane?: { centre: Vec3; normal: Vec3; size: number }
+  /** A click within a few pixels of an edge, while nothing is open: that edge, and whether to add. */
+  onSelectEdge?: (edge: number, point: Vec3, adding: boolean) => void
 }
 
 export function Viewport(props: Props) {
@@ -48,6 +93,11 @@ export function Viewport(props: Props) {
   const sync = useRef<() => void>(() => {})
   const axis = useRef(new Vector2())
   const drag = useRef<{ pointer: number; start: Vector2; projection: Vector2; escape: (e: KeyboardEvent) => void } | null>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+  const handleReading = useRef<HTMLSpanElement>(null)
+  /** From model points to the view: where a point shows, and how many millimetres a pixel is at its depth. */
+  const view = useRef<{ screen(point: Vec3): Vector2; mmPerPx(point: Vec3): number }>(undefined)
+  const handleDrag = useRef<{ key: string; pointer: number; start: Vector2; perMm?: Vector2; mmPerPx: number; escape: (e: KeyboardEvent) => void } | null>(null)
 
   useEffect(() => {
     const el = host.current!
@@ -73,9 +123,9 @@ export function Viewport(props: Props) {
     const camera = new PerspectiveCamera(35, 1, 0.1, 10_000)
     camera.up.set(0, 0, 1)
     const controls = new OrbitControls(camera, canvas)
-    // As in SimpleCAD 0.4: middle-drag pans and Shift+middle-drag orbits, right-drag orbits; left-drag orbits too, as
-    // in 0.5.0 (Shift+left pans).
-    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }
+    // Left drag turns the view anywhere (Shift+left pans), middle drag pans (Shift+middle turns). A right drag draws
+    // the selection box instead (`press`), and a short right click opens the menu.
+    controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.PAN, RIGHT: -1 as MOUSE }
     // A middle press would otherwise start the browser's autoscroll.
     const noAutoscroll = (event: MouseEvent) => { if (event.button === 1) event.preventDefault() }
     canvas.addEventListener('mousedown', noAutoscroll)
@@ -109,6 +159,12 @@ export function Viewport(props: Props) {
     const ghost = new Mesh(new BufferGeometry(), new MeshBasicMaterial({ color: 0x8a93a3, transparent: true, opacity: 0.22, depthWrite: false }))
     ghost.renderOrder = 1
     let ghostKey = ''
+    // Combine's tools, as 0.2.0 coloured a cut: red cut away, green joined, blue kept where they overlap.
+    const toolGhost = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe5484d, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    toolGhost.renderOrder = 2
+    let toolGhostKey = ''
     const prism = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
       color: 0x3b82f6, transparent: true, opacity: 0.35, depthTest: false, depthWrite: false, side: DoubleSide
     }))
@@ -142,6 +198,10 @@ export function Viewport(props: Props) {
     const chosen = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0xe8a33a, depthTest: false }))
     chosen.renderOrder = 3
     let chosenKey = ''
+    // The edge a click would take, lit under the pointer as a face is.
+    const edgeHover = new LineSegments(new BufferGeometry(), new LineBasicMaterial({ color: 0xf2c27a, depthTest: false }))
+    edgeHover.renderOrder = 3
+    edgeHover.visible = false
     /** Which edge each line segment of the displayed shape belongs to, made on the first edge pick. */
     let segmentEdge: { shape: DisplayShape; owner: Uint32Array } | undefined
     const edgeOf = (shape: DisplayShape, segment: number) => {
@@ -161,33 +221,207 @@ export function Viewport(props: Props) {
       color: 0xe5484d, transparent: true, opacity: 0.6, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
     }))
     let markedKey = ''
-    scene.add(body, highlight, hover, edges, ghost, prism, chosen, outline, marked)
+    const parts = new Mesh(new BufferGeometry(), new MeshBasicMaterial({
+      color: 0xe8a33a, transparent: true, opacity: 0.22, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
+    }))
+    let partsKey = ''
+    const plane = new Mesh(new PlaneGeometry(2, 2), new MeshBasicMaterial({
+      color: 0x3b82f6, transparent: true, opacity: 0.2, side: DoubleSide, depthWrite: false
+    }))
+    plane.renderOrder = 2
+    plane.visible = false
+    scene.add(body, highlight, hover, edges, ghost, toolGhost, prism, chosen, edgeHover, outline, marked, parts, plane)
+    // The selection box, drawn over the view while dragged from empty space.
+    // Measure's snap indicator, rubber band and length, drawn over the view in window pixels.
+    const measureLayer = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    measureLayer.setAttribute('class', 'pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible')
+    measureLayer.dataset.testid = 'measure-layer'
+    el.append(measureLayer)
+    /** The snap drawn under the pointer, and the window point it was found at. */
+    let measureSnap: { point: Vec3; kind: SnapKind; x: number; y: number } | undefined
+    const snapCache = new Map<number, SnapPoint[]>()
+    let snapShape: DisplayShape | undefined
+    const area = document.createElement('div')
+    area.className = 'pointer-events-none absolute z-10 hidden border border-accent bg-accent/10'
+    area.dataset.testid = 'selection-box'
+    el.append(area)
     let hovered: number | undefined
+    let hoveredEdge: number | undefined
     let displayed: DisplayShape | undefined
     let frame = -1
     let animation = 0
 
+    // The view's size and place in the window, measured when it resizes: reading them while drawing laid out the
+    // whole window again on every frame, which cost UPS Atlas's steps 50 ms.
+    let width = el.clientWidth
+    let height = el.clientHeight
+    let bounds = canvas.getBoundingClientRect()
     const toScreen = (point: Vector3) => {
       point.project(camera)
-      return new Vector2((point.x + 1) * el.clientWidth / 2, (1 - point.y) * el.clientHeight / 2)
+      return new Vector2((point.x + 1) * width / 2, (1 - point.y) * height / 2)
     }
-    /** Beside the face, clear of the drag handle and inside the view; docked at the bottom without a point. */
+    view.current = {
+      screen: (point) => toScreen(new Vector3(...point)),
+      mmPerPx: (point) => 2 * camera.position.distanceTo(new Vector3(...point)) * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, height)
+    }
+    /** Each model handle's buttons at their points; hidden off screen. */
+    const placeHandles = () => {
+      for (const button of frameRef.current?.querySelectorAll<HTMLButtonElement>('button[data-model-handle]') ?? []) {
+        const point = current.current.handles?.find((h) => h.key === button.dataset.modelHandle)?.at[Number(button.dataset.index)]
+        if (!point) continue
+        const at = toScreen(new Vector3(...point))
+        button.hidden = at.x < 0 || at.x > width || at.y < 0 || at.y > height
+        button.style.left = `${at.x}px`
+        button.style.top = `${at.y}px`
+      }
+    }
+    /** Beside the face, clear of the drag handle and inside the view; docked at the bottom without a point (a tool's
+     * panel in the top right corner, and kept where it opened). */
+    let pinned: Vector2 | 'dock' | undefined
+    let held: { chosen: string; reach: ReturnType<typeof transform.reach> } | undefined
     const placeBar = (at?: Vector2) => {
       const panel = bar.current
       if (!panel) return
-      const { offsetWidth: w, offsetHeight: h } = panel
+      if (current.current.toolOverlay) {
+        pinned = current.current.toolOverlay === 'dock' ? 'dock' : pinned ?? at?.clone() ?? 'dock'
+        at = pinned === 'dock' ? undefined : pinned
+      } else pinned = undefined
+      const tool = current.current.toolOverlay
+      // A tall panel scrolls inside the view rather than running off its bottom.
+      const content = panel.firstElementChild as HTMLElement | null
+      const tallest = tool ? `${Math.max(120, height - 24)}px` : ''
+      if (content && content.style.maxHeight !== tallest) content.style.maxHeight = tallest
+      // Its size as last observed (read once for a panel not yet observed).
+      if (panelSize?.panel !== panel) panelSize = { panel, w: panel.offsetWidth, h: panel.offsetHeight }
+      const { w, h } = panelSize
       const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max - 8))
-      panel.style.left = `${at ? clamp(at.x + 24, el.clientWidth - w) : Math.max(8, (el.clientWidth - w) / 2)}px`
-      panel.style.top = `${at ? clamp(at.y + 24, el.clientHeight - h) : el.clientHeight - h - 12}px`
+      // The bar stays off the part's arrows and rings, and off the face's pull handle: centred over them (a model on
+      // the plate leaves room above it, where the bar covers least of it and of the parts beside it), else under them,
+      // else docked at the bottom. Beside the face it covered the X arrow (and the part's middle) in a small window.
+      // While a step runs the handles go but the same parts stay chosen: the bar keeps its place instead of jumping.
+      const chosen = String(current.current.chosen ?? [])
+      const reach = transform.reach()
+      if (reach || held?.chosen !== chosen) held = { chosen, reach }
+      const gizmo = tool ? undefined : held.reach
+      let x: number, y: number
+      if (gizmo && gizmo.x >= 0 && gizmo.x <= width && gizmo.y >= 0 && gizmo.y <= height) {
+        x = clamp(gizmo.x - w / 2, width - w)
+        const clear = (top: number) => top >= 8 && top + h <= height - 8 &&
+          !(at && at.x > x - 20 && at.x < x + w + 20 && at.y > top - 20 && at.y < top + h + 20)
+        y = [gizmo.y - gizmo.r - 8 - h, gizmo.y + gizmo.r + 8].find(clear) ?? height - h - 12
+      } else {
+        x = at ? clamp(at.x + 24, width - w) : tool ? Math.max(8, width - w - 12) : Math.max(8, (width - w) / 2)
+        y = at ? clamp(at.y + 24, height - h) : tool ? 12 : height - h - 12
+        // Kept into the view, it can land on the point it sits beside (a handle): then above it, else to its left.
+        const covers = () => !!at && at.x > x - 20 && at.x < x + w + 20 && at.y > y - 20 && at.y < y + h + 20
+        if (at && !tool && covers()) y = clamp(at.y - 24 - h, height - h)
+        if (at && !tool && covers()) x = clamp(at.x - 24 - w, width - w)
+      }
+      const [left, top] = [`${x}px`, `${y}px`]
+      if (panel.style.left !== left) panel.style.left = left
+      if (panel.style.top !== top) panel.style.top = top
     }
-    /** While picking edges, a window point on each of the first edges, for scripted picks. */
+    let panelSize: { panel: HTMLElement; w: number; h: number } | undefined
+    // The panel's own size changes (More… opened, a preview's note): keep it inside the view.
+    const sized = new ResizeObserver((entries) => {
+      const box = entries.at(-1)?.borderBoxSize?.[0]
+      if (box && bar.current) panelSize = { panel: bar.current, w: box.inlineSize, h: box.blockSize }
+      draw()
+    })
+    let watched: Element | null = null
+    /** While edges can be picked or clicked, a window point on each of the first edges, for scripted picks. */
+    // The guide labels, as spans over the view.
+    const labelLayer = document.createElement('div')
+    labelLayer.className = 'pointer-events-none absolute inset-0 z-10'
+    labelLayer.dataset.testid = 'guide-labels'
+    el.append(labelLayer)
+    const placeLabels = () => {
+      const labels = current.current.labels ?? []
+      while (labelLayer.children.length > labels.length) labelLayer.lastElementChild!.remove()
+      while (labelLayer.children.length < labels.length) {
+        const span = document.createElement('span')
+        span.className = 'absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-elev/95 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-accent-ink shadow'
+        labelLayer.append(span)
+      }
+      labels.forEach(({ at, text }, i) => {
+        const span = labelLayer.children[i] as HTMLElement
+        const [x, y] = toView(at)
+        if (span.textContent !== text) span.textContent = text
+        span.style.left = `${x}px`
+        span.style.top = `${y - 4}px`
+      })
+    }
+    /** A model point in view pixels. */
+    const toView = (point: Vec3) => {
+      const at = new Vector3(...point).project(camera)
+      return [(at.x + 1) / 2 * bounds.width, (1 - at.y) / 2 * bounds.height] as [number, number]
+    }
+    /** The snap under window point (x, y): the named snaps of the part under it within 22 pixels, by 0.2.0's
+     * priorities, else the surface point itself. */
+    const snapAt = (x: number, y: number) => {
+      const shape = current.current.shape
+      const hit = faceAt(x, y)
+      // Off every face but on an edge (a silhouette): that edge's part.
+      const edge = hit || !shape ? undefined : edgeAt(x, y)
+      if (!shape || (!hit && !edge)) return
+      if (snapShape !== shape) {
+        snapShape = shape
+        snapCache.clear()
+      }
+      const body = hit ? shape.faces[hit.face].body : shape.ranges.find(({ edges }) => edge!.edge >= edges[0] && edge!.edge < edges[1])?.body
+      if (body === undefined) return
+      if (!snapCache.has(body)) snapCache.set(body, snapPoints(shape, body))
+      const pointer: [number, number] = [x - bounds.left, y - bounds.top]
+      const named = snapCache.get(body)!.map((snap) => ({ ...snap, at: toView(snap.point) }))
+      const own = hit ? { point: hit.point.toArray() as Vec3, kind: 'surface' as const, body, at: pointer }
+        : { point: edge!.point, kind: 'edge' as const, body, at: pointer }
+      return nearestSnap([...named, own], pointer)
+    }
+    const glyph = (kind: SnapKind, [x, y]: [number, number]) => ({
+      vertex: `<rect x="${x - 2.5}" y="${y - 2.5}" width="5" height="5" fill="none" stroke-width="1.6"/>`,
+      center: `<circle cx="${x}" cy="${y}" r="2.5" fill="none" stroke-width="1.6"/>`,
+      midpoint: `<path d="M${x} ${y - 3}L${x + 3} ${y}L${x} ${y + 3}L${x - 3} ${y}Z" fill="none" stroke-width="1.6"/>`,
+      edge: `<path d="M${x - 2.5} ${y}H${x + 2.5}" stroke-width="1.6"/>`,
+      face: `<circle cx="${x}" cy="${y}" r="1.3" stroke-width="2.6"/>`,
+      surface: `<circle cx="${x}" cy="${y}" r="1.3" stroke-width="2.6"/>`
+    })[kind]
+    /** The picked points, the hovered snap, the dashed line to it and the length at its middle (0.2.0's overlay). */
+    const drawMeasure = () => {
+      const measuring = current.current.measurePoints
+      if (!measuring) {
+        if (measureLayer.innerHTML) measureLayer.innerHTML = ''
+        return
+      }
+      const { points, format } = measuring
+      const end = points.length === 1 ? measureSnap?.point : points[1]
+      const parts: string[] = []
+      if (points[0] && end) {
+        const [a, b] = [toView(points[0]), toView(end)]
+        const length = format(Math.hypot(...[0, 1, 2].map((i) => end[i] - points[0][i])))
+        parts.push(`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${points.length === 2 ? 'var(--accent)' : 'var(--text-2)'}" stroke-width="1.6" ${points.length === 2 ? '' : 'stroke-dasharray="5 4"'}/>`)
+        const [mx, my] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+        const width = 12 + length.length * 6.6
+        parts.push(`<g data-testid="measure-length"><rect x="${mx - width / 2}" y="${my - 10}" width="${width}" height="20" rx="8" fill="var(--elev)" stroke="var(--border)"/>` +
+          `<text x="${mx}" y="${my + 4}" text-anchor="middle" font-size="11.5" fill="var(--text)">${length}</text></g>`)
+      }
+      points.forEach((point, i) => {
+        const at = toView(point)
+        parts.push(`<g stroke="var(--accent)"><circle cx="${at[0]}" cy="${at[1]}" r="6.5" stroke-width="2" fill="${i === 0 ? 'var(--accent)' : 'none'}"/></g>`)
+      })
+      if (measureSnap && points.length < 2) {
+        const at = toView(measureSnap.point)
+        parts.push(`<g data-snap="${measureSnap.kind}" stroke="var(--accent)" fill="var(--accent)"><circle cx="${at[0]}" cy="${at[1]}" r="6.5" fill="none" stroke-width="2"/>${glyph(measureSnap.kind, at)}</g>`)
+      }
+      const html = parts.join('')
+      if (measureLayer.innerHTML !== html) measureLayer.innerHTML = html
+    }
     const publishEdges = () => {
       const shape = current.current.shape
-      if (!current.current.onPickEdge || !shape || displayed !== shape) {
+      if ((!current.current.onPickEdge && !current.current.onSelectEdge && !current.current.measurePoints) || !shape || displayed !== shape) {
         delete canvas.dataset.edgeAnchors
         return
       }
-      const rect = canvas.getBoundingClientRect()
+      const rect = bounds
       const anchors: (number[] | null)[] = []
       for (let edge = 0; edge + 1 < shape.edgeStart.length && edge < 64; edge++) {
         const [first, end] = [shape.edgeStart[edge], shape.edgeStart[edge + 1]]
@@ -199,7 +433,34 @@ export function Viewport(props: Props) {
         anchors.push([Math.round(rect.left + (point.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - point.y) / 2 * rect.height),
           ...world.toArray().map((v) => Math.round(v * 1000) / 1000)])
       }
-      canvas.dataset.edgeAnchors = JSON.stringify(anchors)
+      const text = JSON.stringify(anchors)
+      if (canvas.dataset.edgeAnchors !== text) canvas.dataset.edgeAnchors = text
+    }
+    /** On small models, a point on each shown part's top face in window points, for scripted clicks (as edge
+     * anchors are): the middle of a face, clear of its edges. */
+    let tops: { shape: DisplayShape; points: [number, Vector3][] } | undefined
+    const publishBodies = () => {
+      const shape = displayed
+      if (!shape || shape.ranges.length > 64) {
+        delete canvas.dataset.bodyAnchors
+        return
+      }
+      if (tops?.shape !== shape) {
+        const best = new Map<number, (typeof shape.faces)[number]>()
+        for (const face of shape.faces) {
+          const held = best.get(face.body)
+          const score = (f: typeof face) => (f.planar ? f.normal[2] : -2) * 1e6 + f.area
+          if (!held || score(face) > score(held)) best.set(face.body, face)
+        }
+        tops = { shape, points: [...best].map(([index, face]) => [index, new Vector3(...face.anchor)]) }
+      }
+      const rect = bounds
+      const anchors = Object.fromEntries(tops.points.map(([index, point]) => {
+        const at = point.clone().project(camera)
+        return [index, [Math.round(rect.left + (at.x + 1) / 2 * rect.width), Math.round(rect.top + (1 - at.y) / 2 * rect.height)]]
+      }))
+      const text = JSON.stringify(anchors)
+      if (canvas.dataset.bodyAnchors !== text) canvas.dataset.bodyAnchors = text
     }
     const draw = () => {
       if (animation) return
@@ -207,26 +468,45 @@ export function Viewport(props: Props) {
         animation = 0
         light.position.copy(camera.position)
         renderer.render(scene, camera)
+        // The renderer brings the camera's matrices up to date only when it draws (not while its context is lost);
+        // what is published and drawn over the view below is projected through them, as a click's raycast is.
+        camera.updateMatrixWorld()
         transform.publish()
+        drawMeasure()
+        placeLabels()
         publishEdges()
+        publishBodies()
         // Where the camera is and what it turns about, for scripted checks of the mouse.
         const rounded = (v: Vector3) => v.toArray().map((n) => Math.round(n * 1000) / 1000)
         const view = JSON.stringify({ position: rounded(camera.position), target: rounded(controls.target) })
         if (canvas.dataset.camera !== view) canvas.dataset.camera = view
-        canvas.setAttribute('aria-busy', String(!displayed))
+        const busy = String(!displayed)
+        if (canvas.getAttribute('aria-busy') !== busy) canvas.setAttribute('aria-busy', busy)
+        placeHandles()
+        if (bar.current !== watched) {
+          if (watched) sized.unobserve(watched)
+          watched = bar.current
+          if (watched) sized.observe(watched)
+        }
+        if (!current.current.overlay) pinned = undefined
         const button = handle.current
         const { selected, shape, canPull } = current.current
         if (!button) return
         const face = selected === undefined ? undefined : shape?.faces[selected]
         button.hidden = !face || !canPull
-        if (!face) return placeBar()
+        if (!face) {
+          // A clicked edge: beside its round handle, which a bar docked at the bottom covered in a small window.
+          const first = current.current.toolOverlay ? undefined : current.current.handles?.[0]?.at[0]
+          const point = first && toScreen(new Vector3(...first))
+          return placeBar(point && point.x >= 0 && point.x <= width && point.y >= 0 && point.y <= height ? point : undefined)
+        }
         const start = new Vector3(...face.anchor)
         const normal = new Vector3(...face.normal)
         const position = toScreen(start.clone())
         const direction = toScreen(start.add(normal)).sub(position)
         axis.current.copy(direction)
         const length = direction.length()
-        const offscreen = position.x < 0 || position.x > el.clientWidth || position.y < 0 || position.y > el.clientHeight
+        const offscreen = position.x < 0 || position.x > width || position.y < 0 || position.y > height
         button.hidden ||= length < 0.1 || offscreen
         button.style.left = `${position.x}px`
         button.style.top = `${position.y}px`
@@ -235,7 +515,7 @@ export function Viewport(props: Props) {
     }
     controls.addEventListener('change', draw)
     const transform = viewportTransform(canvas, camera, scene, body.material, edges.material, draw,
-      (enabled) => { controls.enabled = enabled })
+      (enabled) => { controls.enabled = enabled }, () => bounds)
 
     /** Light up face `face` of the displayed shape under the pointer; undefined clears it. */
     const showHover = (face?: number) => {
@@ -243,12 +523,26 @@ export function Viewport(props: Props) {
       if (face === selected || !shape || displayed !== shape) face = undefined
       if (face === hovered) return
       hovered = face
+      // For scripted clicks: which face a click here would take.
+      canvas.dataset.hoverFace = face === undefined ? '' : String(face)
       hover.visible = face !== undefined
       if (face !== undefined) {
         hover.geometry.setAttribute('position', body.geometry.getAttribute('position'))
         hover.geometry.setIndex(body.geometry.index)
         hover.geometry.setDrawRange(shape!.faceTriStart[face] * 3, (shape!.faceTriStart[face + 1] - shape!.faceTriStart[face]) * 3)
       }
+      draw()
+    }
+    /** Light up edge `edge` of the displayed shape under the pointer; undefined clears it. */
+    const showEdgeHover = (edge?: number) => {
+      const shape = current.current.shape
+      if (!shape || displayed !== shape) edge = undefined
+      if (edge === hoveredEdge) return
+      hoveredEdge = edge
+      edgeHover.geometry.dispose()
+      edgeHover.geometry = edge !== undefined ? edgeGeometry(shape!, [[edge, edge + 1]]) : new BufferGeometry()
+      edgeHover.visible = edge !== undefined
+      canvas.dataset.hoverEdge = edge === undefined ? '' : String(edge)
       draw()
     }
 
@@ -258,6 +552,8 @@ export function Viewport(props: Props) {
       if (displayed !== next) {
         hovered = undefined
         hover.visible = false
+        hoveredEdge = undefined
+        edgeHover.visible = false
         hover.geometry.dispose()
         hover.geometry = new BufferGeometry()
         body.geometry.dispose()
@@ -267,7 +563,8 @@ export function Viewport(props: Props) {
         displayed = next
       }
       const ghostBody = shown ? placingBody ?? tool?.body : undefined
-      const pickShape = ghostBody !== undefined ? shape : undefined
+      const roles = current.current.roles
+      const pickShape = ghostBody !== undefined || roles ? shape : undefined
       if (pickShape !== committedShape) {
         committed.geometry.dispose()
         committed.geometry = pickShape ? surfaceGeometry(pickShape) : new BufferGeometry()
@@ -281,6 +578,19 @@ export function Viewport(props: Props) {
         ghostKey = key
       }
       ghost.visible = !!range
+      const toolRanges = roles && pickShape ? pickShape.ranges.filter(({ body: index }) => roles.tools.includes(index)) : []
+      const toolKey = toolRanges.length ? `${roles!.operation}:${toolRanges.map(({ indices }) => indices).join('|')}:${committed.geometry.id}` : ''
+      if (toolKey !== toolGhostKey) {
+        toolGhost.geometry.dispose()
+        const parts = toolRanges.map(({ indices }) => pickShape!.indices.subarray(...indices))
+        const joined = new Uint32Array(parts.reduce((n, part) => n + part.length, 0))
+        parts.reduce((at, part) => { joined.set(part, at); return at + part.length }, 0)
+        toolGhost.geometry = toolRanges.length ? indexedGeometry(committed.geometry, joined) : new BufferGeometry()
+        toolGhost.material.color.setHex(roles?.operation === 'cut' ? 0xe5484d : roles?.operation === 'join' ? 0x3fbf7f : 0x3b82f6)
+        toolGhostKey = toolKey
+      }
+      toolGhost.visible = !!toolKey
+      canvas.dataset.roles = roles ? JSON.stringify({ kept: roles.kept ?? null, tools: roles.tools, operation: roles.operation }) : ''
       // A live drag (transform.ts) owns the flag while it lasts.
       if (!canvas.dataset.ghost || canvas.dataset.ghost === 'preview') {
         canvas.dataset.ghost = range ? 'preview' : ''
@@ -295,23 +605,35 @@ export function Viewport(props: Props) {
         outline.geometry = new BufferGeometry()
         outline.geometry.setAttribute('position', new Float32BufferAttribute(points, 3))
       }
-      const tinted = next ? current.current.marked ?? [] : []
-      const tintKey = tinted.length ? `${tinted.join(',')}:${body.geometry.id}` : ''
-      if (tintKey !== markedKey) {
-        marked.geometry.dispose()
-        const parts = next!.ranges.filter((range) => tinted.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
-        const indices = new Uint32Array(parts.reduce((total, part) => total + part.length, 0))
-        parts.reduce((at, part) => { indices.set(part, at); return at + part.length }, 0)
-        marked.geometry = tintKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
-        markedKey = tintKey
+      /** Tint `bodies` of the displayed shape with `mesh`; returns the key it now shows. */
+      const tint = (mesh: Mesh, bodies: number[], key: string) => {
+        const nextKey = bodies.length ? `${bodies.join(',')}:${body.geometry.id}` : ''
+        if (nextKey === key) return key
+        mesh.geometry.dispose()
+        const runs = next!.ranges.filter((range) => bodies.includes(range.body)).map((range) => next!.indices.subarray(...range.indices))
+        const indices = new Uint32Array(runs.reduce((total, run) => total + run.length, 0))
+        runs.reduce((at, run) => { indices.set(run, at); return at + run.length }, 0)
+        mesh.geometry = nextKey ? indexedGeometry(body.geometry, indices) : new BufferGeometry()
+        return nextKey
       }
+      markedKey = tint(marked, next ? current.current.marked ?? [] : [], markedKey)
+      partsKey = tint(parts, next && displayed === shape ? current.current.chosen ?? [] : [], partsKey)
       // A group drag (Arrange) moves bodies of the preview; any other moves the model's.
       const transforming = transform.set(tool?.bodies ? next : shown ? undefined : shape, body.geometry, tool, showEdges)
-      marked.visible = !!tintKey && !transforming
+      marked.visible = !!markedKey && !transforming
+      parts.visible = !!partsKey && !transforming
+      const cut = current.current.plane
+      plane.visible = !!cut
+      if (cut) {
+        plane.position.fromArray(cut.centre)
+        plane.quaternion.copy(new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), new Vector3(...cut.normal).normalize()))
+        plane.scale.setScalar(cut.size)
+      }
       const picking = !!current.current.onPickEdge
       body.visible = !transforming
       edges.visible = (showEdges || picking) && !transforming
-      const picked = picking && displayed === shape ? current.current.pickedEdges ?? [] : []
+      // Picked edges show while a tool picks them, and a clicked edge while it is the selection.
+      const picked = displayed === shape ? current.current.pickedEdges ?? [] : []
       const pickedKey = picked.length && shape ? `${picked.join(',')}:${shape.edgeStart.length}` : ''
       if (pickedKey !== chosenKey) {
         chosen.geometry.dispose()
@@ -342,8 +664,11 @@ export function Viewport(props: Props) {
     }
 
     const resize = () => {
-      renderer.setSize(el.clientWidth, el.clientHeight)
-      camera.aspect = el.clientWidth / Math.max(1, el.clientHeight)
+      width = el.clientWidth
+      height = el.clientHeight
+      renderer.setSize(width, height)
+      bounds = canvas.getBoundingClientRect()
+      camera.aspect = width / Math.max(1, height)
       camera.updateProjectionMatrix()
       draw()
     }
@@ -352,7 +677,30 @@ export function Viewport(props: Props) {
     observer.observe(el)
     const ray = new Raycaster()
     const down = new Vector2()
-    const press = (e: PointerEvent) => down.set(e.clientX, e.clientY)
+    /** A selection box being dragged with the right button: where it started, and whether it adds. */
+    let box: { x: number; y: number; adding: boolean } | undefined
+    const endBox = () => {
+      box = undefined
+      area.classList.add('hidden')
+    }
+    const press = (e: PointerEvent) => {
+      down.set(e.clientX, e.clientY)
+      const { onBoxSelect, onPickEdge, shape } = current.current
+      // A right drag draws a box anywhere, over the model too (a right press during a handle drag cancels the drag
+      // and never gets here); released within 4 px, it is a right click instead.
+      if (e.button !== 2 || !onBoxSelect || onPickEdge || !shape || displayed !== shape) return
+      box = { x: e.clientX, y: e.clientY, adding: e.shiftKey || e.ctrlKey || e.metaKey }
+    }
+    const drawBox = (e: PointerEvent) => {
+      if (!box) return
+      const rect = canvas.getBoundingClientRect()
+      const [left, right] = [Math.min(box.x, e.clientX), Math.max(box.x, e.clientX)]
+      const [top, bottom] = [Math.min(box.y, e.clientY), Math.max(box.y, e.clientY)]
+      Object.assign(area.style, { left: `${left - rect.left}px`, top: `${top - rect.top}px`, width: `${right - left}px`, height: `${bottom - top}px` })
+      // Right to left takes what it touches: dashed, as 0.2.0 drew it.
+      area.style.borderStyle = e.clientX < box.x ? 'dashed' : 'solid'
+      area.classList.toggle('hidden', right - left < 4 && bottom - top < 4)
+    }
     /** The model face under a window point, or undefined. */
     const faceAt = (x: number, y: number) => {
       const { shape, placingBody } = current.current
@@ -379,11 +727,42 @@ export function Viewport(props: Props) {
       const hit = ray.intersectObject(edges)[0]
       return hit?.index === undefined ? undefined : { edge: edgeOf(shape, hit.index / 2), point: hit.point.toArray() as Vec3 }
     }
+    /** The edge a click here takes, as 0.2.0: an edge has a pick zone wider than its line, and wins over the face it
+     * bounds, not one in front of it. Only while edges can be clicked. */
+    const edgeOver = (x: number, y: number, face?: { point: Vector3 }) => {
+      if (!current.current.onSelectEdge || current.current.shape !== displayed) return
+      const edge = edgeAt(x, y)
+      const depth = camera.position.distanceTo(controls.target)
+      return edge && (!face || camera.position.distanceTo(new Vector3(...edge.point)) <= camera.position.distanceTo(face.point) + depth * 0.01)
+        ? edge : undefined
+    }
     const pick = (e: PointerEvent) => {
       const shape = current.current.shape
+      if (box && e.button === 2) {
+        const started = box
+        endBox()
+        if (down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 && shape && displayed === shape) {
+          const rect = canvas.getBoundingClientRect()
+          camera.updateMatrixWorld()
+          const viewProjection = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+          const within = {
+            left: Math.min(started.x, e.clientX) - rect.left, right: Math.max(started.x, e.clientX) - rect.left,
+            top: Math.min(started.y, e.clientY) - rect.top, bottom: Math.max(started.y, e.clientY) - rect.top
+          }
+          current.current.onBoxSelect?.(bodiesInRect(shape, viewProjection.elements, rect.width, rect.height, within, e.clientX < started.x), started.adding)
+          return
+        }
+      }
       if (e.button === 2 && current.current.onContextMenu && !transform.claimed() &&
         down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
         current.current.onContextMenu(faceAt(e.clientX, e.clientY)?.face, e.clientX, e.clientY)
+        return
+      }
+      if (e.button === 0 && current.current.measurePoints && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
+        // As 0.2.0: the snap the indicator shows, if the pointer has moved 3 pixels or less since.
+        const shown = measureSnap && Math.hypot(e.clientX - measureSnap.x, e.clientY - measureSnap.y) <= 3 ? measureSnap : undefined
+        const snap = shown ?? snapAt(e.clientX, e.clientY)
+        if (snap) current.current.measurePoints.onPick(snap.point)
         return
       }
       if (e.button === 0 && current.current.onPickEdge && down.distanceTo(new Vector2(e.clientX, e.clientY)) <= 4) {
@@ -394,45 +773,82 @@ export function Viewport(props: Props) {
       if (e.button !== 0 || transform.claimed() || down.distanceTo(new Vector2(e.clientX, e.clientY)) > 4 ||
         (shape !== displayed && shape !== committedShape)) return
       const picked = faceAt(e.clientX, e.clientY)
-      current.current.onSelect(picked?.face, picked?.point.toArray())
+      const edge = edgeOver(e.clientX, e.clientY, picked)
+      if (edge) {
+        current.current.onSelectEdge!(edge.edge, edge.point, e.shiftKey || e.ctrlKey || e.metaKey)
+        return
+      }
+      current.current.onSelect(picked?.face, picked?.point.toArray(), e.shiftKey || e.ctrlKey || e.metaKey)
+    }
+    const open = (e: MouseEvent) => {
+      const shape = current.current.shape
+      // Two quick Shift-clicks are two toggles, not a double-click. The gizmo sits on the part's middle; a
+      // double-click there moves nothing, so it still opens the part.
+      const plain = e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey
+      const picked = plain ? faceAt(e.clientX, e.clientY) : undefined
+      if (picked && shape) current.current.onOpenBody?.(shape.faces[picked.face].body)
     }
     // Hover: at most one pick per frame, and none while a button is held (orbiting).
     let pointer: { x: number; y: number } | null = null
     let hoverFrame = 0
     const move = (e: PointerEvent) => {
-      pointer = e.buttons || current.current.transform ? null : { x: e.clientX, y: e.clientY }
-      if (!pointer) return showHover(undefined)
+      drawBox(e)
+      pointer = e.buttons ? null : { x: e.clientX, y: e.clientY }
+      if (!pointer) {
+        showEdgeHover(undefined)
+        return showHover(undefined)
+      }
       hoverFrame ||= requestAnimationFrame(() => {
         hoverFrame = 0
         if (!pointer) return
         const started = performance.now()
-        showHover(faceAt(pointer.x, pointer.y)?.face)
+        if (current.current.measurePoints) {
+          const snap = snapAt(pointer.x, pointer.y)
+          measureSnap = snap && { point: snap.point, kind: snap.kind, x: pointer.x, y: pointer.y }
+          canvas.dataset.measureSnap = snap ? JSON.stringify({ kind: snap.kind, point: snap.point.map((v) => Math.round(v * 1000) / 1000) }) : ''
+          draw()
+        }
+        // The edge a click would take lights up instead of its face.
+        const face = faceAt(pointer.x, pointer.y)
+        const edge = edgeOver(pointer.x, pointer.y, face)
+        showEdgeHover(edge?.edge)
+        showHover(edge ? undefined : face?.face)
         // What one hover costs, for the performance check.
         canvas.dataset.hoverMs = (performance.now() - started).toFixed(2)
       })
     }
     const leave = () => {
       pointer = null
+      showEdgeHover(undefined)
       showHover(undefined)
     }
-    canvas.addEventListener('pointerdown', press)
+    // Capturing, so a box can be started before the orbit controls see the press.
+    canvas.addEventListener('pointerdown', press, true)
     canvas.addEventListener('pointerup', pick)
+    canvas.addEventListener('pointercancel', endBox)
+    canvas.addEventListener('dblclick', open)
     canvas.addEventListener('pointermove', move)
     canvas.addEventListener('pointerleave', leave)
     sync.current()
     return () => {
       observer.disconnect()
+      sized.disconnect()
       cancelAnimationFrame(animation)
       transform.dispose()
       controls.dispose()
-      canvas.removeEventListener('pointerdown', press)
+      canvas.removeEventListener('pointerdown', press, true)
       canvas.removeEventListener('mousedown', noAutoscroll)
       canvas.removeEventListener('pointerup', pick)
+      canvas.removeEventListener('pointercancel', endBox)
+      canvas.removeEventListener('dblclick', open)
+      area.remove()
+      measureLayer.remove()
+      labelLayer.remove()
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerleave', leave)
       cancelAnimationFrame(hoverFrame)
       sweep.current = undefined
-      for (const object of [body, edges, highlight, hover, grid, ghost, prism, chosen, outline, marked]) {
+      for (const object of [body, edges, highlight, hover, grid, ghost, toolGhost, prism, chosen, edgeHover, outline, marked, parts, plane]) {
         object.geometry.dispose()
         object.material.dispose()
       }
@@ -440,11 +856,12 @@ export function Viewport(props: Props) {
       renderer.dispose()
       canvas.remove()
       sync.current = () => {}
+      view.current = undefined
       readViewFrame.current = undefined
     }
   }, [])
 
-  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, props.pickedEdges, props.outline, props.marked])
+  useEffect(() => sync.current(), [props.shape, props.shown, props.selected, props.showEdges, props.frame, props.canPull, props.placingBody, props.transform, !props.overlay, !props.onPickEdge, !props.onSelectEdge, props.pickedEdges, props.outline, props.marked, String(props.chosen), JSON.stringify(props.roles), JSON.stringify(props.measurePoints?.points ?? null), JSON.stringify(props.labels ?? null), props.plane, props.handles, props.toolOverlay])
 
   /** The handle rides along the face normal with the drag, carrying the distance beside it. */
   const follow = (distance?: number) => {
@@ -469,15 +886,76 @@ export function Viewport(props: Props) {
     const active = drag.current
     if (!active || active.pointer !== e.pointerId) return
     const delta = new Vector2(e.clientX, e.clientY).sub(active.start)
-    const distance = Math.round(delta.dot(active.projection) / active.projection.lengthSq() * 100) / 100
+    const distance = snapped(delta.dot(active.projection) / active.projection.lengthSq(), snapStep(e))
     if (commit) end()
     else follow(distance)
     props.onDrag(distance, commit)
   }
 
+  const endHandle = () => {
+    if (handleDrag.current) window.removeEventListener('keydown', handleDrag.current.escape, true)
+    handleDrag.current = null
+    if (handleReading.current) handleReading.current.hidden = true
+  }
+  const startHandle = (e: ReactPointerEvent<HTMLButtonElement>, key: string, index: number) => {
+    const handle = props.handles?.find((h) => h.key === key)
+    const at = handle?.at[index]
+    if (e.button !== 0 || !handle || !at || !view.current) return
+    const perMm = handle.axis ? view.current.screen(at.map((v, i) => v + handle.axis![i]) as Vec3).sub(view.current.screen(at)) : undefined
+    if (perMm && perMm.lengthSq() < 0.01) return
+    const button = e.currentTarget
+    const pointer = e.pointerId
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      endHandle()
+      current.current.handles?.find((h) => h.key === key)?.onCancel()
+      if (button.hasPointerCapture(pointer)) button.releasePointerCapture(pointer)
+    }
+    window.addEventListener('keydown', escape, true)
+    handleDrag.current = { key, pointer, start: new Vector2(e.clientX, e.clientY), perMm, mmPerPx: view.current.mmPerPx(at), escape }
+    button.setPointerCapture(pointer)
+  }
+  const moveHandle = (e: ReactPointerEvent<HTMLButtonElement>, commit: boolean) => {
+    const active = handleDrag.current
+    if (!active || active.pointer !== e.pointerId) return
+    const delta = new Vector2(e.clientX, e.clientY).sub(active.start)
+    const value = snapped(active.perMm ? delta.dot(active.perMm) / active.perMm.lengthSq() : delta.length() * active.mmPerPx, snapStep(e))
+    const handle = props.handles?.find((h) => h.key === active.key)
+    const label = handleReading.current
+    const box = frameRef.current?.getBoundingClientRect()
+    if (label && box && handle) {
+      label.hidden = commit
+      label.textContent = handle.reading(value)
+      label.style.left = `${e.clientX - box.left + 16}px`
+      label.style.top = `${e.clientY - box.top + 16}px`
+    }
+    if (commit) endHandle()
+    handle?.onDrag(value, commit)
+  }
+
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-workspace">
+    <div ref={frameRef} className="relative min-h-0 flex-1 overflow-hidden bg-workspace">
       <div ref={host} className="absolute inset-0" />
+      {props.handles?.flatMap((h) => h.at.map((_, index) => (
+        // Hidden until the view places it on its next frame: until then it would sit in the view's corner.
+        <button key={`${h.key}:${index}`} type="button" data-model-handle={h.key} data-index={index} hidden
+          aria-label={index ? undefined : h.label} aria-hidden={index ? true : undefined} tabIndex={index ? -1 : undefined} title={h.label}
+          className="absolute z-10 grid size-6 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full border-2 border-white bg-accent shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"
+          // A handle takes no focus: Enter after a drag still applies the tool.
+          onMouseDown={(e) => e.preventDefault()}
+          onPointerDown={(e) => startHandle(e, h.key, index)}
+          onPointerMove={(e) => moveHandle(e, false)}
+          onPointerUp={(e) => moveHandle(e, true)}
+          onLostPointerCapture={() => {
+            if (handleDrag.current?.key !== h.key) return
+            endHandle()
+            h.onCancel()
+          }} />
+      )))}
+      <span ref={handleReading} hidden role="status" aria-label="Handle reading"
+        className="pointer-events-none absolute z-20 whitespace-nowrap rounded-md bg-[#1c1c22]/90 px-2 py-1 text-[11.5px] font-medium tabular-nums text-white shadow-lg" />
       <button
         hidden ref={handle} type="button" aria-label="Drag face along its normal" title="Drag face along its normal"
         className="absolute z-10 grid size-7 -translate-x-1/2 -translate-y-1/2 touch-none place-items-center rounded-full bg-accent text-accent-fg shadow-md [cursor:grab] active:[cursor:grabbing] [&[hidden]]:hidden"

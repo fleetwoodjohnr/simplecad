@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Vec3 } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More, firstField } from '../ui'
 
 /** What a draft is made with, as SimpleCAD 0.4's `DraftFeature` reads it: the taper, the way the part leaves its mould
  * (or the plate), and a point on the plane where the faces keep their size. */
@@ -29,6 +29,7 @@ export function DraftPanel({ busy, picked, onClear, onChange, onPreview, onApply
   const point = neutral.map(Number) as Vec3
   const ready = picked.length > 0 && angle.trim().length > 0 && point.every(Number.isFinite)
   const inputs = (): DraftInputs => ({ angle, pull_direction: pulls[pull][1], neutral_plane: point })
+  useLivePreview(JSON.stringify([inputs(), picked]), ready && !busy, () => onPreview(inputs()))
   return (
     <form aria-label="Draft" className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -40,8 +41,9 @@ export function DraftPanel({ busy, picked, onClear, onChange, onPreview, onApply
       </div>
       {picked.length > 0 && <Btn type="button" size="sm" className="justify-self-start" disabled={busy} onClick={onClear}>Pick again</Btn>}
       <label className="grid gap-1">Draft angle (°)
-        <input className={inputCls} value={angle} maxLength={255} disabled={busy} onChange={(event) => { setAngle(event.target.value); onChange() }} />
+        <input className={inputCls} value={angle} maxLength={255} disabled={busy} {...firstField} onChange={(event) => { setAngle(event.target.value); onChange() }} />
       </label>
+      <More>
       <label className="grid gap-1">Pull direction
         <select className={inputCls} value={pull} disabled={busy} onChange={(event) => { setPull(Number(event.target.value)); onChange() }}>
           {pulls.map(([label], index) => <option key={label} value={index}>{label}</option>)}
@@ -58,8 +60,8 @@ export function DraftPanel({ busy, picked, onClear, onChange, onPreview, onApply
           }} />
         </label>)}
       </fieldset>
+      </More>
       <div className="flex gap-1">
-        <Btn type="button" size="sm" disabled={!ready || busy} onClick={() => onPreview(inputs())}>Preview</Btn>
         <Btn type="submit" size="sm" variant="primary" disabled={!ready || busy}>Apply</Btn>
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>

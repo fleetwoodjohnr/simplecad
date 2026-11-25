@@ -7,10 +7,12 @@ export interface Preferences {
   snap: boolean
   moveStep: number
   rotationSnap: number
+  /** Look for a new release by itself, as the rest of the Simple suite does. */
+  updateCheck: boolean
 }
 
 export const defaults: Preferences = {
-  theme: 'system', displayUnit: 'mm', snap: false, moveStep: 1, rotationSnap: 15
+  theme: 'system', displayUnit: 'mm', snap: false, moveStep: 1, rotationSnap: 15, updateCheck: true
 }
 
 export function sanitisePreferences(data: Partial<Preferences>): Preferences {
@@ -21,7 +23,8 @@ export function sanitisePreferences(data: Partial<Preferences>): Preferences {
     displayUnit: data.displayUnit === 'cm' || data.displayUnit === 'm' || data.displayUnit === 'in' ? data.displayUnit : 'mm',
     snap: typeof data.snap === 'boolean' ? data.snap : defaults.snap,
     moveStep: numeric(data.moveStep, 0.01, 100, defaults.moveStep),
-    rotationSnap: numeric(data.rotationSnap, 1, 180, defaults.rotationSnap)
+    rotationSnap: numeric(data.rotationSnap, 1, 180, defaults.rotationSnap),
+    updateCheck: typeof data.updateCheck === 'boolean' ? data.updateCheck : defaults.updateCheck
   }
 }
 

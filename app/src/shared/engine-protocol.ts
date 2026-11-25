@@ -34,6 +34,17 @@ export interface DisplayShape extends MeshData {
   ranges: BodyRange[]
   /** A face pattern's preview: how it fits. */
   arrangement?: ArrangementNote
+  /** Stack & Place by face edges: what its drag and guides are drawn from. */
+  placement?: PlacementNote
+}
+
+/** The target face's frame (its centre, normal and in-face axes u and v) with its extent along each from the centre,
+ * the placed part's extent about its mounting face's centre, and where that centre went (u, v) and how far off the face. */
+export interface PlacementNote {
+  center: Vec3; normal: Vec3; u: Vec3; v: Vec3
+  face_u: [number, number]; face_v: [number, number]
+  part_u: [number, number]; part_v: [number, number]
+  at: [number, number]; offset: number
 }
 
 export interface BodyInfo {
@@ -325,8 +336,13 @@ export interface StepInfo {
   undone: boolean
 }
 
+/** A shown body's part of a model result on its way to the window: its display only if the window lacks it. */
+export interface ShownPart { body: number; key: number; display?: import('./display').PartDisplay }
+
 export interface ModelResult {
   shape: DisplayShape
+  /** On the way to the window in place of `shape`, which the window puts together again from these. */
+  parts?: ShownPart[]
   bodies: BodyInfo[]
   /** The shown point of the history is not the one last saved. */
   unsaved: boolean
@@ -352,6 +368,8 @@ export type RendererCommand =
   | ({ op: 'previewStack' | 'applyStack'; revision: number } & StackEdit)
   | ({ op: 'previewFace' | 'applyFace'; revision: number } & FaceEdit)
   | { op: 'measure'; revision: number; picks: MeasurePick[] }
+  /** Each face: a hole (true), a shaft (false), or not round (null). */
+  | { op: 'roundFaces'; revision: number; faces: number[] }
   | ({ op: 'applyTransform' | 'previewTransform'; revision: number } & TransformEdit)
   | ({ op: 'applyBodyOperation' | 'previewBodyOperation'; revision: number } & BodyOperationEdit)
   | ({ op: 'applyEdgeFinish' | 'previewEdgeFinish'; revision: number } & EdgeFinishEdit)
@@ -386,7 +404,7 @@ export type RendererCommand =
 
 export type RendererRequest = RendererCommand & { id: number }
 export type EngineResponse =
-  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] | BodyHealth[] | string | SketchSolution }
+  | { id: number; ok: true; result: ModelResult | DisplayShape | Uint8Array | Measurement[] | BodyHealth[] | string | SketchSolution | (boolean | null)[] }
   | { id: number; ok: false; error: string }
 
 export const MAX_EDITS = 100
@@ -750,6 +768,7 @@ export function checkRendererRequest(data: unknown): RendererRequest {
         m.op === 'undo' || m.op === 'redo' || m.op === 'reset' || m.op === 'save' || m.op === 'saved' ||
         (m.op === 'export' && isExportFormat(m.format)) ||
         (m.op === 'measure' && Array.isArray(m.picks) && m.picks.length <= MAX_BODIES && m.picks.every(isMeasurePick)) ||
+        (m.op === 'roundFaces' && Array.isArray(m.faces) && m.faces.length <= 16 && m.faces.every((face) => isIndex(face) && (face as number) <= 0xffffffff)) ||
         (m.op === 'open' && isData(m.data) && isName(m.name) && (m.recovered === undefined || typeof m.recovered === 'boolean')) ||
         (m.op === 'show' && isIndex(m.body) && (m.body as number) < MAX_BODIES && typeof m.visible === 'boolean') ||
         ((m.op === 'preview' || m.op === 'apply') && isEdit(m)) ||

@@ -1,13 +1,17 @@
 import { useState } from 'react'
 import { Btn, inputCls, Modal } from '../ui'
-import { commands, formatShortcut, type CommandActions, type CommandId } from './commands'
+import { barLabel, type BarActions, type BarTool } from './ContextBar'
+import { commands, formatShortcut, type CommandId } from './commands'
 
-export function CommandSearch({ actions, close }: { actions: CommandActions; close: () => void }) {
+/** Everything search offers: every command, and what the selection bar does straight to parts. 0.6.0's short ribbon
+ * leaves most tools to the bar, the right-click menu and here, so every one must be here. */
+export const searchable: BarTool[] = [...Object.keys(commands) as CommandId[], 'subtract', 'join', 'intersect', 'group', 'ungroup', 'hide']
+
+export function CommandSearch({ actions, close }: { actions: BarActions; close: () => void }) {
   const [query, setQuery] = useState('')
-  const results = (Object.keys(commands) as CommandId[]).filter((id) =>
-    commands[id].label.toLowerCase().includes(query.trim().toLowerCase())
-  )
-  const run = (id: CommandId) => {
+  const results = searchable.filter((id) => barLabel(id).toLowerCase().includes(query.trim().toLowerCase()))
+  // At once, so the tool is open before anything else happens; a field it focuses keeps the focus (see Modal).
+  const run = (id: BarTool) => {
     close()
     actions[id].run()
   }
@@ -22,12 +26,12 @@ export function CommandSearch({ actions, close }: { actions: CommandActions; clo
         }} />
       <ul className="mt-2 grid gap-0.5">
         {results.map((id) => {
-          const command = commands[id]
+          const command: { label: string; shortcut?: string } | undefined = id in commands ? commands[id as CommandId] : undefined
           return (
             <li key={id}>
-              <Btn className="w-full justify-between" variant="ghost" disabled={!actions[id].enabled} onClick={() => run(id)}>
-                {command.label}
-                {'shortcut' in command && <span className="text-xs text-text-3">{formatShortcut(command.shortcut)}</span>}
+              <Btn className="w-full justify-between" variant="ghost" aria-label={barLabel(id)} disabled={!actions[id].enabled} onClick={() => run(id)}>
+                {barLabel(id)}
+                {command?.shortcut && <span className="text-xs text-text-3">{formatShortcut(command.shortcut)}</span>}
               </Btn>
             </li>
           )

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import fits from '../../../../simplecad/data/fits.json'
 import type { ThreadedConnectionEdit } from '@/shared/engine-protocol'
 import { threadTables } from './HolePanel'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More } from '../ui'
 
 type Inputs = ThreadedConnectionEdit['threadedConnection']['inputs']
 
@@ -26,6 +26,7 @@ export function ThreadedConnectionPanel({ busy, picked, onClear, onChange, onPre
   const [align, setAlign] = useState(false)
   const set = (change: Partial<Inputs>) => { setInputs((current) => ({ ...current, ...change })); onChange() }
   const ready = picked.length === 2 && inputs.length.trim().length > 0
+  useLivePreview(JSON.stringify([inputs, align, picked]), ready && !busy, () => onPreview(inputs, align))
   return (
     <form aria-label="Threaded Connection" className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -45,6 +46,7 @@ export function ThreadedConnectionPanel({ busy, picked, onClear, onChange, onPre
           </optgroup>)}
         </select>
       </label>
+      <More>
       <label className="grid gap-1">Printable clearance
         <select className={inputCls} value={inputs.clearance} disabled={busy} onChange={(event) => set({ clearance: event.target.value as Inputs['clearance'] })}>
           {Object.entries(fits.thread_clearance).map(([key, fit]) => <option key={key} value={key}>{fit.label} · {fit.clearance} mm</option>)}
@@ -62,8 +64,8 @@ export function ThreadedConnectionPanel({ busy, picked, onClear, onChange, onPre
         <input type="checkbox" checked={align} disabled={busy} onChange={(event) => { setAlign(event.target.checked); onChange() }} />
         Set the shaft into the hole first
       </label>
+      </More>
       <div className="flex gap-1">
-        <Btn type="button" size="sm" disabled={!ready || busy} onClick={() => onPreview(inputs, align)}>Preview</Btn>
         <Btn type="submit" size="sm" variant="primary" disabled={!ready || busy}>Apply</Btn>
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>

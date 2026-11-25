@@ -1,58 +1,21 @@
-import { forwardRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
-import {
-  Triangle,
-  ArrowUpFromLine, Axis3d, Box, ChevronDown, ClipboardCheck, DoorOpen, Replace, Rows3, CircleDot, Combine, SquareRoundCorner, SquareSlash, FlipHorizontal, Grid2x2, Grid3x3, Layers, Magnet, Move, Nut, PenLine,
-  Rotate3d, Ruler, Scaling, Scissors, Shapes, Spline, SquareDashed, Type, type LucideIcon
-} from 'lucide-react'
-import { Menu, MenuContent, MenuItem, MenuTrigger, Tip, cx } from '../ui'
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { ChevronDown, ClipboardCheck, FileInput, PenLine, Ruler, Shapes, type LucideIcon } from 'lucide-react'
+import { Tip, cx } from '../ui'
 import { commands, type CommandActions, type CommandId } from './commands'
 
-type Tool = { id: CommandId; icon: LucideIcon } | { menu: string; icon: LucideIcon; items: CommandId[]; hint: string }
+type Tool = { id: CommandId; icon: LucideIcon }
 
-export const sketchSolids: CommandId[] = ['extrude', 'revolve', 'sweep', 'loft', 'path_pattern']
-
+// 0.6.0's short ribbon, as 0.2.0's: what starts a model or looks at it. Every other tool is in the bar beside the
+// selection, the right-click menu and command search (S), which lists them all.
 const groups: { group: string; tools: Tool[] }[] = [
-  { group: 'Create', tools: [
-    { id: 'shape', icon: Shapes },
-    { id: 'sketch', icon: PenLine },
-    { menu: 'From Sketch', icon: Layers, items: sketchSolids, hint: 'Draw a sketch first' },
-    { id: 'text', icon: Type },
-    { id: 'matchingPart', icon: Nut }
-  ] },
-  { group: 'Modify', tools: [
-    { id: 'pushPull', icon: ArrowUpFromLine },
-    { id: 'move', icon: Move },
-    { id: 'rotate', icon: Rotate3d },
-    { id: 'scale', icon: Scaling },
-    { id: 'fillet', icon: SquareRoundCorner },
-    { id: 'chamfer', icon: SquareSlash },
-    { id: 'shell', icon: Box },
-    { id: 'draft', icon: Triangle },
-    { id: 'hole', icon: CircleDot },
-    { id: 'thread', icon: Spline },
-    { id: 'faceTexture', icon: Grid3x3 }
-  ] },
-  { group: 'Combine', tools: [
-    { id: 'combine', icon: Combine },
-    { id: 'split', icon: Scissors },
-    { id: 'sectionReplace', icon: Replace },
-    { id: 'mirror', icon: FlipHorizontal },
-    { menu: 'Pattern', icon: Grid2x2, items: ['rectangularPattern', 'circularPattern'], hint: 'Show a body first' }
-  ] },
-  { group: 'Place', tools: [{ id: 'stack', icon: Magnet }, { id: 'arrange', icon: Rows3 },
-    { menu: 'Joints', icon: DoorOpen, items: ['hinge', 'clipJoint', 'threadedConnection'], hint: 'Show the two parts to join' }] },
-  { group: 'Construct', tools: [
-    { id: 'offsetPlane', icon: SquareDashed },
-    { menu: 'Datums', icon: Axis3d, items: ['midplane', 'planeAtAngle', 'planeThroughPoints', 'tangentPlane', 'axis', 'point'],
-      hint: 'Show a body first' }
-  ] },
+  { group: 'Create', tools: [{ id: 'shape', icon: Shapes }, { id: 'sketch', icon: PenLine }, { id: 'importModel', icon: FileInput }] },
   { group: 'Inspect', tools: [{ id: 'measure', icon: Ruler }, { id: 'printCheck', icon: ClipboardCheck }] }
 ]
 
 /** Shorter captions for long names, so the ribbon fits; each button keeps its full name for tooltips and screen readers. */
 const captions: Record<string, string> = {
   'Push/Pull': 'Pull', 'Matching Part': 'Match', 'Face Texture': 'Texture', 'Stack & Place': 'Stack', 'Offset Plane': 'Offset',
-  'Section Replace': 'Section', 'From Sketch': 'Solid', 'Print check': 'Print'
+  'Section Replace': 'Section', 'Print check': 'Print'
 }
 
 type ToolBtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label: string; caret?: boolean }
@@ -74,27 +37,12 @@ function Tipped({ label, hint, shortcut, open, children }: { label: string; hint
   return <Tip label={hint ? `${label} · ${hint}` : label} shortcut={shortcut} open={open}><span className="inline-flex">{children}</span></Tip>
 }
 
-/** A ribbon dropdown. Its tooltip stays shut while it is open: the tooltip would sit over the first item. */
-function MenuTool({ tool, actions }: { tool: Extract<Tool, { menu: string }>; actions: CommandActions }) {
-  const [open, setOpen] = useState(false)
-  const enabled = tool.items.some((id) => actions[id].enabled)
-  return <Tipped label={tool.menu} hint={enabled ? undefined : tool.hint} open={open ? false : undefined}>
-    <Menu open={open} onOpenChange={setOpen}>
-      <MenuTrigger asChild><ToolBtn icon={tool.icon} label={tool.menu} caret disabled={!enabled} /></MenuTrigger>
-      <MenuContent>
-        {tool.items.map((id) => <MenuItem key={id} disabled={!actions[id].enabled} onSelect={actions[id].run}>{commands[id].label}</MenuItem>)}
-      </MenuContent>
-    </Menu>
-  </Tipped>
-}
-
 export function Ribbon({ actions, active }: { actions: CommandActions; active: Partial<Record<CommandId, boolean>> }) {
   return <>
     {groups.map(({ group, tools }) => (
       <div key={group} role="group" aria-label={group} className="flex h-full shrink-0 flex-col items-center justify-center border-r border-border px-1">
         <div className="flex items-center gap-0.5">
           {tools.map((tool) => {
-            if ('menu' in tool) return <MenuTool key={tool.menu} tool={tool} actions={actions} />
             const action = actions[tool.id]
             const command = commands[tool.id]
             return <Tipped key={tool.id} label={command.label} hint={action.enabled ? undefined : action.hint}

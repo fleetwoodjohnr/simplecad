@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
-import { edgePoints, errors, expect, launch, scratchDir, test } from './helpers'
+import { edgePoints, errors, expect, handleAt, launch, partAt, scratchDir, test, command, more, searchCommand } from './helpers'
 
 type Point = [number, number]
 
@@ -38,45 +38,26 @@ async function handle(page: Page, axis: 'x' | 'y' | 'z'): Promise<Point> {
   return JSON.parse((await canvas.getAttribute('data-handles'))!)[axis]
 }
 
-test('the ribbon groups the tools, and the selection bar offers what fits the face', async () => {
+// 0.6.0's ribbon, as 0.2.0's: what starts a model or looks at it; everything else is beside the selection and in search.
+test('the short ribbon keeps Shape, Sketch, Import, Measure and Print, and the selection bar offers what fits the face', async () => {
   const { page } = await launch()
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
-  for (const group of ['Create', 'Modify', 'Combine', 'Place', 'Construct', 'Inspect']) {
-    await expect(toolbar.getByRole('group', { name: group, exact: true })).toBeVisible()
-  }
-  const pushPull = toolbar.getByRole('button', { name: 'Push/Pull', exact: true })
-  await expect(pushPull).toBeDisabled()
+  for (const group of ['Create', 'Inspect']) await expect(toolbar.getByRole('group', { name: group, exact: true })).toBeVisible()
+  for (const name of ['Shape', 'Sketch', 'Import', 'Measure', 'Print check']) await expect(toolbar.getByRole('button', { name, exact: true })).toBeVisible()
+  await expect(toolbar.getByRole('button', { name: 'Fillet', exact: true })).toHaveCount(0)
   await expect(page.getByRole('toolbar', { name: 'Selection tools' })).toHaveCount(0)
 
   await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
   const selection = page.getByRole('toolbar', { name: 'Selection tools' })
   await expect(selection).toBeVisible()
   await expect(selection.getByRole('button', { name: 'Hole', exact: true })).toBeEnabled()
-  await pushPull.click()
+  await command(page, 'Push/Pull')
   await expect(selection.getByLabel('Pull distance')).toBeFocused()
 
   await selection.getByRole('button', { name: 'More tools' }).click()
   await page.getByRole('menuitem', { name: 'Clear selection' }).click()
   await expect(selection).toHaveCount(0)
-})
-
-test('a ribbon menu’s tooltip gets out of the way of its first item', async () => {
-  const { page } = await launch()
-  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
-  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
-  // A tooltip already showing makes the next one open at once, the way a pointer sweeping the ribbon does.
-  await toolbar.getByRole('button', { name: 'Mirror', exact: true }).hover()
-  await expect(page.getByRole('tooltip', { name: /^Mirror/ })).toBeVisible()
-  const pattern = toolbar.getByRole('button', { name: 'Pattern' })
-  await pattern.click()
-  // The pointer settling on the open menu's button reopened its tooltip, over the first item.
-  const box = (await pattern.boundingBox())!
-  await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2 + 1)
-  await page.waitForTimeout(700)
-  await expect(page.getByRole('tooltip')).toHaveCount(0)
-  await page.getByRole('menuitem', { name: 'Rectangular Pattern' }).click({ timeout: 5000 })
-  await expect(page.getByRole('form', { name: 'Rectangular Pattern' })).toBeVisible()
 })
 
 test('a Move drag leaves a ghost where it started, Escape puts it back, and a typed drag is one exact step', { tag: '@viewport' }, async () => {
@@ -90,7 +71,7 @@ test('a Move drag leaves a ghost where it started, Escape puts it back, and a ty
     const start = await bounds(app, page, path.join(scratch, 'start.stl'))
     const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
 
-    await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+    await command(page, 'Move')
     let [x, y] = await handle(page, 'x')
     await page.mouse.move(x, y)
     await page.mouse.down()
@@ -114,7 +95,7 @@ test('a Move drag leaves a ghost where it started, Escape puts it back, and a ty
     const moved = await bounds(app, page, path.join(scratch, 'moved.stl'))
     moved.forEach((value, axis) => expect(value).toBeCloseTo(start[axis] + (axis % 3 === 0 ? 12 : 0), 4))
 
-    await toolbar.getByRole('button', { name: 'Rotate', exact: true }).click()
+    await command(page, 'Rotate')
     ;[x, y] = await handle(page, 'z')
     await page.mouse.move(x, y)
     await page.mouse.down()
@@ -306,7 +287,7 @@ test('orients a part stood on end to its lowest flat lay and drops it on the pla
   const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
   const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
-  await toolbar.getByRole('button', { name: 'Rotate', exact: true }).click()
+  await command(page, 'Rotate')
   const rotate = page.getByRole('form', { name: 'Rotate', exact: true })
   await rotate.getByLabel('X (°)').fill('90')
   await rotate.getByRole('button', { name: 'Apply' }).click()
@@ -450,7 +431,7 @@ test('arrow keys nudge a selected face or chosen body as one exact step, and Esc
   await expect(bodies).not.toContainText('Cylinder')
 })
 
-test('the wheel button pans the view, and turns it with Shift, as in 0.4; the right button turns it', { tag: '@viewport' }, async () => {
+test('the wheel button pans the view, and turns it with Shift, as in 0.4; a left drag turns it, from empty space too', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
   const canvas = page.locator('canvas')
@@ -467,12 +448,12 @@ test('the wheel button pans the view, and turns it with Shift, as in 0.4; the ri
   const offset = (view: { position: number[]; target: number[] }) => view.position.map((v, i) => v - view.target[i])
   const box = (await canvas.boundingBox())!
   const [x, y] = [box.x + box.width / 2, box.y + box.height / 2]
-  const drag = async (button: 'middle' | 'right', shift = false) => {
+  const drag = async (button: 'middle' | 'left', shift = false, [fromX, fromY]: readonly [number, number] = [x, y]) => {
     const before = await camera()
     if (shift) await page.keyboard.down('Shift')
-    await page.mouse.move(x, y)
+    await page.mouse.move(fromX, fromY)
     await page.mouse.down({ button })
-    await page.mouse.move(x + 80, y + 30, { steps: 6 })
+    await page.mouse.move(fromX + 80, fromY + 30, { steps: 6 })
     await page.mouse.up({ button })
     if (shift) await page.keyboard.up('Shift')
     await expect.poll(async () => JSON.stringify(await camera())).not.toBe(JSON.stringify(before))
@@ -483,8 +464,8 @@ test('the wheel button pans the view, and turns it with Shift, as in 0.4; the ri
   expect(after.target).not.toEqual(before.target)
   offset(after).forEach((v, i) => expect(v).toBeCloseTo(offset(before)[i], 1))
   // An orbit swings the camera round the point it turns about, which stays.
-  for (const [button, shift] of [['middle', true], ['right', false]] as const) {
-    ;[before, after] = await drag(button, shift)
+  for (const [button, shift, from] of [['middle', true], ['left', false], ['left', false, [box.x + 8, box.y + 8]]] as const) {
+    ;[before, after] = await drag(button, shift, from)
     expect(after.target).toEqual(before.target)
     expect(after.position).not.toEqual(before.position)
   }
@@ -506,7 +487,10 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
 
   await bodies.getByRole('button', { name: 'A', exact: true }).click()
   await expect(notice).toContainText("A can't change until Align is kept as it is or repaired.")
-  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+  // The bar offers Keep and Repair in place of the tools that would change it, and search refuses them.
+  await expect(page.getByRole('toolbar', { name: 'Selection tools' })).toHaveCount(0)
+  await expect(await searchCommand(page, 'Move')).toBeDisabled()
+  await page.keyboard.press('Escape')
   await notice.getByRole('button', { name: 'Keep where it is' }).click()
   await expect(steps.nth(2)).toContainText('Align (kept)')
   await expect(notice).toHaveCount(0)
@@ -514,7 +498,7 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
 
   await bodies.getByRole('button', { name: 'A', exact: true }).click()
   await expect(notice).toHaveCount(0)
-  await toolbar.getByRole('button', { name: 'Move', exact: true }).click()
+  await command(page, 'Move')
   const move = page.getByRole('form', { name: 'Move', exact: true })
   await move.getByLabel('X (mm)').fill('5')
   await move.getByRole('button', { name: 'Apply' }).click()
@@ -525,7 +509,8 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
   await bodies.getByRole('button', { name: 'A', exact: true }).click()
   await page.getByLabel('Planar face').selectOption({ label: (await page.getByLabel('Planar face').locator('option', { hasText: /^C · / }).first().textContent())! })
   await expect(notice).toContainText("C can't change until Combine")
-  await expect(toolbar.getByRole('button', { name: 'Move', exact: true })).toBeDisabled()
+  await expect(await searchCommand(page, 'Move')).toBeDisabled()
+  await page.keyboard.press('Escape')
 
   // The cut part offers to keep its shape, or to choose a new cutter.
   await bodies.getByRole('button', { name: 'C', exact: true }).click()
@@ -535,7 +520,7 @@ test('a part whose step lost its input says why beside it, and Keep where it is 
 })
 
 // SimpleCAD 0.4.4's right click: it chooses what is under the pointer and offers what can be done to it.
-test('a right click picks the face under it and offers its tools, Edit and Delete; a right drag still turns the view', { tag: '@viewport' }, async () => {
+test('a right click picks the face under it and offers its tools, Edit and Delete; on empty space it offers Select all', { tag: '@viewport' }, async () => {
   const { page } = await launch()
   const status = page.getByTestId('engine-status')
   await expect(status).toHaveText(/24000 mm³/)
@@ -564,14 +549,31 @@ test('a right click picks the face under it and offers its tools, Edit and Delet
   await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Undo', exact: true }).click()
   await expect(status).toHaveText(/24000 mm³/)
 
-  // A right drag turns the view and opens nothing.
+  // A right drag, even one starting on the model, draws a box: it takes what it surrounds, opens nothing, and leaves
+  // the view where it was.
+  await canvas.click({ position: { x: 6, y: 6 } })
   const before = await canvas.getAttribute('data-camera')
   await page.mouse.move(x, y)
   await page.mouse.down({ button: 'right' })
   await page.mouse.move(x + 80, y + 30, { steps: 6 })
+  await expect(page.getByTestId('selection-box')).toBeVisible()
   await page.mouse.up({ button: 'right' })
-  await expect.poll(() => canvas.getAttribute('data-camera')).not.toBe(before)
+  await expect(page.getByTestId('selection-box')).toBeHidden()
   await expect(page.getByRole('menu')).toHaveCount(0)
+  expect(await canvas.getAttribute('data-camera')).toBe(before)
+
+  // On empty space: Select all, then Clear selection; the selection stays until one is chosen.
+  await canvas.click({ position: { x: 6, y: 6 }, button: 'right' })
+  const view = page.getByRole('menu', { name: 'View' })
+  await view.getByRole('menuitem', { name: 'Select all' }).click()
+  const chosen = page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })
+  await expect(chosen).toHaveAttribute('aria-pressed', 'true')
+  // A menu that is still closing takes the next press (on CI's slower machines): wait until it has gone.
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await canvas.click({ position: { x: 6, y: 6 }, button: 'right' })
+  await expect(chosen).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('menu', { name: 'View' }).getByRole('menuitem', { name: 'Clear selection' }).click()
+  await expect(chosen).toHaveAttribute('aria-pressed', 'false')
   await expect(errors(page)).toHaveCount(0)
 })
 
@@ -603,5 +605,610 @@ test('a right click, or the menu key, on a body or a step offers what can be don
   await page.getByRole('list', { name: 'Model history' }).locator('li').first().click({ button: 'right' })
   await page.getByRole('menu', { name: 'Box' }).getByRole('menuitem', { name: 'Edit Box' }).click()
   await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+
+/** A 20 × 20 × 10 box beside the first, `x` mm along. */
+async function addBox(page: Page, x: string) {
+  const toolbar = page.getByRole('toolbar', { name: 'Modeling tools' })
+  await toolbar.getByRole('button', { name: 'Shape', exact: true }).click()
+  const shape = page.getByRole('form', { name: 'Create shape' })
+  await shape.getByLabel('Shape type').selectOption('box')
+  for (const [label, value] of [['Width', '20'], ['Depth', '20'], ['Height', '10']]) await shape.getByLabel(label).fill(value)
+  await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await command(page, 'Move')
+  const move = page.getByRole('form', { name: 'Move', exact: true })
+  await move.getByLabel('Body').selectOption({ index: (await move.getByLabel('Body').locator('option').count()) - 1 })
+  await move.getByLabel('X (mm)').fill(x)
+  await move.getByRole('button', { name: 'Apply' }).click()
+  await page.keyboard.press('Escape')
+}
+
+// 0.2.0's way: a click takes the part, and the arrows and rings are already on it; letting go is one step.
+test('a click takes the part with its arrows and rings; dragging one moves or turns it as one step', { tag: '@viewport' }, async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'simplecad-ux-'))
+  try {
+    const { app, page } = await launch()
+    const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+    const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+    const canvas = page.locator('canvas')
+    await expect(steps).toHaveText(['Box'])
+    const start = await bounds(app, page, path.join(scratch, 'start.stl'))
+
+    const [cx, cy] = await partAt(page, 0)
+    await page.mouse.click(cx, cy)
+    await expect(bodies.getByRole('button', { name: 'Box', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('toolbar', { name: 'Selection tools' })).toBeVisible()
+    await expect(canvas).toHaveAttribute('data-rings', /"z"/)
+
+    let [x, y] = await handle(page, 'x')
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 30, y + 8, { steps: 4 })
+    await expect(canvas).toHaveAttribute('data-ghost', 'move')
+    await page.keyboard.type('10')
+    await page.mouse.up()
+    await expect(steps).toHaveText(['Box', 'Move'])
+    const moved = await bounds(app, page, path.join(scratch, 'moved.stl'))
+    moved.forEach((value, axis) => expect(value).toBeCloseTo(start[axis] + (axis % 3 === 0 ? 10 : 0), 4))
+
+    // The part stays chosen after the step, so the next drag needs no click.
+    await expect(canvas).toHaveAttribute('data-rings', /"z"/)
+    await page.waitForTimeout(200)
+    ;[x, y] = JSON.parse((await canvas.getAttribute('data-rings'))!).z as Point
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 20, y + 6, { steps: 4 })
+    await expect(canvas).toHaveAttribute('data-ghost', 'rotate')
+    await page.keyboard.type('90')
+    await page.mouse.up()
+    await expect(steps).toHaveText(['Box', 'Move', 'Rotate'])
+    const turned = await bounds(app, page, path.join(scratch, 'turned.stl'))
+    expect(turned[3] - turned[0]).toBeCloseTo(start[4] - start[1], 4)
+    expect(turned[4] - turned[1]).toBeCloseTo(start[3] - start[0], 4)
+
+    // A click on empty space lets go of it.
+    const box = (await canvas.boundingBox())!
+    await page.mouse.click(box.x + 6, box.y + 6)
+    await expect(bodies.getByRole('button', { name: 'Box', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    await expect(canvas).not.toHaveAttribute('data-handles', /./)
+    await expect(errors(page)).toHaveCount(0)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+// The Windows and macOS runners' small screens give an 800 × 560 view, where the bar beside the face covered the X
+// arrow and the part's middle.
+test('in a small window the selection bar stays off the arrows, the rings and the middle of the part', { tag: '@viewport' }, async () => {
+  const { page } = await launch({ env: { SIMPLECAD_WINDOW: '1024x700' } })
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  await expect(steps).toHaveText(['Box'])
+  expect((await canvas.boundingBox())!.height).toBeLessThan(620)
+  await page.mouse.click(...await partAt(page, 0))
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  await expect(bar).toBeVisible()
+  await expect(canvas).toHaveAttribute('data-rings', /"z"/)
+  await page.waitForTimeout(200)
+  const area = (await bar.boundingBox())!
+  const view = (await canvas.boundingBox())!
+  const points: Point[] = [...Object.values(JSON.parse((await canvas.getAttribute('data-handles'))!) as Record<string, Point>),
+    ...Object.values(JSON.parse((await canvas.getAttribute('data-rings'))!) as Record<string, Point>),
+    [view.x + view.width / 2, view.y + view.height / 2]]
+  for (const [x, y] of points) {
+    expect(x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height, `${x},${y} clear of the bar`).toBe(false)
+  }
+  const [x, y] = await handle(page, 'x')
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 30, y + 8, { steps: 4 })
+  await expect(canvas).toHaveAttribute('data-ghost', 'move')
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box'])
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// A skipped WebGL frame leaves the renderer's pick meshes at their previous positions.
+test('a newly attached move arrow accepts the press while the graphics context is lost', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-body-anchors', /"0"/)
+  await canvas.evaluate((element) => {
+    const gl = (element as HTMLCanvasElement).getContext('webgl2')!
+    // Software rendering can already have lost the context; its extensions are then unavailable.
+    if (!gl.isContextLost()) gl.getExtension('WEBGL_lose_context')?.loseContext()
+  })
+  await expect.poll(() => canvas.evaluate((element) =>
+    (element as HTMLCanvasElement).getContext('webgl2')!.isContextLost())).toBe(true)
+  await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+  const [x, y] = await handle(page, 'x')
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await expect(canvas).toHaveAttribute('data-drag', 'dragging')
+  await page.mouse.move(x + 30, y + 8, { steps: 4 })
+  await expect(canvas).toHaveAttribute('data-ghost', 'move')
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box'])
+})
+
+// History stays clickable while a step runs (disabling hundreds of rows on each step was slow on large projects).
+test('Edit chosen in History while a step runs opens once that step is done', async () => {
+  const { page } = await launch()
+  const status = page.getByTestId('engine-status')
+  await expect(status).toContainText('24000 mm³')
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await page.getByLabel('Pull distance').fill('2')
+  await page.getByLabel('Pull distance').press('Enter')
+  await expect(status).toContainText('26400 mm³')
+  // In one go, so Edit arrives while the Undo still runs.
+  await page.evaluate(() => {
+    const button = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!
+    button('[role=toolbar][aria-label="Modeling tools"] [aria-label="Undo"]').click()
+    button('[aria-label="Model history"] [aria-label="Edit Box"]').click()
+  })
+  await expect(status).toContainText('24000 mm³')
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('a right-drag box takes what it surrounds, or right to left what it touches; Shift adds; Ctrl+A takes all; a right click keeps several; a group is one click and a double-click reaches in, then edits', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const chosen = (name: string) => bodies.getByRole('button', { name, exact: true })
+  const canvas = page.locator('canvas')
+  await expect(steps).toHaveText(['Box'])
+  await addBox(page, '45')
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move'])
+  await page.getByRole('button', { name: 'Fit view' }).click()
+  await page.locator('canvas').click({ position: { x: 6, y: 6 } })
+  const area = (await canvas.boundingBox())!
+
+  // Left to right, round everything: both.
+  await page.mouse.move(area.x + 6, area.y + 6)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(area.x + area.width - 6, area.y + area.height - 6, { steps: 6 })
+  await expect(page.getByTestId('selection-box')).toBeVisible()
+  await page.mouse.up({ button: 'right' })
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('selection-box')).toBeHidden()
+  // Several parts carry the arrows only, and move together.
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await expect(canvas).not.toHaveAttribute('data-rings', /./)
+
+  // A right click on one of them keeps both, and offers what two parts can do.
+  const [ax, ay] = await partAt(page, 0)
+  await page.mouse.click(ax, ay, { button: 'right' })
+  const two = page.getByRole('menu', { name: '2 parts' })
+  await expect(two.getByRole('menuitem', { name: 'Subtract', exact: true })).toBeVisible()
+  await expect(two.getByRole('menuitem', { name: 'Join', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+
+  // Right to left, from empty space on the right to the second part's middle: only what it touches.
+  const [bx, by] = await partAt(page, 1)
+  await page.mouse.click(area.x + 6, area.y + 6)
+  await page.mouse.move(area.x + area.width - 6, by - 4)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(bx, by + 4, { steps: 4 })
+  await page.mouse.up({ button: 'right' })
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'false')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+
+  // Shift with a box adds: a right-to-left box touching only the first part keeps the second.
+  await page.keyboard.down('Shift')
+  await page.mouse.move(ax + 4, ay - 4)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(ax - 4, ay + 4, { steps: 4 })
+  await page.mouse.up({ button: 'right' })
+  await page.keyboard.up('Shift')
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+
+  // Ctrl+A takes every part; a click on empty space clears.
+  await page.mouse.click(area.x + 6, area.y + 6)
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'false')
+  await page.keyboard.press('ControlOrMeta+A')
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+  await page.mouse.click(area.x + 6, area.y + 6)
+
+  // Shift-click adds the first part, and a second Shift-click takes it away again.
+  await page.mouse.click(bx, by)
+  await page.keyboard.down('Shift')
+  await page.mouse.click(ax, ay)
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+  await page.mouse.click(ax, ay)
+  await page.keyboard.up('Shift')
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'false')
+
+  // Group the two: a click on one takes both; a double-click reaches inside; another opens the step that made it.
+  await page.keyboard.down('Shift')
+  await page.mouse.click(ax, ay)
+  await page.keyboard.up('Shift')
+  await page.getByRole('button', { name: 'Group', exact: true }).click()
+  // The Group step's result resets the selection, so the clicks wait for it.
+  await expect(bodies.getByRole('list', { name: 'Group' })).toBeVisible()
+  await page.mouse.click(area.x + 6, area.y + 6)
+  await page.mouse.click(ax, ay)
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'true')
+  await page.mouse.dblclick(ax, ay)
+  await expect(chosen('Box')).toHaveAttribute('aria-pressed', 'true')
+  await expect(chosen('Box2')).toHaveAttribute('aria-pressed', 'false')
+  await page.mouse.dblclick(ax, ay)
+  await expect(page.getByRole('form', { name: 'Edit Box' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('a part that cannot change gets no arrows until it is kept', { tag: '@viewport' }, async () => {
+  const copy = path.join(scratchDir('simplecad-keep-'), 'Lost inputs.scad3')
+  await copyFile(lostInputs, copy)
+  const { page } = await launch({ args: [copy] })
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const canvas = page.locator('canvas')
+  const notice = page.getByRole('region', { name: "Part can't change" })
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(notice).toBeVisible()
+  await page.waitForTimeout(300)
+  await expect(canvas).not.toHaveAttribute('data-handles', /./)
+  await notice.getByRole('button', { name: 'Keep where it is' }).click()
+  await expect(notice).toHaveCount(0)
+  await bodies.getByRole('button', { name: 'A', exact: true }).click()
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+})
+
+// 0.2.0's bar: whatever is selected, its likeliest tool leads, the rest behind ⋯, and the right-click menu agrees.
+test('the bar beside the selection fits what is chosen: a face and its part, two parts, a group, three parts', async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  const first = () => bar.getByRole('button').first()
+  await expect(steps).toHaveText(['Box'])
+
+  // A face: its pull distance and tools, then its part's.
+  await page.getByLabel('Planar face').selectOption({ label: 'Top · 1200 mm²' })
+  await expect(bar.getByLabel('Pull distance')).toBeVisible()
+  for (const name of ['Hole', 'Sketch', 'Text', 'Shell', 'Move', 'Rotate', 'Scale', 'Split', 'Hide', 'Delete']) {
+    await expect(bar.getByRole('button', { name, exact: true })).toBeVisible()
+  }
+  await expect(bodies.getByRole('button', { name: 'Box', exact: true })).toHaveAttribute('aria-pressed', 'true')
+
+  await addBox(page, '45')
+  await addBox(page, '80')
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Box3', 'Move2'])
+
+  // Two parts: Subtract leads, and opens Combine set to cut the first with the second.
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await bodies.getByRole('button', { name: 'Box2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await expect(first()).toHaveAccessibleName('Subtract')
+  for (const name of ['Join', 'Intersect', 'Group', 'Stack & Place', 'Clip Joint']) await expect(bar.getByRole('button', { name, exact: true })).toBeVisible()
+  await bodies.getByRole('button', { name: 'Box2', exact: true }).click({ button: 'right' })
+  await expect(page.getByRole('menu', { name: 'Box2' }).getByRole('menuitem', { name: 'Subtract' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await first().click()
+  const combine = page.getByRole('form', { name: 'Combine' })
+  await expect(combine.getByRole('radio', { name: 'Subtract' })).toBeChecked()
+  await expect(combine.getByRole('status', { name: 'What is combined' })).toHaveText('Removing Box2 from Box. The result keeps the name Box.')
+  await more(combine)
+  await expect(combine.getByRole('checkbox', { name: 'Box2' })).toBeChecked()
+  await expect(combine.getByLabel('Body')).toHaveValue('0')
+  await combine.getByRole('button', { name: 'Cancel' }).click()
+
+  // Grouped, one click takes the group, and Ungroup leads.
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await bodies.getByRole('button', { name: 'Box2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await bar.getByRole('button', { name: 'Group', exact: true }).click()
+  const group = bodies.getByRole('list', { name: 'Group' })
+  await expect(group).toHaveCount(1)
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await expect(first()).toHaveAccessibleName('Ungroup')
+  await first().click()
+  await expect(group).toHaveCount(0)
+
+  // Three parts: Arrange leads.
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await bodies.getByRole('button', { name: 'Box2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await bodies.getByRole('button', { name: 'Box3', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await expect(first()).toHaveAccessibleName('Arrange')
+  await first().click()
+  await expect(page.getByRole('form', { name: 'Arrange' })).toBeVisible()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+/** The first edge anchor the view publishes that is clicked as an edge (not the face beside it). */
+async function clickEdge(page: Page) {
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  for (const [x, y] of await edgePoints(page)) {
+    await page.mouse.click(x, y)
+    if (await bar.getByRole('form', { name: 'Edge finish' }).count() &&
+      !(await bar.getByLabel('Pull distance').count())) return [x, y] as Point
+    await page.mouse.click(5 + (await page.locator('canvas').boundingBox())!.x, 5 + (await page.locator('canvas').boundingBox())!.y)
+  }
+  throw new Error('No edge could be clicked')
+}
+
+// 0.2.0's handles: a clicked edge carries a handle that rounds it, and letting go is one step.
+test('an edge lights up under the pointer; clicked, it offers Round or Bevel with a size, and its handle rounds it when dragged', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  const canvas = page.locator('canvas')
+  await expect(status).toHaveText(/24000 mm³/)
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  const [ex, ey] = await clickEdge(page)
+  await page.mouse.click(5 + (await canvas.boundingBox())!.x, 5 + (await canvas.boundingBox())!.y)
+  await page.mouse.move(ex, ey)
+  await expect(canvas).toHaveAttribute('data-hover-edge', /^\d+$/)
+  await page.mouse.click(ex, ey)
+  const finish = bar.getByRole('form', { name: 'Edge finish' })
+  await expect(finish.getByRole('radio', { name: 'Round' })).toBeChecked()
+  await expect(finish.getByRole('radio', { name: 'Bevel' })).toBeVisible()
+  await expect(finish.getByLabel('Edge size')).toBeVisible()
+  await expect(bar.getByRole('button', { name: 'Measure', exact: true })).toBeVisible()
+  await expect(canvas).toHaveAttribute('data-picked-edges', '1')
+
+  const [x, y] = await handleAt(page.getByRole('button', { name: 'Drag to round the edge' }))
+  // The bar sits beside the handle, never on it (docked at the bottom, it covered the handle in small windows).
+  const barBox = (await bar.boundingBox())!
+  expect(x >= barBox.x && x <= barBox.x + barBox.width && y >= barBox.y && y <= barBox.y + barBox.height).toBe(false)
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 25, y + 25, { steps: 5 })
+  await expect(page.getByRole('status', { name: 'Handle reading' })).toContainText(/^R \d/)
+  // Escape drops the drag; nothing changes.
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box'])
+
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 25, y + 25, { steps: 5 })
+  const reading = (await page.getByRole('status', { name: 'Handle reading' }).textContent())!
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box', 'Fillet'])
+  // A round takes material away; the radius snapped to 0.25 mm.
+  expect(Number(reading.match(/R ([\d.]+)/)![1]) * 4 % 1).toBe(0)
+  await expect.poll(async () => Number((await status.textContent())!.match(/([\d.]+) mm³/)![1])).toBeLessThan(24000)
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('Chamfer from a clicked edge starts with that edge picked', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await clickEdge(page)
+  await page.getByRole('toolbar', { name: 'Selection tools' }).getByRole('button', { name: 'More tools' }).click()
+  await page.getByRole('menuitem', { name: 'Chamfer', exact: true }).click()
+  const chamfer = page.getByRole('form', { name: 'Chamfer' })
+  await expect(chamfer.getByRole('status', { name: 'Picked edges' })).toHaveText('1 edge of Box')
+  await chamfer.getByLabel('Distance').fill('2 mm')
+  await chamfer.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Chamfer'])
+})
+
+test('Bevel turns the edge handle into a bevel; a typed size rounds two Shift-clicked edges in one step', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  await expect(status).toHaveText(/24000 mm³/)
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  const finish = bar.getByRole('form', { name: 'Edge finish' })
+  const first = await clickEdge(page)
+  await finish.getByRole('radio', { name: 'Bevel' }).click()
+  const [bx, by] = await handleAt(page.getByRole('button', { name: 'Drag to bevel the edge' }))
+  await page.mouse.move(bx, by)
+  await page.mouse.down()
+  await page.mouse.move(bx + 25, by + 25, { steps: 5 })
+  await expect(page.getByRole('status', { name: 'Handle reading' })).toContainText(/^C \d/)
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box', 'Chamfer'])
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(status).toHaveText(/24000 mm³/)
+
+  // Two edges: click one, Shift-click another; a typed size previews, and Enter rounds both as one Fillet.
+  await page.mouse.click(...first)
+  await finish.getByRole('radio', { name: 'Round' }).click()
+  for (const point of await edgePoints(page)) {
+    if (Math.hypot(point[0] - first[0], point[1] - first[1]) < 12) continue
+    await page.keyboard.down('Shift')
+    await page.mouse.click(...point)
+    await page.keyboard.up('Shift')
+    if (await finish.getByText(/2 edges/).count()) break
+    // A face took that click and the edges went: start again from the first.
+    await page.mouse.click(...first)
+  }
+  await expect(finish.getByText(/2 edges/)).toBeVisible()
+  await finish.getByLabel('Edge size').fill('1')
+  await expect(status).toHaveAttribute('data-preview', 'shown')
+  await finish.getByLabel('Edge size').press('Enter')
+  await expect(steps).toHaveText(['Box', 'Fillet'])
+  await expect.poll(async () => Number((await status.textContent())!.match(/([\d.]+) mm³/)![1])).toBeLessThan(24000)
+  await expect(errors(page)).toHaveCount(0)
+})
+
+test('the face list is kept for the keyboard: hidden until it has the focus', async () => {
+  const { page } = await launch()
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  const list = page.getByLabel('Planar face')
+  // The label holding it is clipped to a pixel until the list has the focus.
+  const label = list.locator('xpath=..')
+  expect((await label.boundingBox())!.width).toBeLessThanOrEqual(1)
+  await list.focus()
+  expect((await label.boundingBox())!.width).toBeGreaterThan(50)
+  await list.selectOption({ label: 'Top · 1200 mm²' })
+  await expect(page.getByRole('toolbar', { name: 'Selection tools' }).getByLabel('Pull distance')).toBeVisible()
+})
+
+test('Split shows its plane on the part; dragging a handle moves it, reading both halves', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await page.getByRole('toolbar', { name: 'Selection tools' }).getByRole('button', { name: 'Split', exact: true }).click()
+  const form = page.getByRole('form', { name: 'Split' })
+  const offset = form.getByLabel('Offset from the centre')
+  await expect(offset).toHaveValue('0')
+  const [x, y] = await handleAt(page.getByRole('button', { name: 'Drag the split plane' }))
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 30, { steps: 5 })
+  // The Box is 20 mm high: the readout is the two heights, which add up to it.
+  const reading = (await page.getByRole('status', { name: 'Handle reading' }).textContent())!
+  const [a, b] = reading.split('|').map((part) => Number(part.match(/[\d.]+/)![0]))
+  expect(a + b).toBeCloseTo(20, 6)
+  expect(a).toBeGreaterThan(10)
+  await page.mouse.up()
+  await expect(offset).not.toHaveValue('0')
+  expect(Number(await offset.inputValue())).toBeCloseTo(a - 10, 6)
+  await form.getByRole('button', { name: 'Apply' }).click()
+  await expect(steps).toHaveText(['Box', 'Split'])
+  await expect(bodies.getByRole('button', { name: /^Box/ })).toHaveCount(2)
+})
+
+// 0.2.0's Combine: the panel says which part is kept and which cut, Swap turns that round, the view colours them, and
+// a click on a part while it is open adds it as a tool, over a preview too.
+test('Subtract shows the kept part and the cutters, Swap turns them round, and a click adds a cutter', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const status = page.getByTestId('engine-status')
+  const canvas = page.locator('canvas')
+  const bar = page.getByRole('toolbar', { name: 'Selection tools' })
+  await expect(steps).toHaveText(['Box'])
+  await addBox(page, '30')
+  await addBox(page, '45')
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Box3', 'Move2'])
+  await page.getByRole('button', { name: 'Fit view' }).click()
+  const [cx, cy] = await partAt(page, 2)
+  const bodies = page.getByRole('list', { name: 'Bodies', exact: true })
+  await bodies.getByRole('button', { name: 'Box', exact: true }).click()
+  await bodies.getByRole('button', { name: 'Box2', exact: true }).click({ modifiers: ['ControlOrMeta'] })
+  await bar.getByRole('button', { name: 'Subtract', exact: true }).click()
+  const combine = page.getByRole('form', { name: 'Combine' })
+  const sentence = combine.getByRole('status', { name: 'What is combined' })
+  await expect(sentence).toHaveText('Removing Box2 from Box. The result keeps the name Box.')
+  await expect(canvas).toHaveAttribute('data-roles', JSON.stringify({ kept: 0, tools: [1], operation: 'cut' }))
+  await expect(status).toHaveAttribute('data-preview', 'shown')
+
+  // Over the preview, a click on the third part adds it as a cutter; a second click takes it away again.
+  await page.mouse.click(cx, cy)
+  await expect(sentence).toHaveText('Removing Box2 and Box3 from Box. The result keeps the name Box.')
+  await expect(canvas).toHaveAttribute('data-roles', JSON.stringify({ kept: 0, tools: [1, 2], operation: 'cut' }))
+  await page.mouse.click(cx, cy)
+  await expect(sentence).toHaveText('Removing Box2 from Box. The result keeps the name Box.')
+
+  // Swap: Box2 is kept and cut by Box.
+  await combine.getByRole('button', { name: 'Swap' }).click()
+  await expect(sentence).toHaveText('Removing Box from Box2. The result keeps the name Box2.')
+  await expect(canvas).toHaveAttribute('data-roles', JSON.stringify({ kept: 1, tools: [0], operation: 'cut' }))
+  await combine.getByRole('radio', { name: 'Join' }).click()
+  await expect(sentence).toHaveText('Joining Box to Box2.')
+  await expect(canvas).toHaveAttribute('data-roles', JSON.stringify({ kept: 1, tools: [0], operation: 'join' }))
+  await page.keyboard.press('Enter')
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Box3', 'Move2', 'Combine'])
+  await expect(page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })).toHaveCount(0)
+  await expect(canvas).toHaveAttribute('data-roles', '')
+
+  // Three parts in a box: Subtract is on the bar for them too, the first kept.
+  await page.getByRole('toolbar', { name: 'Modeling tools' }).getByRole('button', { name: 'Undo', exact: true }).click()
+  await expect(bodies.getByRole('button', { name: 'Box', exact: true })).toHaveCount(1)
+  const area = (await canvas.boundingBox())!
+  await page.mouse.move(area.x + 6, area.y + 6)
+  await page.mouse.down({ button: 'right' })
+  await page.mouse.move(area.x + area.width - 6, area.y + area.height - 6, { steps: 6 })
+  await page.mouse.up({ button: 'right' })
+  await bar.getByRole('button', { name: 'Subtract', exact: true }).click()
+  await expect(sentence).toHaveText('Removing Box2 and Box3 from Box. The result keeps the name Box.')
+  await page.keyboard.press('Enter')
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Box3', 'Move2', 'Combine'])
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// 0.2.0's move magnets: dragged towards another part, the moving part's box catches on that part's edges, middle,
+// corners and centres within 10 pixels, and the reading says what met what; Shift drags freely.
+test('a dragged part catches flush on its neighbour and says so; with Shift it moves freely', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const steps = page.getByRole('list', { name: 'Model history' }).locator('li')
+  const canvas = page.locator('canvas')
+  await expect(steps).toHaveText(['Box'])
+  await addBox(page, '45')
+  await page.getByRole('button', { name: 'Fit view' }).click()
+  const [px, py] = await partAt(page, 1)
+  await page.mouse.click(px, py)
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await page.waitForTimeout(200)
+  const [hx, hy] = JSON.parse((await canvas.getAttribute('data-handles'))!).x as [number, number]
+  // Back along the X arrow, a few pixels at a time, until the part's near edge meets Box's far edge.
+  const [ux, uy] = [hx - (px - 20), hy - py].map((v, _, all) => v / Math.hypot(...all))
+  const drag = async (shift: boolean) => {
+    await page.mouse.move(hx, hy)
+    await page.mouse.down()
+    if (shift) await page.keyboard.down('Shift')
+    let caught = ''
+    for (let step = 1; step < 120 && !caught; step++) {
+      await page.mouse.move(hx - ux * step * 2, hy - uy * step * 2)
+      caught = (await canvas.getAttribute('data-snap')) ?? ''
+      if (shift && step > 60) break
+    }
+    return caught
+  }
+  const caught = await drag(false)
+  expect(caught).toBe('Box: near edge to far edge')
+  await expect(page.getByRole('status', { name: 'Transform reading' })).toHaveText('ΔX -5 mm · snapped to Box: near edge to far edge')
+  await page.mouse.up()
+  await expect(steps).toHaveText(['Box', 'Box2', 'Move', 'Move2'])
+  await page.getByRole('button', { name: 'Edit Move2' }).click()
+  await expect(page.getByRole('form', { name: 'Move' }).getByLabel('Move X')).toHaveValue('-5')
+  await page.keyboard.press('Escape')
+
+  // Shift: no magnet catches.
+  await page.mouse.click(...await partAt(page, 1))
+  await expect(canvas).toHaveAttribute('data-handles', /"x"/)
+  await page.waitForTimeout(200)
+  expect(await drag(true)).toBe('')
+  await page.keyboard.press('Escape')
+  await page.keyboard.up('Shift')
+  await page.mouse.up()
+  await expect(errors(page)).toHaveCount(0)
+})
+
+// 0.2.0's point-to-point Measure: the pointer snaps to named points, and two clicks give the distance between them.
+test('Measure with nothing selected snaps two points and gives the distance between them', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const canvas = page.locator('canvas')
+  await expect(page.getByTestId('engine-status')).toHaveText(/24000 mm³/)
+  await command(page, 'Measure')
+  const panel = page.getByRole('region', { name: 'Measure' })
+  await expect(panel.getByLabel('Measure selection')).toHaveValue('point')
+  await expect(canvas).toHaveAttribute('data-edge-anchors', /\d/)
+  const anchors = (JSON.parse((await canvas.getAttribute('data-edge-anchors'))!) as (number[] | null)[]).filter((a) => a !== null) as number[][]
+  const picked: number[][] = []
+  for (const anchor of anchors) {
+    // Nudged until a snap shows: moves made while command search's dialog closes land on the dialog.
+    let snap: string | null = ''
+    for (let nudge = 0; nudge < 30 && !snap; nudge++) {
+      await page.mouse.move(anchor[0] + (nudge % 2), anchor[1])
+      await page.waitForTimeout(50)
+      snap = await canvas.getAttribute('data-measure-snap')
+    }
+    const { kind, point } = JSON.parse(snap!) as { kind: string; point: number[] }
+    if (kind !== 'midpoint' || picked.some((p) => Math.hypot(...p.map((v, i) => v - point[i])) < 1e-6)) continue
+    await page.mouse.click(anchor[0], anchor[1])
+    picked.push(point)
+    if (picked.length === 2) break
+  }
+  expect(picked).toHaveLength(2)
+  const distance = Math.hypot(...picked[0].map((v, i) => v - picked[1][i]))
+  const readings = panel.getByRole('definition')
+  await expect(readings.first()).toHaveText(`${+distance.toFixed(3)} mm`)
+  await expect(page.getByTestId('measure-length')).toBeVisible()
   await expect(errors(page)).toHaveCount(0)
 })

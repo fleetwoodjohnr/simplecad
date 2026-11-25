@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ANCHORS, type SectionReplaceEdit } from '@/shared/engine-protocol'
-import { Btn, inputCls } from '../ui'
+import { Btn, inputCls, useLivePreview, More } from '../ui'
 
 type Settings = SectionReplaceEdit['inputs']
 type Anchor = typeof ANCHORS[number]
@@ -32,11 +32,18 @@ export function SectionReplacePanel({ busy, picked, preset, onClear, onChange, o
   })
   const set = (next: Partial<Settings>) => { setSettings((current) => ({ ...current, ...next })); onChange() }
   const valid = fields.every(([key]) => settings[key].trim()) && (!!preset || picked.length === 2)
+  useLivePreview(JSON.stringify([settings, picked]), valid && !preset && !busy, () => onPreview(settings))
   const anchor = (key: 'moving_anchor' | 'target_anchor', label: string) => <label className="grid gap-1">{label}
     <select className={inputCls} value={settings[key]} disabled={busy} onChange={(event) => set({ [key]: event.target.value as Anchor })}>
       {ANCHORS.map((value) => <option key={value} value={value}>{anchorLabels[value]}</option>)}
     </select>
   </label>
+  // An edit changes only these, so they show; a new one keeps them under More… with the anchors.
+  const numbers = <div className="grid grid-cols-2 gap-2">
+    {fields.map(([key, label]) => <label key={key} className="grid gap-1">{label}
+      <input className={inputCls} value={settings[key]} maxLength={255} disabled={busy} onChange={(event) => set({ [key]: event.target.value })} />
+    </label>)}
+  </div>
   return (
     <form aria-label="Section Replace" className="grid shrink-0 gap-2 text-xs" onSubmit={(event) => {
       event.preventDefault()
@@ -54,16 +61,13 @@ export function SectionReplacePanel({ busy, picked, preset, onClear, onChange, o
             : `Replacement: ${picked[0]} · Target: ${picked[1]}`}
         </p>
         <Btn type="button" size="sm" className="justify-self-start" disabled={busy || !picked.length} onClick={onClear}>Clear picks</Btn>
-        <div className="grid grid-cols-2 gap-2">{anchor('moving_anchor', 'Replacement anchor')}{anchor('target_anchor', 'Target anchor')}</div>
       </>}
-      <div className="grid grid-cols-2 gap-2">
-        {fields.map(([key, label]) => <label key={key} className="grid gap-1">{label}
-          <input className={inputCls} value={settings[key]} maxLength={255} disabled={busy} onChange={(event) => set({ [key]: event.target.value })} />
-        </label>)}
-      </div>
+      {preset ? numbers : <More>
+        <div className="grid grid-cols-2 gap-2">{anchor('moving_anchor', 'Replacement anchor')}{anchor('target_anchor', 'Target anchor')}</div>
+        {numbers}
+      </More>}
       <div className="flex gap-1">
         <Btn type="submit" size="sm" variant="primary" disabled={!valid || busy}>Apply</Btn>
-        {!preset && <Btn type="button" size="sm" disabled={!valid || busy} onClick={() => onPreview(settings)}>Preview</Btn>}
         <Btn type="button" size="sm" disabled={busy} onClick={onCancel}>Cancel</Btn>
       </div>
     </form>
