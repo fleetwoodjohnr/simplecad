@@ -213,6 +213,7 @@ test('models a physical thread on a shaft and undoes it in one step', async () =
   await thread.getByLabel('Thread size').selectOption('M30')
   await thread.getByLabel('Threaded length').fill('10 mm')
   await thread.getByRole('button', { name: 'Apply' }).click()
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled({ timeout: 60_000 })
   // The native thread test uses the same 1 mm³ bound for compiler-dependent
   // B-spline integration outside Linux. Keep the Fedora result to display precision.
   await expect.poll(async () => {

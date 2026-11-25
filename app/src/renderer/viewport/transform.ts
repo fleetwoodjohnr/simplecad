@@ -291,6 +291,9 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       // the button goes down is a click that adds to the selection, so no handle takes it (held later, they still
       // free or fine the drag).
       const adding = event.shiftKey || event.ctrlKey || event.metaKey
+      // The renderer may have skipped a frame (including while its WebGL context is lost).
+      // Refresh the controls' world positions and pick meshes before hit-testing the press.
+      if (live && !adding) handle.updateMatrixWorld(true)
       const winner = adding ? undefined : nearest(event)
       arrows.enabled = live && !!arrows.object && !adding && winner !== rings
       rings.enabled = live && !!rings.object && !adding && winner !== arrows

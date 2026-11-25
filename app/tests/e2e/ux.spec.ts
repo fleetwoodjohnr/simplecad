@@ -711,6 +711,30 @@ test('in a small window the selection bar stays off the arrows, the rings and th
   await expect(errors(page)).toHaveCount(0)
 })
 
+// A skipped WebGL frame leaves the renderer's pick meshes at their previous positions.
+test('a newly attached move arrow accepts the press while the graphics context is lost', { tag: '@viewport' }, async () => {
+  const { page } = await launch()
+  const canvas = page.locator('canvas')
+  await expect(canvas).toHaveAttribute('data-body-anchors', /"0"/)
+  await canvas.evaluate((element) => {
+    const gl = (element as HTMLCanvasElement).getContext('webgl2')!
+    // Software rendering can already have lost the context; its extensions are then unavailable.
+    if (!gl.isContextLost()) gl.getExtension('WEBGL_lose_context')?.loseContext()
+  })
+  await expect.poll(() => canvas.evaluate((element) =>
+    (element as HTMLCanvasElement).getContext('webgl2')!.isContextLost())).toBe(true)
+  await page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true }).click()
+  const [x, y] = await handle(page, 'x')
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await expect(canvas).toHaveAttribute('data-drag', 'dragging')
+  await page.mouse.move(x + 30, y + 8, { steps: 4 })
+  await expect(canvas).toHaveAttribute('data-ghost', 'move')
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(page.getByRole('list', { name: 'Model history' }).locator('li')).toHaveText(['Box'])
+})
+
 // History stays clickable while a step runs (disabling hundreds of rows on each step was slow on large projects).
 test('Edit chosen in History while a step runs opens once that step is done', async () => {
   const { page } = await launch()

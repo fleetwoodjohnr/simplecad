@@ -397,6 +397,7 @@ test('vents the top of the box from the selection bar, and makes a vent plate fr
   const shape = page.getByRole('form', { name: 'Create shape' })
   await shape.getByLabel('Shape type').selectOption('vent_plate')
   await shape.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled({ timeout: 60_000 })
   await expect(steps).toHaveText(['Box', 'Vent', 'Vent2'])
   await expect(page.getByRole('list', { name: 'Bodies', exact: true })).toContainText('Vent')
   await toolbar.getByRole('button', { name: 'Undo', exact: true }).click()
@@ -733,6 +734,7 @@ test('threads a shaft into the bore of a tube as a matched pair, and edits the c
   await page.getByLabel('Planar face').selectOption({ label: 'Tube · Curved · 314.16 mm²' })
   await expect(pair.getByRole('status', { name: 'Threaded faces' })).toContainText('both threads are made together')
   await pair.getByRole('button', { name: 'Apply' }).click()
+  await expect(toolbar.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled({ timeout: 60_000 })
   await expect(steps).toHaveText(['Box', 'Cylinder', 'Tube', 'Threaded Connection'])
   await expect(errors(page)).toHaveCount(0)
 
