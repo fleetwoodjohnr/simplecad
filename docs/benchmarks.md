@@ -229,8 +229,12 @@ Redo; ms):
 
 | Project | 0.5.1: first, p50, p95 | 0.6.0: first, p50, p95 | Heaviest step, 0.6.0 (limit: 1.1 × 0.4.4 with display) |
 |---|---|---|---|
-| Atlas Box | 717–997, 116–131, 343–376 | 666–983, 103–104, 258–279 | Undo 475–492 (1253); Redo 323–336 (707) |
-| UPS Atlas | 570–650, 182–195, 686–957 | 610–687, 101–103, 629–641 | Move Undo 422–449 (560) |
+| Atlas Box | 717–997, 116–131, 343–376 | 665–732, 101–103, 262–269 | Undo 482–511 (1253); Redo 328–341 (707) |
+| UPS Atlas | 570–650, 182–195, 686–957 | 683–720, 98–102, 614–739 | Move Undo 428–469 (560) |
+
+On UPS Atlas the first Redos, of its heavy import steps, took 603–856 ms, varying from run to run (one run in
+three steady at about 620 ms, as every run was at 6e1a0ed); they have no limit of their own, and they vary
+with the automatic update check off as well.
 
 What changed:
 
@@ -242,10 +246,10 @@ What changed:
   a step); History's hundreds of buttons were turned off and on (tens of ms of style and layout); and a large
   model's face list (3,000 options) was rebuilt.
 
-**Drag frames** (`measure-atlas-transform.cjs`, Atlas Box, 3.6 s drags): Move p50 16.67, p95 16.67, max 33.3 ms;
-Rotate p50 16.67, p95 16.67, max 33.3 ms.
+**Drag frames** (`measure-atlas-transform.cjs`, Atlas Box, 3.6 s drags, with the move magnets on): Move p50 16.68,
+p95 16.68, max 33.4 ms; Rotate p50 16.68, p95 16.68, max 33.4 ms.
 
-**Main thread while the engine works** (longest task, limit 300 ms): Stack & Place on Atlas Box 57 ms
+**Main thread while the engine works** (longest task, limit 300 ms): Stack & Place on Atlas Box 70 ms
 (`stack-probe.cjs`); live preview of Hole on Atlas Box, typed slowly and in a burst, none over 50 ms
 (`preview-probe.cjs`).
 
@@ -261,7 +265,7 @@ drop-down list 2, a typed value 1, Enter, Delete or Escape 1):
 | Delete a part | 2 | 2 | Click the part, Delete |
 | Drill a 6 mm hole | 5 | 4 | Click where it goes, Hole, type 6, Enter |
 | Cut one part with another | 6 | 4 | Click the part, Shift-click the cutter, Subtract, Enter |
-| Arrange three parts on the plate | 9 | 4 | Drag a box round them, Arrange, click the plate, Enter |
+| Arrange three parts on the plate | 9 | 4 | Right-drag a box round them, Arrange, click the plate, Enter |
 | Join two parts with a clip | 7 | 4 | Click a face, Shift-click the other, Clip Joint, Enter |
 | Change a part's width | 3 | 3 | Double-click the part, type 50, Enter |
 | **All ten** | **47** | **29** | |
