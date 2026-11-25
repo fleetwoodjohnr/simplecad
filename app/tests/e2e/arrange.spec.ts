@@ -136,6 +136,13 @@ test('stands a body on a picked face, drags the pattern, keeps a margin from a p
   // Let the view settle: the handles are published after each frame.
   await page.waitForTimeout(200)
   const [hx, hy] = JSON.parse((await canvas.getAttribute('data-handles'))!).x as [number, number]
+  // Dry run 5: pinned beside the face selected as it opened, the panel could sit on this arrow. A tool with handles on
+  // the model docks in the view's top right corner instead.
+  const view = (await canvas.boundingBox())!
+  const tool = (await page.getByRole('region', { name: 'Tool' }).boundingBox())!
+  expect(Math.abs(view.x + view.width - (tool.x + tool.width) - 12)).toBeLessThan(2)
+  expect(Math.abs(tool.y - view.y - 12)).toBeLessThan(2)
+  expect(hx >= tool.x && hx <= tool.x + tool.width && hy >= tool.y && hy <= tool.y + tool.height).toBe(false)
   await page.mouse.move(hx, hy)
   await page.mouse.down()
   await page.mouse.move(hx + 30, hy + 8, { steps: 4 })

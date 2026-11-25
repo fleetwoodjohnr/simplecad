@@ -189,8 +189,10 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     later = undefined
     if (waiting) set(...waiting)
   }
-  const cancel = () => {
+  /** Ends a drag without a step; `why` goes into data-drag, which a failed scripted drag reports. */
+  const cancel = (why?: string | Event) => {
     if (!active) return
+    canvas.dataset.drag = `cancelled: ${typeof why === 'string' ? why : why?.type ?? ''}`
     active = false
     dragging(false)
     showLabel()
@@ -208,7 +210,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (active && event.button === 2) {
       event.preventDefault()
       event.stopImmediatePropagation()
-      cancel()
+      cancel('right button')
       return
     }
     if (event.button === 0) {
@@ -222,6 +224,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
       const winner = adding ? undefined : nearest(event)
       arrows.enabled = live && !!arrows.object && !adding && winner !== rings
       rings.enabled = live && !!rings.object && !adding && winner !== arrows
+      canvas.dataset.drag = `pressed: ${winner === arrows ? 'arrow' : winner === rings ? 'ring' : 'no handle'}${live ? '' : ' (handles off)'}`
     }
   }
   const pointerAt = (event: { clientX: number; clientY: number; button?: number }) => {
@@ -263,7 +266,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopImmediatePropagation()
-      cancel()
+      cancel('Escape')
       return
     }
     if (event.type === 'keydown' && (/^[0-9.]$/.test(event.key) || (event.key === '-' && !typed) || (event.key === 'Backspace' && typed))) {
@@ -296,6 +299,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   const start = (which: Transform['kind']) => {
     kind = which
     claimed = active = true
+    canvas.dataset.drag = 'dragging'
     lock = undefined
     delta.set(0, 0, 0)
     rotation.identity()
@@ -306,6 +310,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
   /** One drag, typed or not, is one history step. */
   function finish() {
     if (!active || !config) return
+    canvas.dataset.drag = 'done'
     active = false
     dragging(false)
     showLabel()
@@ -349,7 +354,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     later = undefined
     if (drawn !== shape || config?.body !== next?.body || String(config?.bodies) !== String(next?.bodies) ||
       config?.kind !== next?.kind || config?.pivot !== next?.pivot) {
-      cancel()
+      cancel('the view changed')
       const picked = next?.bodies ?? (next ? [next.body] : [])
       const ranges = shape?.ranges.filter(({ body }) => picked.includes(body)) ?? []
       const hadGeometry = arrows.object !== undefined || rings.object !== undefined
@@ -388,7 +393,7 @@ export function viewportTransform(canvas: HTMLCanvasElement, camera: Perspective
     config = next
     if (!active) mesh.material = next?.highlight ? chosen : surface
     const shown = arrows.object !== undefined || rings.object !== undefined
-    if (!next?.enabled) cancel()
+    if (!next?.enabled) cancel('handles turned off')
     live = shown && !!next?.enabled
     handle.visible = live
     arrows.enabled = live && !!arrows.object

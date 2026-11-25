@@ -54,8 +54,9 @@ interface Props {
   /** Tools for the selection, shown beside the selected face (docked at the bottom when it is off screen). */
   overlay?: ReactNode
   /** The overlay is an open tool's panel: placed beside the face once, as it opens, and kept there while the tool
-   * picks; with no face, it docks in the top right corner. */
-  toolOverlay?: boolean
+   * picks; with no face, it docks in the top right corner. 'dock' docks it there from the start: a tool whose handles
+   * are on the model (Arrange's pattern, Move and Rotate), which a panel beside the face could cover. */
+  toolOverlay?: boolean | 'dock'
   /** While set, a click picks the model edge under it (display edge index) instead of a face. */
   onPickEdge?: (edge: number, point: Vec3) => void
   pickedEdges?: number[]
@@ -253,7 +254,7 @@ export function Viewport(props: Props) {
       const panel = bar.current
       if (!panel) return
       if (current.current.toolOverlay) {
-        pinned ??= at?.clone() ?? 'dock'
+        pinned = current.current.toolOverlay === 'dock' ? 'dock' : pinned ?? at?.clone() ?? 'dock'
         at = pinned === 'dock' ? undefined : pinned
       } else pinned = undefined
       const tool = current.current.toolOverlay

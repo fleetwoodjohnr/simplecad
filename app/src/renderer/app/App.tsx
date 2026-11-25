@@ -1813,7 +1813,7 @@ export function App() {
               : (measureKind === 'edge' || measureKind === 'vertex') && ready ? pickMeasureEdge
               : (constructionPhase === 'edges' || constructionPhase === 'points') && ready ? pickConstructionEdge : undefined}
             pickedEdges={arrange ? arrange.edges : edgeTool ? edgePicks : hinge ? hingeEdges : measureKind ? measuredEdges : selectedEdge ? [selectedEdge.edge] : measuredEdges}
-            toolOverlay={toolOpen}
+            toolOverlay={toolOpen && (arrange || transformKind) ? 'dock' : toolOpen}
             overlay={toolOpen ? <section aria-label="Tool" data-tool-panel="" className="grid w-72 gap-2 overflow-y-auto rounded-xl border border-border bg-elev/95 p-3 text-xs shadow-lg backdrop-blur [&>form]:max-h-none">{toolPanels}</section>
               : idle && model && (selectedFace || selectedEdge || chosenBodies.length || blocked) ? <div className="grid justify-items-start gap-1.5">
               {blocked && <section aria-label="Part can't change" className="max-w-sm rounded-xl border border-border bg-elev/95 p-2 text-xs shadow-lg backdrop-blur">
