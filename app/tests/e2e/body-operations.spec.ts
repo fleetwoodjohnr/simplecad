@@ -816,10 +816,22 @@ test('Stack & Place shows its gaps on the face and drags the part, catching flus
 
   // Along the X arrow, a few pixels at a time, until the part catches on the box's edge.
   await expect(canvas).toHaveAttribute('data-handles', /"x"/)
-  await page.waitForTimeout(300)
-  const [hx, hy] = (JSON.parse((await canvas.getAttribute('data-handles'))!) as Record<string, [number, number]>).x
-  // Out along the arrow: from the part (its top's published point) towards the arrow's.
-  const [ox, oy] = (JSON.parse((await canvas.getAttribute('data-body-anchors'))!) as Record<string, [number, number]>)[1]
+  // The preview and camera framing update on animation frames. Aim only after the part
+  // and its arrow are stationary and the canvas receives pointer events at the arrow.
+  const readAim = () => canvas.evaluate((element) => {
+    const arrow = JSON.parse(element.getAttribute('data-handles') ?? '{}').x as [number, number] | undefined
+    const part = JSON.parse(element.getAttribute('data-body-anchors') ?? '{}')[1] as [number, number] | undefined
+    if (!arrow || !part || document.elementFromPoint(...arrow) !== element) return ''
+    return JSON.stringify([arrow, part])
+  })
+  let aim = ''
+  await expect.poll(async () => {
+    const current = await readAim()
+    const settled = current !== '' && current === aim
+    aim = current
+    return settled
+  }, { intervals: [150] }).toBe(true)
+  const [[hx, hy], [ox, oy]] = JSON.parse(aim) as [[number, number], [number, number]]
   const [ux, uy] = [hx - ox, hy - oy].map((v, _, all) => v / Math.hypot(...all))
   // Its handles are on the model, so the panel docks in the corner, off the arrow (beside the face, in a small
   // window, it covered it).
@@ -829,6 +841,7 @@ test('Stack & Place shows its gaps on the face and drags the part, catching flus
   expect(hx >= tool.x && hx <= tool.x + tool.width && hy >= tool.y && hy <= tool.y + tool.height).toBe(false)
   await page.mouse.move(hx, hy)
   await page.mouse.down()
+  await expect(canvas).toHaveAttribute('data-drag', 'dragging')
   let caught = ''
   for (let step = 1; step < 150 && !caught.startsWith('Box:'); step++) {
     await page.mouse.move(hx + ux * step * 2, hy + uy * step * 2)

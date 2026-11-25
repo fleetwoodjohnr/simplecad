@@ -551,7 +551,7 @@ test('a right click picks the face under it and offers its tools, Edit and Delet
 
   // A right drag, even one starting on the model, draws a box: it takes what it surrounds, opens nothing, and leaves
   // the view where it was.
-  await page.mouse.click(box.x + 6, box.y + 6)
+  await canvas.click({ position: { x: 6, y: 6 } })
   const before = await canvas.getAttribute('data-camera')
   await page.mouse.move(x, y)
   await page.mouse.down({ button: 'right' })
@@ -563,14 +563,14 @@ test('a right click picks the face under it and offers its tools, Edit and Delet
   expect(await canvas.getAttribute('data-camera')).toBe(before)
 
   // On empty space: Select all, then Clear selection; the selection stays until one is chosen.
-  await page.mouse.click(box.x + 6, box.y + 6, { button: 'right' })
+  await canvas.click({ position: { x: 6, y: 6 }, button: 'right' })
   const view = page.getByRole('menu', { name: 'View' })
   await view.getByRole('menuitem', { name: 'Select all' }).click()
   const chosen = page.getByRole('list', { name: 'Bodies', exact: true }).getByRole('button', { name: 'Box', exact: true })
   await expect(chosen).toHaveAttribute('aria-pressed', 'true')
   // A menu that is still closing takes the next press (on CI's slower machines): wait until it has gone.
   await expect(page.getByRole('menu')).toHaveCount(0)
-  await page.mouse.click(box.x + 6, box.y + 6, { button: 'right' })
+  await canvas.click({ position: { x: 6, y: 6 }, button: 'right' })
   await expect(chosen).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('menu', { name: 'View' }).getByRole('menuitem', { name: 'Clear selection' }).click()
   await expect(chosen).toHaveAttribute('aria-pressed', 'false')
