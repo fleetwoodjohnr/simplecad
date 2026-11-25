@@ -125,6 +125,9 @@ export async function launch(opts: { env?: Record<string, string>; args?: string
   page.on('console', (m) => {
     if (m.type() === 'error' && /Content Security Policy/.test(m.text())) throw new Error(m.text())
   })
+  // firstWindow resolves before the geometry worker has delivered the initial model.
+  // Use the same startup condition and budget as the suite's warm-up launch.
+  await page.getByTestId('engine-status').filter({ hasText: 'Engine ready' }).waitFor({ timeout: 60_000 })
   return { app, page }
 }
 
